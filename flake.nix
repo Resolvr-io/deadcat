@@ -8,21 +8,35 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
+        lib = pkgs.lib;
+        tauriCli =
+          if pkgs ? tauri-cli then pkgs.tauri-cli
+          else if pkgs ? cargo-tauri then pkgs.cargo-tauri
+          else null;
+        chromium =
+          if lib.meta.availableOn pkgs.stdenv.hostPlatform pkgs.chromium
+          then pkgs.chromium
+          else null;
 
       in
       {
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             cargo
-            clippy
-            diesel-cli
-            docker
             git
+            nodejs_20
+            pnpm
             just
-            pkg-config
             rustc
+            typescript
             sqlite
-          ];
+            pkg-config
+          ]
+          ++ lib.optional (tauriCli != null) tauriCli
+          ++ lib.optional (chromium != null) chromium;
+          shellHook = lib.optionalString (chromium != null) ''
+            export PUPPETEER_EXECUTABLE_PATH="${chromium}/bin/chromium"
+          '';
         };
       });
 }
