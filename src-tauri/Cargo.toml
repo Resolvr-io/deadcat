@@ -1,5 +1,5 @@
 [package]
-name = "app"
+name = "deadcat-live"
 version = "0.1.0"
 description = "Deadcat.Live – Liquid prediction markets"
 authors = ["you"]
@@ -9,7 +9,7 @@ edition = "2021"
 rust-version = "1.77.2"
 
 [lib]
-name = "app_lib"
+name = "deadcat_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
