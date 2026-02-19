@@ -23,6 +23,11 @@
     box-sizing: border-box;
 }
 
+html,
+body {
+    overflow-x: hidden;
+}
+
 body {
     margin: 0;
     padding: 0;
@@ -30,13 +35,8 @@ body {
         "Space Grotesk", "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
     background:
         radial-gradient(
-            circle at 10% -10%,
-            rgba(245, 158, 11, 0.18),
-            transparent 45%
-        ),
-        radial-gradient(
             circle at 90% 120%,
-            rgba(16, 185, 129, 0.14),
+            rgba(16, 185, 129, 0.08),
             transparent 40%
         ),
         linear-gradient(160deg, #020617 0%, #0b1222 45%, #0f172a 100%);
@@ -46,8 +46,8 @@ body {
 }
 
 #app {
-    width: 100vw;
     min-height: 100vh;
+    overflow-x: hidden;
 }
 
 .phi-container {
@@ -69,16 +69,15 @@ body {
 }
 
 .panel-title {
-    letter-spacing: 0.02em;
-    font-weight: 600;
+    letter-spacing: 0.01em;
+    font-weight: 500;
     color: #f8fafc;
 }
 
 .panel-subtitle {
-    color: #94a3b8;
+    color: #64748b;
     font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.02em;
 }
 
 .kv-row {
@@ -104,9 +103,9 @@ body {
 .status-chip {
     border-radius: 9999px;
     padding: 3px 8px;
-    font-size: 0.68rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
+    font-size: 0.65rem;
+    font-weight: 500;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
 }
 
@@ -132,7 +131,7 @@ body {
 }
 
 .chartLivePulseNo {
-    color: #60a5fa;
+    color: #fda4af;
 }
 
 .liveIndicatorDot {
