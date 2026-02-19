@@ -60,6 +60,13 @@ struct AddressResponse {
     address_index: u32,
 }
 
+#[derive(Serialize)]
+struct ChainTipResponse {
+    height: u32,
+    block_hash: String,
+    timestamp: u32,
+}
+
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn next_id(prefix: &str) -> String {
@@ -194,6 +201,32 @@ fn wallet_signer_id(
     Ok(wallet.signer_id.clone())
 }
 
+#[tauri::command]
+async fn fetch_chain_tip(network: WalletNetwork) -> Result<ChainTipResponse, String> {
+    let url = match network {
+        WalletNetwork::Liquid => "https://blockstream.info/liquid/api",
+        WalletNetwork::LiquidTestnet => "https://blockstream.info/liquidtestnet/api",
+        WalletNetwork::LiquidRegtest => {
+            return Err(
+                "liquid-regtest tip fetch is not configured; use liquid or liquid-testnet"
+                    .to_string(),
+            )
+        }
+    };
+
+    let mut client = lwk_wollet::asyncr::EsploraClient::new(network.into_lwk(), url);
+    let tip = client
+        .tip()
+        .await
+        .map_err(|e| format!("failed to fetch chain tip from LWK esplora: {e}"))?;
+
+    Ok(ChainTipResponse {
+        height: tip.height,
+        block_hash: tip.block_hash().to_string(),
+        timestamp: tip.time,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -203,7 +236,8 @@ pub fn run() {
             create_software_signer,
             create_wollet,
             wallet_new_address,
-            wallet_signer_id
+            wallet_signer_id,
+            fetch_chain_tip
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
