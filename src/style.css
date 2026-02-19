@@ -119,36 +119,70 @@ body {
     background-size: 100% 25%;
 }
 
-.live-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 9999px;
-    position: absolute;
-    pointer-events: none;
+.chartLivePulse {
+    fill: currentColor;
+    opacity: 0.6;
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: chartLivePulse 1.6s ease-out infinite;
 }
 
-.live-dot::after {
-    content: "";
-    position: absolute;
-    inset: -7px;
-    border-radius: 9999px;
-    background: currentColor;
-    opacity: 0.28;
-    animation: pulse-live 1.5s ease-out infinite;
+.chartLivePulseYes {
+    color: #5eead4;
 }
 
-@keyframes pulse-live {
+.chartLivePulseNo {
+    color: #60a5fa;
+}
+
+.liveIndicatorDot {
+    width: 7px;
+    height: 7px;
+    border-radius: 9999px;
+    background: #fb7185;
+    box-shadow: 0 0 8px rgba(251, 113, 133, 0.45);
+    animation: liveIndicatorDot 1.2s ease-in-out infinite;
+}
+
+@keyframes chartLivePulse {
     0% {
-        transform: scale(0.7);
-        opacity: 0.35;
-    }
-    70% {
-        transform: scale(1.6);
-        opacity: 0;
+        transform: scale(1);
+        opacity: 0.6;
     }
     100% {
-        transform: scale(1.6);
+        transform: scale(2.5);
         opacity: 0;
+    }
+}
+
+@keyframes liveIndicatorDot {
+    0% {
+        opacity: 1;
+        box-shadow: 0 0 8px rgba(251, 113, 133, 0.45);
+    }
+    50% {
+        opacity: 0.25;
+        box-shadow: 0 0 4px rgba(251, 113, 133, 0.22);
+    }
+    100% {
+        opacity: 1;
+        box-shadow: 0 0 8px rgba(251, 113, 133, 0.45);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .chartLivePulse,
+    .liveIndicatorDot {
+        animation: none;
+    }
+
+    .chartLivePulse {
+        opacity: 0.3;
+        transform: none;
+    }
+
+    .liveIndicatorDot {
+        opacity: 0.9;
     }
 }
 
