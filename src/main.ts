@@ -1,4 +1,5 @@
 import "./style.css";
+import { invoke } from "@tauri-apps/api/core";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
@@ -7,15 +8,17 @@ type NavCategory =
   | "Politics"
   | "Sports"
   | "Culture"
-  | "Crypto"
+  | "Bitcoin"
   | "Weather"
   | "Macro";
 type MarketCategory = Exclude<NavCategory, "Trending">;
-type ViewMode = "home" | "detail";
+type ViewMode = "home" | "detail" | "create";
 type Side = "yes" | "no";
 type OrderType = "market" | "limit";
 type ActionTab = "trade" | "issue" | "redeem" | "cancel";
 type CovenantState = 0 | 1 | 2 | 3;
+type TradeIntent = "open" | "close";
+type SizeMode = "sats" | "contracts";
 
 type ResolveTx = {
   txid: string;
@@ -29,6 +32,14 @@ type CollateralUtxo = {
   txid: string;
   vout: number;
   amountSats: number;
+};
+
+type WalletNetwork = "liquid" | "liquid-testnet" | "liquid-regtest";
+
+type ChainTipResponse = {
+  height: number;
+  block_hash: string;
+  timestamp: number;
 };
 
 type Market = {
@@ -68,13 +79,14 @@ type PathAvailability = {
 
 const EXECUTION_FEE_RATE = 0.01;
 const WIN_FEE_RATE = 0.02;
+const LARGE_ORDER_SATS_GUARDRAIL = 10000;
 
 const categories: NavCategory[] = [
   "Trending",
   "Politics",
   "Sports",
   "Culture",
-  "Crypto",
+  "Bitcoin",
   "Weather",
   "Macro",
 ];
@@ -83,7 +95,7 @@ const markets: Market[] = [
   {
     id: "mkt-1",
     question: "Will BTC close above $120,000 by Dec 31, 2026?",
-    category: "Crypto",
+    category: "Bitcoin",
     description:
       "Resolved using a median close basket from major spot exchanges.",
     resolutionSource: "Exchange close basket",
@@ -243,7 +255,7 @@ const markets: Market[] = [
   {
     id: "mkt-7",
     question: "Will BTC trade above $150,000 before Jan 1, 2027?",
-    category: "Crypto",
+    category: "Bitcoin",
     description:
       "Resolves YES if any major USD spot venue prints 150,000+ before deadline.",
     resolutionSource: "Multi-exchange high print basket",
@@ -268,7 +280,7 @@ const markets: Market[] = [
   {
     id: "mkt-8",
     question: "Will ETH/BTC close above 0.070 by June 30, 2026?",
-    category: "Crypto",
+    category: "Bitcoin",
     description:
       "Resolves from daily close ratio composite across top centralized venues.",
     resolutionSource: "ETH/BTC close composite",
@@ -552,6 +564,16 @@ const trendingIds = [
   "mkt-4",
 ];
 
+function defaultSettlementInput(): string {
+  const inThirtyDays = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  const year = inThirtyDays.getFullYear();
+  const month = String(inThirtyDays.getMonth() + 1).padStart(2, "0");
+  const day = String(inThirtyDays.getDate()).padStart(2, "0");
+  const hours = String(inThirtyDays.getHours()).padStart(2, "0");
+  const minutes = String(inThirtyDays.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
 const state: {
   view: ViewMode;
   activeCategory: NavCategory;
@@ -561,10 +583,25 @@ const state: {
   selectedSide: Side;
   orderType: OrderType;
   actionTab: ActionTab;
-  tradeSizeBtc: number;
+  tradeIntent: TradeIntent;
+  sizeMode: SizeMode;
+  showAdvancedDetails: boolean;
+  showAdvancedActions: boolean;
+  showOrderbook: boolean;
+  showFeeDetails: boolean;
+  tradeSizeSats: number;
+  tradeSizeSatsDraft: string;
+  tradeContracts: number;
+  tradeContractsDraft: string;
   limitPrice: number;
   pairsInput: number;
   tokensInput: number;
+  createQuestion: string;
+  createDescription: string;
+  createCategory: MarketCategory;
+  createResolutionSource: string;
+  createSettlementInput: string;
+  createStartingYesSats: number;
 } = {
   view: "home",
   activeCategory: "Trending",
@@ -574,25 +611,44 @@ const state: {
   selectedSide: "yes",
   orderType: "limit",
   actionTab: "trade",
-  tradeSizeBtc: 0.05,
+  tradeIntent: "open",
+  sizeMode: "sats",
+  showAdvancedDetails: false,
+  showAdvancedActions: false,
+  showOrderbook: false,
+  showFeeDetails: false,
+  tradeSizeSats: 10000,
+  tradeSizeSatsDraft: "10,000",
+  tradeContracts: 10,
+  tradeContractsDraft: "10.00",
   limitPrice: 0.5,
   pairsInput: 10,
   tokensInput: 25,
+  createQuestion: "",
+  createDescription: "",
+  createCategory: "Bitcoin",
+  createResolutionSource: "",
+  createSettlementInput: defaultSettlementInput(),
+  createStartingYesSats: 50,
 };
 
-const SATS_PER_FULL_CONTRACT = 1000;
+const SATS_PER_FULL_CONTRACT = 100;
 const formatProbabilitySats = (price: number): string =>
   `${Math.round(price * SATS_PER_FULL_CONTRACT)} sats`;
 const formatProbabilityWithPercent = (price: number): string =>
-  `${formatProbabilitySats(price)} (${Math.round(price * 100)}%)`;
+  `${Math.round(price * 100)}% (${formatProbabilitySats(price)})`;
 const formatPercent = (value: number): string =>
   `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
 const formatBtc = (value: number): string => `${value.toFixed(4)} BTC`;
 const formatSats = (value: number): string => `${value.toLocaleString()} sats`;
+const formatSatsInput = (value: number): string =>
+  Math.max(1, Math.floor(value)).toLocaleString("en-US");
 const formatVolumeBtc = (value: number): string =>
   value >= 1000
     ? `${(value / 1000).toFixed(1)}K BTC`
     : `${value.toFixed(1)} BTC`;
+const formatBlockHeight = (value: number): string =>
+  value.toLocaleString("en-US");
 const formatEstTime = (date: Date): string =>
   new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
@@ -602,6 +658,17 @@ const formatEstTime = (date: Date): string =>
   })
     .format(date)
     .toLowerCase();
+const formatSettlementDateTime = (date: Date): string =>
+  `${new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(date)} ET`;
 
 function stateLabel(value: CovenantState): string {
   if (value === 0) return "UNINITIALIZED";
@@ -612,6 +679,12 @@ function stateLabel(value: CovenantState): string {
 
 function isExpired(market: Market): boolean {
   return market.currentHeight >= market.expiryHeight;
+}
+
+function getEstimatedSettlementDate(market: Market): Date {
+  const blocksRemaining = market.expiryHeight - market.currentHeight;
+  const minutesPerBlock = 1;
+  return new Date(Date.now() + blocksRemaining * minutesPerBlock * 60 * 1000);
 }
 
 function getPathAvailability(market: Market): PathAvailability {
@@ -638,11 +711,220 @@ function getTrendingMarkets(): Market[] {
   return trendingIds.map((id) => getMarketById(id));
 }
 
-function getExecutionPrice(market: Market): number {
-  if (state.orderType === "market") {
-    return state.selectedSide === "yes" ? market.yesPrice : 1 - market.yesPrice;
+function clampContractPriceSats(value: number): number {
+  return Math.max(1, Math.min(SATS_PER_FULL_CONTRACT - 1, Math.round(value)));
+}
+
+function getBasePriceSats(market: Market, side: Side): number {
+  const raw = side === "yes" ? market.yesPrice : 1 - market.yesPrice;
+  return clampContractPriceSats(raw * SATS_PER_FULL_CONTRACT);
+}
+
+function getMarketSeed(market: Market): number {
+  return [...market.id].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+}
+
+function getPositionContracts(market: Market): { yes: number; no: number } {
+  const seed = getMarketSeed(market);
+  return {
+    yes: 4 + (seed % 19),
+    no: 3 + ((seed * 7) % 17),
+  };
+}
+
+type OrderbookLevel = {
+  priceSats: number;
+  contracts: number;
+};
+
+function getOrderbookLevels(
+  market: Market,
+  side: Side,
+  intent: TradeIntent,
+): OrderbookLevel[] {
+  const seed = getMarketSeed(market);
+  const base = getBasePriceSats(market, side);
+  return Array.from({ length: 8 }).map((_, idx) => {
+    const offset = intent === "open" ? idx + 1 : -(idx + 1);
+    const priceSats = clampContractPriceSats(base + offset);
+    const contracts = 12 + ((seed + idx * 11) % 34);
+    return { priceSats, contracts };
+  });
+}
+
+type FillEstimate = {
+  avgPriceSats: number;
+  bestPriceSats: number;
+  worstPriceSats: number;
+  filledContracts: number;
+  requestedContracts: number;
+  totalSats: number;
+  isPartial: boolean;
+};
+
+function estimateFill(
+  levels: OrderbookLevel[],
+  requestedContracts: number,
+  intent: TradeIntent,
+  orderType: OrderType,
+  limitPriceSats: number,
+): FillEstimate {
+  const request = Math.max(0.01, requestedContracts);
+  const executable = levels.filter((level) =>
+    orderType === "market"
+      ? true
+      : intent === "open"
+        ? level.priceSats <= limitPriceSats
+        : level.priceSats >= limitPriceSats,
+  );
+
+  let remaining = request;
+  let totalSats = 0;
+  let totalContracts = 0;
+  let bestPrice = executable[0]?.priceSats ?? limitPriceSats;
+  let worstPrice = bestPrice;
+
+  for (const level of executable) {
+    if (remaining <= 0) break;
+    const take = Math.min(remaining, level.contracts);
+    totalContracts += take;
+    totalSats += take * level.priceSats;
+    worstPrice = level.priceSats;
+    remaining -= take;
   }
-  return Math.max(0.01, Math.min(0.99, state.limitPrice));
+
+  const avgPriceSats =
+    totalContracts > 0 ? totalSats / totalContracts : limitPriceSats;
+
+  return {
+    avgPriceSats,
+    bestPriceSats: bestPrice,
+    worstPriceSats: worstPrice,
+    filledContracts: totalContracts,
+    requestedContracts: request,
+    totalSats: Math.round(totalSats),
+    isPartial: totalContracts + 0.0001 < request,
+  };
+}
+
+type TradePreview = {
+  basePriceSats: number;
+  limitPriceSats: number;
+  referencePriceSats: number;
+  requestedContracts: number;
+  fill: FillEstimate;
+  executionPriceSats: number;
+  notionalSats: number;
+  executedSats: number;
+  executionFeeSats: number;
+  winFeeSats: number;
+  grossPayoutSats: number;
+  netIfCorrectSats: number;
+  maxProfitSats: number;
+  netAfterFeesSats: number;
+  slippagePct: number;
+  positionContracts: number;
+};
+
+function getTradePreview(market: Market): TradePreview {
+  const limitPriceSats = clampContractPriceSats(
+    state.limitPrice * SATS_PER_FULL_CONTRACT,
+  );
+  const basePriceSats = getBasePriceSats(market, state.selectedSide);
+  const levels = getOrderbookLevels(
+    market,
+    state.selectedSide,
+    state.tradeIntent,
+  );
+  const referencePriceSats =
+    state.orderType === "limit" ? limitPriceSats : basePriceSats;
+  const requestedContracts =
+    state.sizeMode === "contracts"
+      ? Math.max(0.01, state.tradeContracts)
+      : Math.max(1, state.tradeSizeSats) / Math.max(1, referencePriceSats);
+  const fill = estimateFill(
+    levels,
+    requestedContracts,
+    state.tradeIntent,
+    state.orderType,
+    limitPriceSats,
+  );
+  const executionPriceSats =
+    state.orderType === "market"
+      ? Math.max(1, fill.avgPriceSats)
+      : limitPriceSats;
+  const notionalSats =
+    state.sizeMode === "sats"
+      ? Math.max(1, Math.floor(state.tradeSizeSats))
+      : Math.max(1, Math.round(requestedContracts * referencePriceSats));
+  const executedSats = Math.max(0, fill.totalSats);
+  const executionFeeSats = Math.round(executedSats * EXECUTION_FEE_RATE);
+  const grossPayoutSats = Math.floor(
+    fill.filledContracts * SATS_PER_FULL_CONTRACT,
+  );
+  const grossProfitSats = Math.max(0, grossPayoutSats - executedSats);
+  const winFeeSats =
+    state.tradeIntent === "open"
+      ? Math.round(grossProfitSats * WIN_FEE_RATE)
+      : 0;
+  const netIfCorrectSats = Math.max(
+    0,
+    grossPayoutSats - executionFeeSats - winFeeSats,
+  );
+  const maxProfitSats = Math.max(0, netIfCorrectSats - executedSats);
+  const netAfterFeesSats = Math.max(0, executedSats - executionFeeSats);
+  const slippagePct =
+    fill.bestPriceSats > 0
+      ? Math.max(
+          0,
+          ((fill.worstPriceSats - fill.bestPriceSats) / fill.bestPriceSats) *
+            100,
+        )
+      : 0;
+  const position = getPositionContracts(market);
+  const positionContracts =
+    state.selectedSide === "yes" ? position.yes : position.no;
+
+  return {
+    basePriceSats,
+    limitPriceSats,
+    referencePriceSats,
+    requestedContracts,
+    fill,
+    executionPriceSats,
+    notionalSats,
+    executedSats,
+    executionFeeSats,
+    winFeeSats,
+    grossPayoutSats,
+    netIfCorrectSats,
+    maxProfitSats,
+    netAfterFeesSats,
+    slippagePct,
+    positionContracts,
+  };
+}
+
+function commitTradeSizeSatsDraft(): void {
+  const sanitized = state.tradeSizeSatsDraft.replace(/,/g, "");
+  const parsed = Math.floor(Number(sanitized) || 1);
+  const clamped = Math.max(1, parsed);
+  state.tradeSizeSats = clamped;
+  state.tradeSizeSatsDraft = formatSatsInput(clamped);
+}
+
+function commitTradeContractsDraft(market: Market): void {
+  const positions = getPositionContracts(market);
+  const available = state.selectedSide === "yes" ? positions.yes : positions.no;
+  const parsed = Number(state.tradeContractsDraft);
+  const base = Number.isFinite(parsed) ? parsed : 0.01;
+  const normalized = Math.max(0.01, base);
+  const clamped =
+    state.tradeIntent === "close"
+      ? Math.min(normalized, available)
+      : normalized;
+  state.tradeContracts = clamped;
+  state.tradeContractsDraft = clamped.toFixed(2);
 }
 
 function getFilteredMarkets(): Market[] {
@@ -694,6 +976,7 @@ function chartSkeleton(market: Market): string {
       <div class="mb-2 flex items-center gap-4 text-xs text-slate-300">
         <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-emerald-300"></span>Yes ${yesPct}%</span>
         <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-blue-300"></span>No ${noPct}%</span>
+        <span class="text-slate-500">Yes + No = ${SATS_PER_FULL_CONTRACT} sats</span>
         ${
           market.isLive
             ? '<span class="inline-flex items-center gap-1 rounded-full border border-rose-500/50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-300"><span class="liveIndicatorDot"></span>Live · Round 1</span>'
@@ -733,11 +1016,10 @@ function renderTopShell(): string {
             <button class="rounded-full bg-slate-800 px-4 py-2 text-slate-100">Markets</button>
             <button class="hover:text-rose-300">Live</button>
             <button class="hover:text-slate-100">Social</button>
+            <button data-action="open-create-market" class="rounded-full border border-emerald-400/40 px-4 py-2 text-emerald-300 hover:bg-emerald-400/10">New Market</button>
           </nav>
           <div class="ml-auto flex w-full items-center gap-2 md:w-auto">
             <input id="global-search" value="${state.search}" class="h-11 w-full rounded-full border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-300 transition focus:ring-2 md:w-[420px]" placeholder="Trade on anything" />
-            <button class="h-11 rounded-full border border-slate-700 px-4 text-sm font-semibold text-slate-200">Log in</button>
-            <button class="h-11 rounded-full bg-emerald-300 px-4 text-sm font-semibold text-slate-950">Sign up</button>
           </div>
         </div>
       </div>
@@ -796,8 +1078,8 @@ function renderHome(): string {
                   <div class="rounded-lg border border-slate-800 bg-slate-900/50 p-2">Volume<br/><span class="text-slate-200">${formatVolumeBtc(featured.volumeBtc)}</span></div>
                 </div>
                 <div class="space-y-3 text-lg text-slate-200">
-                  <div class="flex items-center justify-between"><span>Yes contract</span><span class="rounded-full border border-emerald-600 px-4 py-1 text-emerald-300">${formatProbabilityWithPercent(featured.yesPrice)}</span></div>
-                  <div class="flex items-center justify-between"><span>No contract</span><span class="rounded-full border border-rose-600 px-4 py-1 text-rose-300">${formatProbabilityWithPercent(featuredNo)}</span></div>
+                  <div class="flex items-center justify-between"><span>Yes contract</span><button data-open-market="${featured.id}" data-open-side="yes" data-open-intent="buy" class="rounded-full border border-emerald-600 px-4 py-1 text-emerald-300 transition hover:bg-emerald-500/10">${formatProbabilityWithPercent(featured.yesPrice)}</button></div>
+                  <div class="flex items-center justify-between"><span>No contract</span><button data-open-market="${featured.id}" data-open-side="no" data-open-intent="buy" class="rounded-full border border-rose-600 px-4 py-1 text-rose-300 transition hover:bg-rose-500/10">${formatProbabilityWithPercent(featuredNo)}</button></div>
                 </div>
                 <p class="mt-3 text-[15px] text-slate-400">${featured.description}</p>
                 <button data-open-market="${featured.id}" class="mt-5 rounded-xl bg-emerald-300 px-5 py-2.5 text-base font-semibold text-slate-950">Open contract</button>
@@ -1026,14 +1308,25 @@ function renderPathCard(
 
 function renderActionTicket(market: Market): string {
   const paths = getPathAvailability(market);
-  const executionPrice = getExecutionPrice(market);
-  const tradeValue = Math.max(0.001, state.tradeSizeBtc);
-  const executionFee = tradeValue * EXECUTION_FEE_RATE;
-  const shares = tradeValue / executionPrice;
-  const grossPayout = shares;
-  const grossProfit = Math.max(0, grossPayout - tradeValue);
-  const winFee = grossProfit * WIN_FEE_RATE;
-  const netIfCorrect = grossPayout - executionFee - winFee;
+  const preview = getTradePreview(market);
+  const executionPriceSats = Math.round(preview.executionPriceSats);
+  const positions = getPositionContracts(market);
+  const selectedPositionContracts =
+    state.selectedSide === "yes" ? positions.yes : positions.no;
+  const maxCloseContracts = Math.max(0.01, selectedPositionContracts);
+  const ctaVerb = state.tradeIntent === "open" ? "Buy" : "Sell";
+  const ctaTarget = state.selectedSide === "yes" ? "Yes" : "No";
+  const ctaLabel = `${ctaVerb} ${ctaTarget}`;
+  const fillabilityLabel =
+    state.orderType === "limit"
+      ? preview.fill.filledContracts <= 0
+        ? "Resting only (not fillable now)"
+        : preview.fill.isPartial
+          ? "Partially fillable now"
+          : "Fully fillable now"
+      : preview.fill.isPartial
+        ? "May partially fill"
+        : "Expected to fill now";
 
   const issueCollateral = state.pairsInput * 2 * market.cptSats;
   const cancelCollateral = state.pairsInput * 2 * market.cptSats;
@@ -1043,54 +1336,158 @@ function renderActionTicket(market: Market): string {
       ? market.cptSats
       : 0;
   const redeemCollateral = state.tokensInput * redeemRate;
-
-  const tabClass = (tab: ActionTab): string =>
-    `rounded-lg border px-3 py-2 text-sm ${state.actionTab === tab ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-700 text-slate-300"}`;
-
+  const yesDisplaySats = clampContractPriceSats(
+    Math.round(market.yesPrice * SATS_PER_FULL_CONTRACT),
+  );
+  const noDisplaySats = SATS_PER_FULL_CONTRACT - yesDisplaySats;
+  const estimatedExecutionFeeSats = Math.round(
+    preview.notionalSats * EXECUTION_FEE_RATE,
+  );
+  const estimatedGrossPayoutSats = Math.floor(
+    preview.requestedContracts * SATS_PER_FULL_CONTRACT,
+  );
+  const estimatedProfitSats = Math.max(
+    0,
+    estimatedGrossPayoutSats - preview.notionalSats,
+  );
+  const estimatedWinFeeSats =
+    state.tradeIntent === "open"
+      ? Math.round(estimatedProfitSats * WIN_FEE_RATE)
+      : 0;
+  const estimatedFeesSats = estimatedExecutionFeeSats + estimatedWinFeeSats;
+  const estimatedNetIfCorrectSats = Math.max(
+    0,
+    estimatedGrossPayoutSats - estimatedFeesSats,
+  );
   return `
     <aside class="rounded-[21px] border border-slate-800 bg-slate-900/80 p-[21px]">
       <p class="panel-subtitle">Contract Action Ticket</p>
-      <p class="mb-3 mt-1 text-sm text-slate-300">Path-gated controls based on covenant state and expiry rules.</p>
-      <div class="mb-3 grid grid-cols-2 gap-2">
-        <button data-tab="trade" class="${tabClass("trade")}">Trade</button>
-        <button data-tab="issue" class="${tabClass("issue")}">Issue</button>
-        <button data-tab="redeem" class="${tabClass("redeem")}">Redeem</button>
-        <button data-tab="cancel" class="${tabClass("cancel")}">Cancel</button>
+      <p class="mb-3 mt-1 text-sm text-slate-300">Buy or sell with a cleaner ticket flow. Advanced covenant actions are below.</p>
+      <div class="mb-3 flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
+        <div class="flex items-center gap-4">
+          <button data-trade-intent="open" class="border-b-2 pb-1 text-2xl font-semibold ${state.tradeIntent === "open" ? "border-slate-100 text-slate-100" : "border-transparent text-slate-500"}">Buy</button>
+          <button data-trade-intent="close" class="border-b-2 pb-1 text-2xl font-semibold ${state.tradeIntent === "close" ? "border-slate-100 text-slate-100" : "border-transparent text-slate-500"}">Sell</button>
+        </div>
+        <div class="flex items-center gap-2 rounded-lg border border-slate-700 p-1">
+          <button data-order-type="market" class="rounded px-3 py-1 text-sm ${state.orderType === "market" ? "bg-slate-200 text-slate-950" : "text-slate-300"}">Market</button>
+          <button data-order-type="limit" class="rounded px-3 py-1 text-sm ${state.orderType === "limit" ? "bg-slate-200 text-slate-950" : "text-slate-300"}">Limit</button>
+        </div>
       </div>
-
+      <div class="mb-3 grid grid-cols-2 gap-2">
+        <button data-side="yes" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "yes" ? (state.tradeIntent === "open" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-amber-400 bg-amber-400/20 text-amber-200") : "border-slate-700 text-slate-300"}">Yes ${yesDisplaySats} sats</button>
+        <button data-side="no" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "no" ? (state.tradeIntent === "open" ? "border-rose-400 bg-rose-400/20 text-rose-200" : "border-blue-400 bg-blue-400/20 text-blue-200") : "border-slate-700 text-slate-300"}">No ${noDisplaySats} sats</button>
+      </div>
+      <div class="mb-3 flex items-center justify-between gap-2">
+        <label class="text-xs uppercase tracking-wide text-slate-400">Amount</label>
+        <div class="grid grid-cols-2 gap-2">
+          <button data-size-mode="sats" class="rounded border px-2 py-1 text-xs ${state.sizeMode === "sats" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-700 text-slate-300"}">sats</button>
+          <button data-size-mode="contracts" class="rounded border px-2 py-1 text-xs ${state.sizeMode === "contracts" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-700 text-slate-300"}">contracts</button>
+        </div>
+      </div>
       ${
-        state.actionTab === "trade"
+        state.sizeMode === "sats"
           ? `
-        <div class="mb-3 grid grid-cols-2 gap-2">
-          <button data-side="yes" class="rounded-lg border px-3 py-2 text-sm ${state.selectedSide === "yes" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-700 text-slate-300"}">Yes</button>
-          <button data-side="no" class="rounded-lg border px-3 py-2 text-sm ${state.selectedSide === "no" ? "border-rose-400 bg-rose-400/20 text-rose-200" : "border-slate-700 text-slate-300"}">No</button>
-        </div>
-        <div class="mb-3 grid grid-cols-2 gap-2">
-          <button data-order-type="market" class="rounded-lg border px-3 py-2 text-sm ${state.orderType === "market" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-700 text-slate-300"}">Market</button>
-          <button data-order-type="limit" class="rounded-lg border px-3 py-2 text-sm ${state.orderType === "limit" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-700 text-slate-300"}">Limit</button>
-        </div>
-        <div class="${state.orderType === "market" ? "hidden" : "block"}">
-          <label for="limit-price" class="mb-1 block text-xs uppercase tracking-wide text-slate-400">Limit price</label>
-          <input id="limit-price" type="number" min="0.01" max="0.99" step="0.01" value="${state.limitPrice.toFixed(2)}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
-        </div>
-        <label for="trade-size" class="mb-1 block text-xs uppercase tracking-wide text-slate-400">Trade size (BTC)</label>
-        <input id="trade-size" type="number" min="0.001" step="0.001" value="${state.tradeSizeBtc.toFixed(3)}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
-        <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
-          <div class="flex items-center justify-between py-1"><span>Execution price</span><span>${formatProbabilityWithPercent(executionPrice)} (${state.orderType})</span></div>
-          <div class="flex items-center justify-between py-1"><span>Order value</span><span>${formatBtc(tradeValue)}</span></div>
-          <div class="flex items-center justify-between py-1"><span>Execution fee (1%)</span><span>${formatBtc(executionFee)}</span></div>
-          <div class="flex items-center justify-between py-1"><span>Potential gross payout</span><span>${formatBtc(grossPayout)}</span></div>
-          <div class="flex items-center justify-between py-1"><span>Winning PnL fee (2%)</span><span>${formatBtc(winFee)}</span></div>
-          <div class="mt-2 border-t border-slate-800 pt-2 font-semibold"><div class="flex items-center justify-between"><span>Net if correct</span><span>${formatBtc(netIfCorrect)}</span></div></div>
-        </div>
-        <button data-action="submit-trade" class="mt-4 w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950">Submit prediction contract</button>
+      <input id="trade-size-sats" type="text" inputmode="numeric" value="${state.tradeSizeSatsDraft}" class="mb-2 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
       `
+          : `
+      <input id="trade-size-contracts" type="number" min="0.01" max="${state.tradeIntent === "close" ? maxCloseContracts.toFixed(2) : "9999"}" step="0.01" value="${state.tradeContractsDraft}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
+      ${
+        state.tradeIntent === "close"
+          ? `<div class="mb-3 flex items-center gap-2 text-sm">
+        <button data-action="sell-25" class="rounded border border-slate-700 px-3 py-1 text-slate-300">25%</button>
+        <button data-action="sell-50" class="rounded border border-slate-700 px-3 py-1 text-slate-300">50%</button>
+        <button data-action="sell-max" class="rounded border border-slate-700 px-3 py-1 text-slate-300">Max</button>
+      </div>`
           : ""
       }
-
+      `
+      }
+      ${
+        state.orderType === "limit"
+          ? `
+      <label for="limit-price" class="mb-1 block text-xs uppercase tracking-wide text-slate-400">Limit price (sats)</label>
+      <input id="limit-price" type="number" min="1" max="99" step="1" value="${Math.round(state.limitPrice * SATS_PER_FULL_CONTRACT)}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
+      <p class="mb-3 text-xs text-slate-500">May not fill immediately; unfilled size rests on book. ${fillabilityLabel}. Matchable now: ${formatSats(preview.executedSats)}.</p>
+      `
+          : `<p class="mb-3 text-xs text-slate-500">Estimated avg fill: ${preview.fill.avgPriceSats.toFixed(1)} sats (range ${preview.fill.bestPriceSats}-${preview.fill.worstPriceSats}).</p>`
+      }
+      <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
+        ${
+          state.tradeIntent === "open"
+            ? `<div class="flex items-center justify-between py-1"><span>You pay</span><span>${formatSats(preview.notionalSats)}</span></div>
+        <div class="flex items-center justify-between py-1"><span>If filled & correct</span><span>${formatSats(estimatedNetIfCorrectSats)}</span></div>`
+            : `<div class="flex items-center justify-between py-1"><span>You receive (if filled)</span><span>${formatSats(Math.max(0, preview.notionalSats - estimatedExecutionFeeSats))}</span></div>
+        <div class="flex items-center justify-between py-1"><span>Position remaining (if filled)</span><span>${Math.max(0, selectedPositionContracts - preview.requestedContracts).toFixed(2)} contracts</span></div>`
+        }
+        <div class="flex items-center justify-between py-1"><span>Estimated fees</span><span>${formatSats(estimatedFeesSats)}</span></div>
+        <div class="mt-1 flex items-center justify-between py-1 text-xs text-slate-500"><span>Price</span><span>${executionPriceSats} sats · Yes + No = ${SATS_PER_FULL_CONTRACT}</span></div>
+      </div>
+      <button data-action="submit-trade" class="mt-4 w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950">${ctaLabel}</button>
+      <div class="mt-3 flex items-center justify-between text-xs text-slate-400">
+        <span>You hold: YES ${positions.yes.toFixed(2)} · NO ${positions.no.toFixed(2)}</span>
+        ${
+          state.tradeIntent === "close"
+            ? `<button data-action="sell-max" class="rounded border border-slate-700 px-2 py-1 text-slate-300">Sell max</button>`
+            : ""
+        }
+      </div>
+      ${
+        state.tradeIntent === "close" &&
+        preview.requestedContracts > selectedPositionContracts + 0.0001
+          ? `<p class="mt-2 text-xs text-rose-300">Requested size exceeds your current ${state.selectedSide.toUpperCase()} position.</p>`
+          : ""
+      }
+      <div class="mt-3 flex items-center gap-2">
+        <button data-action="toggle-orderbook" class="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300">${state.showOrderbook ? "Hide depth" : "Show depth"}</button>
+        <button data-action="toggle-fee-details" class="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300">${state.showFeeDetails ? "Hide fee details" : "Fee details"}</button>
+      </div>
+      ${
+        state.showOrderbook
+          ? `<div class="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-xs">
+        <p class="mb-2 font-semibold text-slate-200">${state.tradeIntent === "open" ? "Asks (buy depth)" : "Bids (sell depth)"} · ${state.selectedSide.toUpperCase()}</p>
+        <div class="space-y-1">
+          ${getOrderbookLevels(market, state.selectedSide, state.tradeIntent)
+            .map(
+              (
+                level,
+                idx,
+              ) => `<div class="flex items-center justify-between rounded ${idx === 0 ? "bg-slate-900/70" : ""} px-2 py-1">
+            <span>${level.priceSats} sats</span>
+            <span>${level.contracts.toFixed(2)} contracts</span>
+          </div>`,
+            )
+            .join("")}
+        </div>
+      </div>`
+          : ""
+      }
+      ${
+        state.showFeeDetails
+          ? `<div class="mt-3 rounded border border-slate-800 bg-slate-900/40 p-2 text-xs text-slate-400">
+        <p>Execution fee: 1% of matched notional.</p>
+        <p>Winning PnL fee: 2% of positive payout minus entry cost (buy only).</p>
+        <p>Final fee depends on actual matched fills.</p>
+      </div>`
+          : ""
+      }
+      <section class="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+        <div class="flex items-center justify-between">
+          <p class="text-xs uppercase tracking-wide text-slate-500">Advanced actions</p>
+          <button data-action="toggle-advanced-actions" class="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300">${state.showAdvancedActions ? "Hide" : "Show"}</button>
+        </div>
+      </section>
+      ${
+        state.showAdvancedActions
+          ? `
+      <div class="mt-3 grid grid-cols-3 gap-2">
+        <button data-tab="issue" class="rounded border px-3 py-2 text-sm ${state.actionTab === "issue" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-700 text-slate-300"}">Issue</button>
+        <button data-tab="redeem" class="rounded border px-3 py-2 text-sm ${state.actionTab === "redeem" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-700 text-slate-300"}">Redeem</button>
+        <button data-tab="cancel" class="rounded border px-3 py-2 text-sm ${state.actionTab === "cancel" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-700 text-slate-300"}">Cancel</button>
+      </div>
       ${
         state.actionTab === "issue"
           ? `
+      <div class="mt-3">
         <p class="mb-2 text-sm text-slate-300">Path: ${paths.initialIssue ? "0 -> 1 Initial Issuance" : "1 -> 1 Subsequent Issuance"}</p>
         <label for="pairs-input" class="mb-1 block text-xs uppercase tracking-wide text-slate-400">Pairs to mint</label>
         <input id="pairs-input" type="number" min="1" step="1" value="${state.pairsInput}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
@@ -1099,6 +1496,7 @@ function renderActionTicket(market: Market): string {
           <div class="mt-1 text-xs text-slate-400">Formula: pairs * 2 * CPT (${state.pairsInput} * 2 * ${market.cptSats})</div>
         </div>
         <button data-action="submit-issue" ${paths.issue || paths.initialIssue ? "" : "disabled"} class="mt-4 w-full rounded-lg ${paths.issue || paths.initialIssue ? "bg-emerald-300 text-slate-950" : "bg-slate-700 text-slate-400"} px-4 py-2 font-semibold">Submit issuance tx</button>
+      </div>
       `
           : ""
       }
@@ -1106,6 +1504,7 @@ function renderActionTicket(market: Market): string {
       ${
         state.actionTab === "redeem"
           ? `
+      <div class="mt-3">
         <p class="mb-2 text-sm text-slate-300">Path: ${paths.redeem ? "Post-resolution redemption" : paths.expiryRedeem ? "Expiry redemption" : "Unavailable"}</p>
         <label for="tokens-input" class="mb-1 block text-xs uppercase tracking-wide text-slate-400">Tokens to burn</label>
         <input id="tokens-input" type="number" min="1" step="1" value="${state.tokensInput}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
@@ -1114,6 +1513,7 @@ function renderActionTicket(market: Market): string {
           <div class="mt-1 text-xs text-slate-400">Formula: tokens * ${paths.redeem ? "2*CPT" : paths.expiryRedeem ? "CPT" : "N/A"}</div>
         </div>
         <button data-action="submit-redeem" ${paths.redeem || paths.expiryRedeem ? "" : "disabled"} class="mt-4 w-full rounded-lg ${paths.redeem || paths.expiryRedeem ? "bg-emerald-300 text-slate-950" : "bg-slate-700 text-slate-400"} px-4 py-2 font-semibold">Submit redemption tx</button>
+      </div>
       `
           : ""
       }
@@ -1121,6 +1521,7 @@ function renderActionTicket(market: Market): string {
       ${
         state.actionTab === "cancel"
           ? `
+      <div class="mt-3">
         <p class="mb-2 text-sm text-slate-300">Path: 1 -> 1 Cancellation</p>
         <label for="pairs-input" class="mb-1 block text-xs uppercase tracking-wide text-slate-400">Matched YES/NO pairs to burn</label>
         <input id="pairs-input" type="number" min="1" step="1" value="${state.pairsInput}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
@@ -1129,10 +1530,13 @@ function renderActionTicket(market: Market): string {
           <div class="mt-1 text-xs text-slate-400">Formula: pairs * 2 * CPT</div>
         </div>
         <button data-action="submit-cancel" ${paths.cancel ? "" : "disabled"} class="mt-4 w-full rounded-lg ${paths.cancel ? "bg-emerald-300 text-slate-950" : "bg-slate-700 text-slate-400"} px-4 py-2 font-semibold">Submit cancellation tx</button>
+      </div>
       `
           : ""
       }
-
+      `
+          : ""
+      }
       <p class="mt-3 text-xs text-slate-500">NOSTR auth required to sign and broadcast covenant transactions.</p>
     </aside>
   `;
@@ -1143,6 +1547,7 @@ function renderDetail(): string {
   const noPrice = 1 - market.yesPrice;
   const paths = getPathAvailability(market);
   const expired = isExpired(market);
+  const estimatedSettlementDate = getEstimatedSettlementDate(market);
   const collateralPoolSats = market.collateralUtxos.reduce(
     (sum, utxo) => sum + utxo.amountSats,
     0,
@@ -1163,21 +1568,29 @@ function renderDetail(): string {
             <h1 class="phi-title mb-2 text-2xl font-semibold leading-tight text-slate-100 lg:text-[34px]">${market.question}</h1>
             <p class="mb-3 text-base text-slate-400">${market.description}</p>
 
-            <div class="mb-4 grid gap-3 sm:grid-cols-4">
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">State<br/><span class="text-slate-100">${market.state} · ${stateLabel(market.state)}</span></div>
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Expiry<br/><span class="text-slate-100">${market.expiryHeight}</span></div>
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">CPT<br/><span class="text-slate-100">${formatSats(market.cptSats)}</span></div>
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Collateral pool<br/><span class="text-slate-100">${formatSats(collateralPoolSats)}</span></div>
+            <div class="mb-4 grid gap-3 sm:grid-cols-3">
+              <div class="rounded-xl border border-emerald-800/60 bg-emerald-950/20 p-3 text-sm text-emerald-200">Yes price<br/><span class="text-lg font-semibold text-emerald-100">${formatProbabilityWithPercent(market.yesPrice)}</span></div>
+              <div class="rounded-xl border border-rose-800/60 bg-rose-950/20 p-3 text-sm text-rose-200">No price<br/><span class="text-lg font-semibold text-rose-100">${formatProbabilityWithPercent(noPrice)}</span></div>
+              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Settlement deadline<br/><span class="text-slate-100">Est. by ${formatSettlementDateTime(estimatedSettlementDate)}</span></div>
             </div>
 
             ${chartSkeleton(market)}
-
-            <div class="mt-4 flex flex-wrap gap-2 text-sm">
-              <button data-side="yes" class="rounded-full border px-4 py-2 ${state.selectedSide === "yes" ? "border-emerald-300 bg-emerald-300/20 text-emerald-200" : "border-slate-700 text-slate-300"}">Yes ${formatProbabilityWithPercent(market.yesPrice)}</button>
-              <button data-side="no" class="rounded-full border px-4 py-2 ${state.selectedSide === "no" ? "border-rose-300 bg-rose-300/20 text-rose-200" : "border-slate-700 text-slate-300"}">No ${formatProbabilityWithPercent(noPrice)}</button>
-            </div>
           </div>
 
+          <section class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px]">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p class="panel-subtitle">Advanced</p>
+                <h3 class="panel-title text-lg">Protocol Details</h3>
+                <p class="text-sm text-slate-400">Oracle, covenant paths, and collateral mechanics. These do not change your basic yes/no order entry flow.</p>
+              </div>
+              <button data-action="toggle-advanced-details" class="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200">${state.showAdvancedDetails ? "Hide details" : "Show details"}</button>
+            </div>
+          </section>
+
+          ${
+            state.showAdvancedDetails
+              ? `
           <div class="grid gap-3 lg:grid-cols-2">
             <section class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px]">
               <p class="panel-subtitle">Oracle</p>
@@ -1185,6 +1598,8 @@ function renderDetail(): string {
               <div class="space-y-1 text-xs text-slate-300">
                 <div class="kv-row"><span>ORACLE_PUBLIC_KEY</span><span class="mono">${market.oraclePubkey}</span></div>
                 <div class="kv-row"><span>MARKET_ID</span><span class="mono">${market.marketId}</span></div>
+                <div class="kv-row"><span>Block target</span><span class="mono">${formatBlockHeight(market.expiryHeight)}</span></div>
+                <div class="kv-row"><span>Current height</span><span class="mono">${formatBlockHeight(market.currentHeight)}</span></div>
                 <div class="kv-row"><span>Message domain</span><span class="mono">SHA256(MARKET_ID || outcome_byte)</span></div>
                 <div class="kv-row"><span>Outcome bytes</span><span class="mono">YES=0x01, NO=0x00</span></div>
                 <div class="kv-row"><span>Resolve status</span><span class="${market.resolveTx?.sigVerified ? "text-emerald-300" : "text-slate-400"}">${market.resolveTx ? `Attested ${market.resolveTx.outcome.toUpperCase()} @ ${market.resolveTx.height}` : "Unresolved"}</span></div>
@@ -1204,6 +1619,7 @@ function renderDetail(): string {
                   )
                   .join("")}
               </div>
+              <p class="mt-2 text-xs text-slate-500">Collateral pool: ${formatSats(collateralPoolSats)} · ${stateLabel(market.state)}</p>
             </section>
           </div>
 
@@ -1230,9 +1646,110 @@ function renderDetail(): string {
               ${renderPathCard("1 -> 1 Cancellation", paths.cancel, "pairs * 2 * CPT", "Equal YES/NO burn")}
             </div>
           </section>
+          `
+              : ""
+          }
         </section>
 
         ${renderActionTicket(market)}
+      </div>
+    </div>
+  `;
+}
+
+function renderCreateMarket(): string {
+  const yesSats = Math.max(
+    1,
+    Math.min(
+      SATS_PER_FULL_CONTRACT - 1,
+      Math.round(state.createStartingYesSats),
+    ),
+  );
+  const noSats = SATS_PER_FULL_CONTRACT - yesSats;
+  const settlementLabel = state.createSettlementInput
+    ? new Date(state.createSettlementInput).toLocaleString("en-US", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : "Not set";
+
+  return `
+    <div class="phi-container py-6 lg:py-8">
+      <div class="mx-auto grid max-w-[1180px] gap-[21px] xl:grid-cols-[1.618fr_1fr]">
+        <section class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
+          <div class="mb-5 flex items-center justify-between gap-3">
+            <div>
+              <p class="panel-subtitle">Prediction Contract</p>
+              <h1 class="phi-title text-2xl font-semibold text-slate-100 lg:text-[34px]">Create New Market</h1>
+            </div>
+            <button data-action="cancel-create-market" class="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300">Back</button>
+          </div>
+
+          <div class="space-y-4">
+            <div>
+              <label for="create-question" class="mb-1 block text-xs uppercase tracking-wide text-slate-400">Question</label>
+              <input id="create-question" value="${state.createQuestion}" maxlength="140" class="w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" placeholder="Will X happen by Y?" />
+            </div>
+
+            <div>
+              <label for="create-description" class="mb-1 block text-xs uppercase tracking-wide text-slate-400">Settlement rule</label>
+              <textarea id="create-description" rows="3" maxlength="280" class="w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" placeholder="Define exactly how YES/NO resolves.">${state.createDescription}</textarea>
+            </div>
+
+            <div class="grid gap-4 md:grid-cols-2">
+              <div>
+                <label for="create-category" class="mb-1 block text-xs uppercase tracking-wide text-slate-400">Category</label>
+                <select id="create-category" class="w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm">
+                  ${categories
+                    .filter((item) => item !== "Trending")
+                    .map(
+                      (item) =>
+                        `<option value="${item}" ${state.createCategory === item ? "selected" : ""}>${item}</option>`,
+                    )
+                    .join("")}
+                </select>
+              </div>
+
+              <div>
+                <label for="create-settlement" class="mb-1 block text-xs uppercase tracking-wide text-slate-400">Settlement deadline</label>
+                <input id="create-settlement" type="datetime-local" value="${state.createSettlementInput}" class="w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
+              </div>
+            </div>
+
+            <div>
+              <label for="create-resolution-source" class="mb-1 block text-xs uppercase tracking-wide text-slate-400">Resolution source</label>
+              <input id="create-resolution-source" value="${state.createResolutionSource}" maxlength="120" class="w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" placeholder="Official source (e.g., NHC advisory, FEC filing, exchange index)" />
+            </div>
+
+            <div>
+              <label for="create-yes-sats" class="mb-1 block text-xs uppercase tracking-wide text-slate-400">Starting Yes price (sats out of 100)</label>
+              <input id="create-yes-sats" type="number" min="1" max="99" step="1" value="${yesSats}" class="w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
+            </div>
+          </div>
+        </section>
+
+        <aside class="rounded-[21px] border border-slate-800 bg-slate-900/80 p-[21px]">
+          <p class="panel-subtitle">Preview</p>
+          <h3 class="panel-title mb-3 text-lg">New Contract Ticket</h3>
+          <div class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+            <p class="text-sm text-slate-200">${state.createQuestion.trim() || "Your market question will appear here."}</p>
+            <p class="text-xs text-slate-400">${state.createDescription.trim() || "Settlement rule summary will appear here."}</p>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="rounded-lg border border-emerald-700/60 bg-emerald-950/20 p-2 text-center text-emerald-200">Yes ${yesSats} sats</div>
+              <div class="rounded-lg border border-rose-700/60 bg-rose-950/20 p-2 text-center text-rose-200">No ${noSats} sats</div>
+            </div>
+            <p class="text-xs text-slate-400">Category: <span class="text-slate-200">${state.createCategory}</span></p>
+            <p class="text-xs text-slate-400">Settlement deadline: <span class="text-slate-200">${settlementLabel}</span></p>
+            <p class="text-xs text-slate-400">Resolution source: <span class="text-slate-200">${state.createResolutionSource.trim() || "Not set"}</span></p>
+            <p class="text-xs text-slate-500">Yes + No = ${SATS_PER_FULL_CONTRACT} sats</p>
+          </div>
+          <button data-action="submit-create-market" class="mt-4 w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950">Publish market draft</button>
+          <p class="mt-2 text-xs text-slate-500">This creates a UI draft only. On-chain creation can be wired next.</p>
+        </aside>
       </div>
     </div>
   `;
@@ -1242,9 +1759,31 @@ function render(): void {
   app.innerHTML = `
     <div class="min-h-screen text-slate-100">
       ${renderTopShell()}
-      <main>${state.view === "home" ? renderHome() : renderDetail()}</main>
+      <main>${state.view === "home" ? renderHome() : state.view === "detail" ? renderDetail() : renderCreateMarket()}</main>
     </div>
   `;
+}
+
+async function syncCurrentHeightFromLwk(network: WalletNetwork): Promise<void> {
+  try {
+    const tip = await invoke<ChainTipResponse>("fetch_chain_tip", { network });
+    if (!Number.isFinite(tip.height) || tip.height <= 0) return;
+
+    let didChange = false;
+    for (const market of markets) {
+      if (market.currentHeight !== tip.height) {
+        market.currentHeight = tip.height;
+        didChange = true;
+      }
+    }
+
+    if (didChange) {
+      render();
+      updateEstClockLabels();
+    }
+  } catch (error) {
+    console.warn("Failed to sync chain tip from LWK:", error);
+  }
 }
 
 function updateEstClockLabels(): void {
@@ -1257,13 +1796,36 @@ function updateEstClockLabels(): void {
   });
 }
 
-function openMarket(marketId: string): void {
+function openMarket(
+  marketId: string,
+  options?: { side?: Side; intent?: TradeIntent },
+): void {
   const market = getMarketById(marketId);
+  const nextSide = options?.side ?? "yes";
+  const nextIntent = options?.intent ?? "open";
+  const positions = getPositionContracts(market);
+  const selectedPosition = nextSide === "yes" ? positions.yes : positions.no;
+
   state.selectedMarketId = market.id;
   state.view = "detail";
-  state.selectedSide = "yes";
-  state.orderType = "limit";
-  state.limitPrice = market.yesPrice;
+  state.selectedSide = nextSide;
+  state.orderType = "market";
+  state.actionTab = "trade";
+  state.tradeIntent = nextIntent;
+  state.sizeMode = nextIntent === "close" ? "contracts" : "sats";
+  state.showAdvancedDetails = false;
+  state.showAdvancedActions = false;
+  state.showOrderbook = false;
+  state.showFeeDetails = false;
+  state.tradeSizeSats = 10000;
+  state.tradeSizeSatsDraft = formatSatsInput(10000);
+  state.tradeContracts =
+    nextIntent === "close"
+      ? Math.max(0.01, Math.min(selectedPosition, selectedPosition / 2))
+      : 10;
+  state.tradeContractsDraft = state.tradeContracts.toFixed(2);
+  state.limitPrice =
+    getBasePriceSats(market, nextSide) / SATS_PER_FULL_CONTRACT;
   render();
 }
 
@@ -1278,6 +1840,10 @@ function ticketActionAllowed(market: Market, tab: ActionTab): boolean {
 render();
 updateEstClockLabels();
 setInterval(updateEstClockLabels, 1_000);
+void syncCurrentHeightFromLwk("liquid");
+setInterval(() => {
+  void syncCurrentHeightFromLwk("liquid");
+}, 60_000);
 
 app.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
@@ -1287,6 +1853,19 @@ app.addEventListener("click", (event) => {
   ) as HTMLElement | null;
   const actionEl = target.closest("[data-action]") as HTMLElement | null;
   const sideEl = target.closest("[data-side]") as HTMLElement | null;
+  const tradeChoiceEl = target.closest(
+    "[data-trade-choice]",
+  ) as HTMLElement | null;
+  const tradeIntentEl = target.closest(
+    "[data-trade-intent]",
+  ) as HTMLElement | null;
+  const sizeModeEl = target.closest("[data-size-mode]") as HTMLElement | null;
+  const tradeSizePresetEl = target.closest(
+    "[data-trade-size-sats]",
+  ) as HTMLElement | null;
+  const tradeSizeDeltaEl = target.closest(
+    "[data-trade-size-delta]",
+  ) as HTMLElement | null;
   const orderTypeEl = target.closest("[data-order-type]") as HTMLElement | null;
   const tabEl = target.closest("[data-tab]") as HTMLElement | null;
 
@@ -1294,8 +1873,24 @@ app.addEventListener("click", (event) => {
     "data-category",
   ) as NavCategory | null;
   const openMarketId = openMarketEl?.getAttribute("data-open-market") ?? null;
+  const openSide = openMarketEl?.getAttribute("data-open-side") as Side | null;
+  const openIntentRaw = openMarketEl?.getAttribute("data-open-intent");
   const action = actionEl?.getAttribute("data-action") ?? null;
   const side = sideEl?.getAttribute("data-side") as Side | null;
+  const tradeChoiceRaw =
+    tradeChoiceEl?.getAttribute("data-trade-choice") ?? null;
+  const tradeIntent = tradeIntentEl?.getAttribute(
+    "data-trade-intent",
+  ) as TradeIntent | null;
+  const sizeMode = sizeModeEl?.getAttribute(
+    "data-size-mode",
+  ) as SizeMode | null;
+  const tradeSizePreset = Number(
+    tradeSizePresetEl?.getAttribute("data-trade-size-sats") ?? "",
+  );
+  const tradeSizeDelta = Number(
+    tradeSizeDeltaEl?.getAttribute("data-trade-size-delta") ?? "",
+  );
   const orderType = orderTypeEl?.getAttribute(
     "data-order-type",
   ) as OrderType | null;
@@ -1309,12 +1904,105 @@ app.addEventListener("click", (event) => {
   }
 
   if (openMarketId) {
-    openMarket(openMarketId);
+    const openIntent: TradeIntent | undefined =
+      openIntentRaw === "sell"
+        ? "close"
+        : openIntentRaw === "buy"
+          ? "open"
+          : openIntentRaw === "open" || openIntentRaw === "close"
+            ? openIntentRaw
+            : undefined;
+    openMarket(openMarketId, {
+      side: openSide ?? undefined,
+      intent: openIntent,
+    });
     return;
   }
 
   if (action === "go-home") {
     state.view = "home";
+    render();
+    return;
+  }
+
+  if (action === "open-create-market") {
+    state.view = "create";
+    render();
+    return;
+  }
+
+  if (action === "cancel-create-market") {
+    state.view = "home";
+    render();
+    return;
+  }
+
+  if (action === "toggle-advanced-details") {
+    state.showAdvancedDetails = !state.showAdvancedDetails;
+    render();
+    return;
+  }
+
+  if (action === "toggle-advanced-actions") {
+    state.showAdvancedActions = !state.showAdvancedActions;
+    if (state.showAdvancedActions && state.actionTab === "trade") {
+      state.actionTab = "issue";
+    }
+    render();
+    return;
+  }
+
+  if (action === "toggle-orderbook") {
+    state.showOrderbook = !state.showOrderbook;
+    render();
+    return;
+  }
+
+  if (action === "toggle-fee-details") {
+    state.showFeeDetails = !state.showFeeDetails;
+    render();
+    return;
+  }
+
+  if (action === "use-cashout") {
+    const market = getSelectedMarket();
+    const positions = getPositionContracts(market);
+    const closeSide: Side = positions.yes >= positions.no ? "yes" : "no";
+    const available = closeSide === "yes" ? positions.yes : positions.no;
+    state.tradeIntent = "close";
+    state.sizeMode = "contracts";
+    state.selectedSide = closeSide;
+    state.tradeContracts = Math.max(0.01, Math.min(available, available / 2));
+    state.tradeContractsDraft = state.tradeContracts.toFixed(2);
+    state.limitPrice =
+      getBasePriceSats(market, closeSide) / SATS_PER_FULL_CONTRACT;
+    render();
+    return;
+  }
+
+  if (action === "sell-max") {
+    const market = getSelectedMarket();
+    const positions = getPositionContracts(market);
+    const available =
+      state.selectedSide === "yes" ? positions.yes : positions.no;
+    state.tradeIntent = "close";
+    state.sizeMode = "contracts";
+    state.tradeContracts = Math.max(0.01, available);
+    state.tradeContractsDraft = state.tradeContracts.toFixed(2);
+    render();
+    return;
+  }
+
+  if (action === "sell-25" || action === "sell-50") {
+    const market = getSelectedMarket();
+    const positions = getPositionContracts(market);
+    const available =
+      state.selectedSide === "yes" ? positions.yes : positions.no;
+    const ratio = action === "sell-25" ? 0.25 : 0.5;
+    state.tradeIntent = "close";
+    state.sizeMode = "contracts";
+    state.tradeContracts = Math.max(0.01, available * ratio);
+    state.tradeContractsDraft = state.tradeContracts.toFixed(2);
     render();
     return;
   }
@@ -1336,7 +2024,80 @@ app.addEventListener("click", (event) => {
   if (side) {
     state.selectedSide = side;
     const market = getSelectedMarket();
-    state.limitPrice = side === "yes" ? market.yesPrice : 1 - market.yesPrice;
+    state.limitPrice = getBasePriceSats(market, side) / SATS_PER_FULL_CONTRACT;
+    render();
+    return;
+  }
+
+  if (tradeChoiceRaw) {
+    const [intentRaw, sideRaw] = tradeChoiceRaw.split(":");
+    const intent = intentRaw as TradeIntent;
+    const pickedSide = sideRaw as Side;
+    if (
+      (intent === "open" || intent === "close") &&
+      (pickedSide === "yes" || pickedSide === "no")
+    ) {
+      state.tradeIntent = intent;
+      state.selectedSide = pickedSide;
+      const market = getSelectedMarket();
+      const positions = getPositionContracts(market);
+      const available = pickedSide === "yes" ? positions.yes : positions.no;
+      state.limitPrice =
+        getBasePriceSats(market, pickedSide) / SATS_PER_FULL_CONTRACT;
+      if (intent === "close") {
+        state.sizeMode = "contracts";
+        state.tradeContracts = Math.max(
+          0.01,
+          Math.min(Math.max(0.01, available), state.tradeContracts),
+        );
+        state.tradeContractsDraft = state.tradeContracts.toFixed(2);
+      }
+      render();
+      return;
+    }
+  }
+
+  if (tradeIntent) {
+    state.tradeIntent = tradeIntent;
+    const market = getSelectedMarket();
+    const positions = getPositionContracts(market);
+    const available =
+      state.selectedSide === "yes" ? positions.yes : positions.no;
+    if (tradeIntent === "close") {
+      state.sizeMode = "contracts";
+      state.tradeContracts = Math.max(
+        0.01,
+        Math.min(Math.max(0.01, available), state.tradeContracts),
+      );
+      state.tradeContractsDraft = state.tradeContracts.toFixed(2);
+    }
+    render();
+    return;
+  }
+
+  if (sizeMode) {
+    state.sizeMode = sizeMode;
+    render();
+    return;
+  }
+
+  if (Number.isFinite(tradeSizePreset) && tradeSizePreset > 0) {
+    state.sizeMode = "sats";
+    state.tradeSizeSats = Math.floor(tradeSizePreset);
+    state.tradeSizeSatsDraft = formatSatsInput(state.tradeSizeSats);
+    render();
+    return;
+  }
+
+  if (Number.isFinite(tradeSizeDelta) && tradeSizeDelta !== 0) {
+    state.sizeMode = "sats";
+    const current = Math.max(
+      1,
+      Math.floor(Number(state.tradeSizeSatsDraft.replace(/,/g, "")) || 1),
+    );
+    const next = Math.max(1, current + Math.floor(tradeSizeDelta));
+    state.tradeSizeSats = next;
+    state.tradeSizeSatsDraft = formatSatsInput(next);
     render();
     return;
   }
@@ -1360,9 +2121,71 @@ app.addEventListener("click", (event) => {
     action === "submit-trade" ||
     action === "submit-issue" ||
     action === "submit-redeem" ||
-    action === "submit-cancel"
+    action === "submit-cancel" ||
+    action === "submit-create-market"
   ) {
+    if (action === "submit-create-market") {
+      const question = state.createQuestion.trim();
+      const description = state.createDescription.trim();
+      const source = state.createResolutionSource.trim();
+      if (
+        !question ||
+        !description ||
+        !source ||
+        !state.createSettlementInput
+      ) {
+        window.alert(
+          "Complete question, settlement rule, source, and settlement deadline before publishing.",
+        );
+        return;
+      }
+      const yesSats = Math.max(
+        1,
+        Math.min(
+          SATS_PER_FULL_CONTRACT - 1,
+          Math.round(state.createStartingYesSats),
+        ),
+      );
+      const noSats = SATS_PER_FULL_CONTRACT - yesSats;
+      window.alert(
+        `Prepared new market draft.\nQuestion: ${question}\nCategory: ${state.createCategory}\nSettlement deadline: ${new Date(state.createSettlementInput).toLocaleString()}\nResolution source: ${source}\nStart prices: YES ${yesSats} sats / NO ${noSats} sats`,
+      );
+      return;
+    }
+
     const market = getSelectedMarket();
+    if (action === "submit-trade") {
+      const preview = getTradePreview(market);
+      if (state.orderType === "market" && preview.fill.filledContracts <= 0) {
+        window.alert("Order is currently not fillable. Adjust price or size.");
+        return;
+      }
+      if (
+        state.tradeIntent === "close" &&
+        preview.requestedContracts > preview.positionContracts + 0.0001
+      ) {
+        window.alert("Close size exceeds your available position.");
+        return;
+      }
+
+      const needsGuardrailConfirm =
+        state.orderType === "market" &&
+        (preview.slippagePct >= 5 ||
+          preview.executedSats >= LARGE_ORDER_SATS_GUARDRAIL);
+
+      if (needsGuardrailConfirm) {
+        const confirmed = window.confirm(
+          `Large market ${state.tradeIntent} detected.\nEstimated slippage: ${preview.slippagePct.toFixed(1)}%\nEstimated notional: ${formatSats(preview.executedSats)}\nYes + No = ${SATS_PER_FULL_CONTRACT} sats.\nProceed?`,
+        );
+        if (!confirmed) return;
+      }
+
+      window.alert(
+        `Prepared trade tx for ${market.marketId}.\nIntent: ${state.tradeIntent.toUpperCase()} ${state.selectedSide.toUpperCase()}\nOrder: ${state.orderType.toUpperCase()}\nEstimated fill now: ${preview.fill.filledContracts.toFixed(2)} contracts\nEstimated notional: ${formatSats(preview.executedSats)}\nYes + No = ${SATS_PER_FULL_CONTRACT} sats.`,
+      );
+      return;
+    }
+
     window.alert(
       `Prepared ${action.replace("submit-", "")} transaction for ${market.marketId}.`,
     );
@@ -1378,16 +2201,27 @@ app.addEventListener("input", (event) => {
     return;
   }
 
-  if (target.id === "trade-size") {
-    state.tradeSizeBtc = Math.max(0.001, Number(target.value) || 0.001);
-    render();
+  if (target.id === "trade-size-sats") {
+    state.tradeSizeSatsDraft = target.value;
+    return;
+  }
+
+  if (target.id === "trade-size-contracts") {
+    state.tradeContractsDraft = target.value;
     return;
   }
 
   if (target.id === "limit-price") {
+    const parsedSats = Math.floor(
+      Number(target.value) || SATS_PER_FULL_CONTRACT / 2,
+    );
+    const clampedSats = Math.max(
+      1,
+      Math.min(SATS_PER_FULL_CONTRACT - 1, parsedSats),
+    );
     state.limitPrice = Math.max(
       0.01,
-      Math.min(0.99, Number(target.value) || 0.5),
+      Math.min(0.99, clampedSats / SATS_PER_FULL_CONTRACT),
     );
     render();
     return;
@@ -1402,5 +2236,92 @@ app.addEventListener("input", (event) => {
   if (target.id === "tokens-input") {
     state.tokensInput = Math.max(1, Math.floor(Number(target.value) || 1));
     render();
+    return;
+  }
+
+  if (target.id === "create-question") {
+    state.createQuestion = target.value;
+    return;
+  }
+
+  if (target.id === "create-description") {
+    state.createDescription = target.value;
+    return;
+  }
+
+  if (target.id === "create-category") {
+    state.createCategory = target.value as MarketCategory;
+    return;
+  }
+
+  if (target.id === "create-settlement") {
+    state.createSettlementInput = target.value;
+    return;
+  }
+
+  if (target.id === "create-resolution-source") {
+    state.createResolutionSource = target.value;
+    return;
+  }
+
+  if (target.id === "create-yes-sats") {
+    const parsed = Math.round(Number(target.value) || 50);
+    state.createStartingYesSats = Math.max(
+      1,
+      Math.min(SATS_PER_FULL_CONTRACT - 1, parsed),
+    );
+    return;
+  }
+});
+
+app.addEventListener("keydown", (event) => {
+  const target = event.target as HTMLInputElement;
+  if (event.key !== "Enter") return;
+
+  if (target.id === "trade-size-sats") {
+    event.preventDefault();
+    commitTradeSizeSatsDraft();
+    render();
+    return;
+  }
+
+  if (target.id === "trade-size-contracts") {
+    event.preventDefault();
+    commitTradeContractsDraft(getSelectedMarket());
+    render();
+  }
+});
+
+app.addEventListener("focusout", (event) => {
+  const target = event.target as HTMLInputElement;
+
+  if (target.id === "trade-size-sats") {
+    commitTradeSizeSatsDraft();
+    render();
+    return;
+  }
+
+  if (target.id === "trade-size-contracts") {
+    commitTradeContractsDraft(getSelectedMarket());
+    render();
+    return;
+  }
+
+  if (
+    target.id === "create-question" ||
+    target.id === "create-description" ||
+    target.id === "create-category" ||
+    target.id === "create-settlement" ||
+    target.id === "create-resolution-source" ||
+    target.id === "create-yes-sats"
+  ) {
+    if (target.id === "create-yes-sats") {
+      const parsed = Math.round(Number(target.value) || 50);
+      state.createStartingYesSats = Math.max(
+        1,
+        Math.min(SATS_PER_FULL_CONTRACT - 1, parsed),
+      );
+    }
+    if (state.view === "create") render();
   }
 });
