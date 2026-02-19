@@ -1,5 +1,6 @@
 import "./style.css";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import QRCode from "qrcode";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
@@ -644,6 +645,7 @@ const state: {
   createSettlementInput: string;
   createStartingYesSats: number;
   walletStatus: "not_created" | "locked" | "unlocked";
+  walletNetwork: "mainnet" | "testnet" | "regtest";
   walletBalance: Record<string, number> | null;
   walletPolicyAssetId: string;
   walletMnemonic: string;
@@ -719,6 +721,7 @@ const state: {
   createSettlementInput: defaultSettlementInput(),
   createStartingYesSats: 50,
   walletStatus: "not_created",
+  walletNetwork: "testnet",
   walletBalance: null,
   walletPolicyAssetId: "",
   walletMnemonic: "",
@@ -2030,9 +2033,10 @@ async function fetchWalletStatus(): Promise<void> {
   try {
     const appState = await invoke<{
       walletStatus: "not_created" | "locked" | "unlocked";
-      networkStatus: { policyAssetId: string };
+      networkStatus: { network: string; policyAssetId: string };
     }>("get_app_state");
     state.walletStatus = appState.walletStatus;
+    state.walletNetwork = appState.networkStatus.network as "mainnet" | "testnet" | "regtest";
     state.walletPolicyAssetId = appState.networkStatus.policyAssetId;
   } catch (e) {
     console.warn("Failed to fetch app state:", e);
@@ -2398,6 +2402,10 @@ function renderWallet(): string {
   const loading = state.walletLoading;
   const error = state.walletError;
 
+  const networkBadge = state.walletNetwork !== "mainnet"
+    ? `<span class="rounded-full bg-amber-500/20 px-2.5 py-0.5 text-xs font-medium text-amber-300">${state.walletNetwork}</span>`
+    : "";
+
   const errorHtml = error
     ? `<div class="rounded-lg border border-red-500/30 bg-red-900/20 px-4 py-3 text-sm text-red-300">${error}</div>`
     : "";
@@ -2411,7 +2419,7 @@ function renderWallet(): string {
       return `
         <div class="phi-container py-8">
           <div class="mx-auto max-w-lg space-y-6">
-            <h2 class="text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet Created</h2>
+            <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet Created ${networkBadge}</h2>
             <div class="rounded-lg border border-slate-600 bg-slate-900/40 p-4 space-y-3">
               <p class="text-sm font-medium text-slate-200">Back up your recovery phrase! You will not see this again.</p>
               ${renderMnemonicGrid(state.walletMnemonic)}
@@ -2427,7 +2435,7 @@ function renderWallet(): string {
     return `
       <div class="phi-container py-8">
         <div class="mx-auto max-w-lg space-y-6">
-          <h2 class="text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet</h2>
+          <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet ${networkBadge}</h2>
           <p class="text-sm text-slate-400">No wallet found. Create a new Liquid (L-BTC) wallet or restore from a recovery phrase.</p>
           ${errorHtml}
           ${loadingHtml}
@@ -2457,7 +2465,7 @@ function renderWallet(): string {
     return `
       <div class="phi-container py-8">
         <div class="mx-auto max-w-lg space-y-6">
-          <h2 class="text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet</h2>
+          <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet ${networkBadge}</h2>
           <p class="text-sm text-slate-400">Wallet locked. Enter your password to unlock.</p>
           ${errorHtml}
           ${loadingHtml}
@@ -2481,14 +2489,14 @@ function renderWallet(): string {
     const icon = tx.balanceChange >= 0 ? "&#8595;" : "&#8593;";
     const date = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : "unconfirmed";
     const shortTxid = tx.txid.slice(0, 10) + "..." + tx.txid.slice(-6);
-    return '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
+    return '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm select-none">' +
       '<div class="flex items-center gap-2">' +
       '<span class="' + color + '">' + icon + '</span>' +
-      '<span class="mono text-slate-400">' + shortTxid + '</span>' +
+      '<button data-action="open-explorer-tx" data-txid="' + tx.txid + '" class="mono text-slate-400 hover:text-slate-200 transition cursor-pointer">' + shortTxid + '</button>' +
       '<span class="text-slate-500">' + date + '</span>' +
       '</div>' +
       '<div class="text-right">' +
-      '<span class="mono ' + color + '">' + sign + formatLbtc(tx.balanceChange) + '</span>' +
+      '<span class="' + color + '">' + sign + formatLbtc(tx.balanceChange) + '</span>' +
       (state.baseCurrency !== "BTC" ? '<div class="text-xs text-slate-500">' + satsToFiatStr(Math.abs(tx.balanceChange)) + '</div>' : '') +
       '</div>' +
       '</div>';
@@ -2511,7 +2519,7 @@ function renderWallet(): string {
     <div class="phi-container py-8">
       <div class="mx-auto max-w-2xl space-y-6">
         <div class="flex items-center justify-between">
-          <h2 class="text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet</h2>
+          <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet ${networkBadge}</h2>
           <div class="flex gap-2">
             <button data-action="sync-wallet" class="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800" ${loading ? "disabled" : ""}>Sync</button>
             <button data-action="show-backup" class="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">Backup</button>
@@ -2658,7 +2666,12 @@ function ticketActionAllowed(market: Market, tab: ActionTab): boolean {
 }
 
 render();
-void fetchWalletStatus();
+void fetchWalletStatus().then(() => {
+  render();
+  if (state.walletStatus === "unlocked") {
+    void refreshWallet();
+  }
+});
 updateEstClockLabels();
 setInterval(updateEstClockLabels, 1_000);
 void syncCurrentHeightFromLwk("liquid");
@@ -2840,6 +2853,9 @@ app.addEventListener("click", (event) => {
     void fetchWalletStatus().then(() => {
       state.view = "wallet";
       render();
+      if (state.walletStatus === "unlocked") {
+        void refreshWallet();
+      }
     });
     return;
   }
@@ -2975,6 +2991,15 @@ app.addEventListener("click", (event) => {
 
   if (action === "sync-wallet") {
     void refreshWallet();
+    return;
+  }
+
+  if (action === "open-explorer-tx") {
+    const txid = actionEl?.getAttribute("data-txid");
+    if (txid) {
+      const base = state.walletNetwork === "testnet" ? "https://blockstream.info/liquidtestnet" : "https://blockstream.info/liquid";
+      void openUrl(base + "/tx/" + txid);
+    }
     return;
   }
 

@@ -12,6 +12,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2.9.5",
     "@tauri-apps/plugin-log": "^2.0.0",
+    "@tauri-apps/plugin-opener": "^2.5.3",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
