@@ -1,21 +1,530 @@
-use std::collections::HashMap;
-use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
+mod payments;
+mod state;
+pub mod wallet;
+
 use std::sync::Mutex;
 
-use lwk_signer::SwSigner;
-use lwk_wollet::{ElementsNetwork, NoPersist, Wollet, WolletDescriptor};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use tauri::{AppHandle, Emitter, Manager, State};
 
-#[derive(Default)]
-struct WalletStore {
-    signers: Mutex<HashMap<String, SwSigner>>,
-    wallets: Mutex<HashMap<String, WalletContext>>,
+use state::{AppState, AppStateManager, PaymentSwap};
+
+const APP_STATE_UPDATED_EVENT: &str = "app_state_updated";
+
+// ============================================================================
+// Network type
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Network {
+    Mainnet,
+    Testnet,
+    Regtest,
 }
 
-struct WalletContext {
-    signer_id: String,
-    wollet: Wollet,
+impl Network {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Network::Mainnet => "mainnet",
+            Network::Testnet => "testnet",
+            Network::Regtest => "regtest",
+        }
+    }
+
+    pub fn is_mainnet(&self) -> bool {
+        matches!(self, Network::Mainnet)
+    }
+}
+
+impl std::str::FromStr for Network {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "mainnet" => Ok(Network::Mainnet),
+            "testnet" => Ok(Network::Testnet),
+            "regtest" => Ok(Network::Regtest),
+            _ => Err(format!("Invalid network: {}", s)),
+        }
+    }
+}
+
+// ============================================================================
+// Network Commands
+// ============================================================================
+
+#[tauri::command]
+fn is_first_launch(manager: State<Mutex<AppStateManager>>) -> bool {
+    let manager = manager.lock().expect("state manager mutex");
+    manager.is_first_launch()
+}
+
+#[tauri::command]
+fn set_network(
+    network: Network,
+    manager: State<Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<AppState, String> {
+    let mut manager = manager.lock().expect("state manager mutex");
+    let state = manager.set_network(network);
+    emit_state(&app, &state);
+    Ok(state)
+}
+
+// ============================================================================
+// App State Commands
+// ============================================================================
+
+#[tauri::command]
+fn get_app_state(manager: State<Mutex<AppStateManager>>) -> Result<AppState, String> {
+    let manager = manager.lock().expect("state manager mutex");
+    if !manager.is_initialized() {
+        return Err("Not initialized - select a network first".to_string());
+    }
+    Ok(manager.snapshot())
+}
+
+// ============================================================================
+// Wallet Commands
+// ============================================================================
+
+#[tauri::command]
+fn get_wallet_status(
+    manager: State<Mutex<AppStateManager>>,
+) -> Result<wallet::types::WalletStatus, String> {
+    let manager = manager.lock().expect("state manager mutex");
+    Ok(manager
+        .wallet()
+        .map(|w| w.status())
+        .unwrap_or(wallet::types::WalletStatus::NotCreated))
+}
+
+#[tauri::command]
+fn create_wallet(
+    password: String,
+    manager: State<Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<String, String> {
+    let mut manager = manager.lock().expect("state manager mutex");
+    let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
+    let mnemonic = wallet.create_wallet(&password).map_err(|e| e.to_string())?;
+    manager.bump_revision();
+    let state = manager.snapshot();
+    emit_state(&app, &state);
+    Ok(mnemonic)
+}
+
+#[tauri::command]
+fn restore_wallet(
+    mnemonic: String,
+    password: String,
+    manager: State<Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<AppState, String> {
+    let mut manager = manager.lock().expect("state manager mutex");
+    let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
+    wallet
+        .restore_wallet(&mnemonic, &password)
+        .map_err(|e| e.to_string())?;
+    manager.bump_revision();
+    let state = manager.snapshot();
+    emit_state(&app, &state);
+    Ok(state)
+}
+
+#[tauri::command]
+fn unlock_wallet(
+    password: String,
+    manager: State<Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<AppState, String> {
+    let mut manager = manager.lock().expect("state manager mutex");
+    let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
+    wallet.unlock(&password).map_err(|e| e.to_string())?;
+    manager.bump_revision();
+    let state = manager.snapshot();
+    emit_state(&app, &state);
+    Ok(state)
+}
+
+#[tauri::command]
+fn lock_wallet(
+    manager: State<Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<AppState, String> {
+    let mut manager = manager.lock().expect("state manager mutex");
+    if let Some(wallet) = manager.wallet_mut() {
+        wallet.lock();
+    }
+    manager.bump_revision();
+    let state = manager.snapshot();
+    emit_state(&app, &state);
+    Ok(state)
+}
+
+#[tauri::command]
+fn sync_wallet(
+    manager: State<Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<AppState, String> {
+    let mut manager = manager.lock().expect("state manager mutex");
+    let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
+    wallet.sync().map_err(|e| e.to_string())?;
+    manager.bump_revision();
+    let state = manager.snapshot();
+    emit_state(&app, &state);
+    Ok(state)
+}
+
+#[tauri::command]
+fn get_wallet_balance(
+    manager: State<Mutex<AppStateManager>>,
+) -> Result<wallet::types::WalletBalance, String> {
+    let manager = manager.lock().expect("state manager mutex");
+    let wallet = manager.wallet().ok_or("Wallet not initialized")?;
+    wallet.balance().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_wallet_address(
+    index: Option<u32>,
+    manager: State<Mutex<AppStateManager>>,
+) -> Result<wallet::types::WalletAddress, String> {
+    let manager = manager.lock().expect("state manager mutex");
+    let wallet = manager.wallet().ok_or("Wallet not initialized")?;
+    wallet.address(index).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_wallet_transactions(
+    manager: State<Mutex<AppStateManager>>,
+) -> Result<Vec<wallet::types::WalletTransaction>, String> {
+    let manager = manager.lock().expect("state manager mutex");
+    let wallet = manager.wallet().ok_or("Wallet not initialized")?;
+    wallet.transactions().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn send_lbtc(
+    address: String,
+    amount_sat: u64,
+    fee_rate: Option<f32>,
+    manager: State<Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<wallet::types::LiquidSendResult, String> {
+    let mut manager = manager.lock().expect("state manager mutex");
+    let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
+    let result = wallet
+        .send_lbtc(&address, amount_sat, fee_rate)
+        .map_err(|e| e.to_string())?;
+    manager.bump_revision();
+    let state = manager.snapshot();
+    emit_state(&app, &state);
+    Ok(result)
+}
+
+#[tauri::command]
+fn get_wallet_mnemonic(
+    password: String,
+    manager: State<Mutex<AppStateManager>>,
+) -> Result<String, String> {
+    let manager = manager.lock().expect("state manager mutex");
+    let wallet = manager.wallet().ok_or("Wallet not initialized")?;
+    let mnemonic = wallet
+        .persister()
+        .load(&password)
+        .map_err(|e| e.to_string())?;
+    Ok(mnemonic)
+}
+
+// ============================================================================
+// Payment Commands (Boltz)
+// ============================================================================
+
+#[tauri::command]
+async fn pay_lightning_invoice(
+    invoice: String,
+    manager: State<'_, Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<payments::boltz::BoltzSubmarineSwapCreated, String> {
+    let (network, refund_pubkey_hex) = {
+        let mgr = manager.lock().expect("state manager mutex");
+        let network = mgr.network().ok_or("Not initialized - select a network first")?;
+        let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
+        let refund_pubkey_hex = wallet
+            .boltz_submarine_refund_pubkey_hex()
+            .map_err(|e| format!("Wallet must be unlocked to initiate swap: {}", e))?;
+        (network, refund_pubkey_hex)
+    };
+
+    let boltz = payments::boltz::BoltzService::new(network, None);
+    let created = boltz
+        .create_submarine_swap(&invoice, &refund_pubkey_hex)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let saved_swap = PaymentSwap {
+        id: created.id.clone(),
+        flow: created.flow.clone(),
+        network: created.network.clone(),
+        status: created.status.clone(),
+        invoice_amount_sat: created.invoice_amount_sat,
+        expected_amount_sat: Some(created.expected_amount_sat),
+        lockup_address: Some(created.lockup_address.clone()),
+        timeout_block_height: Some(created.timeout_block_height),
+        pair_hash: Some(created.pair_hash.clone()),
+        invoice: Some(invoice),
+        invoice_expiry_seconds: Some(created.invoice_expiry_seconds),
+        invoice_expires_at: Some(created.invoice_expires_at.clone()),
+        lockup_txid: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    {
+        let mut mgr = manager.lock().expect("state manager mutex");
+        mgr.upsert_payment_swap(saved_swap);
+        let state = mgr.snapshot();
+        emit_state(&app, &state);
+    }
+
+    Ok(created)
+}
+
+#[tauri::command]
+async fn create_lightning_receive(
+    amount_sat: u64,
+    manager: State<'_, Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<payments::boltz::BoltzLightningReceiveCreated, String> {
+    let (network, claim_pubkey_hex) = {
+        let mgr = manager.lock().expect("state manager mutex");
+        let network = mgr.network().ok_or("Not initialized - select a network first")?;
+        let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
+        let claim_pubkey_hex = wallet
+            .boltz_reverse_claim_pubkey_hex()
+            .map_err(|e| format!("Wallet must be unlocked to initiate swap: {}", e))?;
+        (network, claim_pubkey_hex)
+    };
+
+    let boltz = payments::boltz::BoltzService::new(network, None);
+    let created = boltz
+        .create_lightning_receive(amount_sat, &claim_pubkey_hex)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let saved_swap = PaymentSwap {
+        id: created.id.clone(),
+        flow: created.flow.clone(),
+        network: created.network.clone(),
+        status: created.status.clone(),
+        invoice_amount_sat: created.invoice_amount_sat,
+        expected_amount_sat: Some(created.expected_onchain_amount_sat),
+        lockup_address: Some(created.lockup_address.clone()),
+        timeout_block_height: Some(created.timeout_block_height),
+        pair_hash: Some(created.pair_hash.clone()),
+        invoice: Some(created.invoice.clone()),
+        invoice_expiry_seconds: Some(created.invoice_expiry_seconds),
+        invoice_expires_at: Some(created.invoice_expires_at.clone()),
+        lockup_txid: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    {
+        let mut mgr = manager.lock().expect("state manager mutex");
+        mgr.upsert_payment_swap(saved_swap);
+        let state = mgr.snapshot();
+        emit_state(&app, &state);
+    }
+
+    Ok(created)
+}
+
+#[tauri::command]
+async fn create_bitcoin_receive(
+    amount_sat: u64,
+    manager: State<'_, Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<payments::boltz::BoltzChainSwapCreated, String> {
+    let (network, claim_pubkey_hex, refund_pubkey_hex) = {
+        let mgr = manager.lock().expect("state manager mutex");
+        let network = mgr.network().ok_or("Not initialized - select a network first")?;
+        let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
+        let claim_pubkey_hex = wallet
+            .boltz_reverse_claim_pubkey_hex()
+            .map_err(|e| format!("Wallet must be unlocked to initiate swap: {}", e))?;
+        let refund_pubkey_hex = wallet
+            .boltz_submarine_refund_pubkey_hex()
+            .map_err(|e| format!("Wallet must be unlocked to initiate swap: {}", e))?;
+        (network, claim_pubkey_hex, refund_pubkey_hex)
+    };
+
+    let boltz = payments::boltz::BoltzService::new(network, None);
+    let created = boltz
+        .create_chain_swap_btc_to_lbtc(amount_sat, &claim_pubkey_hex, &refund_pubkey_hex)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let saved_swap = PaymentSwap {
+        id: created.id.clone(),
+        flow: created.flow.clone(),
+        network: created.network.clone(),
+        status: created.status.clone(),
+        invoice_amount_sat: created.amount_sat,
+        expected_amount_sat: Some(created.expected_amount_sat),
+        lockup_address: Some(created.lockup_address.clone()),
+        timeout_block_height: Some(created.timeout_block_height),
+        pair_hash: Some(created.pair_hash.clone()),
+        invoice: None,
+        invoice_expiry_seconds: None,
+        invoice_expires_at: None,
+        lockup_txid: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    {
+        let mut mgr = manager.lock().expect("state manager mutex");
+        mgr.upsert_payment_swap(saved_swap);
+        let state = mgr.snapshot();
+        emit_state(&app, &state);
+    }
+
+    Ok(created)
+}
+
+#[tauri::command]
+async fn create_bitcoin_send(
+    amount_sat: u64,
+    manager: State<'_, Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<payments::boltz::BoltzChainSwapCreated, String> {
+    let (network, claim_pubkey_hex, refund_pubkey_hex) = {
+        let mgr = manager.lock().expect("state manager mutex");
+        let network = mgr.network().ok_or("Not initialized - select a network first")?;
+        let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
+        let claim_pubkey_hex = wallet
+            .boltz_reverse_claim_pubkey_hex()
+            .map_err(|e| format!("Wallet must be unlocked to initiate swap: {}", e))?;
+        let refund_pubkey_hex = wallet
+            .boltz_submarine_refund_pubkey_hex()
+            .map_err(|e| format!("Wallet must be unlocked to initiate swap: {}", e))?;
+        (network, claim_pubkey_hex, refund_pubkey_hex)
+    };
+
+    let boltz = payments::boltz::BoltzService::new(network, None);
+    let created = boltz
+        .create_chain_swap_lbtc_to_btc(amount_sat, &claim_pubkey_hex, &refund_pubkey_hex)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let saved_swap = PaymentSwap {
+        id: created.id.clone(),
+        flow: created.flow.clone(),
+        network: created.network.clone(),
+        status: created.status.clone(),
+        invoice_amount_sat: created.amount_sat,
+        expected_amount_sat: Some(created.expected_amount_sat),
+        lockup_address: Some(created.lockup_address.clone()),
+        timeout_block_height: Some(created.timeout_block_height),
+        pair_hash: Some(created.pair_hash.clone()),
+        invoice: None,
+        invoice_expiry_seconds: None,
+        invoice_expires_at: None,
+        lockup_txid: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    {
+        let mut mgr = manager.lock().expect("state manager mutex");
+        mgr.upsert_payment_swap(saved_swap);
+        let state = mgr.snapshot();
+        emit_state(&app, &state);
+    }
+
+    Ok(created)
+}
+
+#[tauri::command]
+async fn get_chain_swap_pairs(
+    manager: State<'_, Mutex<AppStateManager>>,
+) -> Result<payments::boltz::BoltzChainSwapPairsInfo, String> {
+    let network = {
+        let mgr = manager.lock().expect("state manager mutex");
+        mgr.network().ok_or("Not initialized - select a network first")?
+    };
+
+    let boltz = payments::boltz::BoltzService::new(network, None);
+    boltz
+        .get_chain_swap_pairs_info()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_payment_swaps(
+    manager: State<'_, Mutex<AppStateManager>>,
+) -> Result<Vec<PaymentSwap>, String> {
+    let mgr = manager.lock().expect("state manager mutex");
+    Ok(mgr.payment_swaps().to_vec())
+}
+
+#[tauri::command]
+async fn refresh_payment_swap_status(
+    swap_id: String,
+    manager: State<'_, Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<PaymentSwap, String> {
+    let network = {
+        let mgr = manager.lock().expect("state manager mutex");
+        mgr.network().ok_or("Not initialized - select a network first")?
+    };
+
+    let boltz = payments::boltz::BoltzService::new(network, None);
+    let status = boltz
+        .get_swap_status(&swap_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let updated_swap = {
+        let mut mgr = manager.lock().expect("state manager mutex");
+        let existing = mgr
+            .payment_swaps()
+            .iter()
+            .find(|swap| swap.id == swap_id)
+            .cloned()
+            .ok_or_else(|| format!("Payment swap not found: {}", swap_id))?;
+
+        let mut updated = existing;
+        updated.status = status.status;
+        updated.lockup_txid = status.lockup_txid;
+        updated.updated_at = chrono::Utc::now().to_rfc3339();
+
+        mgr.upsert_payment_swap(updated.clone());
+        let state = mgr.snapshot();
+        emit_state(&app, &state);
+        updated
+    };
+
+    Ok(updated_swap)
+}
+
+// ============================================================================
+// Legacy Commands (backward compatibility)
+// ============================================================================
+
+#[derive(serde::Serialize)]
+struct ChainTipResponse {
+    height: u32,
+    block_hash: String,
+    timestamp: u32,
 }
 
 #[derive(Deserialize)]
@@ -27,178 +536,13 @@ enum WalletNetwork {
 }
 
 impl WalletNetwork {
-    fn into_lwk(self) -> ElementsNetwork {
+    fn into_lwk(self) -> lwk_wollet::ElementsNetwork {
         match self {
-            WalletNetwork::Liquid => ElementsNetwork::Liquid,
-            WalletNetwork::LiquidTestnet => ElementsNetwork::LiquidTestnet,
-            // In lwk_wollet 0.14, regtest is represented as ElementsRegtest { policy_asset }.
-            WalletNetwork::LiquidRegtest => ElementsNetwork::default_regtest(),
+            WalletNetwork::Liquid => lwk_wollet::ElementsNetwork::Liquid,
+            WalletNetwork::LiquidTestnet => lwk_wollet::ElementsNetwork::LiquidTestnet,
+            WalletNetwork::LiquidRegtest => lwk_wollet::ElementsNetwork::default_regtest(),
         }
     }
-}
-
-#[derive(Serialize)]
-struct SoftwareSignerResponse {
-    signer_id: String,
-    mnemonic: String,
-    xpub: String,
-    fingerprint: String,
-}
-
-#[derive(Serialize)]
-struct WolletResponse {
-    wallet_id: String,
-    signer_id: String,
-    first_address: String,
-    address_index: u32,
-}
-
-#[derive(Serialize)]
-struct AddressResponse {
-    wallet_id: String,
-    address: String,
-    address_index: u32,
-}
-
-#[derive(Serialize)]
-struct ChainTipResponse {
-    height: u32,
-    block_hash: String,
-    timestamp: u32,
-}
-
-static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-fn next_id(prefix: &str) -> String {
-    let id = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{id}")
-}
-
-#[tauri::command]
-fn create_software_signer(
-    state: tauri::State<'_, WalletStore>,
-    mnemonic: Option<String>,
-    is_mainnet: Option<bool>,
-) -> Result<SoftwareSignerResponse, String> {
-    let use_mainnet = is_mainnet.unwrap_or(false);
-    let (signer, mnemonic_phrase) = match mnemonic {
-        Some(phrase) => {
-            let signer = SwSigner::new(&phrase, use_mainnet)
-                .map_err(|e| format!("failed to create software signer: {e}"))?;
-            (signer, phrase)
-        }
-        None => {
-            let (signer, random_mnemonic) = SwSigner::random(use_mainnet)
-                .map_err(|e| format!("failed to generate software signer: {e}"))?;
-            (signer, random_mnemonic.to_string())
-        }
-    };
-
-    let signer_id = next_id("signer");
-    let response = SoftwareSignerResponse {
-        signer_id: signer_id.clone(),
-        mnemonic: mnemonic_phrase,
-        xpub: signer.xpub().to_string(),
-        fingerprint: signer.fingerprint().to_string(),
-    };
-
-    let mut signers = state
-        .signers
-        .lock()
-        .map_err(|_| "failed to lock signer store".to_string())?;
-    signers.insert(signer_id, signer);
-
-    Ok(response)
-}
-
-#[tauri::command]
-fn create_wollet(
-    state: tauri::State<'_, WalletStore>,
-    signer_id: String,
-    descriptor: String,
-    network: WalletNetwork,
-    wallet_id: Option<String>,
-) -> Result<WolletResponse, String> {
-    {
-        let signers = state
-            .signers
-            .lock()
-            .map_err(|_| "failed to lock signer store".to_string())?;
-        if !signers.contains_key(&signer_id) {
-            return Err(format!("unknown signer_id: {signer_id}"));
-        }
-    }
-
-    let parsed_descriptor = WolletDescriptor::from_str(&descriptor)
-        .map_err(|e| format!("invalid wollet descriptor: {e}"))?;
-    let wollet = Wollet::new(network.into_lwk(), NoPersist::new(), parsed_descriptor)
-        .map_err(|e| format!("failed to build wollet: {e}"))?;
-
-    let first = wollet
-        .address(None)
-        .map_err(|e| format!("failed to derive first address: {e}"))?;
-
-    let assigned_wallet_id = wallet_id.unwrap_or_else(|| next_id("wallet"));
-    let response = WolletResponse {
-        wallet_id: assigned_wallet_id.clone(),
-        signer_id: signer_id.clone(),
-        first_address: first.address().to_string(),
-        address_index: first.index(),
-    };
-
-    let mut wallets = state
-        .wallets
-        .lock()
-        .map_err(|_| "failed to lock wallet store".to_string())?;
-    wallets.insert(
-        assigned_wallet_id,
-        WalletContext {
-            signer_id,
-            wollet,
-        },
-    );
-
-    Ok(response)
-}
-
-#[tauri::command]
-fn wallet_new_address(
-    state: tauri::State<'_, WalletStore>,
-    wallet_id: String,
-) -> Result<AddressResponse, String> {
-    let mut wallets = state
-        .wallets
-        .lock()
-        .map_err(|_| "failed to lock wallet store".to_string())?;
-    let wallet = wallets
-        .get_mut(&wallet_id)
-        .ok_or_else(|| format!("unknown wallet_id: {wallet_id}"))?;
-
-    let details = wallet
-        .wollet
-        .address(None)
-        .map_err(|e| format!("failed to derive address: {e}"))?;
-
-    Ok(AddressResponse {
-        wallet_id,
-        address: details.address().to_string(),
-        address_index: details.index(),
-    })
-}
-
-#[tauri::command]
-fn wallet_signer_id(
-    state: tauri::State<'_, WalletStore>,
-    wallet_id: String,
-) -> Result<String, String> {
-    let wallets = state
-        .wallets
-        .lock()
-        .map_err(|_| "failed to lock wallet store".to_string())?;
-    let wallet = wallets
-        .get(&wallet_id)
-        .ok_or_else(|| format!("unknown wallet_id: {wallet_id}"))?;
-    Ok(wallet.signer_id.clone())
 }
 
 #[tauri::command]
@@ -227,17 +571,68 @@ async fn fetch_chain_tip(network: WalletNetwork) -> Result<ChainTipResponse, Str
     })
 }
 
+// ============================================================================
+// Helpers
+// ============================================================================
+
+fn emit_state(app: &AppHandle, state: &AppState) {
+    let _ = app.emit(APP_STATE_UPDATED_EVENT, state);
+}
+
+// ============================================================================
+// App Entry Point
+// ============================================================================
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(WalletStore::default())
-        .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("failed to get app data directory");
+
+            let mut manager = AppStateManager::new(app_data_dir);
+            manager.initialize();
+
+            // Default to Testnet on first launch
+            if manager.is_first_launch() {
+                eprintln!("First launch detected - defaulting to Testnet network");
+                manager.set_network(Network::Testnet);
+            }
+
+            app.manage(Mutex::new(manager));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-            create_software_signer,
-            create_wollet,
-            wallet_new_address,
-            wallet_signer_id,
-            fetch_chain_tip
+            // Network
+            is_first_launch,
+            set_network,
+            // App state
+            get_app_state,
+            // Wallet
+            get_wallet_status,
+            create_wallet,
+            restore_wallet,
+            unlock_wallet,
+            lock_wallet,
+            sync_wallet,
+            get_wallet_balance,
+            get_wallet_address,
+            get_wallet_transactions,
+            get_wallet_mnemonic,
+            send_lbtc,
+            // Payments (Boltz)
+            pay_lightning_invoice,
+            create_lightning_receive,
+            create_bitcoin_receive,
+            create_bitcoin_send,
+            get_chain_swap_pairs,
+            list_payment_swaps,
+            refresh_payment_swap_status,
+            // Legacy
+            fetch_chain_tip,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
