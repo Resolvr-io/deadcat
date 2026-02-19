@@ -31,6 +31,8 @@ body {
 body {
     margin: 0;
     padding: 0;
+    -webkit-user-select: none;
+    user-select: none;
     font-family:
         "Space Grotesk", "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
     background:
@@ -48,6 +50,12 @@ body {
 #app {
     min-height: 100vh;
     overflow-x: hidden;
+}
+
+input,
+textarea {
+    -webkit-user-select: text;
+    user-select: text;
 }
 
 .phi-container {
