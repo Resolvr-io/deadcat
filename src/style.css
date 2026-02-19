@@ -2,12 +2,166 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+    --phi: 1.618;
+    --space-1: 8px;
+    --space-2: 13px;
+    --space-3: 21px;
+    --space-4: 34px;
+    --space-5: 55px;
+    --radius-1: 13px;
+    --radius-2: 21px;
+    --radius-3: 34px;
+    --text-1: 0.8125rem;
+    --text-2: 0.9375rem;
+    --text-3: 1.125rem;
+    --text-4: 1.5rem;
+    --text-5: 2.125rem;
+}
+
+* {
+    box-sizing: border-box;
+}
+
 body {
-  margin: 0;
-  padding: 0;
+    margin: 0;
+    padding: 0;
+    font-family:
+        "Space Grotesk", "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+    background:
+        radial-gradient(
+            circle at 10% -10%,
+            rgba(245, 158, 11, 0.18),
+            transparent 45%
+        ),
+        radial-gradient(
+            circle at 90% 120%,
+            rgba(16, 185, 129, 0.14),
+            transparent 40%
+        ),
+        linear-gradient(160deg, #020617 0%, #0b1222 45%, #0f172a 100%);
+    color: #e2e8f0;
+    font-size: var(--text-2);
+    line-height: 1.45;
 }
 
 #app {
-  width: 100vw;
-  height: 100vh;
+    width: 100vw;
+    min-height: 100vh;
+}
+
+.phi-container {
+    margin: 0 auto;
+    max-width: 1440px;
+    padding-left: var(--space-3);
+    padding-right: var(--space-3);
+}
+
+@media (min-width: 1024px) {
+    .phi-container {
+        padding-left: var(--space-4);
+        padding-right: var(--space-4);
+    }
+}
+
+.phi-title {
+    max-width: 34ch;
+}
+
+.panel-title {
+    letter-spacing: 0.02em;
+    font-weight: 600;
+    color: #f8fafc;
+}
+
+.panel-subtitle {
+    color: #94a3b8;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.kv-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 0.8rem;
+    color: #cbd5e1;
+    padding: 4px 0;
+    border-bottom: 1px dashed rgba(148, 163, 184, 0.2);
+}
+
+.kv-row:last-child {
+    border-bottom: none;
+}
+
+.mono {
+    font-family: "SFMono-Regular", "Menlo", "Monaco", "Consolas", monospace;
+    color: #e2e8f0;
+}
+
+.status-chip {
+    border-radius: 9999px;
+    padding: 3px 8px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.chart-grid {
+    background-image: linear-gradient(
+        to bottom,
+        rgba(148, 163, 184, 0.14) 1px,
+        transparent 1px
+    );
+    background-size: 100% 25%;
+}
+
+.live-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 9999px;
+    position: absolute;
+    pointer-events: none;
+}
+
+.live-dot::after {
+    content: "";
+    position: absolute;
+    inset: -7px;
+    border-radius: 9999px;
+    background: currentColor;
+    opacity: 0.28;
+    animation: pulse-live 1.5s ease-out infinite;
+}
+
+@keyframes pulse-live {
+    0% {
+        transform: scale(0.7);
+        opacity: 0.35;
+    }
+    70% {
+        transform: scale(1.6);
+        opacity: 0;
+    }
+    100% {
+        transform: scale(1.6);
+        opacity: 0;
+    }
+}
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    background: rgba(148, 163, 184, 0.35);
+}
+
+::-webkit-scrollbar-track {
+    background: rgba(15, 23, 42, 0.4);
 }
