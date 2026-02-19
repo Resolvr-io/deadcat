@@ -240,9 +240,317 @@ const markets: Market[] = [
     volumeBtc: 21.7,
     liquidityBtc: 3.3,
   },
+  {
+    id: "mkt-7",
+    question: "Will BTC trade above $150,000 before Jan 1, 2027?",
+    category: "Crypto",
+    description:
+      "Resolves YES if any major USD spot venue prints 150,000+ before deadline.",
+    resolutionSource: "Multi-exchange high print basket",
+    isLive: false,
+    state: 1,
+    marketId: "73ab1f09...c33a",
+    oraclePubkey: "8a2e4d9f...f102",
+    expiryHeight: 3702200,
+    currentHeight: 3634120,
+    cptSats: 5000,
+    collateralAssetId: "L-BTC:6f0279e9...",
+    yesAssetId: "YES:ec14...5411",
+    noAssetId: "NO:ec14...5412",
+    yesReissuanceToken: "YRT:ec14...5413",
+    noReissuanceToken: "NRT:ec14...5414",
+    collateralUtxos: [{ txid: "cf90...11ab", vout: 0, amountSats: 188000000 }],
+    yesPrice: 0.44,
+    change24h: 3.1,
+    volumeBtc: 97.9,
+    liquidityBtc: 12.4,
+  },
+  {
+    id: "mkt-8",
+    question: "Will ETH/BTC close above 0.070 by June 30, 2026?",
+    category: "Crypto",
+    description:
+      "Resolves from daily close ratio composite across top centralized venues.",
+    resolutionSource: "ETH/BTC close composite",
+    isLive: false,
+    state: 1,
+    marketId: "8a20de11...998f",
+    oraclePubkey: "8a2e4d9f...f102",
+    expiryHeight: 3665200,
+    currentHeight: 3634120,
+    cptSats: 4000,
+    collateralAssetId: "L-BTC:6f0279e9...",
+    yesAssetId: "YES:7134...8f21",
+    noAssetId: "NO:7134...8f22",
+    yesReissuanceToken: "YRT:7134...8f23",
+    noReissuanceToken: "NRT:7134...8f24",
+    collateralUtxos: [{ txid: "81ae...2bc1", vout: 0, amountSats: 96200000 }],
+    yesPrice: 0.28,
+    change24h: -2.4,
+    volumeBtc: 55.2,
+    liquidityBtc: 8.6,
+  },
+  {
+    id: "mkt-9",
+    question: "Will candidate Redwood choose Vega as running mate?",
+    category: "Politics",
+    description:
+      "Resolved on official campaign filing naming the vice-presidential nominee.",
+    resolutionSource: "FEC filing + campaign announcement",
+    isLive: false,
+    state: 1,
+    marketId: "db4122f0...77bc",
+    oraclePubkey: "8a2e4d9f...f102",
+    expiryHeight: 3942000,
+    currentHeight: 3634120,
+    cptSats: 4500,
+    collateralAssetId: "L-BTC:6f0279e9...",
+    yesAssetId: "YES:41d8...9011",
+    noAssetId: "NO:41d8...9012",
+    yesReissuanceToken: "YRT:41d8...9013",
+    noReissuanceToken: "NRT:41d8...9014",
+    collateralUtxos: [{ txid: "9dc2...0a44", vout: 1, amountSats: 116000000 }],
+    yesPrice: 0.36,
+    change24h: 1.9,
+    volumeBtc: 63.4,
+    liquidityBtc: 8.2,
+  },
+  {
+    id: "mkt-10",
+    question: "Will the governing coalition lose its majority this year?",
+    category: "Politics",
+    description:
+      "YES if official parliamentary seat count drops below majority threshold.",
+    resolutionSource: "Official parliamentary records",
+    isLive: false,
+    state: 1,
+    marketId: "67f0aa31...80d2",
+    oraclePubkey: "8a2e4d9f...f102",
+    expiryHeight: 3814400,
+    currentHeight: 3634120,
+    cptSats: 4000,
+    collateralAssetId: "L-BTC:6f0279e9...",
+    yesAssetId: "YES:b1c2...33e1",
+    noAssetId: "NO:b1c2...33e2",
+    yesReissuanceToken: "YRT:b1c2...33e3",
+    noReissuanceToken: "NRT:b1c2...33e4",
+    collateralUtxos: [{ txid: "0911...a0f4", vout: 0, amountSats: 138500000 }],
+    yesPrice: 0.52,
+    change24h: -1.1,
+    volumeBtc: 78.6,
+    liquidityBtc: 9.7,
+  },
+  {
+    id: "mkt-11",
+    question: "Will Team Orbit win game 4 tonight?",
+    category: "Sports",
+    description:
+      "Live event contract resolves from official league game book final score.",
+    resolutionSource: "Official game book",
+    isLive: true,
+    state: 1,
+    marketId: "2a4ce9d3...33a2",
+    oraclePubkey: "8a2e4d9f...f102",
+    expiryHeight: 3634300,
+    currentHeight: 3634120,
+    cptSats: 3000,
+    collateralAssetId: "L-BTC:6f0279e9...",
+    yesAssetId: "YES:24d4...6611",
+    noAssetId: "NO:24d4...6612",
+    yesReissuanceToken: "YRT:24d4...6613",
+    noReissuanceToken: "NRT:24d4...6614",
+    collateralUtxos: [{ txid: "22aa...9914", vout: 0, amountSats: 54400000 }],
+    yesPrice: 0.61,
+    change24h: 7.2,
+    volumeBtc: 39.8,
+    liquidityBtc: 5.2,
+  },
+  {
+    id: "mkt-12",
+    question: "Will Harbor City FC finish top-4 this season?",
+    category: "Sports",
+    description:
+      "Season standings contract resolved when league table is finalized.",
+    resolutionSource: "Official league standings",
+    isLive: false,
+    state: 1,
+    marketId: "ccf120f8...04a3",
+    oraclePubkey: "8a2e4d9f...f102",
+    expiryHeight: 3726000,
+    currentHeight: 3634120,
+    cptSats: 3500,
+    collateralAssetId: "L-BTC:6f0279e9...",
+    yesAssetId: "YES:50bd...111a",
+    noAssetId: "NO:50bd...111b",
+    yesReissuanceToken: "YRT:50bd...111c",
+    noReissuanceToken: "NRT:50bd...111d",
+    collateralUtxos: [{ txid: "7b2f...34de", vout: 1, amountSats: 84700000 }],
+    yesPrice: 0.47,
+    change24h: 2.8,
+    volumeBtc: 45.6,
+    liquidityBtc: 6.9,
+  },
+  {
+    id: "mkt-13",
+    question: "Will a sci-fi film win Best Picture at the 2027 Oscars?",
+    category: "Culture",
+    description:
+      "Resolves using Academy official Best Picture winner publication.",
+    resolutionSource: "Academy awards official results",
+    isLive: false,
+    state: 1,
+    marketId: "11fe8cc1...44bf",
+    oraclePubkey: "8a2e4d9f...f102",
+    expiryHeight: 3760500,
+    currentHeight: 3634120,
+    cptSats: 3000,
+    collateralAssetId: "L-BTC:6f0279e9...",
+    yesAssetId: "YES:9f44...2be1",
+    noAssetId: "NO:9f44...2be2",
+    yesReissuanceToken: "YRT:9f44...2be3",
+    noReissuanceToken: "NRT:9f44...2be4",
+    collateralUtxos: [{ txid: "55f2...22a7", vout: 0, amountSats: 61000000 }],
+    yesPrice: 0.24,
+    change24h: 1.3,
+    volumeBtc: 33.7,
+    liquidityBtc: 4.4,
+  },
+  {
+    id: "mkt-14",
+    question: "Will a new album from Nova X chart #1 in the US this year?",
+    category: "Culture",
+    description:
+      "YES if Billboard 200 reports #1 for a qualifying Nova X release.",
+    resolutionSource: "Billboard 200 chart",
+    isLive: false,
+    state: 1,
+    marketId: "80bd9a0e...2271",
+    oraclePubkey: "8a2e4d9f...f102",
+    expiryHeight: 3819900,
+    currentHeight: 3634120,
+    cptSats: 2500,
+    collateralAssetId: "L-BTC:6f0279e9...",
+    yesAssetId: "YES:0de1...441a",
+    noAssetId: "NO:0de1...441b",
+    yesReissuanceToken: "YRT:0de1...441c",
+    noReissuanceToken: "NRT:0de1...441d",
+    collateralUtxos: [{ txid: "888a...3c30", vout: 0, amountSats: 47200000 }],
+    yesPrice: 0.58,
+    change24h: -0.8,
+    volumeBtc: 27.1,
+    liquidityBtc: 3.8,
+  },
+  {
+    id: "mkt-15",
+    question: "Will Miami record a daily high above 100F in July 2026?",
+    category: "Weather",
+    description:
+      "Resolves YES if NOAA station data records any 100F+ maximum in July.",
+    resolutionSource: "NOAA Miami station daily highs",
+    isLive: false,
+    state: 1,
+    marketId: "4137aa20...dd42",
+    oraclePubkey: "8a2e4d9f...f102",
+    expiryHeight: 3698400,
+    currentHeight: 3634120,
+    cptSats: 3000,
+    collateralAssetId: "L-BTC:6f0279e9...",
+    yesAssetId: "YES:99ab...1101",
+    noAssetId: "NO:99ab...1102",
+    yesReissuanceToken: "YRT:99ab...1103",
+    noReissuanceToken: "NRT:99ab...1104",
+    collateralUtxos: [{ txid: "776f...6df0", vout: 0, amountSats: 53200000 }],
+    yesPrice: 0.49,
+    change24h: 0.6,
+    volumeBtc: 24.3,
+    liquidityBtc: 3.5,
+  },
+  {
+    id: "mkt-16",
+    question: "Will Hurricane Atlas make US landfall as Cat 3+ this season?",
+    category: "Weather",
+    description:
+      "Resolved from NHC final advisories and post-storm official report.",
+    resolutionSource: "National Hurricane Center",
+    isLive: false,
+    state: 0,
+    marketId: "17ca621d...930e",
+    oraclePubkey: "8a2e4d9f...f102",
+    expiryHeight: 3743300,
+    currentHeight: 3634120,
+    cptSats: 4500,
+    collateralAssetId: "L-BTC:6f0279e9...",
+    yesAssetId: "YES:76a1...9ad1",
+    noAssetId: "NO:76a1...9ad2",
+    yesReissuanceToken: "YRT:76a1...9ad3",
+    noReissuanceToken: "NRT:76a1...9ad4",
+    collateralUtxos: [{ txid: "00f1...be09", vout: 0, amountSats: 0 }],
+    yesPrice: 0.22,
+    change24h: 0.0,
+    volumeBtc: 0.0,
+    liquidityBtc: 0.0,
+  },
+  {
+    id: "mkt-17",
+    question: "Will the Fed funds target be below 4.00% by year-end 2026?",
+    category: "Macro",
+    description:
+      "Resolved from official FOMC target range upper bound at year-end meeting.",
+    resolutionSource: "Federal Reserve target range",
+    isLive: false,
+    state: 1,
+    marketId: "64de90ac...700c",
+    oraclePubkey: "8a2e4d9f...f102",
+    expiryHeight: 3814200,
+    currentHeight: 3634120,
+    cptSats: 4500,
+    collateralAssetId: "L-BTC:6f0279e9...",
+    yesAssetId: "YES:d1a9...fa21",
+    noAssetId: "NO:d1a9...fa22",
+    yesReissuanceToken: "YRT:d1a9...fa23",
+    noReissuanceToken: "NRT:d1a9...fa24",
+    collateralUtxos: [{ txid: "0ac4...bed3", vout: 0, amountSats: 144700000 }],
+    yesPrice: 0.46,
+    change24h: 1.4,
+    volumeBtc: 88.5,
+    liquidityBtc: 10.7,
+  },
+  {
+    id: "mkt-18",
+    question: "Will US core CPI print below 2.8% by Sep 2026?",
+    category: "Macro",
+    description:
+      "YES if BLS release shows year-over-year core CPI below 2.8 by deadline.",
+    resolutionSource: "BLS CPI release",
+    isLive: false,
+    state: 1,
+    marketId: "91fc22ab...6a11",
+    oraclePubkey: "8a2e4d9f...f102",
+    expiryHeight: 3758800,
+    currentHeight: 3634120,
+    cptSats: 4000,
+    collateralAssetId: "L-BTC:6f0279e9...",
+    yesAssetId: "YES:c2d0...66f1",
+    noAssetId: "NO:c2d0...66f2",
+    yesReissuanceToken: "YRT:c2d0...66f3",
+    noReissuanceToken: "NRT:c2d0...66f4",
+    collateralUtxos: [{ txid: "61be...4e72", vout: 0, amountSats: 116400000 }],
+    yesPrice: 0.34,
+    change24h: -1.7,
+    volumeBtc: 69.1,
+    liquidityBtc: 8.9,
+  },
 ];
 
-const trendingIds = ["mkt-3", "mkt-1", "mkt-2", "mkt-5", "mkt-4"];
+const trendingIds = [
+  "mkt-3",
+  "mkt-1",
+  "mkt-2",
+  "mkt-11",
+  "mkt-10",
+  "mkt-17",
+  "mkt-4",
+];
 
 const state: {
   view: ViewMode;
@@ -285,6 +593,15 @@ const formatVolumeBtc = (value: number): string =>
   value >= 1000
     ? `${(value / 1000).toFixed(1)}K BTC`
     : `${value.toFixed(1)} BTC`;
+const formatEstTime = (date: Date): string =>
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  })
+    .format(date)
+    .toLowerCase();
 
 function stateLabel(value: CovenantState): string {
   if (value === 0) return "UNINITIALIZED";
@@ -346,15 +663,22 @@ function getFilteredMarkets(): Market[] {
 
 function chartSkeleton(market: Market): string {
   const yes = market.yesPrice;
+  const now = new Date();
+  const xLabels = [
+    new Date(now.getTime() - 3 * 60 * 60 * 1000),
+    new Date(now.getTime() - 2 * 60 * 60 * 1000),
+    new Date(now.getTime() - 1 * 60 * 60 * 1000),
+    now,
+  ];
   const yesPoints: Array<{ x: number; y: number }> = [
-    { x: 8, y: 62 - yes * 14 },
-    { x: 18, y: 58 - yes * 11 },
-    { x: 30, y: 60 - yes * 13 },
-    { x: 42, y: 56 - yes * 10 },
-    { x: 54, y: 58 - yes * 12 },
-    { x: 64, y: 57 - yes * 11 },
-    { x: 74, y: 55 - yes * 9 },
-    { x: 82, y: 54 - yes * 8 },
+    { x: 6, y: 62 - yes * 14 },
+    { x: 20, y: 58 - yes * 11 },
+    { x: 34, y: 60 - yes * 13 },
+    { x: 50, y: 56 - yes * 10 },
+    { x: 66, y: 58 - yes * 12 },
+    { x: 78, y: 57 - yes * 11 },
+    { x: 88, y: 55 - yes * 9 },
+    { x: 96, y: 54 - yes * 8 },
   ];
   const noPoints = yesPoints.map((point) => ({ x: point.x, y: 92 - point.y }));
 
@@ -372,27 +696,29 @@ function chartSkeleton(market: Market): string {
         <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-blue-300"></span>No ${noPct}%</span>
         ${
           market.isLive
-            ? '<span class="rounded-full border border-rose-500/50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-300">Live</span>'
+            ? '<span class="inline-flex items-center gap-1 rounded-full border border-rose-500/50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-300"><span class="liveIndicatorDot"></span>Live · Round 1</span>'
             : ""
         }
       </div>
-      <svg viewBox="0 0 100 100" class="h-full w-full">
-        <polyline fill="none" stroke="#5eead4" stroke-width="${market.isLive ? "1.6" : "1.3"}" stroke-opacity="${market.isLive ? "1" : "0.7"}" points="${yesPath}" />
-        <polyline fill="none" stroke="#60a5fa" stroke-width="${market.isLive ? "1.6" : "1.3"}" stroke-opacity="${market.isLive ? "1" : "0.7"}" points="${noPath}" />
-        <circle cx="${yesEnd.x}" cy="${yesEnd.y}" r="1.8" fill="#5eead4" />
-        <circle cx="${noEnd.x}" cy="${noEnd.y}" r="1.8" fill="#60a5fa" />
-      </svg>
-      ${
-        market.isLive
-          ? `<div class="absolute live-dot bg-emerald-400 text-emerald-400" style="left: calc(${yesEnd.x}% - 5px); top: calc(${yesEnd.y}% - 5px)"></div>
-      <div class="absolute live-dot bg-blue-400 text-blue-400" style="left: calc(${noEnd.x}% - 5px); top: calc(${noEnd.y}% - 5px)"></div>`
-          : ""
-      }
-      <div class="pointer-events-none absolute inset-0 rounded-xl bg-[linear-gradient(transparent_24%,rgba(148,163,184,0.13)_25%,transparent_26%,transparent_49%,rgba(148,163,184,0.13)_50%,transparent_51%,transparent_74%,rgba(148,163,184,0.13)_75%,transparent_76%)]"></div>
-      <div class="pointer-events-none absolute inset-y-2 right-1 flex flex-col justify-between text-[11px] text-slate-500"><span>100%</span><span>75%</span><span>50%</span><span>25%</span><span>0%</span></div>
-      <div class="pointer-events-none absolute text-[12px] font-semibold text-emerald-300" style="left: calc(${yesEnd.x}% + 8px); top: calc(${yesEnd.y}% - 8px)">Yes ${yesPct}%</div>
-      <div class="pointer-events-none absolute text-[12px] font-semibold text-blue-300" style="left: calc(${noEnd.x}% + 8px); top: calc(${noEnd.y}% - 8px)">No ${noPct}%</div>
-      <div class="pointer-events-none absolute inset-x-3 bottom-1 flex items-center justify-between text-[11px] text-slate-500"><span>6:44am</span><span>3:12pm</span><span>11:41pm</span><span>4:42pm</span></div>
+      <div class="pointer-events-none absolute inset-x-3 top-10 bottom-8">
+        <svg viewBox="0 0 100 100" class="h-full w-full">
+          <polyline fill="none" stroke="#5eead4" stroke-width="${market.isLive ? "1.6" : "1.3"}" stroke-opacity="${market.isLive ? "1" : "0.7"}" points="${yesPath}" />
+          <polyline fill="none" stroke="#60a5fa" stroke-width="${market.isLive ? "1.6" : "1.3"}" stroke-opacity="${market.isLive ? "1" : "0.7"}" points="${noPath}" />
+          ${
+            market.isLive
+              ? `<circle class="chartLivePulse chartLivePulseYes" cx="${yesEnd.x}" cy="${yesEnd.y}" r="1.8" />
+          <circle class="chartLivePulse chartLivePulseNo" cx="${noEnd.x}" cy="${noEnd.y}" r="1.8" />`
+              : ""
+          }
+          <circle cx="${yesEnd.x}" cy="${yesEnd.y}" r="1.8" fill="#5eead4" />
+          <circle cx="${noEnd.x}" cy="${noEnd.y}" r="1.8" fill="#60a5fa" />
+        </svg>
+        <div class="absolute text-[12px] font-semibold text-emerald-300" style="left: calc(${yesEnd.x}% - 56px); top: calc(${yesEnd.y}% - 8px)">Yes ${yesPct}%</div>
+        <div class="absolute text-[12px] font-semibold text-blue-300" style="left: calc(${noEnd.x}% - 50px); top: calc(${noEnd.y}% - 8px)">No ${noPct}%</div>
+      </div>
+      <div class="pointer-events-none absolute inset-x-3 top-10 bottom-8 rounded-xl bg-[linear-gradient(transparent_24%,rgba(148,163,184,0.13)_25%,transparent_26%,transparent_49%,rgba(148,163,184,0.13)_50%,transparent_51%,transparent_74%,rgba(148,163,184,0.13)_75%,transparent_76%)]"></div>
+      <div class="pointer-events-none absolute right-1 top-10 bottom-8 flex flex-col justify-between text-[11px] text-slate-500"><span>100%</span><span>75%</span><span>50%</span><span>25%</span><span>0%</span></div>
+      <div class="pointer-events-none absolute inset-x-3 bottom-1 flex items-center justify-between text-[11px] text-slate-500"><span data-est-label data-offset-hours="3">${formatEstTime(xLabels[0])}</span><span data-est-label data-offset-hours="2">${formatEstTime(xLabels[1])}</span><span data-est-label data-offset-hours="1">${formatEstTime(xLabels[2])}</span><span data-est-label data-offset-hours="0">${formatEstTime(xLabels[3])}</span><span class="ml-2 text-[10px] uppercase tracking-wide text-slate-600">ET</span></div>
     </div>
   `;
 }
@@ -554,10 +880,23 @@ function renderHome(): string {
 function renderCategoryPage(): string {
   const category = state.activeCategory as MarketCategory;
   const categoryMarkets = getFilteredMarkets();
+  const liveContracts = categoryMarkets
+    .filter((market) => market.isLive)
+    .slice(0, 4);
+  const highestLiquidity = [...categoryMarkets]
+    .sort((a, b) => b.liquidityBtc - a.liquidityBtc)
+    .slice(0, 4);
+  const stateMix = categoryMarkets.reduce(
+    (acc, market) => {
+      acc[market.state] += 1;
+      return acc;
+    },
+    { 0: 0, 1: 0, 2: 0, 3: 0 } as Record<CovenantState, number>,
+  );
 
   return `
     <div class="phi-container py-6 lg:py-8">
-      <div class="grid gap-[21px] xl:grid-cols-[233px_1fr]">
+      <div class="grid gap-[21px] xl:grid-cols-[233px_1fr_320px]">
         <aside class="hidden xl:block">
           <div class="space-y-1 text-sm text-slate-400">
             <button class="block w-full rounded-md bg-slate-900/70 px-2 py-2 text-left text-emerald-300">All markets</button>
@@ -571,6 +910,25 @@ function renderCategoryPage(): string {
             <div class="flex items-center gap-2 text-sm text-slate-400">
               <button class="rounded-full border border-slate-700 px-3 py-1.5">Trending</button>
               <button class="rounded-full border border-slate-700 px-3 py-1.5">Frequency</button>
+            </div>
+          </div>
+          <div class="mb-4 grid gap-2 sm:grid-cols-3">
+            <div class="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+              <p class="text-xs uppercase tracking-wide text-slate-500">Contracts</p>
+              <p class="text-lg font-semibold text-slate-100">${categoryMarkets.length}</p>
+            </div>
+            <div class="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+              <p class="text-xs uppercase tracking-wide text-slate-500">Live now</p>
+              <p class="text-lg font-semibold text-rose-300">${liveContracts.length}</p>
+            </div>
+            <div class="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+              <p class="text-xs uppercase tracking-wide text-slate-500">24h volume</p>
+              <p class="text-lg font-semibold text-slate-100">${formatVolumeBtc(
+                categoryMarkets.reduce(
+                  (sum, market) => sum + market.volumeBtc,
+                  0,
+                ),
+              )}</p>
             </div>
           </div>
           <div class="grid gap-3 md:grid-cols-2">
@@ -596,6 +954,51 @@ function renderCategoryPage(): string {
               .join("")}
           </div>
         </section>
+        <aside class="space-y-3">
+          <section class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4">
+            <h3 class="mb-3 text-lg font-semibold text-slate-100">Live contracts</h3>
+            <div class="space-y-3">
+              ${
+                liveContracts.length
+                  ? liveContracts
+                      .map(
+                        (market) => `
+                      <button data-open-market="${market.id}" class="w-full text-left">
+                        <p class="text-sm font-semibold text-slate-200">${market.question}</p>
+                        <p class="mt-1 text-xs text-slate-500">Yes ${Math.round(
+                          market.yesPrice * 100,
+                        )}% · ${formatVolumeBtc(market.volumeBtc)} volume</p>
+                      </button>`,
+                      )
+                      .join("")
+                  : '<p class="text-sm text-slate-500">No live contracts in this category right now.</p>'
+              }
+            </div>
+          </section>
+          <section class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4">
+            <h3 class="mb-3 text-lg font-semibold text-slate-100">Highest liquidity</h3>
+            <div class="space-y-3">
+              ${highestLiquidity
+                .map(
+                  (market, idx) => `
+                <button data-open-market="${market.id}" class="flex w-full items-start justify-between gap-2 text-left">
+                  <p class="text-sm text-slate-300">${idx + 1}. ${market.question}</p>
+                  <p class="text-sm font-semibold text-emerald-300">${formatVolumeBtc(market.liquidityBtc)}</p>
+                </button>`,
+                )
+                .join("")}
+            </div>
+          </section>
+          <section class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4">
+            <h3 class="mb-3 text-lg font-semibold text-slate-100">State mix</h3>
+            <div class="space-y-2 text-sm text-slate-300">
+              <p class="flex items-center justify-between"><span>State 0 · Uninitialized</span><span>${stateMix[0]}</span></p>
+              <p class="flex items-center justify-between"><span>State 1 · Unresolved</span><span>${stateMix[1]}</span></p>
+              <p class="flex items-center justify-between"><span>State 2 · Resolved YES</span><span>${stateMix[2]}</span></p>
+              <p class="flex items-center justify-between"><span>State 3 · Resolved NO</span><span>${stateMix[3]}</span></p>
+            </div>
+          </section>
+        </aside>
       </div>
     </div>
   `;
@@ -844,6 +1247,16 @@ function render(): void {
   `;
 }
 
+function updateEstClockLabels(): void {
+  const labels = document.querySelectorAll<HTMLElement>("[data-est-label]");
+  if (!labels.length) return;
+  labels.forEach((label) => {
+    const offsetHours = Number(label.dataset.offsetHours ?? "0");
+    const timestamp = Date.now() - offsetHours * 60 * 60 * 1000;
+    label.textContent = formatEstTime(new Date(timestamp));
+  });
+}
+
 function openMarket(marketId: string): void {
   const market = getMarketById(marketId);
   state.selectedMarketId = market.id;
@@ -863,6 +1276,8 @@ function ticketActionAllowed(market: Market, tab: ActionTab): boolean {
 }
 
 render();
+updateEstClockLabels();
+setInterval(updateEstClockLabels, 1_000);
 
 app.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
