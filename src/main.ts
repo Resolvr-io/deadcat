@@ -771,7 +771,6 @@ const formatProbabilityWithPercent = (price: number): string =>
   `${Math.round(price * 100)}% (${formatProbabilitySats(price)})`;
 const formatPercent = (value: number): string =>
   `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
-const formatBtc = (value: number): string => `${value.toFixed(4)} BTC`;
 const formatSats = (value: number): string => `${value.toLocaleString()} sats`;
 const formatSatsInput = (value: number): string =>
   Math.max(1, Math.floor(value)).toLocaleString("en-US");
