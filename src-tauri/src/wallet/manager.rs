@@ -7,7 +7,7 @@ use lwk_wollet::blocking::BlockchainBackend;
 use lwk_wollet::elements::pset::PartiallySignedTransaction;
 use lwk_wollet::elements::secp256k1_zkp::{self, Keypair};
 use lwk_wollet::elements::Transaction;
-use lwk_wollet::{ElectrumClient, ElectrumUrl, TxBuilder, Wollet, WolletDescriptor};
+use lwk_wollet::{ElectrumClient, ElectrumUrl, TxBuilder, WalletTxOut, Wollet, WolletDescriptor};
 use thiserror::Error;
 
 use crate::Network;
@@ -328,6 +328,55 @@ impl WalletManager {
             .map_err(|e| WalletError::Electrum(e.to_string()))?;
 
         Ok(LiquidSendResult { txid, fee_sat })
+    }
+
+    /// Raw UTXOs with blinding factors for SDK consumption.
+    pub fn raw_utxos(&self) -> Result<Vec<WalletTxOut>, WalletError> {
+        let wollet = self.wollet.as_ref().ok_or(WalletError::NotUnlocked)?;
+        wollet
+            .utxos()
+            .map_err(|e| WalletError::Query(e.to_string()))
+    }
+
+    /// Fetch a raw transaction by txid from electrum.
+    pub fn fetch_transaction(
+        &self,
+        txid: &lwk_wollet::elements::Txid,
+    ) -> Result<Transaction, WalletError> {
+        let url: ElectrumUrl = self
+            .electrum_url_str
+            .parse()
+            .map_err(|e| WalletError::Electrum(format!("{:?}", e)))?;
+        let client =
+            ElectrumClient::new(&url).map_err(|e| WalletError::Electrum(e.to_string()))?;
+        let txs = client
+            .get_transactions(&[*txid])
+            .map_err(|e| WalletError::Electrum(e.to_string()))?;
+        txs.into_iter()
+            .next()
+            .ok_or_else(|| WalletError::Query(format!("transaction {} not found", txid)))
+    }
+
+    /// Broadcast a pre-signed transaction and sync the wallet afterward.
+    pub fn broadcast_and_sync(
+        &mut self,
+        tx: &Transaction,
+    ) -> Result<lwk_wollet::elements::Txid, WalletError> {
+        let url: ElectrumUrl = self
+            .electrum_url_str
+            .parse()
+            .map_err(|e| WalletError::Electrum(format!("{:?}", e)))?;
+        let mut client =
+            ElectrumClient::new(&url).map_err(|e| WalletError::Electrum(e.to_string()))?;
+        let txid = client
+            .broadcast(tx)
+            .map_err(|e| WalletError::Broadcast(e.to_string()))?;
+
+        let wollet = self.wollet.as_mut().ok_or(WalletError::NotUnlocked)?;
+        lwk_wollet::full_scan_with_electrum_client(wollet, &mut client)
+            .map_err(|e| WalletError::Electrum(e.to_string()))?;
+
+        Ok(txid)
     }
 
     /// Get the persister reference (for password-gated operations like backup).

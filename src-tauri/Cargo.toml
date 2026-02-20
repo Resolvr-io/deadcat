@@ -18,11 +18,13 @@ tauri-build = { version = "2.5.3", features = [] }
 [dependencies]
 tauri = { version = "2.9.5", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-log = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2"
 chrono = { version = "0.4", features = ["clock"] }
 hex = "0.4"
+log = "0.4"
 tokio = { version = "1", features = ["rt", "sync"] }
 
 # Liquid wallet
@@ -39,6 +41,11 @@ argon2 = "0.5"
 rand = "0.8"
 base64 = "0.22"
 bip39 = "2"
+
+# SDK & Nostr
+deadcat-sdk = { git = "ssh://git@github.com/resolvr-io/deadcat-sdk.git", rev = "b26b8543a76fc4aef1d694cbc3e768d120c10a79" }
+nostr-sdk = "0.38"
+nostr-relay-builder = "0.38"
 
 [patch.crates-io]
 secp256k1-zkp = { git = "https://github.com/breez/rust-secp256k1-zkp.git", rev = "eac2e479255a6e32b5588bc25ee53c642fdd8395" }
