@@ -619,6 +619,10 @@ fn emit_state(app: &AppHandle, state: &AppState) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Install the rustls CryptoProvider before any TLS connections.
+    // electrum-client pulls in rustls 0.23 which requires an explicit provider.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_log::Builder::default().build())
@@ -676,6 +680,7 @@ pub fn run() {
             commands::publish_contract,
             commands::oracle_attest,
             commands::create_contract_onchain,
+            commands::issue_tokens,
             // Wallet store (SDK)
             wallet_store::create_software_signer,
             wallet_store::create_wollet,

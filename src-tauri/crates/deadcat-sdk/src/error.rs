@@ -1,3 +1,4 @@
+use crate::state::MarketState;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -79,6 +80,18 @@ pub enum Error {
 
     #[error("insufficient UTXOs: {0}")]
     InsufficientUtxos(String),
+
+    #[error("covenant UTXO scanning failed: {0}")]
+    CovenantScan(String),
+
+    #[error("cannot unblind covenant UTXO: {0}")]
+    Unblind(String),
+
+    #[error("market not in issuable state (found {0:?})")]
+    NotIssuable(MarketState),
+
+    #[error("witness satisfaction failed: {0}")]
+    Witness(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

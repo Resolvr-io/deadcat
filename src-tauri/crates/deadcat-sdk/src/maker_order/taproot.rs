@@ -11,8 +11,8 @@ use crate::taproot::{SIMPLICITY_LEAF_VERSION, simplicity_leaf_hash, taptweak_has
 /// uses the maker's real pubkey as the internal key with a single Simplicity leaf.
 ///
 /// ```text
-/// leaf_hash  = TaggedHash("TapLeaf", [0xbe || CMR])
-/// tweak      = TaggedHash("TapTweak", [maker_base_pubkey || leaf_hash])
+/// leaf_hash  = TaggedHash("TapLeaf/elements", [0xbe || compact_size(32) || CMR])
+/// tweak      = TaggedHash("TapTweak/elements", [maker_base_pubkey || leaf_hash])
 /// output_key = maker_base_pubkey + tweak * G
 /// spk        = OP_1 <output_key>
 /// ```
@@ -55,13 +55,32 @@ pub fn maker_order_address(
 
 /// Build the Simplicity control block for a maker order.
 ///
-/// Returns 33 bytes: `[leaf_version | maker_base_pubkey]`
+/// Returns 33 bytes: `[(leaf_version | parity) | maker_base_pubkey]`
 ///
 /// This is smaller than the prediction market's 65-byte control block because
-/// there is only one leaf (no sibling hash needed).
-pub fn maker_order_control_block(maker_base_pubkey: &[u8; 32]) -> Vec<u8> {
+/// there is only one leaf (no sibling hash needed). The first byte encodes both
+/// the leaf version and the parity of the tweaked output key.
+pub fn maker_order_control_block(cmr: &Cmr, maker_base_pubkey: &[u8; 32]) -> Vec<u8> {
+    let leaf = simplicity_leaf_hash(cmr);
+    let tweak = taptweak_hash(maker_base_pubkey, &leaf);
+
+    let secp = Secp256k1::new();
+    let base_key = XOnlyPublicKey::from_slice(maker_base_pubkey).expect("valid x-only public key");
+    let (_tweaked_key, parity) = base_key
+        .add_tweak(
+            &secp,
+            &simplicityhl::elements::secp256k1_zkp::Scalar::from_be_bytes(tweak)
+                .expect("tweak is a valid scalar"),
+        )
+        .expect("tweak should not overflow");
+
+    let parity_bit: u8 = match parity {
+        simplicityhl::elements::secp256k1_zkp::Parity::Even => 0,
+        simplicityhl::elements::secp256k1_zkp::Parity::Odd => 1,
+    };
+
     let mut cb = Vec::with_capacity(33);
-    cb.push(SIMPLICITY_LEAF_VERSION);
+    cb.push(SIMPLICITY_LEAF_VERSION | parity_bit);
     cb.extend_from_slice(maker_base_pubkey);
     cb
 }
@@ -118,10 +137,11 @@ mod tests {
 
     #[test]
     fn control_block_is_33_bytes() {
+        let cmr = test_cmr();
         let pubkey = [0xaa; 32];
-        let cb = maker_order_control_block(&pubkey);
+        let cb = maker_order_control_block(&cmr, &pubkey);
         assert_eq!(cb.len(), 33);
-        assert_eq!(cb[0], SIMPLICITY_LEAF_VERSION);
+        assert_eq!(cb[0] & 0xfe, SIMPLICITY_LEAF_VERSION);
         assert_eq!(&cb[1..33], &pubkey);
     }
 
