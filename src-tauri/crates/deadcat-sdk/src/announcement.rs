@@ -1,0 +1,22 @@
+use serde::{Deserialize, Serialize};
+
+use crate::params::ContractParams;
+
+/// Off-chain, human-readable fields from the UI create form.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContractMetadata {
+    pub question: String,
+    pub description: String,
+    pub category: String,
+    pub resolution_source: String,
+    pub starting_yes_price: u8,
+}
+
+/// Published to Nostr, contains both SDK params + metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContractAnnouncement {
+    pub version: u8,
+    pub contract_params: ContractParams,
+    pub metadata: ContractMetadata,
+    pub creation_txid: Option<String>,
+}

@@ -52,6 +52,33 @@ pub enum Error {
 
     #[error("excess UTXO value with no change destination provided")]
     MissingChangeDestination,
+
+    #[error("signer error: {0}")]
+    Signer(String),
+
+    #[error("descriptor error: {0}")]
+    Descriptor(String),
+
+    #[error("wallet initialization error: {0}")]
+    WalletInit(String),
+
+    #[error("electrum error: {0}")]
+    Electrum(String),
+
+    #[error("query error: {0}")]
+    Query(String),
+
+    #[error("finalize error: {0}")]
+    Finalize(String),
+
+    #[error("broadcast error: {0}")]
+    Broadcast(String),
+
+    #[error("blinding error: {0}")]
+    Blinding(String),
+
+    #[error("insufficient UTXOs: {0}")]
+    InsufficientUtxos(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use deadcat_sdk::oracle::oracle_message;
-use deadcat_sdk::params::{ContractParams, MarketId};
+use deadcat_sdk::params::MarketId;
 use nostr_sdk::prelude::*;
 use nostr_sdk::secp256k1;
 use serde::{Deserialize, Serialize};
@@ -25,24 +25,7 @@ pub const DEFAULT_RELAY: &str = "wss://relay.damus.io";
 // Types
 // ---------------------------------------------------------------------------
 
-/// Off-chain, human-readable fields from the UI create form.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContractMetadata {
-    pub question: String,
-    pub description: String,
-    pub category: String,
-    pub resolution_source: String,
-    pub starting_yes_price: u8,
-}
-
-/// Published to Nostr, contains both SDK params + metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContractAnnouncement {
-    pub version: u8,
-    pub contract_params: ContractParams,
-    pub metadata: ContractMetadata,
-    pub creation_txid: Option<String>,
-}
+pub use deadcat_sdk::announcement::{ContractAnnouncement, ContractMetadata};
 
 /// What the frontend receives — maps to existing Market type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,6 +327,7 @@ pub fn load_or_generate_keys(app_data_dir: &std::path::Path) -> Result<Keys, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deadcat_sdk::ContractParams;
 
     fn test_metadata() -> ContractMetadata {
         ContractMetadata {

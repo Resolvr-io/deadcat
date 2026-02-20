@@ -1363,6 +1363,12 @@ dependencies = [
 name = "deadcat-sdk"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "log",
+ "lwk_common",
+ "lwk_signer",
+ "lwk_wollet",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "sha2",

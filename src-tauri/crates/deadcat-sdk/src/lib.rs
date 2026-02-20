@@ -1,12 +1,15 @@
 pub use simplicityhl::elements;
 pub use simplicityhl::simplicity;
 
+pub mod announcement;
 pub mod contract;
 pub mod error;
 pub mod maker_order;
+pub mod network;
 pub mod oracle;
 pub mod params;
 pub mod pset;
+pub mod sdk;
 pub mod state;
 pub mod taproot;
 pub mod witness;
@@ -14,8 +17,13 @@ pub mod witness;
 // Core types
 pub use contract::CompiledContract;
 pub use error::{Error, Result};
+pub use network::Network;
 pub use params::{ContractParams, IssuanceAssets, MarketId, compute_issuance_assets};
+pub use sdk::DeadcatSdk;
 pub use state::MarketState;
+
+// Re-export LWK for app-layer use
+pub use lwk_wollet;
 
 // Witness types and API
 pub use witness::{
