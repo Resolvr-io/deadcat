@@ -1,0 +1,197 @@
+use simplicityhl::elements::hashes::{Hash, HashEngine, sha256};
+use simplicityhl::elements::secp256k1_zkp::{Secp256k1, XOnlyPublicKey};
+use simplicityhl::elements::{Address, AddressParams, Script};
+use simplicityhl::simplicity::Cmr;
+
+/// NUMS (Nothing Up My Sleeve) key — provably unspendable internal key.
+pub const NUMS_KEY_BYTES: [u8; 32] = [
+    0x50, 0x92, 0x9b, 0x74, 0xc1, 0xa0, 0x49, 0x54, 0xb7, 0x8b, 0x4b, 0x60, 0x35, 0xe9, 0x7a, 0x5e,
+    0x07, 0x8a, 0x5a, 0x0f, 0x28, 0xec, 0x96, 0xd5, 0x47, 0xbf, 0xee, 0x9a, 0xce, 0x80, 0x3a, 0xc0,
+];
+
+/// The Simplicity tapleaf version used by Elements/Liquid.
+pub const SIMPLICITY_LEAF_VERSION: u8 = 0xbe;
+
+/// Compute a SHA256 tagged hash: SHA256(SHA256(tag) || SHA256(tag) || data).
+pub(crate) fn tagged_hash(tag: &[u8], data: &[u8]) -> [u8; 32] {
+    let tag_hash = sha256::Hash::hash(tag);
+    let mut engine = sha256::Hash::engine();
+    engine.input(tag_hash.as_ref());
+    engine.input(tag_hash.as_ref());
+    engine.input(data);
+    sha256::Hash::from_engine(engine).to_byte_array()
+}
+
+/// Compute the tapdata leaf hash for a given state value.
+/// Uses BIP-341 TapLeaf tagged hash with leaf_version=0x00 for data leaves.
+pub fn tapdata_hash(state: u64) -> [u8; 32] {
+    let state_bytes = state.to_be_bytes();
+    let mut leaf_data = Vec::with_capacity(1 + state_bytes.len());
+    leaf_data.push(0x00); // tapdata leaf version
+    leaf_data.extend_from_slice(&state_bytes);
+    tagged_hash(b"TapLeaf", &leaf_data)
+}
+
+/// Compute the Simplicity tapleaf hash from a CMR.
+pub fn simplicity_leaf_hash(cmr: &Cmr) -> [u8; 32] {
+    let cmr_bytes = cmr.to_byte_array();
+    let mut leaf_data = Vec::with_capacity(1 + cmr_bytes.len());
+    leaf_data.push(SIMPLICITY_LEAF_VERSION);
+    leaf_data.extend_from_slice(&cmr_bytes);
+    tagged_hash(b"TapLeaf", &leaf_data)
+}
+
+/// Compute the tapbranch hash from two children (sorted lexicographically).
+pub fn tapbranch_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let (a, b) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(a);
+    data.extend_from_slice(b);
+    tagged_hash(b"TapBranch", &data)
+}
+
+/// Compute the taptweak hash for key tweaking.
+pub(crate) fn taptweak_hash(pubkey: &[u8; 32], merkle_root: &[u8; 32]) -> [u8; 32] {
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(pubkey);
+    data.extend_from_slice(merkle_root);
+    tagged_hash(b"TapTweak", &data)
+}
+
+/// Compute the full P2TR script pubkey from a CMR and state.
+pub fn covenant_script_pubkey(cmr: &Cmr, state: u64) -> Script {
+    let sim_leaf = simplicity_leaf_hash(cmr);
+    let data_leaf = tapdata_hash(state);
+    let branch = tapbranch_hash(&sim_leaf, &data_leaf);
+    let tweak = taptweak_hash(&NUMS_KEY_BYTES, &branch);
+
+    let secp = Secp256k1::new();
+    let nums_key =
+        XOnlyPublicKey::from_slice(&NUMS_KEY_BYTES).expect("NUMS key is a valid x-only public key");
+
+    let (tweaked_key, _parity) = nums_key
+        .add_tweak(
+            &secp,
+            &simplicityhl::elements::secp256k1_zkp::Scalar::from_be_bytes(tweak)
+                .expect("tweak is a valid scalar"),
+        )
+        .expect("tweak should not overflow");
+
+    // P2TR witness v1 script: OP_1 <32-byte-x-only-key>
+    let mut script_bytes = Vec::with_capacity(34);
+    script_bytes.push(0x51); // OP_1 (witness version 1)
+    script_bytes.push(0x20); // push 32 bytes
+    script_bytes.extend_from_slice(&tweaked_key.serialize());
+    Script::from(script_bytes)
+}
+
+/// Compute the script hash (SHA256 of scriptPubKey) used for introspection jets.
+pub fn covenant_script_hash(cmr: &Cmr, state: u64) -> [u8; 32] {
+    let spk = covenant_script_pubkey(cmr, state);
+    sha256::Hash::hash(spk.as_bytes()).to_byte_array()
+}
+
+/// Compute the covenant address for a given CMR and state.
+pub fn covenant_address(cmr: &Cmr, state: u64, params: &'static AddressParams) -> Address {
+    let spk = covenant_script_pubkey(cmr, state);
+    Address::from_script(&spk, None, params).expect("valid P2TR script should produce an address")
+}
+
+/// All four covenant addresses for a market.
+#[derive(Debug, Clone)]
+pub struct MarketAddresses {
+    pub dormant: Address,
+    pub unresolved: Address,
+    pub resolved_yes: Address,
+    pub resolved_no: Address,
+}
+
+/// Return the NUMS (Nothing Up My Sleeve) internal key bytes.
+pub fn nums_internal_key() -> [u8; 32] {
+    NUMS_KEY_BYTES
+}
+
+/// Build the Simplicity control block for a given CMR and state.
+///
+/// Returns 65 bytes: `[leaf_version | NUMS_KEY | tapdata_hash(state)]`
+pub fn simplicity_control_block(_cmr: &Cmr, state: u64) -> Vec<u8> {
+    let mut cb = Vec::with_capacity(65);
+    cb.push(SIMPLICITY_LEAF_VERSION);
+    cb.extend_from_slice(&NUMS_KEY_BYTES);
+    cb.extend_from_slice(&tapdata_hash(state));
+    cb
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tapdata_hash_deterministic() {
+        let h1 = tapdata_hash(0);
+        let h2 = tapdata_hash(0);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn different_states_different_hashes() {
+        let h0 = tapdata_hash(0);
+        let h1 = tapdata_hash(1);
+        let h2 = tapdata_hash(2);
+        let h3 = tapdata_hash(3);
+        assert_ne!(h0, h1);
+        assert_ne!(h1, h2);
+        assert_ne!(h2, h3);
+    }
+
+    #[test]
+    fn tapbranch_commutative() {
+        let a = [0x01; 32];
+        let b = [0x02; 32];
+        assert_eq!(tapbranch_hash(&a, &b), tapbranch_hash(&b, &a));
+    }
+
+    #[test]
+    fn tapdata_hash_uses_big_endian() {
+        use sha2::{Digest, Sha256};
+
+        // Manually compute TaggedHash("TapLeaf", 0x00 || BE(1))
+        let tag_hash: [u8; 32] = Sha256::digest(b"TapLeaf").into();
+        let state_be = 1u64.to_be_bytes();
+        let mut data = Vec::with_capacity(1 + state_be.len());
+        data.push(0x00);
+        data.extend_from_slice(&state_be);
+
+        let mut hasher = Sha256::new();
+        hasher.update(tag_hash);
+        hasher.update(tag_hash);
+        hasher.update(&data);
+        let expected: [u8; 32] = hasher.finalize().into();
+
+        assert_eq!(tapdata_hash(1), expected);
+    }
+
+    #[test]
+    fn tapdata_hash_rejects_little_endian() {
+        use sha2::{Digest, Sha256};
+
+        // Compute the LE variant — must NOT match
+        let tag_hash: [u8; 32] = Sha256::digest(b"TapLeaf").into();
+        let state_le = 1u64.to_le_bytes();
+        let mut data = Vec::with_capacity(1 + state_le.len());
+        data.push(0x00);
+        data.extend_from_slice(&state_le);
+
+        let mut hasher = Sha256::new();
+        hasher.update(tag_hash);
+        hasher.update(tag_hash);
+        hasher.update(&data);
+        let le_hash: [u8; 32] = hasher.finalize().into();
+
+        assert_ne!(tapdata_hash(1), le_hash);
+    }
+}

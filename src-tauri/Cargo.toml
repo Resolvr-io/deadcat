@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/deadcat-sdk", "crates/deadcat-sdk/deadcat-store"]
+resolver = "2"
+
 [package]
 name = "deadcat-live"
 version = "0.1.0"
@@ -43,7 +47,7 @@ base64 = "0.22"
 bip39 = "2"
 
 # SDK & Nostr
-deadcat-sdk = { git = "ssh://git@github.com/resolvr-io/deadcat-sdk.git", rev = "b26b8543a76fc4aef1d694cbc3e768d120c10a79" }
+deadcat-sdk = { path = "crates/deadcat-sdk" }
 nostr-sdk = "0.38"
 nostr-relay-builder = "0.38"
 
