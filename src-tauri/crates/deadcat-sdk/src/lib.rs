@@ -2,6 +2,8 @@ pub use simplicityhl::elements;
 pub use simplicityhl::simplicity;
 
 pub mod announcement;
+pub mod assembly;
+pub mod chain;
 pub mod contract;
 pub mod error;
 pub mod maker_order;
@@ -12,9 +14,16 @@ pub mod pset;
 pub mod sdk;
 pub mod state;
 pub mod taproot;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod witness;
 
 // Core types
+pub use assembly::{
+    AssembledIssuance, CollateralSource, IssuanceAssemblyInputs, IssuanceEntropy,
+    assemble_issuance, build_issuance_pset, compute_issuance_entropy,
+};
+pub use chain::{ChainBackend, ElectrumBackend};
 pub use contract::CompiledContract;
 pub use error::{Error, Result};
 pub use network::Network;

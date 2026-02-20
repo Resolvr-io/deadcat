@@ -17,4 +17,10 @@ log = "0.4"
 electrum-client = "0.21"
 serde_json = "1"
 
+[features]
+testing = []
+
 [dev-dependencies]
+deadcat-sdk = { path = ".", features = ["testing"] }
+lwk_test_util = "0.14"
+tempfile = "3.25.0"
