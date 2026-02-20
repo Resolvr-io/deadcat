@@ -86,6 +86,7 @@ type PaymentSwap = {
 
 type DiscoveredMarket = {
   id: string;
+  nevent: string;
   market_id: string;
   question: string;
   category: string;
@@ -106,6 +107,13 @@ type DiscoveredMarket = {
   state: CovenantState;
 };
 
+type IssuanceResult = {
+  txid: string;
+  previous_state: number;
+  new_state: number;
+  pairs_issued: number;
+};
+
 type IdentityResponse = { pubkey_hex: string; npub: string };
 type AttestationResult = {
   market_id: string;
@@ -116,6 +124,7 @@ type AttestationResult = {
 
 type Market = {
   id: string;
+  nevent: string;
   question: string;
   category: MarketCategory;
   description: string;
@@ -132,6 +141,7 @@ type Market = {
   noAssetId: string;
   yesReissuanceToken: string;
   noReissuanceToken: string;
+  creationTxid: string | null;
   collateralUtxos: CollateralUtxo[];
   resolveTx?: ResolveTx;
   yesPrice: number;
@@ -168,6 +178,7 @@ let markets: Market[] = [];
 function discoveredToMarket(d: DiscoveredMarket): Market {
   return {
     id: d.id,
+    nevent: d.nevent,
     question: d.question,
     category: (["Bitcoin", "Politics", "Sports", "Culture", "Weather", "Macro"].includes(d.category)
       ? d.category
@@ -186,6 +197,7 @@ function discoveredToMarket(d: DiscoveredMarket): Market {
     noAssetId: d.no_asset_id,
     yesReissuanceToken: d.yes_reissuance_token,
     noReissuanceToken: d.no_reissuance_token,
+    creationTxid: d.creation_txid,
     collateralUtxos: [],
     yesPrice: d.starting_yes_price / 100,
     change24h: 0,
@@ -203,6 +215,38 @@ async function loadMarkets(): Promise<void> {
     markets = [];
   }
   render();
+}
+
+function hexToBytes(hex: string): number[] {
+  const bytes: number[] = [];
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes.push(parseInt(hex.substring(i, i + 2), 16));
+  }
+  return bytes;
+}
+
+function marketToContractParamsJson(market: Market): string {
+  return JSON.stringify({
+    oracle_public_key: hexToBytes(market.oraclePubkey),
+    collateral_asset_id: hexToBytes(market.collateralAssetId),
+    yes_token_asset: hexToBytes(market.yesAssetId),
+    no_token_asset: hexToBytes(market.noAssetId),
+    yes_reissuance_token: hexToBytes(market.yesReissuanceToken),
+    no_reissuance_token: hexToBytes(market.noReissuanceToken),
+    collateral_per_token: market.cptSats,
+    expiry_time: market.expiryHeight,
+  });
+}
+
+async function issueTokens(market: Market, pairs: number): Promise<IssuanceResult> {
+  if (!market.creationTxid) {
+    throw new Error("Market has no creation txid — cannot issue tokens");
+  }
+  return invoke<IssuanceResult>("issue_tokens", {
+    contractParamsJson: marketToContractParamsJson(market),
+    creationTxid: market.creationTxid,
+    pairs,
+  });
 }
 
 function defaultSettlementInput(): string {
@@ -1478,7 +1522,7 @@ function renderDetail(): string {
         <section class="space-y-[21px]">
           <div class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
             <button data-action="go-home" class="mb-4 rounded-lg border border-slate-700 px-3 py-1 text-sm text-slate-300">Back to markets</button>
-            <p class="mb-1 text-sm text-slate-400">${market.category} · Prediction contract</p>
+            <p class="mb-1 text-sm text-slate-400">${market.category} · Prediction contract · <button data-action="open-nostr-event" data-nevent="${market.nevent}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">View on Nostr</button></p>
             <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${market.question}</h1>
             <p class="mb-3 text-base text-slate-400">${market.description}</p>
 
@@ -2139,16 +2183,22 @@ function renderWallet(): string {
     ? (state.walletBalance[state.walletPolicyAssetId] ?? 0)
     : 0;
 
+  const creationTxToMarket = new Map(markets.filter(m => m.creationTxid).map(m => [m.creationTxid!, m.id]));
+
   const txRows = state.walletTransactions.map((tx) => {
+    const marketId = creationTxToMarket.get(tx.txid);
+    const isCreation = !!marketId;
     const sign = tx.balanceChange >= 0 ? "+" : "";
-    const color = tx.balanceChange >= 0 ? "text-emerald-300" : "text-red-300";
-    const icon = tx.balanceChange >= 0 ? "&#8595;" : "&#8593;";
+    const color = isCreation ? "text-violet-300" : tx.balanceChange >= 0 ? "text-emerald-300" : "text-red-300";
+    const icon = isCreation ? "&#9670;" : tx.balanceChange >= 0 ? "&#8595;" : "&#8593;";
+    const label = isCreation ? '<button data-open-market="' + marketId + '" class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 hover:bg-violet-500/30 transition cursor-pointer">Market Creation</button>' : '';
     const date = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : "unconfirmed";
     const shortTxid = tx.txid.slice(0, 10) + "..." + tx.txid.slice(-6);
     return '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm select-none">' +
       '<div class="flex items-center gap-2">' +
       '<span class="' + color + '">' + icon + '</span>' +
       '<button data-action="open-explorer-tx" data-txid="' + tx.txid + '" class="mono text-slate-400 hover:text-slate-200 transition cursor-pointer">' + shortTxid + '</button>' +
+      label +
       '<span class="text-slate-500">' + date + '</span>' +
       '</div>' +
       '<div class="text-right">' +
@@ -2672,6 +2722,14 @@ app.addEventListener("click", (event) => {
     if (txid) {
       const base = state.walletNetwork === "testnet" ? "https://blockstream.info/liquidtestnet" : "https://blockstream.info/liquid";
       void openUrl(base + "/tx/" + txid);
+    }
+    return;
+  }
+
+  if (action === "open-nostr-event") {
+    const nevent = actionEl?.getAttribute("data-nevent");
+    if (nevent) {
+      void openUrl("https://njump.me/" + nevent);
     }
     return;
   }
@@ -3247,6 +3305,24 @@ app.addEventListener("click", (event) => {
       window.alert(
         `Prepared trade tx for ${market.marketId}.\nIntent: ${state.tradeIntent.toUpperCase()} ${state.selectedSide.toUpperCase()}\nOrder: ${state.orderType.toUpperCase()}\nEstimated fill now: ${preview.fill.filledContracts.toFixed(2)} contracts\nEstimated notional: ${formatSats(preview.executedSats)}\nYes + No = ${SATS_PER_FULL_CONTRACT} sats.`,
       );
+      return;
+    }
+
+    if (action === "submit-issue") {
+      const pairs = Math.max(1, Math.floor(state.pairsInput));
+      if (!market.creationTxid) {
+        showToast("Market has no creation txid — cannot issue tokens", "error");
+        return;
+      }
+      showToast(`Issuing ${pairs} pair(s) for ${market.question.slice(0, 40)}...`, "info");
+      (async () => {
+        try {
+          const result = await issueTokens(market, pairs);
+          showToast(`Tokens issued! txid: ${result.txid.slice(0, 16)}...`, "success");
+        } catch (error) {
+          showToast(`Issuance failed: ${error}`, "error");
+        }
+      })();
       return;
     }
 

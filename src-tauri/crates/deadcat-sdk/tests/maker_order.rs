@@ -167,9 +167,10 @@ fn different_pubkeys_different_addresses() {
 
 #[test]
 fn control_block_is_33_bytes() {
-    let cb = maker_order_control_block(&MAKER_PUBKEY);
+    let order = CompiledMakerOrder::new(sell_base_params()).expect("compile");
+    let cb = maker_order_control_block(order.cmr(), &MAKER_PUBKEY);
     assert_eq!(cb.len(), 33);
-    assert_eq!(cb[0], 0xbe); // Simplicity leaf version
+    assert_eq!(cb[0] & 0xfe, 0xbe); // Simplicity leaf version (masking parity)
     assert_eq!(&cb[1..33], &MAKER_PUBKEY);
 }
 

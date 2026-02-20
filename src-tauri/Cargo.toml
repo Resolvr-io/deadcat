@@ -51,5 +51,9 @@ deadcat-sdk = { path = "crates/deadcat-sdk" }
 nostr-sdk = "0.38"
 nostr-relay-builder = "0.38"
 
+# Pin rustls to ring backend (electrum-client pulls in rustls 0.23 which
+# needs exactly one crypto provider selected at the feature level).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+
 [patch.crates-io]
 secp256k1-zkp = { git = "https://github.com/breez/rust-secp256k1-zkp.git", rev = "eac2e479255a6e32b5588bc25ee53c642fdd8395" }

@@ -19,7 +19,7 @@ pub use contract::CompiledContract;
 pub use error::{Error, Result};
 pub use network::Network;
 pub use params::{ContractParams, IssuanceAssets, MarketId, compute_issuance_assets};
-pub use sdk::DeadcatSdk;
+pub use sdk::{DeadcatSdk, IssuanceResult};
 pub use state::MarketState;
 
 // Re-export LWK for app-layer use

@@ -18,8 +18,8 @@ pub const ATTESTATION_TAG: &str = "deadcat-attestation";
 /// Network tag value for Liquid Testnet.
 pub const NETWORK_TAG: &str = "liquid-testnet";
 
-/// Default relay URL.
-pub const DEFAULT_RELAY: &str = "wss://relay.damus.io";
+/// Default relay URLs.
+pub const DEFAULT_RELAYS: &[&str] = &["wss://relay.damus.io", "wss://relay.primal.net"];
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,6 +31,7 @@ pub use deadcat_sdk::announcement::{ContractAnnouncement, ContractMetadata};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredMarket {
     pub id: String,
+    pub nevent: String,
     pub market_id: String,
     pub question: String,
     pub category: String,
@@ -198,8 +199,13 @@ pub fn parse_announcement_event(event: &Event) -> Result<DiscoveredMarket, Strin
     let params = &announcement.contract_params;
     let market_id = params.market_id();
 
+    let nevent = Nip19Event::new(event.id, DEFAULT_RELAYS.iter().map(|r| r.to_string()))
+        .to_bech32()
+        .unwrap_or_default();
+
     Ok(DiscoveredMarket {
         id: event.id.to_hex(),
+        nevent,
         market_id: bytes_to_hex(market_id.as_bytes()),
         question: announcement.metadata.question,
         category: announcement.metadata.category,
@@ -249,14 +255,22 @@ pub fn sign_attestation(
 // Relay interaction
 // ---------------------------------------------------------------------------
 
-/// Connect a Nostr client to the default relay.
+/// Connect a Nostr client to the default relays.
 pub async fn connect_client(relay_url: Option<&str>) -> Result<Client, String> {
     let client = Client::default();
-    let url = relay_url.unwrap_or(DEFAULT_RELAY);
-    client
-        .add_relay(url)
-        .await
-        .map_err(|e| format!("failed to add relay {url}: {e}"))?;
+    if let Some(url) = relay_url {
+        client
+            .add_relay(url)
+            .await
+            .map_err(|e| format!("failed to add relay {url}: {e}"))?;
+    } else {
+        for url in DEFAULT_RELAYS {
+            client
+                .add_relay(*url)
+                .await
+                .map_err(|e| format!("failed to add relay {url}: {e}"))?;
+        }
+    }
     client.connect().await;
     Ok(client)
 }

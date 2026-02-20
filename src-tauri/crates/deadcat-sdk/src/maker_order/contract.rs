@@ -71,7 +71,7 @@ impl CompiledMakerOrder {
 
     /// Build the Simplicity control block (33 bytes).
     pub fn control_block(&self, maker_base_pubkey: &[u8; 32]) -> Vec<u8> {
-        taproot::maker_order_control_block(maker_base_pubkey)
+        taproot::maker_order_control_block(&self.cmr, maker_base_pubkey)
     }
 
     /// Compute the taptweak scalar for key-path spending (cancel).

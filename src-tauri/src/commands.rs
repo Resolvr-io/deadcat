@@ -8,6 +8,8 @@ use crate::discovery::{
     self, AttestationResult, ContractMetadata, CreateContractRequest,
     DiscoveredMarket, IdentityResponse,
 };
+use serde::{Deserialize, Serialize};
+
 use crate::state::AppStateManager;
 use crate::SdkState;
 
@@ -181,8 +183,13 @@ pub async fn publish_contract(
 
     let market = discovery::parse_announcement_event(&event)?;
 
+    let nevent = nostr_sdk::nips::nip19::Nip19Event::new(event_id, discovery::DEFAULT_RELAYS.iter().map(|r| r.to_string()))
+        .to_bech32()
+        .unwrap_or_default();
+
     Ok(DiscoveredMarket {
         id: event_id.to_hex(),
+        nevent,
         ..market
     })
 }
@@ -357,8 +364,81 @@ pub async fn create_contract_onchain(
     let event_id = discovery::publish_event(&client, event.clone()).await?;
     let market = discovery::parse_announcement_event(&event)?;
 
+    let nevent = nostr_sdk::nips::nip19::Nip19Event::new(event_id, discovery::DEFAULT_RELAYS.iter().map(|r| r.to_string()))
+        .to_bech32()
+        .unwrap_or_default();
+
     Ok(DiscoveredMarket {
         id: event_id.to_hex(),
+        nevent,
         ..market
     })
+}
+
+// ---------------------------------------------------------------------------
+// Token issuance command
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+pub struct IssuanceResultResponse {
+    pub txid: String,
+    pub previous_state: u8,
+    pub new_state: u8,
+    pub pairs_issued: u64,
+}
+
+/// Issue prediction market token pairs for an existing on-chain contract.
+///
+/// Detects whether the market is in Dormant (initial issuance) or Unresolved
+/// (subsequent issuance) state and builds the appropriate transaction.
+#[tauri::command]
+pub async fn issue_tokens(
+    contract_params_json: String,
+    creation_txid: String,
+    pairs: u64,
+    app: tauri::AppHandle,
+) -> Result<IssuanceResultResponse, String> {
+    let params: deadcat_sdk::params::ContractParams =
+        serde_json::from_str(&contract_params_json)
+            .map_err(|e| format!("invalid contract params: {e}"))?;
+
+    let app_handle = app.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let txid: lwk_wollet::elements::Txid = creation_txid
+            .parse()
+            .map_err(|e| format!("invalid txid: {e}"))?;
+
+        let manager = app_handle.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr
+            .wallet_mut()
+            .ok_or_else(|| "wallet not initialized".to_string())?;
+
+        if wallet.status() != crate::wallet::types::WalletStatus::Unlocked {
+            return Err("wallet must be unlocked to issue tokens".to_string());
+        }
+
+        let sdk = wallet.sdk_mut().map_err(|e| format!("{e}"))?;
+        let result = sdk
+            .issue_tokens(&params, &txid, pairs, 500)
+            .map_err(|e| format!("issuance failed: {e}"))?;
+
+        mgr.bump_revision();
+        let state = mgr.snapshot();
+        let _ = app_handle.emit(crate::APP_STATE_UPDATED_EVENT, &state);
+
+        Ok(IssuanceResultResponse {
+            txid: result.txid.to_string(),
+            previous_state: result.previous_state as u8,
+            new_state: result.new_state as u8,
+            pairs_issued: result.pairs_issued,
+        })
+    })
+    .await
+    .map_err(|e| format!("task join: {e}"))??;
+
+    Ok(result)
 }
