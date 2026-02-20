@@ -30,3 +30,6 @@ screenshots: screenshots-install
 
 screenshots-update: screenshots-install
 	pnpm test:screenshots:update
+
+test-sdk:
+	cd src-tauri/crates/deadcat-sdk && ELEMENTSD_EXEC=$PWD/tests/elementsd ELECTRS_LIQUID_EXEC=$PWD/tests/electrs cargo test test_the_sdk
