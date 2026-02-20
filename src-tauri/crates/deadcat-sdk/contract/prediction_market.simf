@@ -93,6 +93,7 @@ fn verify_token_commitment(
     abf: u256,
     vbf: u256
 ) {
+    // Recompute the asset generator: H + abf*G
     let h_point: Ge = jet::hash_to_curve(expected_token_id);
     let abf_point: Gej = jet::generate(abf);
     let asset_gen: Gej = jet::gej_ge_add(abf_point, h_point);
@@ -101,8 +102,11 @@ fn verify_token_commitment(
     let (asset_x, asset_y): (u256, u256) = asset_ge;
     let (stored_asset_parity, stored_asset_x): (u1, u256) = asset_commitment;
     assert!(jet::eq_256(asset_x, stored_asset_x));
-    assert!(jet::eq_1(<bool>::into(jet::fe_is_odd(asset_y)), stored_asset_parity));
+    // Generator parity encodes quadratic residue status, not odd/even bit parity.
+    // is_none(fe_square_root(y)) == true when y is NOT a QR, matching stored parity = 1.
+    assert!(jet::eq_1(<bool>::into(is_none::<u256>(jet::fe_square_root(asset_y))), stored_asset_parity));
 
+    // Recompute the value commitment: asset_gen + vbf*G
     let vbf_point: Gej = jet::generate(vbf);
     let value_gen: Gej = jet::gej_add(asset_gen, vbf_point);
 
@@ -110,7 +114,7 @@ fn verify_token_commitment(
     let (value_x, value_y): (u256, u256) = value_ge;
     let (stored_value_parity, stored_value_x): (u1, u256) = amount_commitment;
     assert!(jet::eq_256(value_x, stored_value_x));
-    assert!(jet::eq_1(<bool>::into(jet::fe_is_odd(value_y)), stored_value_parity));
+    assert!(jet::eq_1(<bool>::into(is_none::<u256>(jet::fe_square_root(value_y))), stored_value_parity));
 }
 
 fn verify_input_reissuance_token(

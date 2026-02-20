@@ -1,33 +1,28 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use electrum_client::ElectrumApi;
 use lwk_common::Signer;
 use lwk_signer::SwSigner;
-use lwk_wollet::elements::confidential::{Asset, AssetBlindingFactor, ValueBlindingFactor};
-use lwk_wollet::elements::hashes::Hash;
+use lwk_wollet::elements::confidential::Asset;
 use lwk_wollet::elements::pset::PartiallySignedTransaction;
 use lwk_wollet::elements::secp256k1_zkp::{self, Keypair};
-use lwk_wollet::elements::{AssetId, ContractHash, OutPoint, Script, Transaction, TxOut, Txid};
-use lwk_wollet::blocking::BlockchainBackend;
+use lwk_wollet::elements::{AssetId, OutPoint, Script, Transaction, TxOut, Txid};
 use lwk_wollet::{
     ElectrumClient, ElectrumUrl, TxBuilder, WalletTx, WalletTxOut, Wollet, WolletDescriptor,
 };
 use rand::thread_rng;
 
+use crate::assembly::{
+    CollateralSource, IssuanceAssemblyInputs, assemble_issuance, compute_issuance_entropy,
+};
+use crate::chain::{ChainBackend, ElectrumBackend};
 use crate::contract::CompiledContract;
 use crate::error::{Error, Result};
 use crate::network::Network;
 use crate::params::ContractParams;
 use crate::pset::UnblindedUtxo;
 use crate::pset::creation::{CreationParams, build_creation_pset};
-use crate::pset::initial_issuance::{InitialIssuanceParams, build_initial_issuance_pset};
-use crate::pset::issuance::{SubsequentIssuanceParams, build_subsequent_issuance_pset};
 use crate::state::MarketState;
-use crate::witness::{
-    AllBlindingFactors, ReissuanceBlindingFactors, SpendingPath, satisfy_contract,
-    serialize_satisfied,
-};
 
 /// Result of a successful token issuance.
 #[derive(Debug, Clone)]
@@ -42,7 +37,7 @@ pub struct DeadcatSdk {
     signer: SwSigner,
     wollet: Wollet,
     network: Network,
-    electrum_url: String,
+    chain: ElectrumBackend,
 }
 
 impl DeadcatSdk {
@@ -72,7 +67,7 @@ impl DeadcatSdk {
             signer,
             wollet,
             network,
-            electrum_url: electrum_url.to_string(),
+            chain: ElectrumBackend::new(electrum_url),
         })
     }
 
@@ -86,7 +81,8 @@ impl DeadcatSdk {
 
     pub fn sync(&mut self) -> Result<()> {
         let url: ElectrumUrl = self
-            .electrum_url
+            .chain
+            .electrum_url()
             .parse()
             .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
         let mut client =
@@ -168,33 +164,22 @@ impl DeadcatSdk {
     }
 
     pub fn broadcast_and_sync(&mut self, tx: &Transaction) -> Result<Txid> {
+        let txid = self.chain.broadcast(tx)?;
+        // Re-sync wallet after broadcast
         let url: ElectrumUrl = self
-            .electrum_url
+            .chain
+            .electrum_url()
             .parse()
             .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
         let mut client =
             ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?;
-        let txid = client
-            .broadcast(tx)
-            .map_err(|e| Error::Broadcast(e.to_string()))?;
         lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, &mut client)
             .map_err(|e| Error::Electrum(e.to_string()))?;
         Ok(txid)
     }
 
     pub fn fetch_transaction(&self, txid: &Txid) -> Result<Transaction> {
-        let url: ElectrumUrl = self
-            .electrum_url
-            .parse()
-            .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
-        let client =
-            ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?;
-        let txs = client
-            .get_transactions(&[*txid])
-            .map_err(|e| Error::Electrum(e.to_string()))?;
-        txs.into_iter()
-            .next()
-            .ok_or_else(|| Error::Query(format!("transaction {} not found", txid)))
+        self.chain.fetch_transaction(txid)
     }
 
     pub fn network(&self) -> Network {
@@ -202,7 +187,11 @@ impl DeadcatSdk {
     }
 
     pub fn electrum_url(&self) -> &str {
-        &self.electrum_url
+        self.chain.electrum_url()
+    }
+
+    pub fn chain(&self) -> &ElectrumBackend {
+        &self.chain
     }
 
     pub fn policy_asset(&self) -> AssetId {
@@ -368,26 +357,118 @@ impl DeadcatSdk {
     ) -> Result<IssuanceResult> {
         let contract = CompiledContract::new(*params)?;
 
-        // A. Determine market state by scanning covenant addresses
+        // A. Scan market state
+        let (current_state, covenant_utxos) = self.scan_market_state(&contract)?;
+
+        // B. Classify and unblind covenant UTXOs
+        let (yes_rt, no_rt, collateral_covenant_utxo) =
+            self.classify_covenant_utxos(&covenant_utxos, params, current_state)?;
+
+        // C. Compute issuance entropy
+        let creation_tx = self.fetch_transaction(creation_txid)?;
+        let issuance_entropy = compute_issuance_entropy(
+            &creation_tx,
+            &yes_rt.asset_blinding_factor,
+            &no_rt.asset_blinding_factor,
+        )?;
+
+        // D. Select wallet UTXOs for collateral + fee
+        let (collateral_unblinded, fee_unblinded, change_addr) =
+            self.select_wallet_utxos(params, pairs, fee_amount)?;
+
+        let token_dest = change_addr.script_pubkey();
+
+        let collateral_source = match current_state {
+            MarketState::Dormant => CollateralSource::Initial {
+                wallet_utxo: collateral_unblinded,
+            },
+            MarketState::Unresolved => {
+                let cov_collateral = collateral_covenant_utxo.ok_or_else(|| {
+                    Error::CovenantScan("collateral UTXO not found at covenant".into())
+                })?;
+                CollateralSource::Subsequent {
+                    covenant_collateral: cov_collateral,
+                    new_wallet_utxo: collateral_unblinded,
+                }
+            }
+            other => return Err(Error::NotIssuable(other)),
+        };
+
+        // E-H. Assemble issuance (build PSET → blind → recover factors → attach witnesses)
+        let blinding_pk = change_addr.blinding_pubkey.ok_or_else(|| {
+            Error::Blinding("change address has no blinding key".to_string())
+        })?;
+
+        let master_blinding_key = self
+            .signer
+            .slip77_master_blinding_key()
+            .map_err(|e| Error::Blinding(format!("slip77 key: {e}")))?;
+
+        let assembled = assemble_issuance(
+            IssuanceAssemblyInputs {
+                contract,
+                current_state,
+                yes_reissuance_utxo: yes_rt,
+                no_reissuance_utxo: no_rt,
+                collateral_source,
+                fee_utxo: fee_unblinded,
+                pairs,
+                fee_amount,
+                token_destination: token_dest,
+                change_destination: Some(change_addr.script_pubkey()),
+                issuance_entropy,
+                lock_time: 0,
+            },
+            &master_blinding_key,
+            blinding_pk,
+            &change_addr.script_pubkey(),
+        )?;
+
+        // I. Sign and finalize
+        let tx = self.sign_pset(assembled.pset)?;
+
+        // J. Broadcast
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        Ok(IssuanceResult {
+            txid,
+            previous_state: current_state,
+            new_state: MarketState::Unresolved,
+            pairs_issued: pairs,
+        })
+    }
+
+    /// Scan covenant addresses to determine the current market state.
+    fn scan_market_state(
+        &self,
+        contract: &CompiledContract,
+    ) -> Result<(MarketState, Vec<(OutPoint, TxOut)>)> {
         let dormant_spk = contract.script_pubkey(MarketState::Dormant);
         let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
 
         let dormant_utxos = self.scan_covenant_utxos(&dormant_spk)?;
         let unresolved_utxos = self.scan_covenant_utxos(&unresolved_spk)?;
 
-        let (current_state, covenant_utxos) = if !dormant_utxos.is_empty() {
-            (MarketState::Dormant, dormant_utxos)
+        if !dormant_utxos.is_empty() {
+            Ok((MarketState::Dormant, dormant_utxos))
         } else if !unresolved_utxos.is_empty() {
-            (MarketState::Unresolved, unresolved_utxos)
+            Ok((MarketState::Unresolved, unresolved_utxos))
         } else {
-            return Err(Error::CovenantScan(
+            Err(Error::CovenantScan(
                 "no UTXOs found at Dormant or Unresolved covenant addresses — \
                  the contract may have been created with an older incompatible version"
                     .into(),
-            ));
-        };
+            ))
+        }
+    }
 
-        // B. Classify and unblind covenant UTXOs
+    /// Classify and unblind covenant UTXOs into YES RT, NO RT, and optional collateral.
+    fn classify_covenant_utxos(
+        &self,
+        covenant_utxos: &[(OutPoint, TxOut)],
+        params: &ContractParams,
+        _current_state: MarketState,
+    ) -> Result<(UnblindedUtxo, UnblindedUtxo, Option<UnblindedUtxo>)> {
         let yes_rt_id = AssetId::from_slice(&params.yes_reissuance_token)
             .map_err(|e| Error::Unblind(format!("bad YES reissuance asset: {e}")))?;
         let no_rt_id = AssetId::from_slice(&params.no_reissuance_token)
@@ -399,10 +480,9 @@ impl DeadcatSdk {
         let mut no_rt_utxo: Option<UnblindedUtxo> = None;
         let mut collateral_covenant_utxo: Option<UnblindedUtxo> = None;
 
-        for (outpoint, txout) in &covenant_utxos {
+        for (outpoint, txout) in covenant_utxos {
             match txout.asset {
                 Asset::Explicit(asset) if asset == collateral_id => {
-                    // Explicit collateral — zero blinding factors
                     let value = txout.value.explicit().unwrap_or(0);
                     collateral_covenant_utxo = Some(UnblindedUtxo {
                         outpoint: *outpoint,
@@ -414,7 +494,6 @@ impl DeadcatSdk {
                     });
                 }
                 Asset::Confidential(_) => {
-                    // Confidential — must be a reissuance token; unblind it
                     let (asset, value, abf, vbf) = self.unblind_covenant_utxo(txout)?;
                     let utxo = UnblindedUtxo {
                         outpoint: *outpoint,
@@ -439,33 +518,16 @@ impl DeadcatSdk {
         let no_rt = no_rt_utxo
             .ok_or_else(|| Error::CovenantScan("NO reissuance token not found".into()))?;
 
-        // C. Compute issuance entropy from creation tx
-        let creation_tx = self.fetch_transaction(creation_txid)?;
-        let yes_defining_outpoint = creation_tx
-            .input
-            .first()
-            .ok_or_else(|| Error::CovenantScan("creation tx has no inputs".into()))?
-            .previous_output;
-        let no_defining_outpoint = creation_tx
-            .input
-            .get(1)
-            .ok_or_else(|| Error::CovenantScan("creation tx has < 2 inputs".into()))?
-            .previous_output;
+        Ok((yes_rt, no_rt, collateral_covenant_utxo))
+    }
 
-        let zero_contract_hash = ContractHash::from_byte_array([0u8; 32]);
-        let yes_entropy =
-            AssetId::generate_asset_entropy(yes_defining_outpoint, zero_contract_hash);
-        let no_entropy =
-            AssetId::generate_asset_entropy(no_defining_outpoint, zero_contract_hash);
-
-        let yes_entropy_bytes: [u8; 32] = yes_entropy.to_byte_array();
-        let no_entropy_bytes: [u8; 32] = no_entropy.to_byte_array();
-
-        // Issuance blinding nonce = ABF of consumed reissuance token UTXO
-        let yes_blinding_nonce = yes_rt.asset_blinding_factor;
-        let no_blinding_nonce = no_rt.asset_blinding_factor;
-
-        // D. Select wallet UTXOs for collateral + fee
+    /// Select wallet UTXOs for collateral and fee, returning unblinded UTXOs and change address.
+    fn select_wallet_utxos(
+        &mut self,
+        params: &ContractParams,
+        pairs: u64,
+        fee_amount: u64,
+    ) -> Result<(UnblindedUtxo, UnblindedUtxo, lwk_wollet::elements::Address)> {
         self.sync()?;
         let cpt = params.collateral_per_token;
         let required_collateral = pairs
@@ -476,7 +538,6 @@ impl DeadcatSdk {
         let policy_asset = self.policy_asset();
         let raw_utxos = self.utxos()?;
 
-        // Select collateral UTXO from wallet
         let collateral_wallet_utxo = raw_utxos
             .iter()
             .filter(|u| {
@@ -493,7 +554,6 @@ impl DeadcatSdk {
             })?
             .clone();
 
-        // Select fee UTXO from wallet (must be a different outpoint from collateral)
         let fee_wallet_utxo = raw_utxos
             .iter()
             .filter(|u| {
@@ -512,7 +572,6 @@ impl DeadcatSdk {
             })?
             .clone();
 
-        // Fetch full TxOuts for wallet UTXOs
         let collateral_tx =
             self.fetch_transaction(&collateral_wallet_utxo.outpoint.txid)?;
         let collateral_txout = collateral_tx
@@ -531,7 +590,6 @@ impl DeadcatSdk {
             wallet_txout_to_unblinded(&collateral_wallet_utxo, &collateral_txout);
         let fee_unblinded = wallet_txout_to_unblinded(&fee_wallet_utxo, &fee_txout);
 
-        // Get change address
         let addr_result = self.address(None)?;
         let change_addr: lwk_wollet::elements::Address = addr_result
             .address()
@@ -539,324 +597,16 @@ impl DeadcatSdk {
             .parse()
             .map_err(|e| Error::Query(format!("bad change address: {}", e)))?;
 
-        let token_dest = change_addr.script_pubkey();
-        let cov_col_value = collateral_covenant_utxo.as_ref().map(|u| u.value);
-
-        // E. Build PSET
-        let mut pset = match current_state {
-            MarketState::Dormant => build_initial_issuance_pset(
-                &contract,
-                &InitialIssuanceParams {
-                    yes_reissuance_utxo: yes_rt.clone(),
-                    no_reissuance_utxo: no_rt.clone(),
-                    collateral_utxo: collateral_unblinded,
-                    fee_utxo: fee_unblinded,
-                    pairs,
-                    fee_amount,
-                    yes_token_destination: token_dest.clone(),
-                    no_token_destination: token_dest.clone(),
-                    collateral_change_destination: Some(change_addr.script_pubkey()),
-                    fee_change_destination: Some(change_addr.script_pubkey()),
-                    yes_issuance_blinding_nonce: yes_blinding_nonce,
-                    yes_issuance_asset_entropy: yes_entropy_bytes,
-                    no_issuance_blinding_nonce: no_blinding_nonce,
-                    no_issuance_asset_entropy: no_entropy_bytes,
-                    lock_time: 0,
-                },
-            )?,
-            MarketState::Unresolved => {
-                let cov_collateral = collateral_covenant_utxo.ok_or_else(|| {
-                    Error::CovenantScan("collateral UTXO not found at covenant".into())
-                })?;
-                build_subsequent_issuance_pset(
-                    &contract,
-                    &SubsequentIssuanceParams {
-                        yes_reissuance_utxo: yes_rt.clone(),
-                        no_reissuance_utxo: no_rt.clone(),
-                        collateral_utxo: cov_collateral,
-                        new_collateral_utxo: collateral_unblinded,
-                        fee_utxo: fee_unblinded,
-                        pairs,
-                        fee_amount,
-                        yes_token_destination: token_dest.clone(),
-                        no_token_destination: token_dest.clone(),
-                        collateral_change_destination: Some(change_addr.script_pubkey()),
-                        fee_change_destination: Some(change_addr.script_pubkey()),
-                        yes_issuance_blinding_nonce: yes_blinding_nonce,
-                        yes_issuance_asset_entropy: yes_entropy_bytes,
-                        no_issuance_blinding_nonce: no_blinding_nonce,
-                        no_issuance_asset_entropy: no_entropy_bytes,
-                        lock_time: 0,
-                    },
-                )?
-            }
-            other => return Err(Error::NotIssuable(other)),
-        };
-
-        // F. Blind PSET
-        //
-        // Use blind_last() which internally handles all blinding correctly and
-        // balances the value blinding factors. We then unblind the RT outputs
-        // (0, 1) using the SLIP77 blinding key to recover their ABF/VBF for
-        // the Simplicity witness.
-        {
-            let outputs = pset.outputs_mut();
-            outputs[0].amount = Some(1);
-            outputs[0].asset = Some(yes_rt_id);
-            outputs[1].amount = Some(1);
-            outputs[1].asset = Some(no_rt_id);
-
-            let blinding_pk = change_addr.blinding_pubkey.ok_or_else(|| {
-                Error::Blinding("change address has no blinding key".to_string())
-            })?;
-            let pset_blinding_key = lwk_wollet::elements::bitcoin::PublicKey {
-                inner: blinding_pk,
-                compressed: true,
-            };
-
-            // Mark outputs for blinding:
-            //   0, 1  = reissuance token outputs (MUST be blinded for covenant)
-            //   2     = covenant collateral (explicit — skip)
-            //   3, 4  = YES/NO tokens to creator (explicit — skip)
-            //   5     = fee (explicit — skip)
-            //   6+    = change outputs (blind for privacy)
-            for idx in [0usize, 1] {
-                outputs[idx].blinding_key = Some(pset_blinding_key);
-                outputs[idx].blinder_index = Some(0);
-            }
-            for idx in 6..outputs.len() {
-                outputs[idx].blinding_key = Some(pset_blinding_key);
-                outputs[idx].blinder_index = Some(0);
-            }
-
-            let inputs = pset.inputs_mut();
-            inputs[0].blinded_issuance = Some(0x00);
-            inputs[1].blinded_issuance = Some(0x00);
-
-            // Build input txout secrets for ALL inputs
-            let mut inp_txout_sec = HashMap::new();
-            inp_txout_sec.insert(
-                0usize,
-                lwk_wollet::elements::TxOutSecrets {
-                    asset: yes_rt_id,
-                    asset_bf: AssetBlindingFactor::from_slice(&yes_rt.asset_blinding_factor)
-                        .map_err(|e| Error::Blinding(format!("YES ABF: {e}")))?,
-                    value: yes_rt.value,
-                    value_bf: ValueBlindingFactor::from_slice(&yes_rt.value_blinding_factor)
-                        .map_err(|e| Error::Blinding(format!("YES VBF: {e}")))?,
-                },
-            );
-            inp_txout_sec.insert(
-                1usize,
-                lwk_wollet::elements::TxOutSecrets {
-                    asset: no_rt_id,
-                    asset_bf: AssetBlindingFactor::from_slice(&no_rt.asset_blinding_factor)
-                        .map_err(|e| Error::Blinding(format!("NO ABF: {e}")))?,
-                    value: no_rt.value,
-                    value_bf: ValueBlindingFactor::from_slice(&no_rt.value_blinding_factor)
-                        .map_err(|e| Error::Blinding(format!("NO VBF: {e}")))?,
-                },
-            );
-
-            if current_state == MarketState::Dormant {
-                // Dormant: inputs [yes_rt(0), no_rt(1), collateral(2), fee(3)]
-                inp_txout_sec.insert(2, collateral_wallet_utxo.unblinded.clone());
-                inp_txout_sec.insert(3, fee_wallet_utxo.unblinded.clone());
-            } else {
-                // Unresolved: inputs [yes_rt(0), no_rt(1), cov_collateral(2), new_collateral(3), fee(4)]
-                // Covenant collateral (idx 2) is explicit — zero blinding factors
-                let cov_col_value = cov_col_value.unwrap();
-                inp_txout_sec.insert(
-                    2,
-                    lwk_wollet::elements::TxOutSecrets {
-                        asset: collateral_id,
-                        asset_bf: AssetBlindingFactor::from_slice(&[0u8; 32])
-                            .map_err(|e| Error::Blinding(format!("cov ABF: {e}")))?,
-                        value: cov_col_value,
-                        value_bf: ValueBlindingFactor::from_slice(&[0u8; 32])
-                            .map_err(|e| Error::Blinding(format!("cov VBF: {e}")))?,
-                    },
-                );
-                inp_txout_sec.insert(3, collateral_wallet_utxo.unblinded.clone());
-                inp_txout_sec.insert(4, fee_wallet_utxo.unblinded.clone());
-            }
-
-            let secp = secp256k1_zkp::Secp256k1::new();
-            let mut rng = thread_rng();
-
-            pset.blind_last(&mut rng, &secp, &inp_txout_sec)
-                .map_err(|e| Error::Blinding(format!("{e:?}")))?;
-        }
-
-        // G. Recover output blinding factors for RT outputs (0, 1) by unblinding
-        //    the now-confidential outputs using the SLIP77 blinding key.
-        let master_blinding_key = self
-            .signer
-            .slip77_master_blinding_key()
-            .map_err(|e| Error::Blinding(format!("slip77 key: {e}")))?;
-        let blinding_sk = master_blinding_key.blinding_private_key(&change_addr.script_pubkey());
-
-        let secp = secp256k1_zkp::Secp256k1::new();
-        let yes_rt_txout = pset.outputs()[0].to_txout();
-        let no_rt_txout = pset.outputs()[1].to_txout();
-
-        let yes_secrets = yes_rt_txout
-            .unblind(&secp, blinding_sk.into())
-            .map_err(|e| Error::Blinding(format!("unblind YES RT output: {e}")))?;
-        let no_secrets = no_rt_txout
-            .unblind(&secp, blinding_sk.into())
-            .map_err(|e| Error::Blinding(format!("unblind NO RT output: {e}")))?;
-
-        let mut yes_output_abf = [0u8; 32];
-        yes_output_abf.copy_from_slice(yes_secrets.asset_bf.into_inner().as_ref());
-        let mut yes_output_vbf = [0u8; 32];
-        yes_output_vbf.copy_from_slice(yes_secrets.value_bf.into_inner().as_ref());
-        let mut no_output_abf = [0u8; 32];
-        no_output_abf.copy_from_slice(no_secrets.asset_bf.into_inner().as_ref());
-        let mut no_output_vbf = [0u8; 32];
-        no_output_vbf.copy_from_slice(no_secrets.value_bf.into_inner().as_ref());
-
-        let blinding = AllBlindingFactors {
-            yes: ReissuanceBlindingFactors {
-                input_abf: yes_rt.asset_blinding_factor,
-                input_vbf: yes_rt.value_blinding_factor,
-                output_abf: yes_output_abf,
-                output_vbf: yes_output_vbf,
-            },
-            no: ReissuanceBlindingFactors {
-                input_abf: no_rt.asset_blinding_factor,
-                input_vbf: no_rt.value_blinding_factor,
-                output_abf: no_output_abf,
-                output_vbf: no_output_vbf,
-            },
-        };
-
-        let spending_path = match current_state {
-            MarketState::Dormant => SpendingPath::InitialIssuance { blinding },
-            MarketState::Unresolved => SpendingPath::SubsequentIssuance { blinding },
-            other => return Err(Error::NotIssuable(other)),
-        };
-
-        let satisfied = satisfy_contract(&contract, &spending_path, current_state)
-            .map_err(|e| Error::Witness(e.to_string()))?;
-        let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
-
-        // H. Attach Simplicity witness to covenant inputs
-        //
-        // Simplicity taproot script-path witness stack (4 items):
-        //   [witness_bytes, program_bytes, cmr_bytes, control_block]
-        // The CMR (32 bytes) is the "script" committed to in the tapleaf.
-        let control_block = contract.control_block(current_state);
-        let cmr_bytes = contract.cmr().to_byte_array().to_vec();
-        let witness_stack: Vec<Vec<u8>> =
-            vec![witness_bytes, program_bytes, cmr_bytes.clone(), control_block.clone()];
-
-        // Input 0 is the primary covenant input — it gets the main spending path witness.
-        // The contract's initial/subsequent issuance paths assert current_index() == 0.
-        pset.inputs_mut()[0].final_script_witness = Some(witness_stack);
-
-        // All other covenant inputs (input 1, and input 2 for subsequent issuance)
-        // use SecondaryCovenantInput, which just verifies same script hash as input 0
-        // and current_index != 0.
-        let secondary_path = SpendingPath::SecondaryCovenantInput;
-        let secondary_satisfied =
-            satisfy_contract(&contract, &secondary_path, current_state)
-                .map_err(|e| Error::Witness(e.to_string()))?;
-        let (sec_program, sec_witness) = serialize_satisfied(&secondary_satisfied);
-        let sec_witness_stack: Vec<Vec<u8>> =
-            vec![sec_witness, sec_program, cmr_bytes, control_block];
-
-        pset.inputs_mut()[1].final_script_witness = Some(sec_witness_stack.clone());
-
-        if current_state == MarketState::Unresolved {
-            // Subsequent issuance also has a covenant collateral input at index 2
-            pset.inputs_mut()[2].final_script_witness = Some(sec_witness_stack);
-        }
-
-        // I. Sign wallet inputs and extract final transaction
-        self.wollet
-            .add_details(&mut pset)
-            .map_err(|e| Error::Signer(format!("add_details: {}", e)))?;
-        self.signer
-            .sign(&mut pset)
-            .map_err(|e| Error::Signer(format!("{:?}", e)))?;
-        let tx = self
-            .wollet
-            .finalize(&mut pset)
-            .map_err(|e| Error::Finalize(e.to_string()))?;
-
-        // J. Broadcast
-        let txid = self.broadcast_and_sync(&tx)?;
-
-        Ok(IssuanceResult {
-            txid,
-            previous_state: current_state,
-            new_state: MarketState::Unresolved,
-            pairs_issued: pairs,
-        })
+        Ok((collateral_unblinded, fee_unblinded, change_addr))
     }
 
     // ── Covenant scanning helpers ───────────────────────────────────────
 
-    /// Scan a covenant address for unspent outputs using the raw electrum protocol.
     fn scan_covenant_utxos(
         &self,
         script_pubkey: &Script,
     ) -> Result<Vec<(OutPoint, TxOut)>> {
-        // Convert elements Script to bitcoin Script for electrum API
-        let btc_script = lwk_wollet::bitcoin::ScriptBuf::from(script_pubkey.to_bytes());
-
-        let client = electrum_client::Client::new(&self.electrum_url)
-            .map_err(|e| Error::CovenantScan(e.to_string()))?;
-
-        // Use raw_call because Liquid's electrum server returns a different
-        // JSON schema for listunspent (no plain `value` field — outputs are
-        // confidential), which causes electrum_client's typed deserializer to
-        // fail. We only need tx_hash + tx_pos anyway.
-        //
-        // Electrum script hash = SHA256(scriptPubKey) with reversed byte order.
-        use sha2::{Digest, Sha256};
-        let mut hash = Sha256::digest(btc_script.as_bytes()).to_vec();
-        hash.reverse();
-        let script_hash_hex = hex::encode(&hash);
-
-        let resp = client
-            .raw_call(
-                "blockchain.scripthash.listunspent",
-                [electrum_client::Param::String(script_hash_hex)],
-            )
-            .map_err(|e| Error::CovenantScan(e.to_string()))?;
-
-        let entries = resp
-            .as_array()
-            .ok_or_else(|| Error::CovenantScan("expected array response".into()))?;
-
-        let mut results = Vec::new();
-        for entry in entries {
-            let tx_hash_hex = entry["tx_hash"]
-                .as_str()
-                .ok_or_else(|| Error::CovenantScan("missing tx_hash".into()))?;
-            let tx_pos = entry["tx_pos"]
-                .as_u64()
-                .ok_or_else(|| Error::CovenantScan("missing tx_pos".into()))?
-                as usize;
-
-            // Parse the hex txid (display-order) into elements::Txid
-            let txid: Txid = tx_hash_hex
-                .parse()
-                .map_err(|e| Error::CovenantScan(format!("bad tx_hash: {e}")))?;
-
-            let tx = self.fetch_transaction(&txid)?;
-            let txout = tx
-                .output
-                .get(tx_pos)
-                .ok_or_else(|| Error::CovenantScan("vout out of range".into()))?
-                .clone();
-
-            let outpoint = OutPoint::new(txid, tx_pos as u32);
-            results.push((outpoint, txout));
-        }
-        Ok(results)
+        self.chain.scan_script_utxos(script_pubkey)
     }
 
     /// Unblind a confidential covenant UTXO by trying wallet blinding keys.

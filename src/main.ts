@@ -1522,7 +1522,7 @@ function renderDetail(): string {
         <section class="space-y-[21px]">
           <div class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
             <button data-action="go-home" class="mb-4 rounded-lg border border-slate-700 px-3 py-1 text-sm text-slate-300">Back to markets</button>
-            <p class="mb-1 text-sm text-slate-400">${market.category} · Prediction contract · <button data-action="open-nostr-event" data-nevent="${market.nevent}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">View on Nostr</button></p>
+            <p class="mb-1 text-sm text-slate-400">${market.category} · Prediction contract · <button data-action="open-nostr-event" data-nevent="${market.nevent}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">View on Nostr</button>${market.creationTxid ? ` · <button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">Creation Tx</button>` : ""}</p>
             <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${market.question}</h1>
             <p class="mb-3 text-base text-slate-400">${market.description}</p>
 
