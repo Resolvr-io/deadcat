@@ -7,7 +7,8 @@ mod sync;
 
 pub use error::StoreError;
 pub use store::{
-    DeadcatStore, IssuanceData, MakerOrderInfo, MarketFilter, MarketInfo, OrderFilter, OrderStatus,
+    ContractMetadataInput, DeadcatStore, IssuanceData, MakerOrderInfo, MarketFilter, MarketInfo,
+    OrderFilter, OrderStatus,
 };
 pub use sync::{ChainSource, ChainUtxo, MarketStateChange, OrderStatusChange, SyncReport};
 

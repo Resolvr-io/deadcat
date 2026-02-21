@@ -513,6 +513,9 @@ fn main() {
     let budget_pad_a: u256 = witness::BUDGET_PAD_A;
     let budget_pad_b: u256 = witness::BUDGET_PAD_B;
     assert!(jet::eq_256(budget_pad_a, budget_pad_b));
+    let budget_pad_c: u256 = witness::BUDGET_PAD_C;
+    let budget_pad_d: u256 = witness::BUDGET_PAD_D;
+    assert!(jet::eq_256(budget_pad_c, budget_pad_d));
 
     // Read all witnesses in main (required by SimplicityHL)
     let yes_in_abf: u256 = witness::YES_REISSUANCE_INPUT_ABF;

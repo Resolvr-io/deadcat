@@ -23,6 +23,14 @@ diesel::table! {
         no_issuance_entropy -> Nullable<Binary>,
         yes_issuance_blinding_nonce -> Nullable<Binary>,
         no_issuance_blinding_nonce -> Nullable<Binary>,
+        question -> Nullable<Text>,
+        description -> Nullable<Text>,
+        category -> Nullable<Text>,
+        resolution_source -> Nullable<Text>,
+        starting_yes_price -> Nullable<Integer>,
+        creator_pubkey -> Nullable<Binary>,
+        creation_txid -> Nullable<Text>,
+        nevent -> Nullable<Text>,
     }
 }
 
