@@ -14,7 +14,8 @@ use deadcat_sdk::{
 };
 
 use deadcat_store::{
-    ChainSource, ChainUtxo, DeadcatStore, IssuanceData, MarketFilter, OrderFilter, OrderStatus,
+    ChainSource, ChainUtxo, ContractMetadataInput, DeadcatStore, IssuanceData, MarketFilter,
+    OrderFilter, OrderStatus,
 };
 
 // ==================== Test Helpers ====================
@@ -213,7 +214,7 @@ fn test_reopen_persists_data() {
     // Create and ingest
     let market_id = {
         let mut store = DeadcatStore::open(&db_path).unwrap();
-        store.ingest_market(&test_params()).unwrap()
+        store.ingest_market(&test_params(), None).unwrap()
     };
 
     // Reopen and verify
@@ -230,7 +231,7 @@ fn test_market_ingest_and_query_roundtrip() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_params();
 
-    let market_id = store.ingest_market(&params).unwrap();
+    let market_id = store.ingest_market(&params, None).unwrap();
     assert_eq!(market_id, params.market_id());
 
     let info = store.get_market(&market_id).unwrap().unwrap();
@@ -244,8 +245,8 @@ fn test_market_idempotent_ingest() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_params();
 
-    let id1 = store.ingest_market(&params).unwrap();
-    let id2 = store.ingest_market(&params).unwrap();
+    let id1 = store.ingest_market(&params, None).unwrap();
+    let id2 = store.ingest_market(&params, None).unwrap();
     assert_eq!(id1, id2);
 
     let all = store.list_markets(&MarketFilter::default()).unwrap();
@@ -262,8 +263,8 @@ fn test_get_nonexistent_market() {
 #[test]
 fn test_list_markets_filter_by_oracle_key() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    store.ingest_market(&test_params()).unwrap();
-    store.ingest_market(&test_params_2()).unwrap();
+    store.ingest_market(&test_params(), None).unwrap();
+    store.ingest_market(&test_params_2(), None).unwrap();
 
     let filter = MarketFilter {
         oracle_public_key: Some([0xaa; 32]),
@@ -277,8 +278,8 @@ fn test_list_markets_filter_by_oracle_key() {
 #[test]
 fn test_list_markets_filter_by_state() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    let id1 = store.ingest_market(&test_params()).unwrap();
-    store.ingest_market(&test_params_2()).unwrap();
+    let id1 = store.ingest_market(&test_params(), None).unwrap();
+    store.ingest_market(&test_params_2(), None).unwrap();
 
     store
         .update_market_state(&id1, MarketState::Unresolved)
@@ -296,8 +297,8 @@ fn test_list_markets_filter_by_state() {
 #[test]
 fn test_list_markets_filter_by_expiry() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    store.ingest_market(&test_params()).unwrap(); // expiry = 1_000_000
-    store.ingest_market(&test_params_2()).unwrap(); // expiry = 2_000_000
+    store.ingest_market(&test_params(), None).unwrap(); // expiry = 1_000_000
+    store.ingest_market(&test_params_2(), None).unwrap(); // expiry = 2_000_000
 
     let filter = MarketFilter {
         expiry_before: Some(1_500_000),
@@ -319,8 +320,8 @@ fn test_list_markets_filter_by_expiry() {
 #[test]
 fn test_list_markets_filter_by_collateral_asset() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    store.ingest_market(&test_params()).unwrap();
-    store.ingest_market(&test_params_2()).unwrap();
+    store.ingest_market(&test_params(), None).unwrap();
+    store.ingest_market(&test_params_2(), None).unwrap();
 
     // Both share [0xbb; 32]
     let filter = MarketFilter {
@@ -339,8 +340,8 @@ fn test_list_markets_filter_by_collateral_asset() {
 #[test]
 fn test_list_markets_with_limit() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    store.ingest_market(&test_params()).unwrap();
-    store.ingest_market(&test_params_2()).unwrap();
+    store.ingest_market(&test_params(), None).unwrap();
+    store.ingest_market(&test_params_2(), None).unwrap();
 
     let filter = MarketFilter {
         limit: Some(1),
@@ -352,7 +353,7 @@ fn test_list_markets_with_limit() {
 #[test]
 fn test_update_market_state() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    let id = store.ingest_market(&test_params()).unwrap();
+    let id = store.ingest_market(&test_params(), None).unwrap();
 
     assert_eq!(
         store.get_market(&id).unwrap().unwrap().state,
@@ -539,7 +540,7 @@ fn test_update_order_status() {
 #[test]
 fn test_utxo_add_query_mark_spent_lifecycle() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    let market_id = store.ingest_market(&test_params()).unwrap();
+    let market_id = store.ingest_market(&test_params(), None).unwrap();
 
     let utxo = test_utxo_with_outpoint([0xAA; 32], 0, [0xbb; 32], 100_000);
 
@@ -567,7 +568,7 @@ fn test_utxo_add_query_mark_spent_lifecycle() {
 #[test]
 fn test_utxo_add_idempotent() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    let market_id = store.ingest_market(&test_params()).unwrap();
+    let market_id = store.ingest_market(&test_params(), None).unwrap();
 
     let utxo = test_utxo_with_outpoint([0xAA; 32], 0, [0xbb; 32], 100_000);
 
@@ -607,7 +608,7 @@ fn test_order_utxo_lifecycle() {
 #[test]
 fn test_get_market_utxos_filter_by_state() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    let market_id = store.ingest_market(&test_params()).unwrap();
+    let market_id = store.ingest_market(&test_params(), None).unwrap();
 
     let utxo1 = test_utxo_with_outpoint([0xAA; 32], 0, [0xbb; 32], 100_000);
     let utxo2 = test_utxo_with_outpoint([0xBB; 32], 0, [0xbb; 32], 200_000);
@@ -645,7 +646,7 @@ fn test_watched_script_pubkeys() {
 
     assert_eq!(store.watched_script_pubkeys().unwrap().len(), 0);
 
-    store.ingest_market(&test_params()).unwrap();
+    store.ingest_market(&test_params(), None).unwrap();
     assert_eq!(store.watched_script_pubkeys().unwrap().len(), 4);
 
     store
@@ -689,7 +690,7 @@ fn test_sync_empty_store() {
 fn test_sync_discovers_utxos() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_params();
-    let market_id = store.ingest_market(&params).unwrap();
+    let market_id = store.ingest_market(&params, None).unwrap();
 
     let dormant_spk = get_market_spk(&mut store, &params, MarketState::Dormant);
 
@@ -719,7 +720,7 @@ fn test_sync_discovers_utxos() {
 fn test_sync_marks_spent() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_params();
-    let market_id = store.ingest_market(&params).unwrap();
+    let market_id = store.ingest_market(&params, None).unwrap();
 
     let utxo = test_utxo_with_outpoint([0xDD; 32], 0, [0xbb; 32], 100_000);
     store
@@ -748,7 +749,7 @@ fn test_sync_marks_spent() {
 fn test_sync_derives_market_state() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_params();
-    let market_id = store.ingest_market(&params).unwrap();
+    let market_id = store.ingest_market(&params, None).unwrap();
 
     let unresolved_spk = get_market_spk(&mut store, &params, MarketState::Unresolved);
 
@@ -920,7 +921,7 @@ fn test_sync_cancelled_order_excluded() {
 fn test_sync_idempotent() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_params();
-    let market_id = store.ingest_market(&params).unwrap();
+    let market_id = store.ingest_market(&params, None).unwrap();
 
     let dormant_spk = get_market_spk(&mut store, &params, MarketState::Dormant);
 
@@ -952,7 +953,7 @@ fn test_sync_idempotent() {
 fn test_sync_multi_round_discover_then_spend() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_params();
-    let market_id = store.ingest_market(&params).unwrap();
+    let market_id = store.ingest_market(&params, None).unwrap();
 
     let dormant_spk = get_market_spk(&mut store, &params, MarketState::Dormant);
 
@@ -984,7 +985,7 @@ fn test_sync_multi_round_discover_then_spend() {
 fn test_sync_market_utxos_at_multiple_states() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_params();
-    let market_id = store.ingest_market(&params).unwrap();
+    let market_id = store.ingest_market(&params, None).unwrap();
 
     let dormant_spk = get_market_spk(&mut store, &params, MarketState::Dormant);
     let unresolved_spk = get_market_spk(&mut store, &params, MarketState::Unresolved);
@@ -1022,7 +1023,7 @@ fn test_sync_market_utxos_at_multiple_states() {
 #[test]
 fn test_sync_chain_error_propagates() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    store.ingest_market(&test_params()).unwrap();
+    store.ingest_market(&test_params(), None).unwrap();
 
     let chain = MockChainSource {
         fail_with: Some("node unreachable".into()),
@@ -1040,7 +1041,7 @@ fn test_sync_transaction_atomicity() {
     // If sync fails mid-way, no partial state should be committed.
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_params();
-    let market_id = store.ingest_market(&params).unwrap();
+    let market_id = store.ingest_market(&params, None).unwrap();
 
     // Add a UTXO so sync_spent_utxos has work to do
     let utxo = test_utxo_with_outpoint([0xDD; 32], 0, [0xbb; 32], 100_000);
@@ -1140,7 +1141,7 @@ fn test_idempotent_ingest_preserves_nonce() {
 #[test]
 fn test_set_market_issuance_data() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    let market_id = store.ingest_market(&test_params()).unwrap();
+    let market_id = store.ingest_market(&test_params(), None).unwrap();
 
     // Initially no issuance data
     let info = store.get_market(&market_id).unwrap().unwrap();
@@ -1267,7 +1268,7 @@ fn test_sync_extracts_issuance_entropy() {
     };
 
     let mut store2 = DeadcatStore::open_in_memory().unwrap();
-    let market_id2 = store2.ingest_market(&custom_params).unwrap();
+    let market_id2 = store2.ingest_market(&custom_params, None).unwrap();
 
     // Build a mock tx with both initial issuances (ZERO_TWEAK nonce)
     let dormant_spk = get_market_spk(&mut store2, &custom_params, MarketState::Dormant);
@@ -1353,7 +1354,7 @@ fn test_sync_extracts_entropy_from_creation_tx() {
     };
 
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    let market_id = store.ingest_market(&custom_params).unwrap();
+    let market_id = store.ingest_market(&custom_params, None).unwrap();
 
     let dormant_spk = get_market_spk(&mut store, &custom_params, MarketState::Dormant);
     let utxo_txid = [0xEE; 32];
@@ -1426,7 +1427,7 @@ fn test_sync_skips_entropy_when_tx_unavailable() {
     };
 
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    let market_id = store.ingest_market(&custom_params).unwrap();
+    let market_id = store.ingest_market(&custom_params, None).unwrap();
 
     let dormant_spk = get_market_spk(&mut store, &custom_params, MarketState::Dormant);
 
@@ -1447,4 +1448,110 @@ fn test_sync_skips_entropy_when_tx_unavailable() {
     // Entropy should remain None since tx was unavailable
     let info = store.get_market(&market_id).unwrap().unwrap();
     assert!(info.issuance.is_none());
+}
+
+// ==================== Metadata Tests ====================
+
+#[test]
+fn test_ingest_market_with_metadata_roundtrip() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_params();
+
+    let metadata = ContractMetadataInput {
+        question: Some("Will BTC hit 100k?".to_string()),
+        description: Some("Resolves via exchange data.".to_string()),
+        category: Some("Bitcoin".to_string()),
+        resolution_source: Some("CoinGecko".to_string()),
+        starting_yes_price: Some(55),
+        creator_pubkey: Some(vec![0xdd; 32]),
+        creation_txid: Some("abc123def456".to_string()),
+        nevent: Some("nevent1qtest".to_string()),
+    };
+
+    let market_id = store.ingest_market(&params, Some(&metadata)).unwrap();
+    let info = store.get_market(&market_id).unwrap().unwrap();
+
+    assert_eq!(info.question.as_deref(), Some("Will BTC hit 100k?"));
+    assert_eq!(
+        info.description.as_deref(),
+        Some("Resolves via exchange data.")
+    );
+    assert_eq!(info.category.as_deref(), Some("Bitcoin"));
+    assert_eq!(info.resolution_source.as_deref(), Some("CoinGecko"));
+    assert_eq!(info.starting_yes_price, Some(55));
+    assert_eq!(info.creator_pubkey.as_deref(), Some([0xdd; 32].as_slice()));
+    assert_eq!(info.creation_txid.as_deref(), Some("abc123def456"));
+    assert_eq!(info.nevent.as_deref(), Some("nevent1qtest"));
+}
+
+#[test]
+fn test_ingest_market_without_metadata() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+
+    let market_id = store.ingest_market(&test_params(), None).unwrap();
+    let info = store.get_market(&market_id).unwrap().unwrap();
+
+    assert!(info.question.is_none());
+    assert!(info.description.is_none());
+    assert!(info.category.is_none());
+    assert!(info.resolution_source.is_none());
+    assert!(info.starting_yes_price.is_none());
+    assert!(info.creator_pubkey.is_none());
+    assert!(info.creation_txid.is_none());
+    assert!(info.nevent.is_none());
+}
+
+#[test]
+fn test_ingest_market_metadata_persists_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("meta.db").to_str().unwrap().to_string();
+
+    let market_id = {
+        let mut store = DeadcatStore::open(&db_path).unwrap();
+        let metadata = ContractMetadataInput {
+            question: Some("Test question".to_string()),
+            category: Some("Politics".to_string()),
+            ..Default::default()
+        };
+        store
+            .ingest_market(&test_params(), Some(&metadata))
+            .unwrap()
+    };
+
+    // Reopen and verify metadata persists
+    let mut store = DeadcatStore::open(&db_path).unwrap();
+    let info = store.get_market(&market_id).unwrap().unwrap();
+    assert_eq!(info.question.as_deref(), Some("Test question"));
+    assert_eq!(info.category.as_deref(), Some("Politics"));
+}
+
+#[test]
+fn test_list_markets_includes_metadata() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+
+    let metadata1 = ContractMetadataInput {
+        question: Some("Question 1".to_string()),
+        ..Default::default()
+    };
+    let metadata2 = ContractMetadataInput {
+        question: Some("Question 2".to_string()),
+        ..Default::default()
+    };
+
+    store
+        .ingest_market(&test_params(), Some(&metadata1))
+        .unwrap();
+    store
+        .ingest_market(&test_params_2(), Some(&metadata2))
+        .unwrap();
+
+    let markets = store.list_markets(&MarketFilter::default()).unwrap();
+    assert_eq!(markets.len(), 2);
+
+    let questions: Vec<_> = markets
+        .iter()
+        .filter_map(|m| m.question.as_deref())
+        .collect();
+    assert!(questions.contains(&"Question 1"));
+    assert!(questions.contains(&"Question 2"));
 }

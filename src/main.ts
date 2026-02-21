@@ -234,8 +234,13 @@ function discoveredToMarket(d: DiscoveredMarket): Market {
 
 async function loadMarkets(): Promise<void> {
   try {
+    // 1. Fetch from Nostr
     const discovered = await invoke<DiscoveredMarket[]>("discover_contracts");
-    markets = discovered.map(discoveredToMarket);
+    // 2. Ingest into store (incompatible contracts silently dropped)
+    await invoke("ingest_discovered_markets", { markets: discovered });
+    // 3. Load from store (only compatible, compiled contracts with on-chain state)
+    const stored = await invoke<DiscoveredMarket[]>("list_contracts");
+    markets = stored.map(discoveredToMarket);
   } catch (error) {
     console.warn("Failed to discover contracts:", error);
     markets = [];
@@ -3384,6 +3389,8 @@ app.addEventListener("click", (event) => {
               collateral_per_token: 5000,
             },
           });
+          // Ingest the newly created market into the store
+          await invoke("ingest_discovered_markets", { markets: [result] });
           markets.push(discoveredToMarket(result));
           state.view = "home";
           state.createQuestion = "";

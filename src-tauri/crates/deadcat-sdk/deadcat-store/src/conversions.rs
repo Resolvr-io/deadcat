@@ -10,7 +10,7 @@ use crate::error::StoreError;
 use crate::models::{
     MakerOrderRow, MarketRow, NewMakerOrderRow, NewMarketRow, NewUtxoRow, UtxoRow,
 };
-use crate::store::{IssuanceData, MakerOrderInfo, MarketInfo, OrderStatus};
+use crate::store::{ContractMetadataInput, IssuanceData, MakerOrderInfo, MarketInfo, OrderStatus};
 
 pub fn vec_to_array32(v: &[u8], field: &str) -> std::result::Result<[u8; 32], StoreError> {
     v.try_into().map_err(|_| {
@@ -104,13 +104,25 @@ impl TryFrom<&MarketRow> for MarketInfo {
             issuance,
             created_at: row.created_at.clone(),
             updated_at: row.updated_at.clone(),
+            question: row.question.clone(),
+            description: row.description.clone(),
+            category: row.category.clone(),
+            resolution_source: row.resolution_source.clone(),
+            starting_yes_price: row.starting_yes_price.map(|v| v as u8),
+            creator_pubkey: row.creator_pubkey.clone(),
+            creation_txid: row.creation_txid.clone(),
+            nevent: row.nevent.clone(),
         })
     }
 }
 
 // --- ContractParams + CompiledContract -> NewMarketRow ---
 
-pub fn new_market_row(params: &ContractParams, compiled: &CompiledContract) -> NewMarketRow {
+pub fn new_market_row(
+    params: &ContractParams,
+    compiled: &CompiledContract,
+    metadata: Option<&ContractMetadataInput>,
+) -> NewMarketRow {
     let market_id = params.market_id();
     NewMarketRow {
         market_id: market_id.as_bytes().to_vec(),
@@ -139,6 +151,14 @@ pub fn new_market_row(params: &ContractParams, compiled: &CompiledContract) -> N
             .script_pubkey(MarketState::ResolvedNo)
             .as_bytes()
             .to_vec(),
+        question: metadata.and_then(|m| m.question.clone()),
+        description: metadata.and_then(|m| m.description.clone()),
+        category: metadata.and_then(|m| m.category.clone()),
+        resolution_source: metadata.and_then(|m| m.resolution_source.clone()),
+        starting_yes_price: metadata.and_then(|m| m.starting_yes_price.map(|v| v as i32)),
+        creator_pubkey: metadata.and_then(|m| m.creator_pubkey.clone()),
+        creation_txid: metadata.and_then(|m| m.creation_txid.clone()),
+        nevent: metadata.and_then(|m| m.nevent.clone()),
     }
 }
 

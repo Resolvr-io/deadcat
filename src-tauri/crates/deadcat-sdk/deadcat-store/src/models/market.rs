@@ -26,6 +26,14 @@ pub struct MarketRow {
     pub no_issuance_entropy: Option<Vec<u8>>,
     pub yes_issuance_blinding_nonce: Option<Vec<u8>>,
     pub no_issuance_blinding_nonce: Option<Vec<u8>>,
+    pub question: Option<String>,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    pub resolution_source: Option<String>,
+    pub starting_yes_price: Option<i32>,
+    pub creator_pubkey: Option<Vec<u8>>,
+    pub creation_txid: Option<String>,
+    pub nevent: Option<String>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -45,4 +53,12 @@ pub struct NewMarketRow {
     pub unresolved_spk: Vec<u8>,
     pub resolved_yes_spk: Vec<u8>,
     pub resolved_no_spk: Vec<u8>,
+    pub question: Option<String>,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    pub resolution_source: Option<String>,
+    pub starting_yes_price: Option<i32>,
+    pub creator_pubkey: Option<Vec<u8>>,
+    pub creation_txid: Option<String>,
+    pub nevent: Option<String>,
 }
