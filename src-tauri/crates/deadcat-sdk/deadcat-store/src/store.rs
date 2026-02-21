@@ -61,6 +61,19 @@ pub struct IssuanceData {
     pub no_blinding_nonce: [u8; 32],
 }
 
+/// Optional Nostr/UI metadata to attach when ingesting a market.
+#[derive(Debug, Clone, Default)]
+pub struct ContractMetadataInput {
+    pub question: Option<String>,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    pub resolution_source: Option<String>,
+    pub starting_yes_price: Option<u8>,
+    pub creator_pubkey: Option<Vec<u8>>,
+    pub creation_txid: Option<String>,
+    pub nevent: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct MarketInfo {
     pub market_id: MarketId,
@@ -70,6 +83,14 @@ pub struct MarketInfo {
     pub issuance: Option<IssuanceData>,
     pub created_at: String,
     pub updated_at: String,
+    pub question: Option<String>,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    pub resolution_source: Option<String>,
+    pub starting_yes_price: Option<u8>,
+    pub creator_pubkey: Option<Vec<u8>>,
+    pub creation_txid: Option<String>,
+    pub nevent: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,7 +161,11 @@ impl DeadcatStore {
     /// Ingest a market from its contract parameters. Compiles the contract to derive
     /// the CMR and 4 state scriptPubKeys. Returns the MarketId.
     /// If the market already exists, this is a no-op returning the existing ID.
-    pub fn ingest_market(&mut self, params: &ContractParams) -> crate::Result<MarketId> {
+    pub fn ingest_market(
+        &mut self,
+        params: &ContractParams,
+        metadata: Option<&ContractMetadataInput>,
+    ) -> crate::Result<MarketId> {
         let mid = params.market_id();
         let mid_bytes = mid.as_bytes().to_vec();
 
@@ -154,7 +179,7 @@ impl DeadcatStore {
         }
 
         let compiled = CompiledContract::new(*params)?;
-        let row = new_market_row(params, &compiled);
+        let row = new_market_row(params, &compiled, metadata);
 
         diesel::insert_into(markets::table)
             .values(&row)

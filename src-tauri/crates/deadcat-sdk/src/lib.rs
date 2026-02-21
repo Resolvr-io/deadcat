@@ -20,15 +20,17 @@ pub mod witness;
 
 // Core types
 pub use assembly::{
-    AssembledIssuance, CollateralSource, IssuanceAssemblyInputs, IssuanceEntropy,
-    assemble_issuance, build_issuance_pset, compute_issuance_entropy,
+    AssembledIssuance, AssembledTransaction, CollateralSource, IssuanceAssemblyInputs,
+    IssuanceEntropy, assemble_cancellation, assemble_expiry_redemption, assemble_issuance,
+    assemble_oracle_resolve, assemble_post_resolution_redemption, build_issuance_pset,
+    compute_issuance_entropy,
 };
 pub use chain::{ChainBackend, ElectrumBackend};
 pub use contract::CompiledContract;
 pub use error::{Error, Result};
 pub use network::Network;
 pub use params::{ContractParams, IssuanceAssets, MarketId, compute_issuance_assets};
-pub use sdk::{DeadcatSdk, IssuanceResult};
+pub use sdk::{CancellationResult, DeadcatSdk, IssuanceResult, RedemptionResult, ResolutionResult};
 pub use state::MarketState;
 
 // Re-export LWK for app-layer use

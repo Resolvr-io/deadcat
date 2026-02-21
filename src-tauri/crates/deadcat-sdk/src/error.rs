@@ -90,6 +90,15 @@ pub enum Error {
     #[error("market not in issuable state (found {0:?})")]
     NotIssuable(MarketState),
 
+    #[error("market not in redeemable state (found {0:?})")]
+    NotRedeemable(MarketState),
+
+    #[error("market not in cancellable state (found {0:?})")]
+    NotCancellable(MarketState),
+
+    #[error("market not in resolvable state (found {0:?})")]
+    NotResolvable(MarketState),
+
     #[error("witness satisfaction failed: {0}")]
     Witness(String),
 }

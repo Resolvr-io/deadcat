@@ -564,6 +564,7 @@ mod tests {
             fee_amount: 500,
             payout_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
         };
         let pset =
             post_resolution_redemption::build_post_resolution_redemption_pset(&contract, &params)
@@ -587,6 +588,7 @@ mod tests {
             fee_amount: 500,
             payout_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
         };
         let pset =
             post_resolution_redemption::build_post_resolution_redemption_pset(&contract, &params)
@@ -608,6 +610,7 @@ mod tests {
             fee_amount: 500,
             payout_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
         };
         let result =
             post_resolution_redemption::build_post_resolution_redemption_pset(&contract, &params);
@@ -627,6 +630,7 @@ mod tests {
             fee_amount: 500,
             payout_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
         };
         let result =
             post_resolution_redemption::build_post_resolution_redemption_pset(&contract, &params);
@@ -648,6 +652,7 @@ mod tests {
             fee_amount: 500,
             payout_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
             lock_time: 999_999,
         };
         let pset = expiry_redemption::build_expiry_redemption_pset(&contract, &params).unwrap();
@@ -669,6 +674,7 @@ mod tests {
             fee_amount: 500,
             payout_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
             lock_time: 999_999,
         };
         let pset = expiry_redemption::build_expiry_redemption_pset(&contract, &params).unwrap();
@@ -689,6 +695,7 @@ mod tests {
             fee_amount: 500,
             payout_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
             lock_time: 999_999,
         };
         let result = expiry_redemption::build_expiry_redemption_pset(&contract, &params);
@@ -708,6 +715,7 @@ mod tests {
             fee_amount: 500,
             payout_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
             lock_time: 999_999,
         };
         let pset = expiry_redemption::build_expiry_redemption_pset(&contract, &params).unwrap();
@@ -734,6 +742,7 @@ mod tests {
             fee_amount: 500,
             refund_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
         };
         let pset = cancellation::build_cancellation_pset(&contract, &params).unwrap();
         // 1 collateral + 1 yes + 1 no + 1 fee = 4 inputs
@@ -757,6 +766,7 @@ mod tests {
             fee_amount: 500,
             refund_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
         };
         let pset = cancellation::build_cancellation_pset(&contract, &params).unwrap();
         // 1 collateral + 1 yes_reissuance + 1 no_reissuance + 1 yes + 1 no + 1 fee = 6 inputs
@@ -780,6 +790,7 @@ mod tests {
             fee_amount: 500,
             refund_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
         };
         let pset = cancellation::build_cancellation_pset(&contract, &params).unwrap();
         let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
@@ -802,6 +813,7 @@ mod tests {
             fee_amount: 500,
             refund_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
         };
         let pset = cancellation::build_cancellation_pset(&contract, &params).unwrap();
         let dormant_spk = contract.script_pubkey(MarketState::Dormant);
@@ -825,6 +837,7 @@ mod tests {
             fee_amount: 500,
             refund_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
         };
         let result = cancellation::build_cancellation_pset(&contract, &params);
         assert!(matches!(result, Err(Error::MissingReissuanceUtxos)));
@@ -845,6 +858,7 @@ mod tests {
             fee_amount: 500,
             refund_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
         };
         let result = cancellation::build_cancellation_pset(&contract, &params);
         assert!(matches!(result, Err(Error::InsufficientCollateral)));
@@ -865,6 +879,7 @@ mod tests {
             fee_amount: 500,
             refund_destination: Script::new(),
             fee_change_destination: None,
+            token_change_destination: None,
         };
         let result = cancellation::build_cancellation_pset(&contract, &params);
         assert!(matches!(result, Err(Error::CollateralOverflow)));

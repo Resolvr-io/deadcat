@@ -48,8 +48,13 @@ bip39 = "2"
 
 # SDK & Nostr
 deadcat-sdk = { path = "crates/deadcat-sdk" }
+deadcat-store = { path = "crates/deadcat-sdk/deadcat-store" }
 nostr-sdk = "0.38"
 nostr-relay-builder = "0.38"
+
+# Crypto
+sha2 = "0.10"
+electrum-client = "0.21"
 
 # Pin rustls to ring backend (electrum-client pulls in rustls 0.23 which
 # needs exactly one crypto provider selected at the feature level).

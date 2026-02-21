@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
+use deadcat_store::{ContractMetadataInput, MarketFilter};
 use nostr_sdk::prelude::*;
 use tauri::{Emitter, Manager};
 
@@ -457,4 +458,145 @@ pub async fn issue_tokens(
     .map_err(|e| format!("task join: {e}"))??;
 
     Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Market store commands
+// ---------------------------------------------------------------------------
+
+/// Ingest discovered markets into the persistent store.
+///
+/// For each market, compiles the contract — markets that fail compilation are
+/// silently dropped. Returns the number of markets successfully ingested.
+#[tauri::command]
+pub fn ingest_discovered_markets(
+    markets: Vec<DiscoveredMarket>,
+    app: tauri::AppHandle,
+) -> Result<u32, String> {
+    let state_handle = app.state::<Mutex<AppStateManager>>();
+    let mut mgr = state_handle
+        .lock()
+        .map_err(|_| "state lock failed".to_string())?;
+    let wallet = mgr
+        .wallet_mut()
+        .ok_or_else(|| "wallet not initialized".to_string())?;
+
+    let mut count = 0u32;
+    for market in &markets {
+        let params = match discovered_to_contract_params(market) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("skipping market {}: {e}", market.market_id);
+                continue;
+            }
+        };
+
+        let metadata = ContractMetadataInput {
+            question: Some(market.question.clone()),
+            description: Some(market.description.clone()),
+            category: Some(market.category.clone()),
+            resolution_source: Some(market.resolution_source.clone()),
+            starting_yes_price: Some(market.starting_yes_price),
+            creator_pubkey: hex::decode(&market.creator_pubkey).ok(),
+            creation_txid: market.creation_txid.clone(),
+            nevent: Some(market.nevent.clone()),
+        };
+
+        match wallet.ingest_market(&params, Some(&metadata)) {
+            Ok(_) => count += 1,
+            Err(e) => {
+                log::warn!("failed to ingest market {}: {e}", market.market_id);
+            }
+        }
+    }
+
+    Ok(count)
+}
+
+/// List all markets from the persistent store.
+///
+/// Returns markets as `DiscoveredMarket` (the frontend type), with `state`
+/// reflecting real on-chain state from the store's sync.
+#[tauri::command]
+pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
+    let state_handle = app.state::<Mutex<AppStateManager>>();
+    let mut mgr = state_handle
+        .lock()
+        .map_err(|_| "state lock failed".to_string())?;
+    let wallet = mgr
+        .wallet_mut()
+        .ok_or_else(|| "wallet not initialized".to_string())?;
+
+    let infos = wallet
+        .list_markets(&MarketFilter::default())
+        .map_err(|e| format!("list markets: {e}"))?;
+
+    let mut result = Vec::with_capacity(infos.len());
+    for info in &infos {
+        result.push(market_info_to_discovered(info));
+    }
+    Ok(result)
+}
+
+/// Convert a `DiscoveredMarket` (frontend type) into SDK `ContractParams`.
+fn discovered_to_contract_params(
+    m: &DiscoveredMarket,
+) -> Result<deadcat_sdk::ContractParams, String> {
+    let decode32 = |hex_str: &str, name: &str| -> Result<[u8; 32], String> {
+        let bytes = hex::decode(hex_str).map_err(|e| format!("{name}: hex decode: {e}"))?;
+        bytes
+            .try_into()
+            .map_err(|_| format!("{name}: expected 32 bytes"))
+    };
+
+    Ok(deadcat_sdk::ContractParams {
+        oracle_public_key: decode32(&m.oracle_pubkey, "oracle_pubkey")?,
+        collateral_asset_id: decode32(&m.collateral_asset_id, "collateral_asset_id")?,
+        yes_token_asset: decode32(&m.yes_asset_id, "yes_asset_id")?,
+        no_token_asset: decode32(&m.no_asset_id, "no_asset_id")?,
+        yes_reissuance_token: decode32(&m.yes_reissuance_token, "yes_reissuance_token")?,
+        no_reissuance_token: decode32(&m.no_reissuance_token, "no_reissuance_token")?,
+        collateral_per_token: m.cpt_sats,
+        expiry_time: m.expiry_height,
+    })
+}
+
+/// Convert a `MarketInfo` (store type) back to `DiscoveredMarket` (frontend type).
+fn market_info_to_discovered(info: &deadcat_store::MarketInfo) -> DiscoveredMarket {
+    let p = &info.params;
+    let market_id_hex = hex::encode(info.market_id.as_bytes());
+    DiscoveredMarket {
+        // Use market_id as stable unique identifier (the store doesn't persist Nostr event IDs)
+        id: market_id_hex.clone(),
+        nevent: info.nevent.clone().unwrap_or_default(),
+        market_id: market_id_hex,
+        question: info.question.clone().unwrap_or_default(),
+        category: info.category.clone().unwrap_or_default(),
+        description: info.description.clone().unwrap_or_default(),
+        resolution_source: info.resolution_source.clone().unwrap_or_default(),
+        oracle_pubkey: hex::encode(p.oracle_public_key),
+        expiry_height: p.expiry_time,
+        cpt_sats: p.collateral_per_token,
+        collateral_asset_id: hex::encode(p.collateral_asset_id),
+        yes_asset_id: hex::encode(p.yes_token_asset),
+        no_asset_id: hex::encode(p.no_token_asset),
+        yes_reissuance_token: hex::encode(p.yes_reissuance_token),
+        no_reissuance_token: hex::encode(p.no_reissuance_token),
+        starting_yes_price: info.starting_yes_price.unwrap_or(50),
+        creator_pubkey: info
+            .creator_pubkey
+            .as_ref()
+            .map(hex::encode)
+            .unwrap_or_default(),
+        created_at: parse_iso_datetime_to_unix(&info.created_at),
+        creation_txid: info.creation_txid.clone(),
+        state: info.state.as_u64() as u8,
+    }
+}
+
+/// Parse an ISO datetime string (e.g. "2026-02-21 12:34:56") into a unix timestamp.
+fn parse_iso_datetime_to_unix(s: &str) -> u64 {
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+        .map(|dt| dt.and_utc().timestamp() as u64)
+        .unwrap_or(0)
 }

@@ -20,6 +20,8 @@ pub struct ExpiryRedemptionParams {
     pub fee_amount: u64,
     pub payout_destination: Script,
     pub fee_change_destination: Option<Script>,
+    /// Where to send excess tokens if token UTXOs hold more than `tokens_burned`.
+    pub token_change_destination: Option<Script>,
     pub lock_time: u32,
 }
 
@@ -72,6 +74,17 @@ pub fn build_expiry_redemption_pset(
             &params.payout_destination,
         ),
     );
+    // Token change output (if UTXOs hold more than tokens_burned)
+    if let Some(ref change_spk) = params.token_change_destination {
+        let total: u64 = params.token_utxos.iter().map(|u| u.value).sum();
+        let change = total.saturating_sub(params.tokens_burned);
+        if change > 0 {
+            add_pset_output(
+                &mut pset,
+                explicit_txout(&params.burn_token_asset, change, change_spk),
+            );
+        }
+    }
     add_pset_output(
         &mut pset,
         fee_txout(&contract.params().collateral_asset_id, params.fee_amount),

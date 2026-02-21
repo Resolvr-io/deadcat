@@ -531,6 +531,442 @@ pub fn assemble_issuance(
     })
 }
 
+/// Result of assembling a non-issuance transaction (before signing).
+pub struct AssembledTransaction {
+    pub pset: PartiallySignedTransaction,
+    pub spending_path: SpendingPath,
+}
+
+/// Ensure the fee output (OP_RETURN, empty script_pubkey) is the last output.
+///
+/// The contract checks `ensure_fee_output(num_outputs - 1)`, meaning the fee
+/// must be the last output. PSET builders may place a fee change output after
+/// the fee. This function swaps the last two outputs if needed.
+fn ensure_fee_output_last(pset: &mut PartiallySignedTransaction) {
+    let outputs = pset.outputs_mut();
+    let n = outputs.len();
+    if n < 2 {
+        return;
+    }
+    // If the last output is NOT empty script (fee), but the second-to-last is,
+    // swap them so the fee is last.
+    let last_is_fee = outputs[n - 1].script_pubkey.is_empty();
+    let prev_is_fee = outputs[n - 2].script_pubkey.is_empty();
+    if !last_is_fee && prev_is_fee {
+        outputs.swap(n - 2, n - 1);
+    }
+}
+
+/// Attach Simplicity witness stacks to parameterized covenant inputs.
+///
+/// Unlike `attach_witnesses` (issuance-only, hardcoded indices 0/1/2), this
+/// function lets the caller specify which PSET inputs are covenant inputs.
+pub fn attach_covenant_witnesses(
+    pset: &mut PartiallySignedTransaction,
+    contract: &CompiledContract,
+    state: MarketState,
+    primary_path: SpendingPath,
+    primary_index: usize,
+    secondary_indices: &[usize],
+) -> Result<SpendingPath> {
+    let tx = Arc::new(pset_to_pruning_transaction(pset)?);
+    let utxos: Vec<ElementsUtxo> = pset
+        .inputs()
+        .iter()
+        .enumerate()
+        .map(|(i, inp)| {
+            inp.witness_utxo
+                .as_ref()
+                .map(|u| ElementsUtxo::from(u.clone()))
+                .ok_or_else(|| Error::Pset(format!("input {i} missing witness_utxo")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let control_block_bytes = contract.control_block(state);
+    let cmr_bytes = contract.cmr().to_byte_array().to_vec();
+
+    let build_witness_stack = |path: &SpendingPath, input_index: u32| -> Result<Vec<Vec<u8>>> {
+        let env = build_pruning_env(&tx, &utxos, input_index, contract, state)?;
+        let satisfied = satisfy_contract_with_env(contract, path, state, Some(&env))
+            .map_err(|e| Error::Witness(e.to_string()))?;
+        let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
+
+        let stack = vec![
+            witness_bytes,
+            program_bytes,
+            cmr_bytes.clone(),
+            control_block_bytes.clone(),
+        ];
+
+        debug_assert!(
+            satisfied.redeem().bounds().cost.is_budget_valid(&stack),
+            "input {input_index}: Simplicity program cost exceeds witness budget"
+        );
+
+        Ok(stack)
+    };
+
+    // Primary covenant input
+    pset.inputs_mut()[primary_index].final_script_witness =
+        Some(build_witness_stack(&primary_path, primary_index as u32)?);
+
+    // Secondary covenant inputs
+    let secondary_path = SpendingPath::SecondaryCovenantInput;
+    for &idx in secondary_indices {
+        pset.inputs_mut()[idx].final_script_witness =
+            Some(build_witness_stack(&secondary_path, idx as u32)?);
+    }
+
+    Ok(primary_path)
+}
+
+/// Blind a PSET by setting up RT outputs (if any), marking wallet outputs for
+/// blinding, providing ALL input txout secrets, and calling `blind_last`.
+///
+/// - `rt_setup`: If Some, sets up outputs 0,1 as RT outputs with the given asset IDs
+/// - `wallet_output_indices`: output indices to mark for blinding (wallet destinations)
+/// - `input_utxos`: (index, utxo) pairs for ALL inputs that need secrets
+fn blind_pset(
+    pset: &mut PartiallySignedTransaction,
+    rt_setup: Option<(&UnblindedUtxo, &UnblindedUtxo)>,
+    wallet_output_indices: &[usize],
+    input_utxos: &[(usize, &UnblindedUtxo)],
+    blinding_pubkey: PublicKey,
+) -> Result<()> {
+    let pset_blinding_key = lwk_wollet::elements::bitcoin::PublicKey {
+        inner: blinding_pubkey,
+        compressed: true,
+    };
+
+    if let Some((yes_rt, no_rt)) = rt_setup {
+        let yes_rt_id = AssetId::from_slice(&yes_rt.asset_id)
+            .map_err(|e| Error::Blinding(format!("bad YES reissuance asset: {e}")))?;
+        let no_rt_id = AssetId::from_slice(&no_rt.asset_id)
+            .map_err(|e| Error::Blinding(format!("bad NO reissuance asset: {e}")))?;
+
+        let outputs = pset.outputs_mut();
+        outputs[0].amount = Some(1);
+        outputs[0].asset = Some(yes_rt_id);
+        outputs[1].amount = Some(1);
+        outputs[1].asset = Some(no_rt_id);
+
+        for idx in [0usize, 1] {
+            outputs[idx].blinding_key = Some(pset_blinding_key);
+            outputs[idx].blinder_index = Some(0);
+        }
+    }
+
+    let outputs = pset.outputs_mut();
+    for &idx in wallet_output_indices {
+        outputs[idx].blinding_key = Some(pset_blinding_key);
+        outputs[idx].blinder_index = Some(0);
+    }
+
+    let mut inp_txout_sec = HashMap::new();
+    for &(idx, utxo) in input_utxos {
+        let asset_id = AssetId::from_slice(&utxo.asset_id)
+            .map_err(|e| Error::Blinding(format!("input {idx} asset: {e}")))?;
+        inp_txout_sec.insert(idx, txout_secrets_from_unblinded(utxo, asset_id)?);
+    }
+
+    let secp = secp256k1_zkp::Secp256k1::new();
+    let mut rng = thread_rng();
+    pset.blind_last(&mut rng, &secp, &inp_txout_sec)
+        .map_err(|e| Error::Blinding(format!("{e:?}")))?;
+
+    Ok(())
+}
+
+/// Identify wallet output indices: all outputs with non-empty script_pubkey
+/// that are NOT covenant addresses and NOT burn (OP_RETURN) outputs.
+fn find_wallet_output_indices(
+    pset: &PartiallySignedTransaction,
+    contract: &CompiledContract,
+) -> Vec<usize> {
+    let covenant_spks: Vec<Script> = [
+        MarketState::Dormant,
+        MarketState::Unresolved,
+        MarketState::ResolvedYes,
+        MarketState::ResolvedNo,
+    ]
+    .iter()
+    .map(|s| contract.script_pubkey(*s))
+    .collect();
+
+    pset.outputs()
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| !o.script_pubkey.is_empty() && !covenant_spks.contains(&o.script_pubkey))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Assemble a post-resolution redemption transaction.
+pub fn assemble_post_resolution_redemption(
+    contract: &CompiledContract,
+    params: &crate::pset::post_resolution_redemption::PostResolutionRedemptionParams,
+    blinding_pubkey: PublicKey,
+) -> Result<AssembledTransaction> {
+    let mut pset = crate::pset::post_resolution_redemption::build_post_resolution_redemption_pset(
+        contract, params,
+    )?;
+    ensure_fee_output_last(&mut pset);
+
+    let wallet_outputs = find_wallet_output_indices(&pset, contract);
+    let input_refs = build_input_refs(
+        vec![(0, &params.collateral_utxo)],
+        &[&params.token_utxos],
+        &params.fee_utxo,
+    );
+    blind_pset(
+        &mut pset,
+        None,
+        &wallet_outputs,
+        &input_refs,
+        blinding_pubkey,
+    )?;
+
+    let spending_path = SpendingPath::PostResolutionRedemption {
+        tokens_burned: params.tokens_burned,
+    };
+
+    let spending_path = attach_covenant_witnesses(
+        &mut pset,
+        contract,
+        params.resolved_state,
+        spending_path,
+        0,
+        &[],
+    )?;
+
+    Ok(AssembledTransaction {
+        pset,
+        spending_path,
+    })
+}
+
+/// Assemble an expiry redemption transaction.
+pub fn assemble_expiry_redemption(
+    contract: &CompiledContract,
+    params: &crate::pset::expiry_redemption::ExpiryRedemptionParams,
+    blinding_pubkey: PublicKey,
+) -> Result<AssembledTransaction> {
+    let mut pset = crate::pset::expiry_redemption::build_expiry_redemption_pset(contract, params)?;
+    ensure_fee_output_last(&mut pset);
+
+    let wallet_outputs = find_wallet_output_indices(&pset, contract);
+    let input_refs = build_input_refs(
+        vec![(0, &params.collateral_utxo)],
+        &[&params.token_utxos],
+        &params.fee_utxo,
+    );
+    blind_pset(
+        &mut pset,
+        None,
+        &wallet_outputs,
+        &input_refs,
+        blinding_pubkey,
+    )?;
+
+    let spending_path = SpendingPath::ExpiryRedemption {
+        tokens_burned: params.tokens_burned,
+        burn_token_asset: params.burn_token_asset,
+    };
+
+    let spending_path = attach_covenant_witnesses(
+        &mut pset,
+        contract,
+        MarketState::Unresolved,
+        spending_path,
+        0,
+        &[],
+    )?;
+
+    Ok(AssembledTransaction {
+        pset,
+        spending_path,
+    })
+}
+
+/// Assemble a cancellation transaction.
+///
+/// For partial cancellation: blind wallet outputs, witness at index 0 only.
+/// For full cancellation: blind RT + wallet outputs, recover blinding factors,
+/// witness at index 0 with secondaries [1, 2].
+pub fn assemble_cancellation(
+    contract: &CompiledContract,
+    params: &crate::pset::cancellation::CancellationParams,
+    slip77_key: &lwk_wollet::elements_miniscript::confidential::slip77::MasterBlindingKey,
+    blinding_pubkey: PublicKey,
+    change_spk: &Script,
+) -> Result<AssembledTransaction> {
+    let cpt = contract.params().collateral_per_token;
+    let refund = params
+        .pairs_burned
+        .checked_mul(2)
+        .and_then(|v| v.checked_mul(cpt))
+        .ok_or(Error::CollateralOverflow)?;
+    let remaining = params.collateral_utxo.value.saturating_sub(refund);
+    let is_full = remaining == 0;
+
+    let mut pset = crate::pset::cancellation::build_cancellation_pset(contract, params)?;
+    ensure_fee_output_last(&mut pset);
+
+    if is_full {
+        let yes_rt = params
+            .yes_reissuance_utxo
+            .as_ref()
+            .ok_or(Error::MissingReissuanceUtxos)?;
+        let no_rt = params
+            .no_reissuance_utxo
+            .as_ref()
+            .ok_or(Error::MissingReissuanceUtxos)?;
+
+        let wallet_outputs = find_wallet_output_indices(&pset, contract);
+        let input_refs = build_input_refs(
+            vec![(0, &params.collateral_utxo), (1, yes_rt), (2, no_rt)],
+            &[&params.yes_token_utxos, &params.no_token_utxos],
+            &params.fee_utxo,
+        );
+
+        blind_pset(
+            &mut pset,
+            Some((yes_rt, no_rt)),
+            &wallet_outputs,
+            &input_refs,
+            blinding_pubkey,
+        )?;
+
+        let blinding = recover_blinding_factors(&pset, slip77_key, change_spk, yes_rt, no_rt)?;
+
+        let spending_path = SpendingPath::Cancellation {
+            pairs_burned: params.pairs_burned,
+            blinding: Some(blinding),
+        };
+
+        let spending_path = attach_covenant_witnesses(
+            &mut pset,
+            contract,
+            MarketState::Unresolved,
+            spending_path,
+            0,
+            &[1, 2],
+        )?;
+
+        Ok(AssembledTransaction {
+            pset,
+            spending_path,
+        })
+    } else {
+        let wallet_outputs = find_wallet_output_indices(&pset, contract);
+        let input_refs = build_input_refs(
+            vec![(0, &params.collateral_utxo)],
+            &[&params.yes_token_utxos, &params.no_token_utxos],
+            &params.fee_utxo,
+        );
+
+        blind_pset(
+            &mut pset,
+            None,
+            &wallet_outputs,
+            &input_refs,
+            blinding_pubkey,
+        )?;
+
+        let spending_path = SpendingPath::Cancellation {
+            pairs_burned: params.pairs_burned,
+            blinding: None,
+        };
+
+        let spending_path = attach_covenant_witnesses(
+            &mut pset,
+            contract,
+            MarketState::Unresolved,
+            spending_path,
+            0,
+            &[],
+        )?;
+
+        Ok(AssembledTransaction {
+            pset,
+            spending_path,
+        })
+    }
+}
+
+/// Assemble an oracle resolve transaction.
+pub fn assemble_oracle_resolve(
+    contract: &CompiledContract,
+    params: &crate::pset::oracle_resolve::OracleResolveParams,
+    oracle_signature: [u8; 64],
+    slip77_key: &lwk_wollet::elements_miniscript::confidential::slip77::MasterBlindingKey,
+    blinding_pubkey: PublicKey,
+    change_spk: &Script,
+    yes_rt_input: &UnblindedUtxo,
+    no_rt_input: &UnblindedUtxo,
+) -> Result<AssembledTransaction> {
+    let mut pset = crate::pset::oracle_resolve::build_oracle_resolve_pset(contract, params)?;
+
+    // Oracle resolve: 4 outputs (RT0, RT1, collateral, fee). Only RT outputs are blinded.
+    // Inputs: yes_rt(0), no_rt(1), collateral(2), fee(3)
+    let input_refs: Vec<(usize, &UnblindedUtxo)> = vec![
+        (0, yes_rt_input),
+        (1, no_rt_input),
+        (2, &params.collateral_utxo),
+        (3, &params.fee_utxo),
+    ];
+    blind_pset(
+        &mut pset,
+        Some((yes_rt_input, no_rt_input)),
+        &[],
+        &input_refs,
+        blinding_pubkey,
+    )?;
+
+    let blinding =
+        recover_blinding_factors(&pset, slip77_key, change_spk, yes_rt_input, no_rt_input)?;
+
+    let spending_path = SpendingPath::OracleResolve {
+        outcome_yes: params.outcome_yes,
+        oracle_signature,
+        blinding,
+    };
+
+    let spending_path = attach_covenant_witnesses(
+        &mut pset,
+        contract,
+        MarketState::Unresolved,
+        spending_path,
+        0,
+        &[1, 2],
+    )?;
+
+    Ok(AssembledTransaction {
+        pset,
+        spending_path,
+    })
+}
+
+/// Build sequential input refs from fixed inputs, token groups, and a fee UTXO.
+///
+/// Assigns consecutive indices starting after the last fixed input.
+fn build_input_refs<'a>(
+    fixed: Vec<(usize, &'a UnblindedUtxo)>,
+    token_groups: &[&'a [UnblindedUtxo]],
+    fee_utxo: &'a UnblindedUtxo,
+) -> Vec<(usize, &'a UnblindedUtxo)> {
+    let mut refs = fixed;
+    let mut idx = refs.last().map_or(0, |(i, _)| i + 1);
+    for group in token_groups {
+        for u in *group {
+            refs.push((idx, u));
+            idx += 1;
+        }
+    }
+    refs.push((idx, fee_utxo));
+    refs
+}
+
 fn txout_secrets_from_unblinded(
     utxo: &UnblindedUtxo,
     expected_asset: AssetId,

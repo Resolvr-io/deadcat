@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use deadcat_sdk::DeadcatSdk;
+use deadcat_store::{ContractMetadataInput, DeadcatStore, MarketFilter, MarketInfo};
 use thiserror::Error;
 
+use crate::chain_adapter::ElectrumChainAdapter;
 use crate::Network;
 
 use super::persister::{MnemonicPersister, WalletPersistError};
@@ -27,6 +29,9 @@ pub enum WalletError {
 
     #[error("Persist error: {0}")]
     Persist(#[from] WalletPersistError),
+
+    #[error("Store error: {0}")]
+    Store(#[from] deadcat_store::StoreError),
 }
 
 /// Converts the app-layer `Network` to the SDK `Network`.
@@ -43,16 +48,26 @@ pub struct WalletManager {
     network: Network,
     persister: MnemonicPersister,
     sdk: Option<DeadcatSdk>,
+    store: DeadcatStore,
 }
 
 impl WalletManager {
     pub fn new(app_data_dir: &Path, network: Network) -> Self {
         let persister = MnemonicPersister::new(app_data_dir, network.as_str());
+
+        // Open the store at <app_data_dir>/<network>/deadcat.db
+        let store_dir = app_data_dir.join(network.as_str());
+        std::fs::create_dir_all(&store_dir).ok();
+        let db_path = store_dir.join("deadcat.db");
+        let store = DeadcatStore::open(db_path.to_str().unwrap_or(":memory:"))
+            .expect("failed to open deadcat store");
+
         Self {
             app_data_dir: app_data_dir.to_path_buf(),
             network,
             persister,
             sdk: None,
+            store,
         }
     }
 
@@ -134,6 +149,16 @@ impl WalletManager {
 
     pub fn sync(&mut self) -> Result<(), WalletError> {
         self.sdk_mut()?.sync()?;
+        self.sync_store()?;
+        Ok(())
+    }
+
+    /// Sync the market store against the chain. Works independently of wallet
+    /// unlock state — only needs an Electrum URL.
+    pub fn sync_store(&mut self) -> Result<(), WalletError> {
+        let electrum_url = self.electrum_url().to_string();
+        let chain = ElectrumChainAdapter::new(&electrum_url);
+        self.store.sync(&chain)?;
         Ok(())
     }
 
@@ -215,5 +240,26 @@ impl WalletManager {
 
     pub fn persister(&self) -> &MnemonicPersister {
         &self.persister
+    }
+
+    // ── Market store delegation ──────────────────────────────────────────
+
+    pub fn ingest_market(
+        &mut self,
+        params: &deadcat_sdk::ContractParams,
+        metadata: Option<&ContractMetadataInput>,
+    ) -> Result<deadcat_sdk::MarketId, WalletError> {
+        Ok(self.store.ingest_market(params, metadata)?)
+    }
+
+    pub fn list_markets(&mut self, filter: &MarketFilter) -> Result<Vec<MarketInfo>, WalletError> {
+        Ok(self.store.list_markets(filter)?)
+    }
+
+    pub fn get_market(
+        &mut self,
+        id: &deadcat_sdk::MarketId,
+    ) -> Result<Option<MarketInfo>, WalletError> {
+        Ok(self.store.get_market(id)?)
     }
 }
