@@ -13,7 +13,9 @@ use lwk_wollet::{
 use rand::thread_rng;
 
 use crate::assembly::{
-    CollateralSource, IssuanceAssemblyInputs, assemble_issuance, compute_issuance_entropy,
+    CollateralSource, IssuanceAssemblyInputs, assemble_cancellation, assemble_expiry_redemption,
+    assemble_issuance, assemble_oracle_resolve, assemble_post_resolution_redemption,
+    compute_issuance_entropy,
 };
 use crate::chain::{ChainBackend, ElectrumBackend};
 use crate::contract::CompiledContract;
@@ -21,7 +23,11 @@ use crate::error::{Error, Result};
 use crate::network::Network;
 use crate::params::ContractParams;
 use crate::pset::UnblindedUtxo;
+use crate::pset::cancellation::CancellationParams;
 use crate::pset::creation::{CreationParams, build_creation_pset};
+use crate::pset::expiry_redemption::ExpiryRedemptionParams;
+use crate::pset::oracle_resolve::OracleResolveParams;
+use crate::pset::post_resolution_redemption::PostResolutionRedemptionParams;
 use crate::state::MarketState;
 
 /// Result of a successful token issuance.
@@ -31,6 +37,34 @@ pub struct IssuanceResult {
     pub previous_state: MarketState,
     pub new_state: MarketState,
     pub pairs_issued: u64,
+}
+
+/// Result of a successful token cancellation.
+#[derive(Debug, Clone)]
+pub struct CancellationResult {
+    pub txid: Txid,
+    pub previous_state: MarketState,
+    pub new_state: MarketState,
+    pub pairs_burned: u64,
+    pub is_full_cancellation: bool,
+}
+
+/// Result of a successful oracle resolution.
+#[derive(Debug, Clone)]
+pub struct ResolutionResult {
+    pub txid: Txid,
+    pub previous_state: MarketState,
+    pub new_state: MarketState,
+    pub outcome_yes: bool,
+}
+
+/// Result of a successful token redemption (post-resolution or expiry).
+#[derive(Debug, Clone)]
+pub struct RedemptionResult {
+    pub txid: Txid,
+    pub previous_state: MarketState,
+    pub tokens_redeemed: u64,
+    pub payout_sats: u64,
 }
 
 pub struct DeadcatSdk {
@@ -368,7 +402,7 @@ impl DeadcatSdk {
         let (collateral_unblinded, fee_unblinded, change_addr) =
             self.select_wallet_utxos(params, pairs, fee_amount)?;
 
-        let token_dest = change_addr.script_pubkey();
+        let change_spk = change_addr.script_pubkey();
 
         let collateral_source = match current_state {
             MarketState::Dormant => CollateralSource::Initial {
@@ -406,14 +440,14 @@ impl DeadcatSdk {
                 fee_utxo: fee_unblinded,
                 pairs,
                 fee_amount,
-                token_destination: token_dest,
-                change_destination: Some(change_addr.script_pubkey()),
+                token_destination: change_spk.clone(),
+                change_destination: Some(change_spk.clone()),
                 issuance_entropy,
                 lock_time: 0,
             },
             &master_blinding_key,
             blinding_pk,
-            &change_addr.script_pubkey(),
+            &change_spk,
         )?;
 
         // I. Sign and finalize
@@ -437,17 +471,25 @@ impl DeadcatSdk {
     ) -> Result<(MarketState, Vec<(OutPoint, TxOut)>)> {
         let dormant_spk = contract.script_pubkey(MarketState::Dormant);
         let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
+        let resolved_yes_spk = contract.script_pubkey(MarketState::ResolvedYes);
+        let resolved_no_spk = contract.script_pubkey(MarketState::ResolvedNo);
 
         let dormant_utxos = self.scan_covenant_utxos(&dormant_spk)?;
         let unresolved_utxos = self.scan_covenant_utxos(&unresolved_spk)?;
+        let resolved_yes_utxos = self.scan_covenant_utxos(&resolved_yes_spk)?;
+        let resolved_no_utxos = self.scan_covenant_utxos(&resolved_no_spk)?;
 
         if !dormant_utxos.is_empty() {
             Ok((MarketState::Dormant, dormant_utxos))
         } else if !unresolved_utxos.is_empty() {
             Ok((MarketState::Unresolved, unresolved_utxos))
+        } else if !resolved_yes_utxos.is_empty() {
+            Ok((MarketState::ResolvedYes, resolved_yes_utxos))
+        } else if !resolved_no_utxos.is_empty() {
+            Ok((MarketState::ResolvedNo, resolved_no_utxos))
         } else {
             Err(Error::CovenantScan(
-                "no UTXOs found at Dormant or Unresolved covenant addresses — \
+                "no UTXOs found at any covenant addresses — \
                  the contract may have been created with an older incompatible version"
                     .into(),
             ))
@@ -589,6 +631,472 @@ impl DeadcatSdk {
             .map_err(|e| Error::Query(format!("bad change address: {}", e)))?;
 
         Ok((collateral_unblinded, fee_unblinded, change_addr))
+    }
+
+    // ── Token cancellation ───────────────────────────────────────────────
+
+    /// Cancel token pairs by burning equal YES and NO tokens to reclaim collateral.
+    ///
+    /// If all collateral is burned (full cancellation), the market transitions
+    /// back to Dormant. Otherwise it stays Unresolved (partial cancellation).
+    pub fn cancel_tokens(
+        &mut self,
+        params: &ContractParams,
+        pairs_to_burn: u64,
+        fee_amount: u64,
+    ) -> Result<CancellationResult> {
+        self.sync()?;
+        let contract = CompiledContract::new(*params)?;
+
+        let (current_state, covenant_utxos) = self.scan_market_state(&contract)?;
+        if current_state != MarketState::Unresolved {
+            return Err(Error::NotCancellable(current_state));
+        }
+
+        let (yes_rt, no_rt, collateral_covenant_utxo) =
+            self.classify_covenant_utxos(&covenant_utxos, params, current_state)?;
+
+        let collateral = collateral_covenant_utxo
+            .ok_or_else(|| Error::CovenantScan("collateral UTXO not found at covenant".into()))?;
+
+        let cpt = params.collateral_per_token;
+        let refund = pairs_to_burn
+            .checked_mul(2)
+            .and_then(|v| v.checked_mul(cpt))
+            .ok_or(Error::CollateralOverflow)?;
+        let is_full = collateral.value == refund;
+
+        // Find YES and NO token UTXOs in wallet
+        let (yes_token_utxos, no_token_utxos) = self.find_token_utxos_for_burn(
+            &params.yes_token_asset,
+            &params.no_token_asset,
+            pairs_to_burn,
+        )?;
+
+        let (fee_unblinded, change_addr) = self.select_fee_utxo(fee_amount)?;
+        let change_spk = change_addr.script_pubkey();
+
+        let cancellation_params = CancellationParams {
+            collateral_utxo: collateral,
+            yes_reissuance_utxo: if is_full { Some(yes_rt.clone()) } else { None },
+            no_reissuance_utxo: if is_full { Some(no_rt.clone()) } else { None },
+            yes_token_utxos,
+            no_token_utxos,
+            fee_utxo: fee_unblinded,
+            pairs_burned: pairs_to_burn,
+            fee_amount,
+            refund_destination: change_spk.clone(),
+            fee_change_destination: Some(change_spk.clone()),
+            token_change_destination: Some(change_spk.clone()),
+        };
+
+        let blinding_pk = change_addr
+            .blinding_pubkey
+            .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
+
+        let master_blinding_key = self
+            .signer
+            .slip77_master_blinding_key()
+            .map_err(|e| Error::Blinding(format!("slip77 key: {e}")))?;
+
+        let assembled = assemble_cancellation(
+            &contract,
+            &cancellation_params,
+            &master_blinding_key,
+            blinding_pk,
+            &change_spk,
+        )?;
+
+        let tx = self.sign_pset(assembled.pset)?;
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        let new_state = if is_full {
+            MarketState::Dormant
+        } else {
+            MarketState::Unresolved
+        };
+
+        Ok(CancellationResult {
+            txid,
+            previous_state: current_state,
+            new_state,
+            pairs_burned: pairs_to_burn,
+            is_full_cancellation: is_full,
+        })
+    }
+
+    // ── Oracle resolution ────────────────────────────────────────────────
+
+    /// Resolve a market with an oracle signature.
+    ///
+    /// Transitions the market from Unresolved to ResolvedYes or ResolvedNo.
+    /// The oracle resolve transaction has exactly 4 outputs with no room for
+    /// fee change, so the entire fee UTXO is consumed as the fee.
+    pub fn resolve_market(
+        &mut self,
+        params: &ContractParams,
+        outcome_yes: bool,
+        oracle_signature: [u8; 64],
+        fee_amount: u64,
+    ) -> Result<ResolutionResult> {
+        self.sync()?;
+        let contract = CompiledContract::new(*params)?;
+
+        let (current_state, covenant_utxos) = self.scan_market_state(&contract)?;
+        if current_state != MarketState::Unresolved {
+            return Err(Error::NotResolvable(current_state));
+        }
+
+        let (yes_rt, no_rt, collateral_covenant_utxo) =
+            self.classify_covenant_utxos(&covenant_utxos, params, current_state)?;
+
+        let collateral = collateral_covenant_utxo
+            .ok_or_else(|| Error::CovenantScan("collateral UTXO not found at covenant".into()))?;
+
+        let (fee_unblinded, change_addr) = self.select_fee_utxo(fee_amount)?;
+        let change_spk = change_addr.script_pubkey();
+
+        let resolve_params = OracleResolveParams {
+            yes_reissuance_utxo: yes_rt.clone(),
+            no_reissuance_utxo: no_rt.clone(),
+            collateral_utxo: collateral,
+            fee_amount: fee_unblinded.value,
+            fee_utxo: fee_unblinded,
+            outcome_yes,
+            lock_time: 0,
+        };
+
+        let blinding_pk = change_addr
+            .blinding_pubkey
+            .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
+
+        let master_blinding_key = self
+            .signer
+            .slip77_master_blinding_key()
+            .map_err(|e| Error::Blinding(format!("slip77 key: {e}")))?;
+
+        let assembled = assemble_oracle_resolve(
+            &contract,
+            &resolve_params,
+            oracle_signature,
+            &master_blinding_key,
+            blinding_pk,
+            &change_spk,
+            &yes_rt,
+            &no_rt,
+        )?;
+
+        let tx = self.sign_pset(assembled.pset)?;
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        let new_state = if outcome_yes {
+            MarketState::ResolvedYes
+        } else {
+            MarketState::ResolvedNo
+        };
+
+        Ok(ResolutionResult {
+            txid,
+            previous_state: current_state,
+            new_state,
+            outcome_yes,
+        })
+    }
+
+    // ── Post-resolution redemption ───────────────────────────────────────
+
+    /// Redeem winning tokens after oracle resolution.
+    ///
+    /// Burns winning tokens and reclaims 2x collateral_per_token per token.
+    pub fn redeem_tokens(
+        &mut self,
+        params: &ContractParams,
+        tokens_to_burn: u64,
+        fee_amount: u64,
+    ) -> Result<RedemptionResult> {
+        self.sync()?;
+        let contract = CompiledContract::new(*params)?;
+
+        let (current_state, covenant_utxos) = self.scan_market_state(&contract)?;
+        if !current_state.is_resolved() {
+            return Err(Error::NotRedeemable(current_state));
+        }
+
+        let winning_asset = current_state
+            .winning_token_asset(params)
+            .ok_or(Error::InvalidState)?;
+
+        let collateral = Self::find_collateral_utxo(&covenant_utxos, params)?;
+
+        let cpt = params.collateral_per_token;
+        let payout = tokens_to_burn
+            .checked_mul(2)
+            .and_then(|v| v.checked_mul(cpt))
+            .ok_or(Error::CollateralOverflow)?;
+
+        // Find winning token UTXOs in wallet
+        let token_utxos = self.find_single_token_utxos(&winning_asset, tokens_to_burn)?;
+
+        let (fee_unblinded, change_addr) = self.select_fee_utxo(fee_amount)?;
+        let change_spk = change_addr.script_pubkey();
+
+        let redemption_params = PostResolutionRedemptionParams {
+            collateral_utxo: collateral,
+            token_utxos,
+            fee_utxo: fee_unblinded,
+            tokens_burned: tokens_to_burn,
+            resolved_state: current_state,
+            fee_amount,
+            payout_destination: change_spk.clone(),
+            fee_change_destination: Some(change_spk.clone()),
+            token_change_destination: Some(change_spk),
+        };
+
+        let blinding_pk = change_addr
+            .blinding_pubkey
+            .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
+
+        let assembled =
+            assemble_post_resolution_redemption(&contract, &redemption_params, blinding_pk)?;
+
+        let tx = self.sign_pset(assembled.pset)?;
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        Ok(RedemptionResult {
+            txid,
+            previous_state: current_state,
+            tokens_redeemed: tokens_to_burn,
+            payout_sats: payout,
+        })
+    }
+
+    // ── Expiry redemption ────────────────────────────────────────────────
+
+    /// Redeem tokens after market expiry (no oracle resolution).
+    ///
+    /// Burns tokens and reclaims 1x collateral_per_token per token.
+    /// Requires the market to still be Unresolved and block height past expiry.
+    pub fn redeem_expired(
+        &mut self,
+        params: &ContractParams,
+        token_asset: [u8; 32],
+        tokens_to_burn: u64,
+        fee_amount: u64,
+    ) -> Result<RedemptionResult> {
+        self.sync()?;
+        let contract = CompiledContract::new(*params)?;
+
+        let (current_state, covenant_utxos) = self.scan_market_state(&contract)?;
+        if current_state != MarketState::Unresolved {
+            return Err(Error::NotRedeemable(current_state));
+        }
+
+        let collateral = Self::find_collateral_utxo(&covenant_utxos, params)?;
+
+        let cpt = params.collateral_per_token;
+        let payout = tokens_to_burn
+            .checked_mul(cpt)
+            .ok_or(Error::CollateralOverflow)?;
+
+        let token_utxos = self.find_single_token_utxos(&token_asset, tokens_to_burn)?;
+
+        let (fee_unblinded, change_addr) = self.select_fee_utxo(fee_amount)?;
+        let change_spk = change_addr.script_pubkey();
+
+        let expiry_params = ExpiryRedemptionParams {
+            collateral_utxo: collateral,
+            token_utxos,
+            fee_utxo: fee_unblinded,
+            tokens_burned: tokens_to_burn,
+            burn_token_asset: token_asset,
+            fee_amount,
+            payout_destination: change_spk.clone(),
+            fee_change_destination: Some(change_spk.clone()),
+            token_change_destination: Some(change_spk),
+            lock_time: params.expiry_time,
+        };
+
+        let blinding_pk = change_addr
+            .blinding_pubkey
+            .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
+
+        let assembled = assemble_expiry_redemption(&contract, &expiry_params, blinding_pk)?;
+
+        let tx = self.sign_pset(assembled.pset)?;
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        Ok(RedemptionResult {
+            txid,
+            previous_state: current_state,
+            tokens_redeemed: tokens_to_burn,
+            payout_sats: payout,
+        })
+    }
+
+    /// Find the explicit collateral UTXO from a set of covenant UTXOs.
+    fn find_collateral_utxo(
+        covenant_utxos: &[(OutPoint, TxOut)],
+        params: &ContractParams,
+    ) -> Result<UnblindedUtxo> {
+        let collateral_id = AssetId::from_slice(&params.collateral_asset_id)
+            .map_err(|e| Error::Unblind(format!("bad collateral asset: {e}")))?;
+
+        for (outpoint, txout) in covenant_utxos {
+            if let Asset::Explicit(asset) = txout.asset {
+                if asset == collateral_id {
+                    let value = txout.value.explicit().unwrap_or(0);
+                    return Ok(UnblindedUtxo {
+                        outpoint: *outpoint,
+                        txout: txout.clone(),
+                        asset_id: params.collateral_asset_id,
+                        value,
+                        asset_blinding_factor: [0u8; 32],
+                        value_blinding_factor: [0u8; 32],
+                    });
+                }
+            }
+        }
+
+        Err(Error::CovenantScan(
+            "collateral UTXO not found at covenant".into(),
+        ))
+    }
+
+    // ── Token/fee UTXO helpers ───────────────────────────────────────────
+
+    /// Find YES and NO token UTXOs in the wallet for burning `pairs` of each.
+    fn find_token_utxos_for_burn(
+        &self,
+        yes_asset: &[u8; 32],
+        no_asset: &[u8; 32],
+        pairs: u64,
+    ) -> Result<(Vec<UnblindedUtxo>, Vec<UnblindedUtxo>)> {
+        let yes_id = AssetId::from_slice(yes_asset)
+            .map_err(|e| Error::Query(format!("bad YES asset: {e}")))?;
+        let no_id = AssetId::from_slice(no_asset)
+            .map_err(|e| Error::Query(format!("bad NO asset: {e}")))?;
+
+        let raw_utxos = self.utxos()?;
+
+        let collect_tokens = |asset_id: AssetId,
+                              asset_bytes: &[u8; 32],
+                              needed: u64|
+         -> Result<Vec<UnblindedUtxo>> {
+            let mut collected = Vec::new();
+            let mut total = 0u64;
+            for u in raw_utxos
+                .iter()
+                .filter(|u| !u.is_spent && u.unblinded.asset == asset_id)
+            {
+                let tx = self.fetch_transaction(&u.outpoint.txid)?;
+                let txout = tx
+                    .output
+                    .get(u.outpoint.vout as usize)
+                    .ok_or_else(|| Error::Query("token UTXO vout out of range".into()))?
+                    .clone();
+                collected.push(wallet_txout_to_unblinded(u, &txout));
+                total = total.saturating_add(u.unblinded.value);
+                if total >= needed {
+                    break;
+                }
+            }
+            if total < needed {
+                return Err(Error::InsufficientUtxos(format!(
+                    "need {} tokens of asset {:?}, found {}",
+                    needed,
+                    hex::encode(asset_bytes),
+                    total
+                )));
+            }
+            Ok(collected)
+        };
+
+        let yes_utxos = collect_tokens(yes_id, yes_asset, pairs)?;
+        let no_utxos = collect_tokens(no_id, no_asset, pairs)?;
+
+        Ok((yes_utxos, no_utxos))
+    }
+
+    /// Find token UTXOs of a single asset type for burning.
+    fn find_single_token_utxos(
+        &self,
+        token_asset: &[u8; 32],
+        needed: u64,
+    ) -> Result<Vec<UnblindedUtxo>> {
+        let asset_id = AssetId::from_slice(token_asset)
+            .map_err(|e| Error::Query(format!("bad token asset: {e}")))?;
+
+        let raw_utxos = self.utxos()?;
+        let mut collected = Vec::new();
+        let mut total = 0u64;
+        for u in raw_utxos
+            .iter()
+            .filter(|u| !u.is_spent && u.unblinded.asset == asset_id)
+        {
+            let tx = self.fetch_transaction(&u.outpoint.txid)?;
+            let txout = tx
+                .output
+                .get(u.outpoint.vout as usize)
+                .ok_or_else(|| Error::Query("token UTXO vout out of range".into()))?
+                .clone();
+            collected.push(wallet_txout_to_unblinded(u, &txout));
+            total = total.saturating_add(u.unblinded.value);
+            if total >= needed {
+                break;
+            }
+        }
+        if total < needed {
+            return Err(Error::InsufficientUtxos(format!(
+                "need {} tokens of asset {}, found {}",
+                needed,
+                hex::encode(token_asset),
+                total
+            )));
+        }
+        Ok(collected)
+    }
+
+    /// Select a fee UTXO and return it with a change address.
+    ///
+    /// Callers must ensure the wallet is synced before calling this method.
+    fn select_fee_utxo(
+        &mut self,
+        fee_amount: u64,
+    ) -> Result<(UnblindedUtxo, lwk_wollet::elements::Address)> {
+        let policy_asset = self.policy_asset();
+        let raw_utxos = self.utxos()?;
+
+        let fee_wallet_utxo = raw_utxos
+            .iter()
+            .filter(|u| {
+                !u.is_spent && u.unblinded.asset == policy_asset && u.unblinded.value >= fee_amount
+            })
+            .min_by_key(|u| u.unblinded.value)
+            .ok_or_else(|| {
+                Error::InsufficientUtxos(format!(
+                    "need an L-BTC UTXO with >= {} sats for the fee",
+                    fee_amount
+                ))
+            })?
+            .clone();
+
+        let fee_tx = self.fetch_transaction(&fee_wallet_utxo.outpoint.txid)?;
+        let fee_txout = fee_tx
+            .output
+            .get(fee_wallet_utxo.outpoint.vout as usize)
+            .ok_or_else(|| Error::Query("fee UTXO vout out of range".into()))?
+            .clone();
+
+        let fee_unblinded = wallet_txout_to_unblinded(&fee_wallet_utxo, &fee_txout);
+
+        let addr_result = self.address(None)?;
+        let change_addr: lwk_wollet::elements::Address = addr_result
+            .address()
+            .to_string()
+            .parse()
+            .map_err(|e| Error::Query(format!("bad change address: {}", e)))?;
+
+        Ok((fee_unblinded, change_addr))
     }
 
     // ── Covenant scanning helpers ───────────────────────────────────────

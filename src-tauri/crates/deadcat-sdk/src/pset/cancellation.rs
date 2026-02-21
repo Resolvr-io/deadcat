@@ -26,6 +26,8 @@ pub struct CancellationParams {
     pub fee_amount: u64,
     pub refund_destination: Script,
     pub fee_change_destination: Option<Script>,
+    /// Where to send excess tokens if token UTXOs hold more than `pairs_burned`.
+    pub token_change_destination: Option<Script>,
 }
 
 /// Build the cancellation PSET (state 1 → 1 partial, 1 → 0 full).
@@ -85,6 +87,25 @@ pub fn build_cancellation_pset(
                 &params.refund_destination,
             ),
         );
+        // Token change outputs (if UTXOs hold more than pairs_burned)
+        if let Some(ref change_spk) = params.token_change_destination {
+            let yes_total: u64 = params.yes_token_utxos.iter().map(|u| u.value).sum();
+            let yes_change = yes_total.saturating_sub(params.pairs_burned);
+            if yes_change > 0 {
+                add_pset_output(
+                    &mut pset,
+                    explicit_txout(&contract.params().yes_token_asset, yes_change, change_spk),
+                );
+            }
+            let no_total: u64 = params.no_token_utxos.iter().map(|u| u.value).sum();
+            let no_change = no_total.saturating_sub(params.pairs_burned);
+            if no_change > 0 {
+                add_pset_output(
+                    &mut pset,
+                    explicit_txout(&contract.params().no_token_asset, no_change, change_spk),
+                );
+            }
+        }
         add_pset_output(
             &mut pset,
             fee_txout(&contract.params().collateral_asset_id, params.fee_amount),
