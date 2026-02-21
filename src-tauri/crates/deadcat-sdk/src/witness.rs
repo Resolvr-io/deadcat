@@ -1,6 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use simplicityhl::elements::Transaction;
 use simplicityhl::num::U256;
+use simplicityhl::simplicity::jet::elements::ElementsEnv;
 use simplicityhl::str::WitnessName;
 use simplicityhl::types::{ResolvedType, TypeConstructible};
 use simplicityhl::value::ValueConstructible;
@@ -150,6 +153,16 @@ pub fn build_witness_values(path: &SpendingPath, state: MarketState) -> WitnessV
     );
 
     let zero = [0u8; 32];
+
+    // Budget padding witnesses (must match the .simf contract's BUDGET_PAD_A/B).
+    map.insert(
+        WitnessName::from_str_unchecked("BUDGET_PAD_A"),
+        u256_val(&zero),
+    );
+    map.insert(
+        WitnessName::from_str_unchecked("BUDGET_PAD_B"),
+        u256_val(&zero),
+    );
 
     match path {
         SpendingPath::InitialIssuance { blinding } => {
@@ -315,6 +328,8 @@ fn set_zero_redemption_map(map: &mut HashMap<WitnessName, Value>) {
 /// Satisfy a compiled contract with the given spending path and state.
 ///
 /// Builds witness values from the path and state, then calls `program.satisfy()`.
+/// Note: this does NOT prune the program. Use `satisfy_contract_with_env` for
+/// on-chain transactions that require pruning.
 pub fn satisfy_contract(
     contract: &CompiledContract,
     path: &SpendingPath,
@@ -322,6 +337,21 @@ pub fn satisfy_contract(
 ) -> Result<SatisfiedProgram, String> {
     let witness_values = build_witness_values(path, state);
     contract.program().satisfy(witness_values)
+}
+
+/// Satisfy a compiled contract with pruning enabled via an ElementsEnv.
+///
+/// When `env` is `Some`, the program is pruned: un-taken case branches are
+/// replaced with HIDDEN nodes containing only their CMR. This is required by
+/// Simplicity's anti-DOS consensus rules (every visible node must be executed).
+pub fn satisfy_contract_with_env(
+    contract: &CompiledContract,
+    path: &SpendingPath,
+    state: MarketState,
+    env: Option<&ElementsEnv<Arc<Transaction>>>,
+) -> Result<SatisfiedProgram, String> {
+    let witness_values = build_witness_values(path, state);
+    contract.program().satisfy_with_env(witness_values, env)
 }
 
 /// Serialize a satisfied program into (program_bytes, witness_bytes).

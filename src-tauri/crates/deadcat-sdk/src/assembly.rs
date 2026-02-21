@@ -1,10 +1,19 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use lwk_wollet::elements::confidential::{AssetBlindingFactor, ValueBlindingFactor};
+use lwk_wollet::elements::confidential::{
+    AssetBlindingFactor, Value as ConfValue, ValueBlindingFactor,
+};
 use lwk_wollet::elements::pset::PartiallySignedTransaction;
 use lwk_wollet::elements::secp256k1_zkp::{self, PublicKey};
-use lwk_wollet::elements::{AssetId, ContractHash, Script, Transaction};
+use lwk_wollet::elements::{
+    AssetId, AssetIssuance, BlockHash, ContractHash, LockTime, OutPoint, Script, Sequence,
+    Transaction, TxIn,
+};
 use rand::thread_rng;
+use simplicityhl::elements::hashes::Hash;
+use simplicityhl::elements::taproot::ControlBlock;
+use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 
 use crate::contract::CompiledContract;
 use crate::error::{Error, Result};
@@ -13,7 +22,7 @@ use crate::pset::initial_issuance::{InitialIssuanceParams, build_initial_issuanc
 use crate::pset::issuance::{SubsequentIssuanceParams, build_subsequent_issuance_pset};
 use crate::state::MarketState;
 use crate::witness::{
-    AllBlindingFactors, ReissuanceBlindingFactors, SpendingPath, satisfy_contract,
+    AllBlindingFactors, ReissuanceBlindingFactors, SpendingPath, satisfy_contract_with_env,
     serialize_satisfied,
 };
 
@@ -189,6 +198,12 @@ pub fn blind_issuance_pset(
         outputs[idx].blinding_key = Some(pset_blinding_key);
         outputs[idx].blinder_index = Some(0);
     }
+    // Blind the token destination outputs (3, 4) so the wallet can detect them.
+    // Outputs 2 (collateral→covenant) and 5 (fee) stay explicit.
+    for idx in [3usize, 4] {
+        outputs[idx].blinding_key = Some(pset_blinding_key);
+        outputs[idx].blinder_index = Some(0);
+    }
     for idx in 6..outputs.len() {
         outputs[idx].blinding_key = Some(pset_blinding_key);
         outputs[idx].blinder_index = Some(0);
@@ -329,7 +344,105 @@ pub fn recover_blinding_factors(
     })
 }
 
+/// Build a Transaction from the PSET for use as an ElementsEnv during pruning.
+///
+/// The resulting transaction has the correct structure (inputs, outputs, locktime)
+/// matching what will be broadcast, but with empty witnesses.
+fn pset_to_pruning_transaction(pset: &PartiallySignedTransaction) -> Result<Transaction> {
+    let outputs: Vec<_> = pset.outputs().iter().map(|o| o.to_txout()).collect();
+
+    let mut inputs = Vec::new();
+    for inp in pset.inputs() {
+        let outpoint = OutPoint::new(inp.previous_txid, inp.previous_output_index);
+
+        let has_issuance = inp.issuance_value_amount.is_some()
+            || inp.issuance_value_comm.is_some()
+            || inp.issuance_blinding_nonce.is_some()
+            || inp.issuance_asset_entropy.is_some()
+            || inp.issuance_inflation_keys.is_some()
+            || inp.issuance_inflation_keys_comm.is_some();
+
+        let asset_issuance = if has_issuance {
+            let amount = if let Some(comm) = inp.issuance_value_comm {
+                ConfValue::Confidential(comm)
+            } else if let Some(amt) = inp.issuance_value_amount {
+                ConfValue::Explicit(amt)
+            } else {
+                ConfValue::Null
+            };
+            let inflation_keys = if let Some(comm) = inp.issuance_inflation_keys_comm {
+                ConfValue::Confidential(comm)
+            } else if let Some(keys) = inp.issuance_inflation_keys {
+                ConfValue::Explicit(keys)
+            } else {
+                ConfValue::Null
+            };
+
+            let zero_nonce =
+                || secp256k1_zkp::Tweak::from_slice(&[0u8; 32]).expect("valid zero tweak");
+
+            AssetIssuance {
+                asset_blinding_nonce: inp.issuance_blinding_nonce.unwrap_or_else(zero_nonce),
+                asset_entropy: inp.issuance_asset_entropy.unwrap_or_default(),
+                amount,
+                inflation_keys,
+            }
+        } else {
+            Default::default()
+        };
+
+        inputs.push(TxIn {
+            previous_output: outpoint,
+            is_pegin: false,
+            script_sig: Script::new(),
+            sequence: inp.sequence.unwrap_or(Sequence::ENABLE_LOCKTIME_NO_RBF),
+            asset_issuance,
+            witness: Default::default(),
+        });
+    }
+
+    let lock_time = pset
+        .global
+        .tx_data
+        .fallback_locktime
+        .unwrap_or(LockTime::ZERO);
+
+    Ok(Transaction {
+        version: 2,
+        lock_time,
+        input: inputs,
+        output: outputs,
+    })
+}
+
+/// Build the ElementsEnv for a specific covenant input, enabling Simplicity pruning.
+fn build_pruning_env(
+    tx: &Arc<Transaction>,
+    utxos: &[ElementsUtxo],
+    input_index: u32,
+    contract: &CompiledContract,
+    state: MarketState,
+) -> Result<ElementsEnv<Arc<Transaction>>> {
+    let cb_bytes = contract.control_block(state);
+    let control_block = ControlBlock::from_slice(&cb_bytes)
+        .map_err(|e| Error::Witness(format!("control block: {e}")))?;
+
+    Ok(ElementsEnv::new(
+        Arc::clone(tx),
+        utxos.to_vec(),
+        input_index,
+        *contract.cmr(),
+        control_block,
+        None,
+        BlockHash::all_zeros(),
+    ))
+}
+
 /// Attach Simplicity witness stacks to covenant inputs in the PSET (step H).
+///
+/// Constructs an ElementsEnv from the PSET to enable Simplicity program pruning.
+/// Pruning replaces un-taken case branches with HIDDEN nodes (their CMR hashes),
+/// which is required by Simplicity's anti-DOS consensus rules.
 pub fn attach_witnesses(
     pset: &mut PartiallySignedTransaction,
     contract: &CompiledContract,
@@ -342,28 +455,59 @@ pub fn attach_witnesses(
         other => return Err(Error::NotIssuable(other)),
     };
 
-    let satisfied = satisfy_contract(contract, &spending_path, state)
-        .map_err(|e| Error::Witness(e.to_string()))?;
-    let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
+    // Build a Transaction + UTXOs from the PSET for Simplicity pruning.
+    let tx = Arc::new(pset_to_pruning_transaction(pset)?);
+    let utxos: Vec<ElementsUtxo> = pset
+        .inputs()
+        .iter()
+        .enumerate()
+        .map(|(i, inp)| {
+            inp.witness_utxo
+                .as_ref()
+                .map(|u| ElementsUtxo::from(u.clone()))
+                .ok_or_else(|| Error::Pset(format!("input {i} missing witness_utxo")))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-    let control_block = contract.control_block(state);
+    let control_block_bytes = contract.control_block(state);
     let cmr_bytes = contract.cmr().to_byte_array().to_vec();
-    let witness_stack: Vec<Vec<u8>> =
-        vec![witness_bytes, program_bytes, cmr_bytes.clone(), control_block.clone()];
 
-    pset.inputs_mut()[0].final_script_witness = Some(witness_stack);
+    // Prune, serialize, and build the witness stack for a covenant input.
+    let build_witness_stack =
+        |path: &SpendingPath, input_index: u32| -> Result<Vec<Vec<u8>>> {
+            let env = build_pruning_env(&tx, &utxos, input_index, contract, state)?;
+            let satisfied = satisfy_contract_with_env(contract, path, state, Some(&env))
+                .map_err(|e| Error::Witness(e.to_string()))?;
+            let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
 
+            let stack = vec![
+                witness_bytes,
+                program_bytes,
+                cmr_bytes.clone(),
+                control_block_bytes.clone(),
+            ];
+
+            debug_assert!(
+                satisfied.redeem().bounds().cost.is_budget_valid(&stack),
+                "input {input_index}: Simplicity program cost exceeds witness budget"
+            );
+
+            Ok(stack)
+        };
+
+    // Primary covenant input (index 0)
+    pset.inputs_mut()[0].final_script_witness =
+        Some(build_witness_stack(&spending_path, 0)?);
+
+    // Secondary covenant input (index 1)
     let secondary_path = SpendingPath::SecondaryCovenantInput;
-    let secondary_satisfied = satisfy_contract(contract, &secondary_path, state)
-        .map_err(|e| Error::Witness(e.to_string()))?;
-    let (sec_program, sec_witness) = serialize_satisfied(&secondary_satisfied);
-    let sec_witness_stack: Vec<Vec<u8>> =
-        vec![sec_witness, sec_program, cmr_bytes, control_block];
+    pset.inputs_mut()[1].final_script_witness =
+        Some(build_witness_stack(&secondary_path, 1)?);
 
-    pset.inputs_mut()[1].final_script_witness = Some(sec_witness_stack.clone());
-
+    // For SubsequentIssuance, input 2 is also a covenant input (collateral)
     if state == MarketState::Unresolved {
-        pset.inputs_mut()[2].final_script_witness = Some(sec_witness_stack);
+        pset.inputs_mut()[2].final_script_witness =
+            Some(build_witness_stack(&secondary_path, 2)?);
     }
 
     Ok(spending_path)

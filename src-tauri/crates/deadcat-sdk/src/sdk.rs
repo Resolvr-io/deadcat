@@ -85,8 +85,7 @@ impl DeadcatSdk {
             .electrum_url()
             .parse()
             .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
-        let mut client =
-            ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?;
+        let mut client = ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?;
         lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, &mut client)
             .map_err(|e| Error::Electrum(e.to_string()))?;
         Ok(())
@@ -100,19 +99,14 @@ impl DeadcatSdk {
         Ok(balance.iter().map(|(k, v)| (*k, *v)).collect())
     }
 
-    pub fn address(
-        &self,
-        index: Option<u32>,
-    ) -> Result<lwk_wollet::AddressResult> {
+    pub fn address(&self, index: Option<u32>) -> Result<lwk_wollet::AddressResult> {
         self.wollet
             .address(index)
             .map_err(|e| Error::Query(e.to_string()))
     }
 
     pub fn utxos(&self) -> Result<Vec<WalletTxOut>> {
-        self.wollet
-            .utxos()
-            .map_err(|e| Error::Query(e.to_string()))
+        self.wollet.utxos().map_err(|e| Error::Query(e.to_string()))
     }
 
     pub fn transactions(&self) -> Result<Vec<WalletTx>> {
@@ -171,8 +165,7 @@ impl DeadcatSdk {
             .electrum_url()
             .parse()
             .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
-        let mut client =
-            ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?;
+        let mut client = ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?;
         lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, &mut client)
             .map_err(|e| Error::Electrum(e.to_string()))?;
         Ok(txid)
@@ -241,8 +234,7 @@ impl DeadcatSdk {
         let policy_asset = self.policy_asset();
         let policy_bytes: [u8; 32] = policy_asset.into_inner().to_byte_array();
 
-        let (yes_utxo, no_utxo) =
-            select_defining_utxos(&raw_utxos, policy_asset, min_utxo_value)?;
+        let (yes_utxo, no_utxo) = select_defining_utxos(&raw_utxos, policy_asset, min_utxo_value)?;
 
         let yes_tx = self.fetch_transaction(&yes_utxo.outpoint.txid)?;
         let no_tx = self.fetch_transaction(&no_utxo.outpoint.txid)?;
@@ -395,9 +387,9 @@ impl DeadcatSdk {
         };
 
         // E-H. Assemble issuance (build PSET → blind → recover factors → attach witnesses)
-        let blinding_pk = change_addr.blinding_pubkey.ok_or_else(|| {
-            Error::Blinding("change address has no blinding key".to_string())
-        })?;
+        let blinding_pk = change_addr
+            .blinding_pubkey
+            .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
 
         let master_blinding_key = self
             .signer
@@ -572,8 +564,7 @@ impl DeadcatSdk {
             })?
             .clone();
 
-        let collateral_tx =
-            self.fetch_transaction(&collateral_wallet_utxo.outpoint.txid)?;
+        let collateral_tx = self.fetch_transaction(&collateral_wallet_utxo.outpoint.txid)?;
         let collateral_txout = collateral_tx
             .output
             .get(collateral_wallet_utxo.outpoint.vout as usize)
@@ -602,10 +593,7 @@ impl DeadcatSdk {
 
     // ── Covenant scanning helpers ───────────────────────────────────────
 
-    fn scan_covenant_utxos(
-        &self,
-        script_pubkey: &Script,
-    ) -> Result<Vec<(OutPoint, TxOut)>> {
+    fn scan_covenant_utxos(&self, script_pubkey: &Script) -> Result<Vec<(OutPoint, TxOut)>> {
         self.chain.scan_script_utxos(script_pubkey)
     }
 
@@ -614,10 +602,7 @@ impl DeadcatSdk {
     /// During creation/issuance, reissuance token outputs are blinded using the
     /// change address blinding pubkey. The matching private key is derived via
     /// SLIP77 from the address's script_pubkey.
-    fn unblind_covenant_utxo(
-        &self,
-        txout: &TxOut,
-    ) -> Result<(AssetId, u64, [u8; 32], [u8; 32])> {
+    fn unblind_covenant_utxo(&self, txout: &TxOut) -> Result<(AssetId, u64, [u8; 32], [u8; 32])> {
         let master_blinding_key = self
             .signer
             .slip77_master_blinding_key()
@@ -713,10 +698,10 @@ fn select_defining_utxos(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lwk_wollet::Chain;
     use lwk_wollet::elements::bitcoin::hashes::Hash;
     use lwk_wollet::elements::confidential::{AssetBlindingFactor, ValueBlindingFactor};
     use lwk_wollet::elements::{AddressParams, OutPoint, Script, TxOutSecrets};
-    use lwk_wollet::Chain;
 
     fn make_utxo(value: u64, asset: AssetId, vout: u32, spent: bool) -> WalletTxOut {
         let addr = lwk_wollet::elements::Address::p2sh(

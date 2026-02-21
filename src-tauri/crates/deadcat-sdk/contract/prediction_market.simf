@@ -506,6 +506,14 @@ fn main() {
     let actual_hash: u256 = get_input_script_hash(jet::current_index());
     assert!(jet::eq_256(expected_hash, actual_hash));
 
+    // Budget padding: these witnesses increase the serialized witness size so that
+    // the Simplicity execution budget (witness_stack_bytes + 50 WU) covers the
+    // program's cost. Without this, the pruned program's cost slightly exceeds
+    // the budget derived from its natural witness + program size.
+    let budget_pad_a: u256 = witness::BUDGET_PAD_A;
+    let budget_pad_b: u256 = witness::BUDGET_PAD_B;
+    assert!(jet::eq_256(budget_pad_a, budget_pad_b));
+
     // Read all witnesses in main (required by SimplicityHL)
     let yes_in_abf: u256 = witness::YES_REISSUANCE_INPUT_ABF;
     let yes_in_vbf: u256 = witness::YES_REISSUANCE_INPUT_VBF;
