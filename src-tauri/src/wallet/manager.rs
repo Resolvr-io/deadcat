@@ -184,6 +184,7 @@ impl WalletManager {
                     fee: tx.fee,
                     height: tx.height,
                     timestamp: tx.timestamp,
+                    tx_type: tx.type_.clone(),
                 }
             })
             .collect())
