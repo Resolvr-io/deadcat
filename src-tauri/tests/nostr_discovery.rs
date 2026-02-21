@@ -160,8 +160,7 @@ async fn oracle_attestation_roundtrip() {
     assert!(!att_events.is_empty(), "should find attestation event");
 
     let att_ev = att_events.iter().next().unwrap();
-    let content: discovery::AttestationContent =
-        serde_json::from_str(&att_ev.content).unwrap();
+    let content: discovery::AttestationContent = serde_json::from_str(&att_ev.content).unwrap();
 
     assert_eq!(content.market_id, market_id_hex);
     assert!(content.outcome_yes);

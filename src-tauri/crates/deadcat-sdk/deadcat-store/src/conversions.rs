@@ -2,12 +2,14 @@ use deadcat_sdk::elements::encode::{deserialize as elements_deserialize, seriali
 use deadcat_sdk::elements::hashes::Hash;
 use deadcat_sdk::elements::{OutPoint, TxOut, Txid};
 use deadcat_sdk::{
-    CompiledContract, CompiledMakerOrder, ContractParams, MarketId, MarketState, MakerOrderParams,
+    CompiledContract, CompiledMakerOrder, ContractParams, MakerOrderParams, MarketId, MarketState,
     OrderDirection, UnblindedUtxo, derive_maker_receive, maker_receive_script_pubkey,
 };
 
 use crate::error::StoreError;
-use crate::models::{MakerOrderRow, MarketRow, NewMakerOrderRow, NewMarketRow, NewUtxoRow, UtxoRow};
+use crate::models::{
+    MakerOrderRow, MarketRow, NewMakerOrderRow, NewMarketRow, NewUtxoRow, UtxoRow,
+};
 use crate::store::{IssuanceData, MakerOrderInfo, MarketInfo, OrderStatus};
 
 pub fn vec_to_array32(v: &[u8], field: &str) -> std::result::Result<[u8; 32], StoreError> {
@@ -48,10 +50,7 @@ impl TryFrom<&MarketRow> for ContractParams {
                 &row.yes_reissuance_token,
                 "yes_reissuance_token",
             )?,
-            no_reissuance_token: vec_to_array32(
-                &row.no_reissuance_token,
-                "no_reissuance_token",
-            )?,
+            no_reissuance_token: vec_to_array32(&row.no_reissuance_token, "no_reissuance_token")?,
             collateral_per_token: row.collateral_per_token as u64,
             // NOTE: expiry_time stored as i32 limits to ~2038 for epoch timestamps.
             // Block heights (the typical usage) are well within i32 range.
@@ -124,10 +123,22 @@ pub fn new_market_row(params: &ContractParams, compiled: &CompiledContract) -> N
         collateral_per_token: params.collateral_per_token as i64,
         expiry_time: params.expiry_time as i32,
         cmr: compiled.cmr().as_ref().to_vec(),
-        dormant_spk: compiled.script_pubkey(MarketState::Dormant).as_bytes().to_vec(),
-        unresolved_spk: compiled.script_pubkey(MarketState::Unresolved).as_bytes().to_vec(),
-        resolved_yes_spk: compiled.script_pubkey(MarketState::ResolvedYes).as_bytes().to_vec(),
-        resolved_no_spk: compiled.script_pubkey(MarketState::ResolvedNo).as_bytes().to_vec(),
+        dormant_spk: compiled
+            .script_pubkey(MarketState::Dormant)
+            .as_bytes()
+            .to_vec(),
+        unresolved_spk: compiled
+            .script_pubkey(MarketState::Unresolved)
+            .as_bytes()
+            .to_vec(),
+        resolved_yes_spk: compiled
+            .script_pubkey(MarketState::ResolvedYes)
+            .as_bytes()
+            .to_vec(),
+        resolved_no_spk: compiled
+            .script_pubkey(MarketState::ResolvedNo)
+            .as_bytes()
+            .to_vec(),
     }
 }
 
@@ -186,8 +197,7 @@ pub fn new_maker_order_row(
     maker_base_pubkey: Option<&[u8; 32]>,
     order_nonce: Option<&[u8; 32]>,
 ) -> NewMakerOrderRow {
-    let covenant_spk = maker_base_pubkey
-        .map(|pk| compiled.script_pubkey(pk).as_bytes().to_vec());
+    let covenant_spk = maker_base_pubkey.map(|pk| compiled.script_pubkey(pk).as_bytes().to_vec());
 
     // Compute maker_receive_spk when both pubkey and nonce are present
     let maker_receive_spk = match (maker_base_pubkey, order_nonce) {

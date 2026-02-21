@@ -41,10 +41,8 @@ pub trait ChainSource {
 
     /// Returns the raw serialized transaction bytes for a given txid.
     /// `Ok(Some(raw_bytes))` if found, `Ok(None)` if not available.
-    fn get_transaction(
-        &self,
-        txid: &[u8; 32],
-    ) -> std::result::Result<Option<Vec<u8>>, Self::Error>;
+    fn get_transaction(&self, txid: &[u8; 32])
+    -> std::result::Result<Option<Vec<u8>>, Self::Error>;
 }
 
 /// Report returned by `DeadcatStore::sync()`.

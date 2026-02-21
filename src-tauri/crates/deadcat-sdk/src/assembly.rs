@@ -91,10 +91,8 @@ pub fn compute_issuance_entropy(
         .previous_output;
 
     let zero_contract_hash = ContractHash::from_byte_array([0u8; 32]);
-    let yes_entropy =
-        AssetId::generate_asset_entropy(yes_defining_outpoint, zero_contract_hash);
-    let no_entropy =
-        AssetId::generate_asset_entropy(no_defining_outpoint, zero_contract_hash);
+    let yes_entropy = AssetId::generate_asset_entropy(yes_defining_outpoint, zero_contract_hash);
+    let no_entropy = AssetId::generate_asset_entropy(no_defining_outpoint, zero_contract_hash);
 
     Ok(IssuanceEntropy {
         yes_blinding_nonce: *yes_rt_abf,
@@ -105,9 +103,7 @@ pub fn compute_issuance_entropy(
 }
 
 /// Build the PSET for an issuance transaction (step E).
-pub fn build_issuance_pset(
-    inputs: &IssuanceAssemblyInputs,
-) -> Result<PartiallySignedTransaction> {
+pub fn build_issuance_pset(inputs: &IssuanceAssemblyInputs) -> Result<PartiallySignedTransaction> {
     match inputs.current_state {
         MarketState::Dormant => {
             let wallet_utxo = match &inputs.collateral_source {
@@ -250,10 +246,7 @@ pub fn blind_issuance_pset(
 
     match (&inputs.current_state, &inputs.collateral_source) {
         (MarketState::Dormant, CollateralSource::Initial { wallet_utxo }) => {
-            inp_txout_sec.insert(
-                2,
-                txout_secrets_from_unblinded(wallet_utxo, collateral_id)?,
-            );
+            inp_txout_sec.insert(2, txout_secrets_from_unblinded(wallet_utxo, collateral_id)?);
             inp_txout_sec.insert(
                 3,
                 txout_secrets_from_unblinded(&inputs.fee_utxo, collateral_id)?,
@@ -473,41 +466,37 @@ pub fn attach_witnesses(
     let cmr_bytes = contract.cmr().to_byte_array().to_vec();
 
     // Prune, serialize, and build the witness stack for a covenant input.
-    let build_witness_stack =
-        |path: &SpendingPath, input_index: u32| -> Result<Vec<Vec<u8>>> {
-            let env = build_pruning_env(&tx, &utxos, input_index, contract, state)?;
-            let satisfied = satisfy_contract_with_env(contract, path, state, Some(&env))
-                .map_err(|e| Error::Witness(e.to_string()))?;
-            let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
+    let build_witness_stack = |path: &SpendingPath, input_index: u32| -> Result<Vec<Vec<u8>>> {
+        let env = build_pruning_env(&tx, &utxos, input_index, contract, state)?;
+        let satisfied = satisfy_contract_with_env(contract, path, state, Some(&env))
+            .map_err(|e| Error::Witness(e.to_string()))?;
+        let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
 
-            let stack = vec![
-                witness_bytes,
-                program_bytes,
-                cmr_bytes.clone(),
-                control_block_bytes.clone(),
-            ];
+        let stack = vec![
+            witness_bytes,
+            program_bytes,
+            cmr_bytes.clone(),
+            control_block_bytes.clone(),
+        ];
 
-            debug_assert!(
-                satisfied.redeem().bounds().cost.is_budget_valid(&stack),
-                "input {input_index}: Simplicity program cost exceeds witness budget"
-            );
+        debug_assert!(
+            satisfied.redeem().bounds().cost.is_budget_valid(&stack),
+            "input {input_index}: Simplicity program cost exceeds witness budget"
+        );
 
-            Ok(stack)
-        };
+        Ok(stack)
+    };
 
     // Primary covenant input (index 0)
-    pset.inputs_mut()[0].final_script_witness =
-        Some(build_witness_stack(&spending_path, 0)?);
+    pset.inputs_mut()[0].final_script_witness = Some(build_witness_stack(&spending_path, 0)?);
 
     // Secondary covenant input (index 1)
     let secondary_path = SpendingPath::SecondaryCovenantInput;
-    pset.inputs_mut()[1].final_script_witness =
-        Some(build_witness_stack(&secondary_path, 1)?);
+    pset.inputs_mut()[1].final_script_witness = Some(build_witness_stack(&secondary_path, 1)?);
 
     // For SubsequentIssuance, input 2 is also a covenant input (collateral)
     if state == MarketState::Unresolved {
-        pset.inputs_mut()[2].final_script_witness =
-            Some(build_witness_stack(&secondary_path, 2)?);
+        pset.inputs_mut()[2].final_script_witness = Some(build_witness_stack(&secondary_path, 2)?);
     }
 
     Ok(spending_path)

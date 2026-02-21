@@ -17,9 +17,7 @@ use simplicityhl::elements::{
 use simplicityhl::simplicity::bit_machine::BitMachine;
 use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 
-use crate::assembly::{
-    IssuanceAssemblyInputs, build_issuance_pset, attach_witnesses,
-};
+use crate::assembly::{IssuanceAssemblyInputs, attach_witnesses, build_issuance_pset};
 use crate::contract::CompiledContract;
 use crate::error::{Error, Result};
 use crate::state::MarketState;
@@ -127,8 +125,7 @@ pub fn execute_against_env(
     utxos: Vec<ElementsUtxo>,
     input_index: u32,
 ) -> std::result::Result<(), String> {
-    let satisfied =
-        satisfy_contract(contract, path, state).map_err(|e| format!("satisfy: {e}"))?;
+    let satisfied = satisfy_contract(contract, path, state).map_err(|e| format!("satisfy: {e}"))?;
     let redeem = satisfied.redeem();
 
     let cb_bytes = contract.control_block(state);
@@ -145,8 +142,7 @@ pub fn execute_against_env(
         BlockHash::all_zeros(),
     );
 
-    let mut machine =
-        BitMachine::for_program(redeem).map_err(|e| format!("bit machine: {e}"))?;
+    let mut machine = BitMachine::for_program(redeem).map_err(|e| format!("bit machine: {e}"))?;
 
     machine
         .exec(redeem, &env)

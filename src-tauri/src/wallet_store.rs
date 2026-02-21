@@ -130,13 +130,7 @@ pub fn create_wollet(
         .wallets
         .lock()
         .map_err(|_| "failed to lock wallet store".to_string())?;
-    wallets.insert(
-        assigned_wallet_id,
-        WalletContext {
-            signer_id,
-            wollet,
-        },
-    );
+    wallets.insert(assigned_wallet_id, WalletContext { signer_id, wollet });
 
     Ok(response)
 }
@@ -182,4 +176,3 @@ pub fn wallet_signer_id(
         .ok_or_else(|| format!("unknown wallet_id: {wallet_id}"))?;
     Ok(wallet.signer_id.clone())
 }
-

@@ -16,7 +16,7 @@ use deadcat_sdk::elements::{
 use deadcat_sdk::simplicity::bit_machine::BitMachine;
 use deadcat_sdk::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 use deadcat_sdk::witness::{
-    satisfy_contract, AllBlindingFactors, ReissuanceBlindingFactors, SpendingPath,
+    AllBlindingFactors, ReissuanceBlindingFactors, SpendingPath, satisfy_contract,
 };
 use deadcat_sdk::{CompiledContract, ContractParams, MarketState};
 
@@ -128,8 +128,7 @@ fn execute_contract(
     utxos: Vec<ElementsUtxo>,
     input_index: u32,
 ) -> Result<(), String> {
-    let satisfied =
-        satisfy_contract(contract, path, state).map_err(|e| format!("satisfy: {e}"))?;
+    let satisfied = satisfy_contract(contract, path, state).map_err(|e| format!("satisfy: {e}"))?;
     let redeem = satisfied.redeem();
 
     let cb_bytes = contract.control_block(state);
@@ -146,8 +145,7 @@ fn execute_contract(
         BlockHash::all_zeros(),
     );
 
-    let mut machine =
-        BitMachine::for_program(redeem).map_err(|e| format!("bit machine: {e}"))?;
+    let mut machine = BitMachine::for_program(redeem).map_err(|e| format!("bit machine: {e}"))?;
 
     machine
         .exec(redeem, &env)
@@ -406,7 +404,11 @@ fn initial_issuance_execution() {
                 &unresolved_spk,
             ),
             // [2] Collateral → Unresolved
-            explicit_txout(&params.collateral_asset_id, total_collateral, &unresolved_spk),
+            explicit_txout(
+                &params.collateral_asset_id,
+                total_collateral,
+                &unresolved_spk,
+            ),
             // [3] YES tokens (not checked by contract)
             explicit_txout(&params.yes_token_asset, pairs, &Script::new()),
             // [4] NO tokens (not checked by contract)
@@ -493,7 +495,11 @@ fn initial_issuance_fails_with_wrong_collateral() {
                 &unresolved_spk,
             ),
             // Wrong collateral amount
-            explicit_txout(&params.collateral_asset_id, wrong_collateral, &unresolved_spk),
+            explicit_txout(
+                &params.collateral_asset_id,
+                wrong_collateral,
+                &unresolved_spk,
+            ),
             explicit_txout(&params.yes_token_asset, pairs, &Script::new()),
             explicit_txout(&params.no_token_asset, pairs, &Script::new()),
             explicit_txout(&params.collateral_asset_id, 1000, &Script::new()),
@@ -576,7 +582,11 @@ fn initial_issuance_fails_at_wrong_index() {
                 &blinding.no.output_vbf,
                 &unresolved_spk,
             ),
-            explicit_txout(&params.collateral_asset_id, total_collateral, &unresolved_spk),
+            explicit_txout(
+                &params.collateral_asset_id,
+                total_collateral,
+                &unresolved_spk,
+            ),
             explicit_txout(&params.yes_token_asset, pairs, &Script::new()),
             explicit_txout(&params.no_token_asset, pairs, &Script::new()),
             explicit_txout(&params.collateral_asset_id, 1000, &Script::new()),
@@ -592,10 +602,7 @@ fn initial_issuance_fails_at_wrong_index() {
         1, // Wrong index — should fail
     );
 
-    assert!(
-        result.is_err(),
-        "InitialIssuance at index 1 should fail"
-    );
+    assert!(result.is_err(), "InitialIssuance at index 1 should fail");
 }
 
 // ---------------------------------------------------------------------------
@@ -676,7 +683,11 @@ fn subsequent_issuance_execution() {
                 &unresolved_spk,
             ),
             // [2] Total collateral → Unresolved
-            explicit_txout(&params.collateral_asset_id, total_collateral, &unresolved_spk),
+            explicit_txout(
+                &params.collateral_asset_id,
+                total_collateral,
+                &unresolved_spk,
+            ),
             // [3] YES tokens (not checked by contract)
             explicit_txout(&params.yes_token_asset, pairs, &Script::new()),
             // [4] NO tokens (not checked by contract)
@@ -713,8 +724,7 @@ fn subsequent_issuance_execution() {
 use deadcat_sdk::assembly::{CollateralSource, IssuanceAssemblyInputs, IssuanceEntropy};
 use deadcat_sdk::pset::UnblindedUtxo;
 use deadcat_sdk::testing::{
-    assemble_issuance_for_env, execute_against_env,
-    test_blinding as shared_test_blinding,
+    assemble_issuance_for_env, execute_against_env, test_blinding as shared_test_blinding,
 };
 
 fn test_unblinded_utxo(asset_id: [u8; 32], value: u64, spk: &Script) -> UnblindedUtxo {
@@ -728,12 +738,7 @@ fn test_unblinded_utxo(asset_id: [u8; 32], value: u64, spk: &Script) -> Unblinde
     }
 }
 
-fn test_rt_utxo(
-    asset_id: [u8; 32],
-    abf: [u8; 32],
-    vbf: [u8; 32],
-    spk: &Script,
-) -> UnblindedUtxo {
+fn test_rt_utxo(asset_id: [u8; 32], abf: [u8; 32], vbf: [u8; 32], spk: &Script) -> UnblindedUtxo {
     UnblindedUtxo {
         outpoint: OutPoint::new(Txid::all_zeros(), 0),
         txout: confidential_rt_txout(&asset_id, &abf, &vbf, spk),

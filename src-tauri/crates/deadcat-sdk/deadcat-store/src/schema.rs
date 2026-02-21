@@ -80,9 +80,4 @@ diesel::table! {
 diesel::joinable!(utxos -> markets (market_id));
 diesel::joinable!(utxos -> maker_orders (maker_order_id));
 
-diesel::allow_tables_to_appear_in_same_query!(
-    markets,
-    maker_orders,
-    utxos,
-    sync_state,
-);
+diesel::allow_tables_to_appear_in_same_query!(markets, maker_orders, utxos, sync_state,);
