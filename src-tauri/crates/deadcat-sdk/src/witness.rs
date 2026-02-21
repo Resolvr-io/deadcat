@@ -154,13 +154,21 @@ pub fn build_witness_values(path: &SpendingPath, state: MarketState) -> WitnessV
 
     let zero = [0u8; 32];
 
-    // Budget padding witnesses (must match the .simf contract's BUDGET_PAD_A/B).
+    // Budget padding witnesses (must match the .simf contract's BUDGET_PAD_A/B/C/D).
     map.insert(
         WitnessName::from_str_unchecked("BUDGET_PAD_A"),
         u256_val(&zero),
     );
     map.insert(
         WitnessName::from_str_unchecked("BUDGET_PAD_B"),
+        u256_val(&zero),
+    );
+    map.insert(
+        WitnessName::from_str_unchecked("BUDGET_PAD_C"),
+        u256_val(&zero),
+    );
+    map.insert(
+        WitnessName::from_str_unchecked("BUDGET_PAD_D"),
         u256_val(&zero),
     );
 
