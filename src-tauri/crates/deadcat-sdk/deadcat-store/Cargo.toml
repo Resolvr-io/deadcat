@@ -1,0 +1,13 @@
+[package]
+name = "deadcat-store"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+deadcat-sdk = { path = ".." }
+diesel = { version = "2", features = ["sqlite", "r2d2"] }
+diesel_migrations = "2"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

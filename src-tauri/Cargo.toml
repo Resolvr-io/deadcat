@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/deadcat-sdk", "crates/deadcat-sdk/deadcat-store"]
+resolver = "2"
+
 [package]
 name = "deadcat-live"
 version = "0.1.0"
@@ -18,11 +22,13 @@ tauri-build = { version = "2.5.3", features = [] }
 [dependencies]
 tauri = { version = "2.9.5", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-log = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2"
 chrono = { version = "0.4", features = ["clock"] }
 hex = "0.4"
+log = "0.4"
 tokio = { version = "1", features = ["rt", "sync"] }
 
 # Liquid wallet
@@ -39,6 +45,15 @@ argon2 = "0.5"
 rand = "0.8"
 base64 = "0.22"
 bip39 = "2"
+
+# SDK & Nostr
+deadcat-sdk = { path = "crates/deadcat-sdk" }
+nostr-sdk = "0.38"
+nostr-relay-builder = "0.38"
+
+# Pin rustls to ring backend (electrum-client pulls in rustls 0.23 which
+# needs exactly one crypto provider selected at the feature level).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 
 [patch.crates-io]
 secp256k1-zkp = { git = "https://github.com/breez/rust-secp256k1-zkp.git", rev = "eac2e479255a6e32b5588bc25ee53c642fdd8395" }

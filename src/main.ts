@@ -110,8 +110,47 @@ type PaymentSwap = {
   createdAt: string; updatedAt: string;
 };
 
+type DiscoveredMarket = {
+  id: string;
+  nevent: string;
+  market_id: string;
+  question: string;
+  category: string;
+  description: string;
+  resolution_source: string;
+  oracle_pubkey: string;
+  expiry_height: number;
+  cpt_sats: number;
+  collateral_asset_id: string;
+  yes_asset_id: string;
+  no_asset_id: string;
+  yes_reissuance_token: string;
+  no_reissuance_token: string;
+  starting_yes_price: number;
+  creator_pubkey: string;
+  created_at: number;
+  creation_txid: string | null;
+  state: CovenantState;
+};
+
+type IssuanceResult = {
+  txid: string;
+  previous_state: number;
+  new_state: number;
+  pairs_issued: number;
+};
+
+type IdentityResponse = { pubkey_hex: string; npub: string };
+type AttestationResult = {
+  market_id: string;
+  outcome_yes: boolean;
+  signature_hex: string;
+  nostr_event_id: string;
+};
+
 type Market = {
   id: string;
+  nevent: string;
   question: string;
   category: MarketCategory;
   description: string;
@@ -128,6 +167,7 @@ type Market = {
   noAssetId: string;
   yesReissuanceToken: string;
   noReissuanceToken: string;
+  creationTxid: string | null;
   collateralUtxos: CollateralUtxo[];
   resolveTx?: ResolveTx;
   yesPrice: number;
@@ -159,478 +199,86 @@ const categories: NavCategory[] = [
   "Macro",
 ];
 
-const markets: Market[] = [
-  {
-    id: "mkt-1",
-    question: "Will BTC close above $120,000 by Dec 31, 2026?",
-    category: "Bitcoin",
-    description:
-      "Resolved using a median close basket from major spot exchanges.",
-    resolutionSource: "Exchange close basket",
-    isLive: false,
-    state: 1,
-    marketId: "9db7d4d4...a1ce",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3650000,
-    currentHeight: 3634120,
-    cptSats: 5000,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:5a1f...3b21",
-    noAssetId: "NO:7cb4...2f88",
-    yesReissuanceToken: "YRT:1b11...e2ac",
-    noReissuanceToken: "NRT:2f88...b190",
-    collateralUtxos: [{ txid: "5fd1...e92b", vout: 0, amountSats: 293000000 }],
-    yesPrice: 0.57,
-    change24h: 4.2,
-    volumeBtc: 184.3,
-    liquidityBtc: 24.2,
-  },
-  {
-    id: "mkt-2",
-    question: "Will Team Orbit win the 2026 basketball finals?",
-    category: "Sports",
-    description:
-      "Resolves when the official league result publishes the champion.",
-    resolutionSource: "Official league result",
-    isLive: true,
-    state: 1,
-    marketId: "6d41c93f...8b4a",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3621000,
-    currentHeight: 3620890,
-    cptSats: 5000,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:98a3...4420",
-    noAssetId: "NO:9f3d...1ac3",
-    yesReissuanceToken: "YRT:be31...770a",
-    noReissuanceToken: "NRT:d993...0c14",
-    collateralUtxos: [{ txid: "4ce1...17a9", vout: 1, amountSats: 107000000 }],
-    yesPrice: 0.33,
-    change24h: -3.5,
-    volumeBtc: 54.4,
-    liquidityBtc: 7.8,
-  },
-  {
-    id: "mkt-3",
-    question: "Will candidate Redwood win their party nomination in 2028?",
-    category: "Politics",
-    description:
-      "Settlement follows official nominee certification from party convention.",
-    resolutionSource: "Party convention certification",
-    isLive: false,
-    state: 1,
-    marketId: "5a90ccde...cd44",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 4015000,
-    currentHeight: 3634120,
-    cptSats: 5000,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:7ab1...2310",
-    noAssetId: "NO:7ab1...2311",
-    yesReissuanceToken: "YRT:a9de...2930",
-    noReissuanceToken: "NRT:d1e9...fa70",
-    collateralUtxos: [{ txid: "f111...78ce", vout: 0, amountSats: 225400000 }],
-    yesPrice: 0.41,
-    change24h: 6.8,
-    volumeBtc: 112.7,
-    liquidityBtc: 15.4,
-  },
-  {
-    id: "mkt-4",
-    question: "Will NYC record more than 10 inches of snow in Feb 2026?",
-    category: "Weather",
-    description:
-      "Based on NOAA monthly snowfall at the Central Park weather station.",
-    resolutionSource: "NOAA Central Park station",
-    isLive: true,
-    state: 3,
-    marketId: "44b1e1aa...39ff",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3610000,
-    currentHeight: 3634120,
-    cptSats: 3000,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:11c0...b8e1",
-    noAssetId: "NO:11c0...b8e2",
-    yesReissuanceToken: "YRT:4900...3ef1",
-    noReissuanceToken: "NRT:fb2e...9a14",
-    collateralUtxos: [{ txid: "2af8...71de", vout: 0, amountSats: 62000000 }],
-    resolveTx: {
-      txid: "aa83...d1ef",
-      outcome: "no",
-      sigVerified: true,
-      height: 3610024,
-      signatureHash: "SHA256(44b1e1aa...39ff||00)",
-    },
-    yesPrice: 0.29,
-    change24h: -0.9,
-    volumeBtc: 28.5,
-    liquidityBtc: 4.1,
-  },
-  {
-    id: "mkt-5",
-    question: "Will the Fed cut rates at the next FOMC decision?",
-    category: "Macro",
-    description: "Binary outcome based on official target range cut vs no cut.",
-    resolutionSource: "Federal Reserve statement",
-    isLive: false,
-    state: 1,
-    marketId: "19bc40da...ccb1",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3620000,
-    currentHeight: 3634120,
-    cptSats: 4000,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:b441...7d11",
-    noAssetId: "NO:b441...7d12",
-    yesReissuanceToken: "YRT:c510...90ea",
-    noReissuanceToken: "NRT:2a30...ca7d",
-    collateralUtxos: [{ txid: "5511...0abc", vout: 0, amountSats: 121000000 }],
-    yesPrice: 0.39,
-    change24h: 2.1,
-    volumeBtc: 91.2,
-    liquidityBtc: 11.5,
-  },
-  {
-    id: "mkt-6",
-    question:
-      "Will a major AI model release rank #1 on app stores within 30 days?",
-    category: "Culture",
-    description:
-      "Outcome measured by top free overall ranking in US app stores.",
-    resolutionSource: "Public app store rankings",
-    isLive: false,
-    state: 1,
-    marketId: "43bc8dd2...ff10",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3640000,
-    currentHeight: 3634120,
-    cptSats: 3500,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:a341...12d4",
-    noAssetId: "NO:a341...12d5",
-    yesReissuanceToken: "YRT:5a32...3bc9",
-    noReissuanceToken: "NRT:44bd...1290",
-    collateralUtxos: [
-      { txid: "f001...77ac", vout: 0, amountSats: 43000000 },
-      { txid: "f001...77ac", vout: 1, amountSats: 31000000 },
-    ],
-    yesPrice: 0.35,
-    change24h: 5.4,
-    volumeBtc: 21.7,
-    liquidityBtc: 3.3,
-  },
-  {
-    id: "mkt-7",
-    question: "Will BTC trade above $150,000 before Jan 1, 2027?",
-    category: "Bitcoin",
-    description:
-      "Resolves YES if any major USD spot venue prints 150,000+ before deadline.",
-    resolutionSource: "Multi-exchange high print basket",
-    isLive: false,
-    state: 1,
-    marketId: "73ab1f09...c33a",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3702200,
-    currentHeight: 3634120,
-    cptSats: 5000,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:ec14...5411",
-    noAssetId: "NO:ec14...5412",
-    yesReissuanceToken: "YRT:ec14...5413",
-    noReissuanceToken: "NRT:ec14...5414",
-    collateralUtxos: [{ txid: "cf90...11ab", vout: 0, amountSats: 188000000 }],
-    yesPrice: 0.44,
-    change24h: 3.1,
-    volumeBtc: 97.9,
-    liquidityBtc: 12.4,
-  },
-  {
-    id: "mkt-8",
-    question: "Will ETH/BTC close above 0.070 by June 30, 2026?",
-    category: "Bitcoin",
-    description:
-      "Resolves from daily close ratio composite across top centralized venues.",
-    resolutionSource: "ETH/BTC close composite",
-    isLive: false,
-    state: 1,
-    marketId: "8a20de11...998f",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3665200,
-    currentHeight: 3634120,
-    cptSats: 4000,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:7134...8f21",
-    noAssetId: "NO:7134...8f22",
-    yesReissuanceToken: "YRT:7134...8f23",
-    noReissuanceToken: "NRT:7134...8f24",
-    collateralUtxos: [{ txid: "81ae...2bc1", vout: 0, amountSats: 96200000 }],
-    yesPrice: 0.28,
-    change24h: -2.4,
-    volumeBtc: 55.2,
-    liquidityBtc: 8.6,
-  },
-  {
-    id: "mkt-9",
-    question: "Will candidate Redwood choose Vega as running mate?",
-    category: "Politics",
-    description:
-      "Resolved on official campaign filing naming the vice-presidential nominee.",
-    resolutionSource: "FEC filing + campaign announcement",
-    isLive: false,
-    state: 1,
-    marketId: "db4122f0...77bc",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3942000,
-    currentHeight: 3634120,
-    cptSats: 4500,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:41d8...9011",
-    noAssetId: "NO:41d8...9012",
-    yesReissuanceToken: "YRT:41d8...9013",
-    noReissuanceToken: "NRT:41d8...9014",
-    collateralUtxos: [{ txid: "9dc2...0a44", vout: 1, amountSats: 116000000 }],
-    yesPrice: 0.36,
-    change24h: 1.9,
-    volumeBtc: 63.4,
-    liquidityBtc: 8.2,
-  },
-  {
-    id: "mkt-10",
-    question: "Will the governing coalition lose its majority this year?",
-    category: "Politics",
-    description:
-      "YES if official parliamentary seat count drops below majority threshold.",
-    resolutionSource: "Official parliamentary records",
-    isLive: false,
-    state: 1,
-    marketId: "67f0aa31...80d2",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3814400,
-    currentHeight: 3634120,
-    cptSats: 4000,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:b1c2...33e1",
-    noAssetId: "NO:b1c2...33e2",
-    yesReissuanceToken: "YRT:b1c2...33e3",
-    noReissuanceToken: "NRT:b1c2...33e4",
-    collateralUtxos: [{ txid: "0911...a0f4", vout: 0, amountSats: 138500000 }],
-    yesPrice: 0.52,
-    change24h: -1.1,
-    volumeBtc: 78.6,
-    liquidityBtc: 9.7,
-  },
-  {
-    id: "mkt-11",
-    question: "Will Team Orbit win game 4 tonight?",
-    category: "Sports",
-    description:
-      "Live event contract resolves from official league game book final score.",
-    resolutionSource: "Official game book",
-    isLive: true,
-    state: 1,
-    marketId: "2a4ce9d3...33a2",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3634300,
-    currentHeight: 3634120,
-    cptSats: 3000,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:24d4...6611",
-    noAssetId: "NO:24d4...6612",
-    yesReissuanceToken: "YRT:24d4...6613",
-    noReissuanceToken: "NRT:24d4...6614",
-    collateralUtxos: [{ txid: "22aa...9914", vout: 0, amountSats: 54400000 }],
-    yesPrice: 0.61,
-    change24h: 7.2,
-    volumeBtc: 39.8,
-    liquidityBtc: 5.2,
-  },
-  {
-    id: "mkt-12",
-    question: "Will Harbor City FC finish top-4 this season?",
-    category: "Sports",
-    description:
-      "Season standings contract resolved when league table is finalized.",
-    resolutionSource: "Official league standings",
-    isLive: false,
-    state: 1,
-    marketId: "ccf120f8...04a3",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3726000,
-    currentHeight: 3634120,
-    cptSats: 3500,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:50bd...111a",
-    noAssetId: "NO:50bd...111b",
-    yesReissuanceToken: "YRT:50bd...111c",
-    noReissuanceToken: "NRT:50bd...111d",
-    collateralUtxos: [{ txid: "7b2f...34de", vout: 1, amountSats: 84700000 }],
-    yesPrice: 0.47,
-    change24h: 2.8,
-    volumeBtc: 45.6,
-    liquidityBtc: 6.9,
-  },
-  {
-    id: "mkt-13",
-    question: "Will a sci-fi film win Best Picture at the 2027 Oscars?",
-    category: "Culture",
-    description:
-      "Resolves using Academy official Best Picture winner publication.",
-    resolutionSource: "Academy awards official results",
-    isLive: false,
-    state: 1,
-    marketId: "11fe8cc1...44bf",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3760500,
-    currentHeight: 3634120,
-    cptSats: 3000,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:9f44...2be1",
-    noAssetId: "NO:9f44...2be2",
-    yesReissuanceToken: "YRT:9f44...2be3",
-    noReissuanceToken: "NRT:9f44...2be4",
-    collateralUtxos: [{ txid: "55f2...22a7", vout: 0, amountSats: 61000000 }],
-    yesPrice: 0.24,
-    change24h: 1.3,
-    volumeBtc: 33.7,
-    liquidityBtc: 4.4,
-  },
-  {
-    id: "mkt-14",
-    question: "Will a new album from Nova X chart #1 in the US this year?",
-    category: "Culture",
-    description:
-      "YES if Billboard 200 reports #1 for a qualifying Nova X release.",
-    resolutionSource: "Billboard 200 chart",
-    isLive: false,
-    state: 1,
-    marketId: "80bd9a0e...2271",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3819900,
-    currentHeight: 3634120,
-    cptSats: 2500,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:0de1...441a",
-    noAssetId: "NO:0de1...441b",
-    yesReissuanceToken: "YRT:0de1...441c",
-    noReissuanceToken: "NRT:0de1...441d",
-    collateralUtxos: [{ txid: "888a...3c30", vout: 0, amountSats: 47200000 }],
-    yesPrice: 0.58,
-    change24h: -0.8,
-    volumeBtc: 27.1,
-    liquidityBtc: 3.8,
-  },
-  {
-    id: "mkt-15",
-    question: "Will Miami record a daily high above 100F in July 2026?",
-    category: "Weather",
-    description:
-      "Resolves YES if NOAA station data records any 100F+ maximum in July.",
-    resolutionSource: "NOAA Miami station daily highs",
-    isLive: false,
-    state: 1,
-    marketId: "4137aa20...dd42",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3698400,
-    currentHeight: 3634120,
-    cptSats: 3000,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:99ab...1101",
-    noAssetId: "NO:99ab...1102",
-    yesReissuanceToken: "YRT:99ab...1103",
-    noReissuanceToken: "NRT:99ab...1104",
-    collateralUtxos: [{ txid: "776f...6df0", vout: 0, amountSats: 53200000 }],
-    yesPrice: 0.49,
-    change24h: 0.6,
-    volumeBtc: 24.3,
-    liquidityBtc: 3.5,
-  },
-  {
-    id: "mkt-16",
-    question: "Will Hurricane Atlas make US landfall as Cat 3+ this season?",
-    category: "Weather",
-    description:
-      "Resolved from NHC final advisories and post-storm official report.",
-    resolutionSource: "National Hurricane Center",
-    isLive: false,
-    state: 0,
-    marketId: "17ca621d...930e",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3743300,
-    currentHeight: 3634120,
-    cptSats: 4500,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:76a1...9ad1",
-    noAssetId: "NO:76a1...9ad2",
-    yesReissuanceToken: "YRT:76a1...9ad3",
-    noReissuanceToken: "NRT:76a1...9ad4",
-    collateralUtxos: [{ txid: "00f1...be09", vout: 0, amountSats: 0 }],
-    yesPrice: 0.22,
-    change24h: 0.0,
-    volumeBtc: 0.0,
-    liquidityBtc: 0.0,
-  },
-  {
-    id: "mkt-17",
-    question: "Will the Fed funds target be below 4.00% by year-end 2026?",
-    category: "Macro",
-    description:
-      "Resolved from official FOMC target range upper bound at year-end meeting.",
-    resolutionSource: "Federal Reserve target range",
-    isLive: false,
-    state: 1,
-    marketId: "64de90ac...700c",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3814200,
-    currentHeight: 3634120,
-    cptSats: 4500,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:d1a9...fa21",
-    noAssetId: "NO:d1a9...fa22",
-    yesReissuanceToken: "YRT:d1a9...fa23",
-    noReissuanceToken: "NRT:d1a9...fa24",
-    collateralUtxos: [{ txid: "0ac4...bed3", vout: 0, amountSats: 144700000 }],
-    yesPrice: 0.46,
-    change24h: 1.4,
-    volumeBtc: 88.5,
-    liquidityBtc: 10.7,
-  },
-  {
-    id: "mkt-18",
-    question: "Will US core CPI print below 2.8% by Sep 2026?",
-    category: "Macro",
-    description:
-      "YES if BLS release shows year-over-year core CPI below 2.8 by deadline.",
-    resolutionSource: "BLS CPI release",
-    isLive: false,
-    state: 1,
-    marketId: "91fc22ab...6a11",
-    oraclePubkey: "8a2e4d9f...f102",
-    expiryHeight: 3758800,
-    currentHeight: 3634120,
-    cptSats: 4000,
-    collateralAssetId: "L-BTC:6f0279e9...",
-    yesAssetId: "YES:c2d0...66f1",
-    noAssetId: "NO:c2d0...66f2",
-    yesReissuanceToken: "YRT:c2d0...66f3",
-    noReissuanceToken: "NRT:c2d0...66f4",
-    collateralUtxos: [{ txid: "61be...4e72", vout: 0, amountSats: 116400000 }],
-    yesPrice: 0.34,
-    change24h: -1.7,
-    volumeBtc: 69.1,
-    liquidityBtc: 8.9,
-  },
-];
+let markets: Market[] = [];
 
-const trendingIds = [
-  "mkt-3",
-  "mkt-1",
-  "mkt-2",
-  "mkt-11",
-  "mkt-10",
-  "mkt-17",
-  "mkt-4",
-];
+function discoveredToMarket(d: DiscoveredMarket): Market {
+  return {
+    id: d.id,
+    nevent: d.nevent,
+    question: d.question,
+    category: (["Bitcoin", "Politics", "Sports", "Culture", "Weather", "Macro"].includes(d.category)
+      ? d.category
+      : "Bitcoin") as MarketCategory,
+    description: d.description,
+    resolutionSource: d.resolution_source,
+    isLive: d.state === 1,
+    state: d.state,
+    marketId: d.market_id,
+    oraclePubkey: d.oracle_pubkey,
+    expiryHeight: d.expiry_height,
+    currentHeight: 0,
+    cptSats: d.cpt_sats,
+    collateralAssetId: d.collateral_asset_id,
+    yesAssetId: d.yes_asset_id,
+    noAssetId: d.no_asset_id,
+    yesReissuanceToken: d.yes_reissuance_token,
+    noReissuanceToken: d.no_reissuance_token,
+    creationTxid: d.creation_txid,
+    collateralUtxos: [],
+    yesPrice: d.starting_yes_price / 100,
+    change24h: 0,
+    volumeBtc: 0,
+    liquidityBtc: 0,
+  };
+}
+
+async function loadMarkets(): Promise<void> {
+  try {
+    const discovered = await invoke<DiscoveredMarket[]>("discover_contracts");
+    markets = discovered.map(discoveredToMarket);
+  } catch (error) {
+    console.warn("Failed to discover contracts:", error);
+    markets = [];
+  }
+  render();
+}
+
+function hexToBytes(hex: string): number[] {
+  const bytes: number[] = [];
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes.push(parseInt(hex.substring(i, i + 2), 16));
+  }
+  return bytes;
+}
+
+/** Reverse byte-order of a hex string (internal ↔ display order for hash-based IDs). */
+function reverseHex(hex: string): string {
+  return (hex.match(/.{2}/g) || []).reverse().join("");
+}
+
+function marketToContractParamsJson(market: Market): string {
+  return JSON.stringify({
+    oracle_public_key: hexToBytes(market.oraclePubkey),
+    collateral_asset_id: hexToBytes(market.collateralAssetId),
+    yes_token_asset: hexToBytes(market.yesAssetId),
+    no_token_asset: hexToBytes(market.noAssetId),
+    yes_reissuance_token: hexToBytes(market.yesReissuanceToken),
+    no_reissuance_token: hexToBytes(market.noReissuanceToken),
+    collateral_per_token: market.cptSats,
+    expiry_time: market.expiryHeight,
+  });
+}
+
+async function issueTokens(market: Market, pairs: number): Promise<IssuanceResult> {
+  if (!market.creationTxid) {
+    throw new Error("Market has no creation txid — cannot issue tokens");
+  }
+  return invoke<IssuanceResult>("issue_tokens", {
+    contractParamsJson: marketToContractParamsJson(market),
+    creationTxid: market.creationTxid,
+    pairs,
+  });
+}
 
 function defaultSettlementInput(): string {
   const inThirtyDays = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
@@ -675,7 +323,7 @@ const state: {
   walletBalance: Record<string, number> | null;
   walletPolicyAssetId: string;
   walletMnemonic: string;
-  walletTransactions: { txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null }[];
+  walletTransactions: { txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[];
   walletError: string;
   walletLoading: boolean;
   walletPassword: string;
@@ -718,6 +366,9 @@ const state: {
   helpOpen: boolean;
   settingsOpen: boolean;
   logoutOpen: boolean;
+  nostrPubkey: string | null;
+  marketCreating: boolean;
+  marketsLoading: boolean;
 } = {
   view: "home",
   activeCategory: "Trending",
@@ -788,10 +439,35 @@ const state: {
   walletUnit: "sats",
   walletBalanceHidden: false,
   baseCurrency: "BTC" as BaseCurrency,
+  marketCreating: false,
   helpOpen: false,
   settingsOpen: false,
   logoutOpen: false,
+  nostrPubkey: null,
+  marketsLoading: true,
 };
+
+// ── Toast notifications ──────────────────────────────────────────────
+function showToast(message: string, kind: "success" | "error" | "info" = "info") {
+  const el = document.createElement("div");
+  const bg =
+    kind === "success"
+      ? "bg-emerald-600"
+      : kind === "error"
+        ? "bg-red-600"
+        : "bg-slate-700";
+  el.className = `fixed bottom-6 left-1/2 -translate-x-1/2 z-[999] max-w-lg w-[90vw] px-4 py-3 rounded-lg ${bg} text-white text-sm shadow-lg transition-opacity duration-300`;
+  el.style.opacity = "0";
+  el.style.userSelect = "text";
+  el.style.wordBreak = "break-all";
+  el.textContent = message;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => (el.style.opacity = "1"));
+  setTimeout(() => {
+    el.style.opacity = "0";
+    setTimeout(() => el.remove(), 300);
+  }, 6000);
+}
 
 const SATS_PER_FULL_CONTRACT = 100;
 const formatProbabilitySats = (price: number): string =>
@@ -911,7 +587,7 @@ function getSelectedMarket(): Market {
 }
 
 function getTrendingMarkets(): Market[] {
-  return trendingIds.map((id) => getMarketById(id));
+  return markets.slice(0, 7);
 }
 
 function clampContractPriceSats(value: number): number {
@@ -1252,6 +928,7 @@ function renderTopShell(): string {
                 </div>
               </div>` : ""}
             </div>
+            ${state.nostrPubkey ? `<span class="hidden whitespace-nowrap rounded-full border border-slate-700 px-3 py-2 text-xs text-slate-400 md:inline-block" title="${state.nostrPubkey}">${state.nostrPubkey.slice(0, 8)}...</span>` : ""}
           </div>
         </div>
       </div>
@@ -1344,7 +1021,27 @@ function renderHome(): string {
     return renderCategoryPage();
   }
 
+  if (state.marketsLoading) {
+    return `
+      <div class="phi-container py-16 text-center">
+        <p class="text-lg text-slate-400">Discovering markets from Nostr relays...</p>
+      </div>
+    `;
+  }
+
   const trending = getTrendingMarkets();
+
+  if (trending.length === 0) {
+    return `
+      <div class="phi-container py-16 text-center">
+        <h2 class="mb-3 text-2xl font-semibold text-slate-100">No markets discovered</h2>
+        <p class="mb-6 text-base text-slate-400">Be the first to create a prediction market on Liquid Testnet.</p>
+        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950">Create New Market</button>
+        ${state.nostrPubkey ? `<p class="mt-4 text-xs text-slate-500">Identity: ${state.nostrPubkey.slice(0, 8)}...${state.nostrPubkey.slice(-8)}</p>` : ""}
+      </div>
+    `;
+  }
+
   const featured = trending[state.trendingIndex % trending.length];
   const featuredNo = 1 - featured.yesPrice;
   const topMarkets = getFilteredMarkets().slice(0, 6);
@@ -1833,7 +1530,7 @@ function renderActionTicket(market: Market): string {
       `
           : ""
       }
-      <p class="mt-3 text-xs text-slate-500">NOSTR auth required to sign and broadcast covenant transactions.</p>
+      <p class="mt-3 text-xs text-slate-500">${state.nostrPubkey ? `Nostr identity: ${state.nostrPubkey.slice(0, 12)}...` : "Nostr identity not initialized."}</p>
     </aside>
   `;
 }
@@ -1860,7 +1557,7 @@ function renderDetail(): string {
         <section class="space-y-[21px]">
           <div class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
             <button data-action="go-home" class="mb-4 rounded-lg border border-slate-700 px-3 py-1 text-sm text-slate-300">Back to markets</button>
-            <p class="mb-1 text-sm text-slate-400">${market.category} · Prediction contract</p>
+            <p class="mb-1 text-sm text-slate-400">${market.category} · Prediction contract · <button data-action="open-nostr-event" data-nevent="${market.nevent}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">View on Nostr</button>${market.creationTxid ? ` · <button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">Creation Tx</button>` : ""}</p>
             <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${market.question}</h1>
             <p class="mb-3 text-base text-slate-400">${market.description}</p>
 
@@ -1901,6 +1598,14 @@ function renderDetail(): string {
                 <div class="kv-row"><span>Resolve status</span><span class="${market.resolveTx?.sigVerified ? "text-emerald-300" : "text-slate-400"}">${market.resolveTx ? `Attested ${market.resolveTx.outcome.toUpperCase()} @ ${market.resolveTx.height}` : "Unresolved"}</span></div>
                 ${market.resolveTx ? `<div class="kv-row"><span>Signature hash</span><span class="mono">${market.resolveTx.signatureHash}</span></div><div class="kv-row"><span>Resolve tx</span><span class="mono">${market.resolveTx.txid}</span></div>` : ""}
               </div>
+              ${state.nostrPubkey && state.nostrPubkey === market.oraclePubkey && market.state === 1 && !market.resolveTx ? `
+              <div class="mt-3 rounded-lg border border-amber-700/60 bg-amber-950/20 p-3">
+                <p class="mb-2 text-sm font-semibold text-amber-200">You are the oracle for this market</p>
+                <div class="flex items-center gap-2">
+                  <button data-action="oracle-attest-yes" class="rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950">Resolve YES</button>
+                  <button data-action="oracle-attest-no" class="rounded-lg bg-rose-400 px-4 py-2 text-sm font-semibold text-slate-950">Resolve NO</button>
+                </div>
+              </div>` : ""}
             </section>
 
             <section class="rounded-[21px] border ${market.collateralUtxos.length === 1 ? "border-emerald-800" : "border-rose-800"} bg-slate-950/55 p-[21px]">
@@ -2043,8 +1748,8 @@ function renderCreateMarket(): string {
             <p class="text-xs text-slate-400">Resolution source: <span class="text-slate-200">${state.createResolutionSource.trim() || "Not set"}</span></p>
             <p class="text-xs text-slate-500">Yes + No = ${SATS_PER_FULL_CONTRACT} sats</p>
           </div>
-          <button data-action="submit-create-market" class="mt-4 w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950">Publish market draft</button>
-          <p class="mt-2 text-xs text-slate-500">This creates a UI draft only. On-chain creation can be wired next.</p>
+          <button data-action="submit-create-market" class="mt-4 w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50" ${state.marketCreating ? "disabled" : ""}>${state.marketCreating ? "Creating Market..." : "Create Market"}</button>
+          <p class="mt-2 text-xs text-slate-500">${state.marketCreating ? "Building transaction, broadcasting, and announcing. This may take a moment." : "Creates the on-chain contract and announces the market. Your key is the oracle signing key."}</p>
         </aside>
       </div>
     </div>
@@ -2082,7 +1787,7 @@ async function refreshWallet(): Promise<void> {
     await invoke("sync_wallet");
     const balance = await invoke<{ assets: Record<string, number> }>("get_wallet_balance");
     state.walletBalance = balance.assets;
-    const txs = await invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null }[]>("get_wallet_transactions");
+    const txs = await invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions");
     state.walletTransactions = txs;
     const swaps = await invoke<PaymentSwap[]>("list_payment_swaps");
     state.walletSwaps = swaps;
@@ -2513,16 +2218,46 @@ function renderWallet(): string {
     ? (state.walletBalance[state.walletPolicyAssetId] ?? 0)
     : 0;
 
+  const creationTxToMarket = new Map(markets.filter(m => m.creationTxid).map(m => [m.creationTxid!, m.id]));
+
+  // Map token asset IDs to labels for display.
+  // Market asset IDs are internal byte order; wallet balance keys are display order (reversed).
+  const assetLabel = new Map<string, { side: string; question: string; marketId: string }>();
+  for (const m of markets) {
+    if (m.yesAssetId) assetLabel.set(reverseHex(m.yesAssetId), { side: "YES", question: m.question, marketId: m.id });
+    if (m.noAssetId) assetLabel.set(reverseHex(m.noAssetId), { side: "NO", question: m.question, marketId: m.id });
+  }
+
+  // Token positions: non-policy assets with positive balance
+  const tokenPositions = state.walletBalance
+    ? Object.entries(state.walletBalance)
+        .filter(([id, amt]) => id !== state.walletPolicyAssetId && amt > 0)
+        .map(([id, amt]) => {
+          const info = assetLabel.get(id);
+          return { assetId: id, amount: amt, info };
+        })
+    : [];
+
   const txRows = state.walletTransactions.map((tx) => {
+    const marketId = creationTxToMarket.get(tx.txid);
+    const isCreation = !!marketId;
+    const isIssuance = tx.txType === "issuance" || tx.txType === "reissuance";
     const sign = tx.balanceChange >= 0 ? "+" : "";
-    const color = tx.balanceChange >= 0 ? "text-emerald-300" : "text-red-300";
-    const icon = tx.balanceChange >= 0 ? "&#8595;" : "&#8593;";
+    const color = isCreation || isIssuance ? "text-violet-300" : tx.balanceChange >= 0 ? "text-emerald-300" : "text-red-300";
+    const icon = isCreation || isIssuance ? "&#9670;" : tx.balanceChange >= 0 ? "&#8595;" : "&#8593;";
+    let label = '';
+    if (isCreation) {
+      label = '<button data-open-market="' + marketId + '" class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 hover:bg-violet-500/30 transition cursor-pointer">Market Creation</button>';
+    } else if (isIssuance) {
+      label = '<span class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">Issuance</span>';
+    }
     const date = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : "unconfirmed";
     const shortTxid = tx.txid.slice(0, 10) + "..." + tx.txid.slice(-6);
     return '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm select-none">' +
       '<div class="flex items-center gap-2">' +
       '<span class="' + color + '">' + icon + '</span>' +
       '<button data-action="open-explorer-tx" data-txid="' + tx.txid + '" class="mono text-slate-400 hover:text-slate-200 transition cursor-pointer">' + shortTxid + '</button>' +
+      label +
       '<span class="text-slate-500">' + date + '</span>' +
       '</div>' +
       '<div class="text-right">' +
@@ -2577,6 +2312,32 @@ function renderWallet(): string {
             <button data-action="set-wallet-unit" data-unit="btc" class="rounded-full px-3 py-1 transition ${state.walletUnit === "btc" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}">L-BTC</button>
           </div>
         </div>
+
+        ${tokenPositions.length > 0 && !state.walletBalanceHidden ? `
+        <!-- Token Positions -->
+        <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
+          <h3 class="mb-3 font-semibold text-slate-100">Token Positions</h3>
+          ${tokenPositions.map(tp => {
+            const shortAsset = tp.assetId.slice(0, 8) + "..." + tp.assetId.slice(-4);
+            if (tp.info) {
+              const sideColor = tp.info.side === "YES" ? "text-emerald-300" : "text-red-300";
+              const sideBg = tp.info.side === "YES" ? "bg-emerald-500/20" : "bg-red-500/20";
+              const truncQ = tp.info.question.length > 50 ? tp.info.question.slice(0, 50) + "..." : tp.info.question;
+              return '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
+                '<div class="flex items-center gap-2">' +
+                '<span class="rounded ' + sideBg + ' px-1.5 py-0.5 text-[10px] font-medium ' + sideColor + '">' + tp.info.side + '</span>' +
+                '<button data-open-market="' + tp.info.marketId + '" class="text-slate-300 hover:text-slate-100 transition cursor-pointer text-left">' + truncQ + '</button>' +
+                '</div>' +
+                '<span class="mono text-slate-100">' + tp.amount.toLocaleString() + '</span>' +
+                '</div>';
+            }
+            return '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
+              '<span class="mono text-slate-400">' + shortAsset + '</span>' +
+              '<span class="mono text-slate-100">' + tp.amount.toLocaleString() + '</span>' +
+              '</div>';
+          }).join("")}
+        </div>
+        ` : ""}
 
         <!-- Action Buttons -->
         <div class="grid grid-cols-2 gap-4">
@@ -2695,27 +2456,43 @@ function ticketActionAllowed(market: Market, tab: ActionTab): boolean {
   return paths.cancel;
 }
 
-render();
-
-// Dismiss splash screen after 2 full animation cycles (2.4s × 2 = 4.8s)
-setTimeout(() => {
-  const splash = document.getElementById("splash");
-  if (!splash) return;
-  splash.classList.add("fade-out");
-  splash.addEventListener("transitionend", () => splash.remove(), { once: true });
-}, 4800);
-
-void fetchWalletStatus().then(() => {
+async function initApp(): Promise<void> {
   render();
-  if (state.walletStatus === "unlocked") {
-    void refreshWallet();
+  updateEstClockLabels();
+
+  // Dismiss splash screen after 2 full animation cycles (2.4s × 2 = 4.8s)
+  setTimeout(() => {
+    const splash = document.getElementById("splash");
+    if (!splash) return;
+    splash.classList.add("fade-out");
+    splash.addEventListener("transitionend", () => splash.remove(), { once: true });
+  }, 4800);
+
+  void fetchWalletStatus().then(() => {
+    render();
+    if (state.walletStatus === "unlocked") {
+      void refreshWallet();
+    }
+  });
+
+  try {
+    const identity = await invoke<IdentityResponse>("init_nostr_identity");
+    state.nostrPubkey = identity.pubkey_hex;
+  } catch (error) {
+    console.warn("Failed to init nostr identity:", error);
   }
-});
-updateEstClockLabels();
+
+  await loadMarkets();
+  state.marketsLoading = false;
+  render();
+
+  void syncCurrentHeightFromLwk("liquid-testnet");
+}
+
+initApp();
 setInterval(updateEstClockLabels, 1_000);
-void syncCurrentHeightFromLwk("liquid");
 setInterval(() => {
-  void syncCurrentHeightFromLwk("liquid");
+  void syncCurrentHeightFromLwk("liquid-testnet");
 }, 60_000);
 
 app.addEventListener("click", (event) => {
@@ -3062,6 +2839,14 @@ app.addEventListener("click", (event) => {
     return;
   }
 
+  if (action === "open-nostr-event") {
+    const nevent = actionEl?.getAttribute("data-nevent");
+    if (nevent) {
+      void openUrl("https://njump.me/" + nevent);
+    }
+    return;
+  }
+
   if (action === "open-receive") {
     state.walletModal = "receive";
     state.walletModalTab = "lightning";
@@ -3328,6 +3113,37 @@ app.addEventListener("click", (event) => {
     return;
   }
 
+  if (action === "oracle-attest-yes" || action === "oracle-attest-no") {
+    const market = getSelectedMarket();
+    const outcomeYes = action === "oracle-attest-yes";
+    const outcomeLabel = outcomeYes ? "YES" : "NO";
+    const confirmed = window.confirm(
+      `Resolve "${market.question}" as ${outcomeLabel}?\n\nThis publishes a Schnorr signature to Nostr that permanently attests the outcome. This cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    (async () => {
+      try {
+        const result = await invoke<AttestationResult>("oracle_attest", {
+          marketIdHex: market.marketId,
+          outcomeYes,
+        });
+        market.state = outcomeYes ? 2 : 3;
+        market.resolveTx = {
+          txid: result.nostr_event_id,
+          outcome: outcomeYes ? "yes" : "no",
+          sigVerified: true,
+          height: market.currentHeight,
+          signatureHash: result.signature_hex.slice(0, 16) + "...",
+        };
+        render();
+      } catch (error) {
+        window.alert(`Failed to attest: ${error}`);
+      }
+    })();
+    return;
+  }
+
   if (action === "toggle-advanced-details") {
     state.showAdvancedDetails = !state.showAdvancedDetails;
     render();
@@ -3526,7 +3342,7 @@ app.addEventListener("click", (event) => {
         !state.createSettlementInput
       ) {
         window.alert(
-          "Complete question, settlement rule, source, and settlement deadline before publishing.",
+          "Complete question, settlement rule, source, and settlement deadline before creating.",
         );
         return;
       }
@@ -3537,10 +3353,40 @@ app.addEventListener("click", (event) => {
           Math.round(state.createStartingYesSats),
         ),
       );
-      const noSats = SATS_PER_FULL_CONTRACT - yesSats;
-      window.alert(
-        `Prepared new market draft.\nQuestion: ${question}\nCategory: ${state.createCategory}\nSettlement deadline: ${new Date(state.createSettlementInput).toLocaleString()}\nResolution source: ${source}\nStart prices: YES ${yesSats} sats / NO ${noSats} sats`,
+      const deadlineUnix = Math.floor(
+        new Date(state.createSettlementInput).getTime() / 1000,
       );
+
+      state.marketCreating = true;
+      render();
+      (async () => {
+        try {
+          const result = await invoke<DiscoveredMarket>("create_contract_onchain", {
+            request: {
+              question,
+              description,
+              category: state.createCategory,
+              resolution_source: source,
+              starting_yes_price: yesSats,
+              settlement_deadline_unix: deadlineUnix,
+              collateral_per_token: 5000,
+            },
+          });
+          markets.push(discoveredToMarket(result));
+          state.view = "home";
+          state.createQuestion = "";
+          state.createDescription = "";
+          state.createResolutionSource = "";
+          state.createSettlementInput = defaultSettlementInput();
+          state.createStartingYesSats = 50;
+          showToast(`Market created! txid: ${result.creation_txid ?? "unknown"}`, "success");
+        } catch (error) {
+          showToast(`Failed to create market: ${error}`, "error");
+        } finally {
+          state.marketCreating = false;
+          render();
+        }
+      })();
       return;
     }
 
@@ -3574,6 +3420,24 @@ app.addEventListener("click", (event) => {
       window.alert(
         `Prepared trade tx for ${market.marketId}.\nIntent: ${state.tradeIntent.toUpperCase()} ${state.selectedSide.toUpperCase()}\nOrder: ${state.orderType.toUpperCase()}\nEstimated fill now: ${preview.fill.filledContracts.toFixed(2)} contracts\nEstimated notional: ${formatSats(preview.executedSats)}\nYes + No = ${SATS_PER_FULL_CONTRACT} sats.`,
       );
+      return;
+    }
+
+    if (action === "submit-issue") {
+      const pairs = Math.max(1, Math.floor(state.pairsInput));
+      if (!market.creationTxid) {
+        showToast("Market has no creation txid — cannot issue tokens", "error");
+        return;
+      }
+      showToast(`Issuing ${pairs} pair(s) for ${market.question.slice(0, 40)}...`, "info");
+      (async () => {
+        try {
+          const result = await issueTokens(market, pairs);
+          showToast(`Tokens issued! txid: ${result.txid.slice(0, 16)}...`, "success");
+        } catch (error) {
+          showToast(`Issuance failed: ${error}`, "error");
+        }
+      })();
       return;
     }
 

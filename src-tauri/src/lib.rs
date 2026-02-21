@@ -1,6 +1,9 @@
+pub mod commands;
+pub mod discovery;
 mod payments;
 mod state;
 pub mod wallet;
+mod wallet_store;
 
 use std::sync::Mutex;
 
@@ -10,6 +13,23 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use state::{AppState, AppStateManager, PaymentSwap};
 
 const APP_STATE_UPDATED_EVENT: &str = "app_state_updated";
+
+// SDK / Nostr state (managed alongside AppStateManager)
+pub struct SdkState {
+    pub wallet_store: wallet_store::WalletStore,
+    pub nostr_keys: Mutex<Option<nostr_sdk::Keys>>,
+    pub nostr_client: tokio::sync::Mutex<Option<nostr_sdk::Client>>,
+}
+
+impl Default for SdkState {
+    fn default() -> Self {
+        Self {
+            wallet_store: wallet_store::WalletStore::default(),
+            nostr_keys: Mutex::new(None),
+            nostr_client: tokio::sync::Mutex::new(None),
+        }
+    }
+}
 
 // ============================================================================
 // Network type
@@ -149,10 +169,7 @@ fn unlock_wallet(
 }
 
 #[tauri::command]
-fn lock_wallet(
-    manager: State<Mutex<AppStateManager>>,
-    app: AppHandle,
-) -> Result<AppState, String> {
+fn lock_wallet(manager: State<Mutex<AppStateManager>>, app: AppHandle) -> Result<AppState, String> {
     let mut manager = manager.lock().expect("state manager mutex");
     if let Some(wallet) = manager.wallet_mut() {
         wallet.lock();
@@ -164,10 +181,7 @@ fn lock_wallet(
 }
 
 #[tauri::command]
-fn sync_wallet(
-    manager: State<Mutex<AppStateManager>>,
-    app: AppHandle,
-) -> Result<AppState, String> {
+fn sync_wallet(manager: State<Mutex<AppStateManager>>, app: AppHandle) -> Result<AppState, String> {
     let mut manager = manager.lock().expect("state manager mutex");
     let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
     wallet.sync().map_err(|e| e.to_string())?;
@@ -250,7 +264,9 @@ async fn pay_lightning_invoice(
 ) -> Result<payments::boltz::BoltzSubmarineSwapCreated, String> {
     let (network, refund_pubkey_hex) = {
         let mgr = manager.lock().expect("state manager mutex");
-        let network = mgr.network().ok_or("Not initialized - select a network first")?;
+        let network = mgr
+            .network()
+            .ok_or("Not initialized - select a network first")?;
         let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
         let refund_pubkey_hex = wallet
             .boltz_submarine_refund_pubkey_hex()
@@ -301,7 +317,9 @@ async fn create_lightning_receive(
 ) -> Result<payments::boltz::BoltzLightningReceiveCreated, String> {
     let (network, claim_pubkey_hex) = {
         let mgr = manager.lock().expect("state manager mutex");
-        let network = mgr.network().ok_or("Not initialized - select a network first")?;
+        let network = mgr
+            .network()
+            .ok_or("Not initialized - select a network first")?;
         let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
         let claim_pubkey_hex = wallet
             .boltz_reverse_claim_pubkey_hex()
@@ -352,7 +370,9 @@ async fn create_bitcoin_receive(
 ) -> Result<payments::boltz::BoltzChainSwapCreated, String> {
     let (network, claim_pubkey_hex, refund_pubkey_hex) = {
         let mgr = manager.lock().expect("state manager mutex");
-        let network = mgr.network().ok_or("Not initialized - select a network first")?;
+        let network = mgr
+            .network()
+            .ok_or("Not initialized - select a network first")?;
         let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
         let claim_pubkey_hex = wallet
             .boltz_reverse_claim_pubkey_hex()
@@ -406,7 +426,9 @@ async fn create_bitcoin_send(
 ) -> Result<payments::boltz::BoltzChainSwapCreated, String> {
     let (network, claim_pubkey_hex, refund_pubkey_hex) = {
         let mgr = manager.lock().expect("state manager mutex");
-        let network = mgr.network().ok_or("Not initialized - select a network first")?;
+        let network = mgr
+            .network()
+            .ok_or("Not initialized - select a network first")?;
         let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
         let claim_pubkey_hex = wallet
             .boltz_reverse_claim_pubkey_hex()
@@ -458,7 +480,8 @@ async fn get_chain_swap_pairs(
 ) -> Result<payments::boltz::BoltzChainSwapPairsInfo, String> {
     let network = {
         let mgr = manager.lock().expect("state manager mutex");
-        mgr.network().ok_or("Not initialized - select a network first")?
+        mgr.network()
+            .ok_or("Not initialized - select a network first")?
     };
 
     let boltz = payments::boltz::BoltzService::new(network, None);
@@ -484,7 +507,8 @@ async fn refresh_payment_swap_status(
 ) -> Result<PaymentSwap, String> {
     let network = {
         let mgr = manager.lock().expect("state manager mutex");
-        mgr.network().ok_or("Not initialized - select a network first")?
+        mgr.network()
+            .ok_or("Not initialized - select a network first")?
     };
 
     let boltz = payments::boltz::BoltzService::new(network, None);
@@ -521,7 +545,7 @@ async fn refresh_payment_swap_status(
 // ============================================================================
 
 #[derive(serde::Serialize)]
-struct ChainTipResponse {
+pub struct ChainTipResponse {
     height: u32,
     block_hash: String,
     timestamp: u32,
@@ -529,14 +553,14 @@ struct ChainTipResponse {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
-enum WalletNetwork {
+pub enum WalletNetwork {
     Liquid,
     LiquidTestnet,
     LiquidRegtest,
 }
 
 impl WalletNetwork {
-    fn into_lwk(self) -> lwk_wollet::ElementsNetwork {
+    pub fn into_lwk(self) -> lwk_wollet::ElementsNetwork {
         match self {
             WalletNetwork::Liquid => lwk_wollet::ElementsNetwork::Liquid,
             WalletNetwork::LiquidTestnet => lwk_wollet::ElementsNetwork::LiquidTestnet,
@@ -545,8 +569,17 @@ impl WalletNetwork {
     }
 }
 
-#[tauri::command]
-async fn fetch_chain_tip(network: WalletNetwork) -> Result<ChainTipResponse, String> {
+impl From<Network> for WalletNetwork {
+    fn from(n: Network) -> Self {
+        match n {
+            Network::Mainnet => WalletNetwork::Liquid,
+            Network::Testnet => WalletNetwork::LiquidTestnet,
+            Network::Regtest => WalletNetwork::LiquidRegtest,
+        }
+    }
+}
+
+pub async fn fetch_chain_tip_inner(network: WalletNetwork) -> Result<ChainTipResponse, String> {
     let url = match network {
         WalletNetwork::Liquid => "https://blockstream.info/liquid/api",
         WalletNetwork::LiquidTestnet => "https://blockstream.info/liquidtestnet/api",
@@ -571,6 +604,11 @@ async fn fetch_chain_tip(network: WalletNetwork) -> Result<ChainTipResponse, Str
     })
 }
 
+#[tauri::command]
+async fn fetch_chain_tip(network: WalletNetwork) -> Result<ChainTipResponse, String> {
+    fetch_chain_tip_inner(network).await
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -585,8 +623,13 @@ fn emit_state(app: &AppHandle, state: &AppState) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Install the rustls CryptoProvider before any TLS connections.
+    // electrum-client pulls in rustls 0.23 which requires an explicit provider.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_log::Builder::default().build())
         .setup(|app| {
             let app_data_dir = app
                 .path()
@@ -603,6 +646,7 @@ pub fn run() {
             }
 
             app.manage(Mutex::new(manager));
+            app.manage(SdkState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -633,6 +677,19 @@ pub fn run() {
             refresh_payment_swap_status,
             // Legacy
             fetch_chain_tip,
+            // SDK / Nostr
+            commands::init_nostr_identity,
+            commands::get_nostr_identity,
+            commands::discover_contracts,
+            commands::publish_contract,
+            commands::oracle_attest,
+            commands::create_contract_onchain,
+            commands::issue_tokens,
+            // Wallet store (SDK)
+            wallet_store::create_software_signer,
+            wallet_store::create_wollet,
+            wallet_store::wallet_new_address,
+            wallet_store::wallet_signer_id,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
