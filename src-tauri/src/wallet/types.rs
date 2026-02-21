@@ -42,6 +42,8 @@ pub struct WalletTransaction {
     pub fee: u64,
     pub height: Option<u32>,
     pub timestamp: Option<u32>,
+    /// Transaction type from LWK: "issuance", "reissuance", "burn", "incoming", "outgoing", etc.
+    pub tx_type: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

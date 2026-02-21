@@ -225,6 +225,11 @@ function hexToBytes(hex: string): number[] {
   return bytes;
 }
 
+/** Reverse byte-order of a hex string (internal ↔ display order for hash-based IDs). */
+function reverseHex(hex: string): string {
+  return (hex.match(/.{2}/g) || []).reverse().join("");
+}
+
 function marketToContractParamsJson(market: Market): string {
   return JSON.stringify({
     oracle_public_key: hexToBytes(market.oraclePubkey),
@@ -292,7 +297,7 @@ const state: {
   walletBalance: Record<string, number> | null;
   walletPolicyAssetId: string;
   walletMnemonic: string;
-  walletTransactions: { txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null }[];
+  walletTransactions: { txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[];
   walletError: string;
   walletLoading: boolean;
   walletPassword: string;
@@ -1751,7 +1756,7 @@ async function refreshWallet(): Promise<void> {
     await invoke("sync_wallet");
     const balance = await invoke<{ assets: Record<string, number> }>("get_wallet_balance");
     state.walletBalance = balance.assets;
-    const txs = await invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null }[]>("get_wallet_transactions");
+    const txs = await invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions");
     state.walletTransactions = txs;
     const swaps = await invoke<PaymentSwap[]>("list_payment_swaps");
     state.walletSwaps = swaps;
@@ -2185,13 +2190,37 @@ function renderWallet(): string {
 
   const creationTxToMarket = new Map(markets.filter(m => m.creationTxid).map(m => [m.creationTxid!, m.id]));
 
+  // Map token asset IDs to labels for display.
+  // Market asset IDs are internal byte order; wallet balance keys are display order (reversed).
+  const assetLabel = new Map<string, { side: string; question: string; marketId: string }>();
+  for (const m of markets) {
+    if (m.yesAssetId) assetLabel.set(reverseHex(m.yesAssetId), { side: "YES", question: m.question, marketId: m.id });
+    if (m.noAssetId) assetLabel.set(reverseHex(m.noAssetId), { side: "NO", question: m.question, marketId: m.id });
+  }
+
+  // Token positions: non-policy assets with positive balance
+  const tokenPositions = state.walletBalance
+    ? Object.entries(state.walletBalance)
+        .filter(([id, amt]) => id !== state.walletPolicyAssetId && amt > 0)
+        .map(([id, amt]) => {
+          const info = assetLabel.get(id);
+          return { assetId: id, amount: amt, info };
+        })
+    : [];
+
   const txRows = state.walletTransactions.map((tx) => {
     const marketId = creationTxToMarket.get(tx.txid);
     const isCreation = !!marketId;
+    const isIssuance = tx.txType === "issuance" || tx.txType === "reissuance";
     const sign = tx.balanceChange >= 0 ? "+" : "";
-    const color = isCreation ? "text-violet-300" : tx.balanceChange >= 0 ? "text-emerald-300" : "text-red-300";
-    const icon = isCreation ? "&#9670;" : tx.balanceChange >= 0 ? "&#8595;" : "&#8593;";
-    const label = isCreation ? '<button data-open-market="' + marketId + '" class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 hover:bg-violet-500/30 transition cursor-pointer">Market Creation</button>' : '';
+    const color = isCreation || isIssuance ? "text-violet-300" : tx.balanceChange >= 0 ? "text-emerald-300" : "text-red-300";
+    const icon = isCreation || isIssuance ? "&#9670;" : tx.balanceChange >= 0 ? "&#8595;" : "&#8593;";
+    let label = '';
+    if (isCreation) {
+      label = '<button data-open-market="' + marketId + '" class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 hover:bg-violet-500/30 transition cursor-pointer">Market Creation</button>';
+    } else if (isIssuance) {
+      label = '<span class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">Issuance</span>';
+    }
     const date = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : "unconfirmed";
     const shortTxid = tx.txid.slice(0, 10) + "..." + tx.txid.slice(-6);
     return '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm select-none">' +
@@ -2253,6 +2282,32 @@ function renderWallet(): string {
             <button data-action="set-wallet-unit" data-unit="btc" class="rounded-full px-3 py-1 transition ${state.walletUnit === "btc" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}">L-BTC</button>
           </div>
         </div>
+
+        ${tokenPositions.length > 0 && !state.walletBalanceHidden ? `
+        <!-- Token Positions -->
+        <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
+          <h3 class="mb-3 font-semibold text-slate-100">Token Positions</h3>
+          ${tokenPositions.map(tp => {
+            const shortAsset = tp.assetId.slice(0, 8) + "..." + tp.assetId.slice(-4);
+            if (tp.info) {
+              const sideColor = tp.info.side === "YES" ? "text-emerald-300" : "text-red-300";
+              const sideBg = tp.info.side === "YES" ? "bg-emerald-500/20" : "bg-red-500/20";
+              const truncQ = tp.info.question.length > 50 ? tp.info.question.slice(0, 50) + "..." : tp.info.question;
+              return '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
+                '<div class="flex items-center gap-2">' +
+                '<span class="rounded ' + sideBg + ' px-1.5 py-0.5 text-[10px] font-medium ' + sideColor + '">' + tp.info.side + '</span>' +
+                '<button data-open-market="' + tp.info.marketId + '" class="text-slate-300 hover:text-slate-100 transition cursor-pointer text-left">' + truncQ + '</button>' +
+                '</div>' +
+                '<span class="mono text-slate-100">' + tp.amount.toLocaleString() + '</span>' +
+                '</div>';
+            }
+            return '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
+              '<span class="mono text-slate-400">' + shortAsset + '</span>' +
+              '<span class="mono text-slate-100">' + tp.amount.toLocaleString() + '</span>' +
+              '</div>';
+          }).join("")}
+        </div>
+        ` : ""}
 
         <!-- Action Buttons -->
         <div class="grid grid-cols-2 gap-4">
