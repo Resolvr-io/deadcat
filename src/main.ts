@@ -5,6 +5,32 @@ import QRCode from "qrcode";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
+// ── Deadcat loader SVG markup (reused for overlay) ──
+
+const LOADER_CAT_SVG = `<svg viewBox="0 0 260 267" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M0.146484 9.04605C0.146484 1.23441 10.9146 -3.16002 16.7881 2.6984L86.5566 71.7336C100.142 68.0294 114.765 66.0128 130 66.0128C145.239 66.0128 159.865 68.0306 173.453 71.7365L243.212 2.71207C249.085 -3.14676 259.854 1.24698 259.854 9.05875V161.26C259.949 162.835 260 164.42 260 166.013C260 221.241 201.797 266.013 130 266.013C58.203 266.013 0 221.241 0 166.013C1.54644e-06 164.42 0.0506677 162.835 0.146484 161.26V9.04605ZM100.287 187.013L120.892 207.087V208.903C120.892 217.907 114.199 225.23 105.974 225.231H91.0049C87.1409 225.231 84.0001 228.319 84 232.118C84 235.918 87.1446 239.013 91.0049 239.013H105.974C114.534 239.013 122.574 235.049 128.02 228.383C133.461 235.045 141.502 239.013 150.065 239.013C166.019 239.013 179 225.506 179 208.903C179 205.104 175.856 202.013 171.992 202.013C168.128 202.013 164.984 205.104 164.983 208.903C164.983 217.907 158.291 225.231 150.065 225.231C141.84 225.231 135.147 217.907 135.147 208.903V207.049L155.713 187.013H100.287ZM70.4697 140.12L52.4219 122.072L44 130.495L62.0469 148.542L44.0596 166.53L52.4824 174.953L70.4697 156.965L88.5176 175.013L96.9404 166.591L78.8916 148.542L97 130.435L88.5781 122.013L70.4697 140.12ZM195.367 123.557C200.554 128.783 204 138.006 204 148.513C204 158.3 201.01 166.973 196.408 172.339C216.243 169.73 231 159.83 231 148.013C231 135.99 215.724 125.951 195.367 123.557ZM175.489 123.7C155.707 126.33 141 136.217 141 148.013C141 159.603 155.197 169.349 174.456 172.181C169.931 166.803 167 158.204 167 148.513C167 138.102 170.382 128.951 175.489 123.7Z" fill="#34d399"/></svg>`;
+
+const LOADER_BAG_SVG = `<svg viewBox="0 0 298 376" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M11.897 1.04645L36.1423 14.835L60.3877 1.04645C62.8491 -0.348818 65.8439 -0.348818 68.3053 1.04645L92.5507 14.835L116.796 1.04645C119.257 -0.348818 122.252 -0.348818 124.714 1.04645L148.959 14.835L173.204 1.04645C175.666 -0.348818 178.661 -0.348818 181.122 1.04645L205.367 14.835L229.613 1.04645C232.074 -0.348818 235.069 -0.348818 237.53 1.04645L261.776 14.835L286.021 1.04645C288.523 -0.348818 291.559 -0.348818 294.021 1.08749C296.482 2.5238 298 5.1502 298 8.02282V350.973C298 364.228 287.252 375.02 273.96 375.02H24.0402C10.7894 375.02 0 364.269 0 350.973V8.02282C0 5.19123 1.5179 2.56484 3.97935 1.12853C6.4408 -0.307781 9.4766 -0.307781 11.9791 1.08749H11.9381L11.897 1.04645Z" fill="#1e293b"/></svg>`;
+
+function loaderHtml(): string {
+  return `<div class="deadcat-loader"><div class="deadcat-loader-scene"><div class="deadcat-loader-clip"><div class="deadcat-loader-cat">${LOADER_CAT_SVG}</div></div><div class="deadcat-loader-bag">${LOADER_BAG_SVG}</div></div></div>`;
+}
+
+function showOverlayLoader(): void {
+  if (document.getElementById("deadcat-overlay")) return;
+  const el = document.createElement("div");
+  el.id = "deadcat-overlay";
+  el.className = "deadcat-overlay";
+  el.innerHTML = loaderHtml();
+  document.body.appendChild(el);
+}
+
+function hideOverlayLoader(): void {
+  const el = document.getElementById("deadcat-overlay");
+  if (!el) return;
+  el.classList.add("fade-out");
+  el.addEventListener("transitionend", () => el.remove(), { once: true });
+}
+
 type NavCategory =
   | "Trending"
   | "Politics"
@@ -950,6 +976,10 @@ function renderTopShell(): string {
           </button>
         </div>
         <p class="mt-4 text-sm text-slate-400">Settings content coming soon.</p>
+        <div class="mt-6 border-t border-slate-800 pt-4">
+          <p class="text-xs font-medium uppercase tracking-wider text-slate-500">Dev</p>
+          <button data-action="dev-restart" class="mt-2 rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition">Restart App</button>
+        </div>
       </div>
     </div>` : ""}
     ${state.logoutOpen ? `<div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
@@ -1751,6 +1781,7 @@ async function fetchWalletStatus(): Promise<void> {
 async function refreshWallet(): Promise<void> {
   state.walletLoading = true;
   state.walletError = "";
+  showOverlayLoader();
   render();
   try {
     await invoke("sync_wallet");
@@ -1764,6 +1795,7 @@ async function refreshWallet(): Promise<void> {
     state.walletError = String(e);
   }
   state.walletLoading = false;
+  hideOverlayLoader();
   render();
 }
 
@@ -2115,9 +2147,7 @@ function renderWallet(): string {
     ? `<div class="rounded-lg border border-red-500/30 bg-red-900/20 px-4 py-3 text-sm text-red-300">${error}</div>`
     : "";
 
-  const loadingHtml = loading
-    ? `<div class="text-sm text-slate-400">Loading...</div>`
-    : "";
+  const loadingHtml = "";
 
   if (state.walletStatus === "not_created") {
     if (state.walletMnemonic) {
@@ -2430,6 +2460,14 @@ async function initApp(): Promise<void> {
   render();
   updateEstClockLabels();
 
+  // Dismiss splash screen after 2 full animation cycles (2.4s × 2 = 4.8s)
+  setTimeout(() => {
+    const splash = document.getElementById("splash");
+    if (!splash) return;
+    splash.classList.add("fade-out");
+    splash.addEventListener("transitionend", () => splash.remove(), { once: true });
+  }, 4800);
+
   void fetchWalletStatus().then(() => {
     render();
     if (state.walletStatus === "unlocked") {
@@ -2596,6 +2634,20 @@ app.addEventListener("click", (event) => {
     return;
   }
 
+  if (action === "dev-restart") {
+    state.settingsOpen = false;
+    render();
+    const splash = document.createElement("div");
+    splash.id = "splash";
+    splash.innerHTML = loaderHtml();
+    document.body.appendChild(splash);
+    setTimeout(() => {
+      splash.classList.add("fade-out");
+      splash.addEventListener("transitionend", () => splash.remove(), { once: true });
+    }, 4800);
+    return;
+  }
+
   if (action === "user-logout") {
     state.userMenuOpen = false;
     state.logoutOpen = true;
@@ -2646,6 +2698,7 @@ app.addEventListener("click", (event) => {
     }
     state.walletLoading = true;
     state.walletError = "";
+    showOverlayLoader();
     render();
     (async () => {
       try {
@@ -2659,6 +2712,7 @@ app.addEventListener("click", (event) => {
         state.walletError = String(e);
       }
       state.walletLoading = false;
+      hideOverlayLoader();
       render();
     })();
     return;
@@ -2687,6 +2741,7 @@ app.addEventListener("click", (event) => {
     }
     state.walletLoading = true;
     state.walletError = "";
+    showOverlayLoader();
     render();
     (async () => {
       try {
@@ -2701,6 +2756,7 @@ app.addEventListener("click", (event) => {
       } catch (e) {
         state.walletError = String(e);
         state.walletLoading = false;
+        hideOverlayLoader();
         render();
       }
     })();
@@ -2715,6 +2771,7 @@ app.addEventListener("click", (event) => {
     }
     state.walletLoading = true;
     state.walletError = "";
+    showOverlayLoader();
     render();
     (async () => {
       try {
@@ -2725,6 +2782,7 @@ app.addEventListener("click", (event) => {
       } catch (e) {
         state.walletError = String(e);
         state.walletLoading = false;
+        hideOverlayLoader();
         render();
       }
     })();
@@ -3026,6 +3084,7 @@ app.addEventListener("click", (event) => {
     }
     state.walletLoading = true;
     state.walletError = "";
+    showOverlayLoader();
     render();
     (async () => {
       try {
@@ -3037,6 +3096,7 @@ app.addEventListener("click", (event) => {
         state.walletError = String(e);
       }
       state.walletLoading = false;
+      hideOverlayLoader();
       render();
     })();
     return;
