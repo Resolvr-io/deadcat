@@ -1,3 +1,4 @@
+mod chain_adapter;
 pub mod commands;
 pub mod discovery;
 mod payments;
@@ -685,6 +686,8 @@ pub fn run() {
             commands::oracle_attest,
             commands::create_contract_onchain,
             commands::issue_tokens,
+            commands::ingest_discovered_markets,
+            commands::list_contracts,
             // Wallet store (SDK)
             wallet_store::create_software_signer,
             wallet_store::create_wollet,
