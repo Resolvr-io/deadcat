@@ -604,10 +604,12 @@ function getMarketSeed(market: Market): number {
 }
 
 function getPositionContracts(market: Market): { yes: number; no: number } {
-  const seed = getMarketSeed(market);
+  if (!state.walletBalance) return { yes: 0, no: 0 };
+  const yesKey = reverseHex(market.yesAssetId);
+  const noKey = reverseHex(market.noAssetId);
   return {
-    yes: 4 + (seed % 19),
-    no: 3 + ((seed * 7) % 17),
+    yes: state.walletBalance[yesKey] ?? 0,
+    no: state.walletBalance[noKey] ?? 0,
   };
 }
 
@@ -1566,6 +1568,16 @@ function renderDetail(): string {
               <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">No price<br/><span class="text-lg font-medium text-rose-400">${formatProbabilityWithPercent(noPrice)}</span></div>
               <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Settlement deadline<br/><span class="text-slate-100">Est. by ${formatSettlementDateTime(estimatedSettlementDate)}</span></div>
             </div>
+
+            ${(() => {
+              const pos = getPositionContracts(market);
+              if (pos.yes === 0 && pos.no === 0) return "";
+              return `<div class="mb-4 flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/40 px-4 py-3 text-sm">
+                <span class="text-slate-400">Your position</span>
+                ${pos.yes > 0 ? `<span class="rounded bg-emerald-500/20 px-2 py-0.5 font-medium text-emerald-300">YES ${pos.yes.toLocaleString()}</span>` : ""}
+                ${pos.no > 0 ? `<span class="rounded bg-red-500/20 px-2 py-0.5 font-medium text-red-300">NO ${pos.no.toLocaleString()}</span>` : ""}
+              </div>`;
+            })()}
 
             ${chartSkeleton(market)}
           </div>
