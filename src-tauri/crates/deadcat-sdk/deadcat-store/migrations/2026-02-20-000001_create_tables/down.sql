@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS utxos;
+DROP TABLE IF EXISTS maker_orders;
+DROP TABLE IF EXISTS markets;
+DROP TABLE IF EXISTS sync_state;
