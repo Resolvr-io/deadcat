@@ -36,8 +36,7 @@ impl ChainBackend for ElectrumBackend {
         use electrum_client::ElectrumApi;
         use sha2::{Digest, Sha256};
 
-        let btc_script =
-            lwk_wollet::bitcoin::ScriptBuf::from(script_pubkey.to_bytes());
+        let btc_script = lwk_wollet::bitcoin::ScriptBuf::from(script_pubkey.to_bytes());
 
         let client = electrum_client::Client::new(&self.electrum_url)
             .map_err(|e| Error::CovenantScan(e.to_string()))?;

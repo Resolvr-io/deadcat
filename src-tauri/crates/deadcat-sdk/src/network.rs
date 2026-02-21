@@ -1,5 +1,5 @@
-use lwk_wollet::elements::AddressParams;
 use lwk_wollet::ElementsNetwork;
+use lwk_wollet::elements::AddressParams;
 use serde::Deserialize;
 
 /// Network variants for Liquid.

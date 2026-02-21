@@ -1,8 +1,8 @@
+pub mod commands;
+pub mod discovery;
 mod payments;
 mod state;
 pub mod wallet;
-pub mod commands;
-pub mod discovery;
 mod wallet_store;
 
 use std::sync::Mutex;
@@ -169,10 +169,7 @@ fn unlock_wallet(
 }
 
 #[tauri::command]
-fn lock_wallet(
-    manager: State<Mutex<AppStateManager>>,
-    app: AppHandle,
-) -> Result<AppState, String> {
+fn lock_wallet(manager: State<Mutex<AppStateManager>>, app: AppHandle) -> Result<AppState, String> {
     let mut manager = manager.lock().expect("state manager mutex");
     if let Some(wallet) = manager.wallet_mut() {
         wallet.lock();
@@ -184,10 +181,7 @@ fn lock_wallet(
 }
 
 #[tauri::command]
-fn sync_wallet(
-    manager: State<Mutex<AppStateManager>>,
-    app: AppHandle,
-) -> Result<AppState, String> {
+fn sync_wallet(manager: State<Mutex<AppStateManager>>, app: AppHandle) -> Result<AppState, String> {
     let mut manager = manager.lock().expect("state manager mutex");
     let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
     wallet.sync().map_err(|e| e.to_string())?;
@@ -270,7 +264,9 @@ async fn pay_lightning_invoice(
 ) -> Result<payments::boltz::BoltzSubmarineSwapCreated, String> {
     let (network, refund_pubkey_hex) = {
         let mgr = manager.lock().expect("state manager mutex");
-        let network = mgr.network().ok_or("Not initialized - select a network first")?;
+        let network = mgr
+            .network()
+            .ok_or("Not initialized - select a network first")?;
         let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
         let refund_pubkey_hex = wallet
             .boltz_submarine_refund_pubkey_hex()
@@ -321,7 +317,9 @@ async fn create_lightning_receive(
 ) -> Result<payments::boltz::BoltzLightningReceiveCreated, String> {
     let (network, claim_pubkey_hex) = {
         let mgr = manager.lock().expect("state manager mutex");
-        let network = mgr.network().ok_or("Not initialized - select a network first")?;
+        let network = mgr
+            .network()
+            .ok_or("Not initialized - select a network first")?;
         let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
         let claim_pubkey_hex = wallet
             .boltz_reverse_claim_pubkey_hex()
@@ -372,7 +370,9 @@ async fn create_bitcoin_receive(
 ) -> Result<payments::boltz::BoltzChainSwapCreated, String> {
     let (network, claim_pubkey_hex, refund_pubkey_hex) = {
         let mgr = manager.lock().expect("state manager mutex");
-        let network = mgr.network().ok_or("Not initialized - select a network first")?;
+        let network = mgr
+            .network()
+            .ok_or("Not initialized - select a network first")?;
         let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
         let claim_pubkey_hex = wallet
             .boltz_reverse_claim_pubkey_hex()
@@ -426,7 +426,9 @@ async fn create_bitcoin_send(
 ) -> Result<payments::boltz::BoltzChainSwapCreated, String> {
     let (network, claim_pubkey_hex, refund_pubkey_hex) = {
         let mgr = manager.lock().expect("state manager mutex");
-        let network = mgr.network().ok_or("Not initialized - select a network first")?;
+        let network = mgr
+            .network()
+            .ok_or("Not initialized - select a network first")?;
         let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
         let claim_pubkey_hex = wallet
             .boltz_reverse_claim_pubkey_hex()
@@ -478,7 +480,8 @@ async fn get_chain_swap_pairs(
 ) -> Result<payments::boltz::BoltzChainSwapPairsInfo, String> {
     let network = {
         let mgr = manager.lock().expect("state manager mutex");
-        mgr.network().ok_or("Not initialized - select a network first")?
+        mgr.network()
+            .ok_or("Not initialized - select a network first")?
     };
 
     let boltz = payments::boltz::BoltzService::new(network, None);
@@ -504,7 +507,8 @@ async fn refresh_payment_swap_status(
 ) -> Result<PaymentSwap, String> {
     let network = {
         let mgr = manager.lock().expect("state manager mutex");
-        mgr.network().ok_or("Not initialized - select a network first")?
+        mgr.network()
+            .ok_or("Not initialized - select a network first")?
     };
 
     let boltz = payments::boltz::BoltzService::new(network, None);

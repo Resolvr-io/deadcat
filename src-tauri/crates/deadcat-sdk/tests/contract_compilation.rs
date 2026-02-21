@@ -193,9 +193,9 @@ fn control_block_structure() {
 /// 2. Verify our manual tapbranch/tweak/control_block are internally consistent
 #[test]
 fn simplicity_leaf_matches_taprootbuilder() {
+    use deadcat_sdk::elements::Script;
     use deadcat_sdk::elements::secp256k1_zkp::{Secp256k1, XOnlyPublicKey};
     use deadcat_sdk::elements::taproot::{LeafVersion, TaprootBuilder};
-    use deadcat_sdk::elements::Script;
 
     let params = test_params();
     let contract = CompiledContract::new(params).expect("contract should compile");
@@ -218,7 +218,11 @@ fn simplicity_leaf_matches_taprootbuilder() {
         .control_block(&(sim_script, sim_version))
         .expect("control block should exist");
     let lib_cb_bytes = lib_cb.serialize();
-    assert_eq!(lib_cb_bytes.len(), 33, "single-leaf control block should be 33 bytes");
+    assert_eq!(
+        lib_cb_bytes.len(),
+        33,
+        "single-leaf control block should be 33 bytes"
+    );
 
     // Our simplicity_leaf_hash should match the leaf hash TaprootBuilder computed.
     // The TaprootBuilder doesn't expose the leaf hash directly, but we can verify
@@ -234,7 +238,8 @@ fn simplicity_leaf_matches_taprootbuilder() {
         // bytes 33..65 = sibling hash = tapdata_hash(state)
         let expected_sibling = deadcat_sdk::taproot::tapdata_hash(state);
         assert_eq!(
-            &our_cb[33..65], &expected_sibling,
+            &our_cb[33..65],
+            &expected_sibling,
             "control block sibling for state {state} should be tapdata_hash"
         );
     }
@@ -245,7 +250,7 @@ fn simplicity_leaf_matches_taprootbuilder() {
 /// same output key embedded in the script.
 #[test]
 fn taproot_output_key_consistency() {
-    use deadcat_sdk::elements::secp256k1_zkp::{Secp256k1, Scalar, XOnlyPublicKey};
+    use deadcat_sdk::elements::secp256k1_zkp::{Scalar, Secp256k1, XOnlyPublicKey};
 
     let params = test_params();
     let contract = CompiledContract::new(params).expect("contract should compile");

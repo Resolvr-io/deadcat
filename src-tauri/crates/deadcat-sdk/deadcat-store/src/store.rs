@@ -1,10 +1,10 @@
 use diesel::prelude::*;
 use diesel::sql_types::Integer;
 use diesel::sqlite::SqliteConnection;
-use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 use deadcat_sdk::{
-    CompiledContract, CompiledMakerOrder, ContractParams, MarketId, MarketState, MakerOrderParams,
+    CompiledContract, CompiledMakerOrder, ContractParams, MakerOrderParams, MarketId, MarketState,
     OrderDirection, UnblindedUtxo,
 };
 
@@ -14,9 +14,7 @@ use crate::conversions::{
 use crate::error::StoreError;
 use crate::models::{MakerOrderRow, MarketRow, NewUtxoRow, UtxoRow};
 use crate::schema::{maker_orders, markets, sync_state, utxos};
-use crate::sync::{
-    ChainSource, ChainUtxo, MarketStateChange, OrderStatusChange, SyncReport,
-};
+use crate::sync::{ChainSource, ChainUtxo, MarketStateChange, OrderStatusChange, SyncReport};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
@@ -391,23 +389,17 @@ impl DeadcatStore {
         mid: &MarketId,
         new_state: MarketState,
     ) -> crate::Result<()> {
-        diesel::update(
-            markets::table.filter(markets::market_id.eq(mid.as_bytes().to_vec())),
-        )
-        .set((
-            markets::current_state.eq(new_state.as_u64() as i32),
-            markets::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
-        ))
-        .execute(&mut self.conn)?;
+        diesel::update(markets::table.filter(markets::market_id.eq(mid.as_bytes().to_vec())))
+            .set((
+                markets::current_state.eq(new_state.as_u64() as i32),
+                markets::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+            ))
+            .execute(&mut self.conn)?;
 
         Ok(())
     }
 
-    pub fn update_order_status(
-        &mut self,
-        order_id: i32,
-        status: OrderStatus,
-    ) -> crate::Result<()> {
+    pub fn update_order_status(&mut self, order_id: i32, status: OrderStatus) -> crate::Result<()> {
         diesel::update(maker_orders::table.filter(maker_orders::id.eq(order_id)))
             .set((
                 maker_orders::order_status.eq(status.as_i32()),
@@ -427,17 +419,15 @@ impl DeadcatStore {
         mid: &MarketId,
         data: &IssuanceData,
     ) -> crate::Result<()> {
-        diesel::update(
-            markets::table.filter(markets::market_id.eq(mid.as_bytes().to_vec())),
-        )
-        .set((
-            markets::yes_issuance_entropy.eq(data.yes_entropy.to_vec()),
-            markets::no_issuance_entropy.eq(data.no_entropy.to_vec()),
-            markets::yes_issuance_blinding_nonce.eq(data.yes_blinding_nonce.to_vec()),
-            markets::no_issuance_blinding_nonce.eq(data.no_blinding_nonce.to_vec()),
-            markets::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
-        ))
-        .execute(&mut self.conn)?;
+        diesel::update(markets::table.filter(markets::market_id.eq(mid.as_bytes().to_vec())))
+            .set((
+                markets::yes_issuance_entropy.eq(data.yes_entropy.to_vec()),
+                markets::no_issuance_entropy.eq(data.no_entropy.to_vec()),
+                markets::yes_issuance_blinding_nonce.eq(data.yes_blinding_nonce.to_vec()),
+                markets::no_issuance_blinding_nonce.eq(data.no_blinding_nonce.to_vec()),
+                markets::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+            ))
+            .execute(&mut self.conn)?;
 
         Ok(())
     }
@@ -586,14 +576,8 @@ fn sync_market_utxos<C: ChainSource>(
                 .map_err(|e| StoreError::Sync(e.to_string()))?;
 
             for cu in chain_utxos {
-                let inserted = insert_chain_utxo(
-                    conn,
-                    &cu,
-                    spk,
-                    Some(mid_bytes),
-                    Some(*state),
-                    None,
-                )?;
+                let inserted =
+                    insert_chain_utxo(conn, &cu, spk, Some(mid_bytes), Some(*state), None)?;
                 if inserted {
                     report.new_utxos += 1;
 
@@ -693,9 +677,12 @@ fn try_extract_issuance_entropy<C: ChainSource>(
     }
 
     // Only store if we found both YES and NO
-    if let (Some(ye), Some(ne), Some(ybn), Some(nbn)) =
-        (yes_entropy, no_entropy, yes_blinding_nonce, no_blinding_nonce)
-    {
+    if let (Some(ye), Some(ne), Some(ybn), Some(nbn)) = (
+        yes_entropy,
+        no_entropy,
+        yes_blinding_nonce,
+        no_blinding_nonce,
+    ) {
         diesel::update(markets::table.filter(markets::market_id.eq(mid_bytes)))
             .set((
                 markets::yes_issuance_entropy.eq(ye.to_vec()),
@@ -750,14 +737,7 @@ fn sync_order_utxos<C: ChainSource>(
             .map_err(|e| StoreError::Sync(e.to_string()))?;
 
         for cu in chain_utxos {
-            let inserted = insert_chain_utxo(
-                conn,
-                &cu,
-                spk,
-                None,
-                None,
-                Some(*order_id),
-            )?;
+            let inserted = insert_chain_utxo(conn, &cu, spk, None, None, Some(*order_id))?;
             if inserted {
                 report.new_utxos += 1;
             }
@@ -784,9 +764,7 @@ fn sync_spent_utxos<C: ChainSource>(
             .map_err(|e| StoreError::Sync(e.to_string()))?
         {
             diesel::update(
-                utxos::table.filter(
-                    utxos::txid.eq(txid_bytes).and(utxos::vout.eq(*vout_val)),
-                ),
+                utxos::table.filter(utxos::txid.eq(txid_bytes).and(utxos::vout.eq(*vout_val))),
             )
             .set((
                 utxos::spent.eq(1),
@@ -808,10 +786,7 @@ fn sync_spent_utxos<C: ChainSource>(
 /// resolved states simultaneously (should not happen), we report an error. If no unspent
 /// UTXOs exist, the state is left unchanged (resolution is final, and a temporarily empty
 /// Dormant/Unresolved market may be mid-transaction).
-fn derive_market_states(
-    conn: &mut SqliteConnection,
-    report: &mut SyncReport,
-) -> crate::Result<()> {
+fn derive_market_states(conn: &mut SqliteConnection, report: &mut SyncReport) -> crate::Result<()> {
     let market_rows: Vec<(Vec<u8>, i32)> = markets::table
         .select((markets::market_id, markets::current_state))
         .load(conn)?;
@@ -853,9 +828,8 @@ fn derive_market_states(
             diesel::update(markets::table.filter(markets::market_id.eq(mid_bytes)))
                 .set((
                     markets::current_state.eq(new_state),
-                    markets::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(
-                        DATETIME_NOW,
-                    )),
+                    markets::updated_at
+                        .eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
                 ))
                 .execute(conn)?;
 
@@ -922,9 +896,8 @@ fn derive_order_statuses(
             diesel::update(maker_orders::table.filter(maker_orders::id.eq(oid)))
                 .set((
                     maker_orders::order_status.eq(new_status_i32),
-                    maker_orders::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(
-                        DATETIME_NOW,
-                    )),
+                    maker_orders::updated_at
+                        .eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
                 ))
                 .execute(conn)?;
             report.order_status_changes.push(OrderStatusChange {

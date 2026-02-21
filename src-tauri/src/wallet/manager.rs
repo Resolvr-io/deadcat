@@ -195,7 +195,9 @@ impl WalletManager {
         amount_sat: u64,
         fee_rate: Option<f32>,
     ) -> Result<LiquidSendResult, WalletError> {
-        let (txid, fee_sat) = self.sdk_mut()?.send_lbtc(address_str, amount_sat, fee_rate)?;
+        let (txid, fee_sat) = self
+            .sdk_mut()?
+            .send_lbtc(address_str, amount_sat, fee_rate)?;
         Ok(LiquidSendResult {
             txid: txid.to_string(),
             fee_sat,

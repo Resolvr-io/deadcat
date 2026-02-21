@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use deadcat_sdk::elements::confidential::{Asset, Nonce, Value as ConfValue};
 use deadcat_sdk::elements::encode::serialize;
 use deadcat_sdk::elements::hashes::Hash;
+use deadcat_sdk::elements::secp256k1_zkp::{Tweak, ZERO_TWEAK};
 use deadcat_sdk::elements::{
     AssetId, AssetIssuance, ContractHash, LockTime, OutPoint, Script, Sequence, Transaction, TxIn,
     TxInWitness, TxOut, TxOutWitness, Txid,
 };
-use deadcat_sdk::elements::secp256k1_zkp::{Tweak, ZERO_TWEAK};
 use deadcat_sdk::{
-    ContractParams, MarketId, MarketState, MakerOrderParams, OrderDirection, UnblindedUtxo,
+    ContractParams, MakerOrderParams, MarketId, MarketState, OrderDirection, UnblindedUtxo,
     derive_maker_receive, maker_receive_script_pubkey,
 };
 
@@ -46,9 +46,8 @@ fn test_params_2() -> ContractParams {
 }
 
 const NUMS_KEY_BYTES: [u8; 32] = [
-    0x50, 0x92, 0x9b, 0x74, 0xc1, 0xa0, 0x49, 0x54, 0xb7, 0x8b, 0x4b, 0x60, 0x35, 0xe9, 0x7a,
-    0x5e, 0x07, 0x8a, 0x5a, 0x0f, 0x28, 0xec, 0x96, 0xd5, 0x47, 0xbf, 0xee, 0x9a, 0xce, 0x80,
-    0x3a, 0xc0,
+    0x50, 0x92, 0x9b, 0x74, 0xc1, 0xa0, 0x49, 0x54, 0xb7, 0x8b, 0x4b, 0x60, 0x35, 0xe9, 0x7a, 0x5e,
+    0x07, 0x8a, 0x5a, 0x0f, 0x28, 0xec, 0x96, 0xd5, 0x47, 0xbf, 0xee, 0x9a, 0xce, 0x80, 0x3a, 0xc0,
 ];
 
 fn test_maker_order_params() -> MakerOrderParams {
@@ -172,28 +171,17 @@ impl ChainSource for MockChainSource {
         if let Some(ref msg) = self.fail_with {
             return Err(std::io::Error::new(std::io::ErrorKind::Other, msg.clone()));
         }
-        Ok(self
-            .unspent
-            .get(script_pubkey)
-            .cloned()
-            .unwrap_or_default())
+        Ok(self.unspent.get(script_pubkey).cloned().unwrap_or_default())
     }
 
-    fn is_spent(
-        &self,
-        txid: &[u8; 32],
-        vout: u32,
-    ) -> Result<Option<[u8; 32]>, Self::Error> {
+    fn is_spent(&self, txid: &[u8; 32], vout: u32) -> Result<Option<[u8; 32]>, Self::Error> {
         if let Some(ref msg) = self.fail_with {
             return Err(std::io::Error::new(std::io::ErrorKind::Other, msg.clone()));
         }
         Ok(self.spent.get(&(*txid, vout)).copied())
     }
 
-    fn get_transaction(
-        &self,
-        txid: &[u8; 32],
-    ) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn get_transaction(&self, txid: &[u8; 32]) -> Result<Option<Vec<u8>>, Self::Error> {
         if let Some(ref msg) = self.fail_with {
             return Err(std::io::Error::new(std::io::ErrorKind::Other, msg.clone()));
         }
@@ -292,7 +280,9 @@ fn test_list_markets_filter_by_state() {
     let id1 = store.ingest_market(&test_params()).unwrap();
     store.ingest_market(&test_params_2()).unwrap();
 
-    store.update_market_state(&id1, MarketState::Unresolved).unwrap();
+    store
+        .update_market_state(&id1, MarketState::Unresolved)
+        .unwrap();
 
     let filter = MarketFilter {
         current_state: Some(MarketState::Unresolved),
@@ -306,8 +296,8 @@ fn test_list_markets_filter_by_state() {
 #[test]
 fn test_list_markets_filter_by_expiry() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    store.ingest_market(&test_params()).unwrap();     // expiry = 1_000_000
-    store.ingest_market(&test_params_2()).unwrap();    // expiry = 2_000_000
+    store.ingest_market(&test_params()).unwrap(); // expiry = 1_000_000
+    store.ingest_market(&test_params_2()).unwrap(); // expiry = 2_000_000
 
     let filter = MarketFilter {
         expiry_before: Some(1_500_000),
@@ -352,7 +342,10 @@ fn test_list_markets_with_limit() {
     store.ingest_market(&test_params()).unwrap();
     store.ingest_market(&test_params_2()).unwrap();
 
-    let filter = MarketFilter { limit: Some(1), ..Default::default() };
+    let filter = MarketFilter {
+        limit: Some(1),
+        ..Default::default()
+    };
     assert_eq!(store.list_markets(&filter).unwrap().len(), 1);
 }
 
@@ -361,9 +354,14 @@ fn test_update_market_state() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let id = store.ingest_market(&test_params()).unwrap();
 
-    assert_eq!(store.get_market(&id).unwrap().unwrap().state, MarketState::Dormant);
+    assert_eq!(
+        store.get_market(&id).unwrap().unwrap().state,
+        MarketState::Dormant
+    );
 
-    store.update_market_state(&id, MarketState::Unresolved).unwrap();
+    store
+        .update_market_state(&id, MarketState::Unresolved)
+        .unwrap();
     let info = store.get_market(&id).unwrap().unwrap();
     assert_eq!(info.state, MarketState::Unresolved);
 
@@ -371,8 +369,13 @@ fn test_update_market_state() {
     // (SQLite datetime('now') resolution is 1s, so we just verify it's valid)
     assert!(!info.updated_at.is_empty());
 
-    store.update_market_state(&id, MarketState::ResolvedYes).unwrap();
-    assert_eq!(store.get_market(&id).unwrap().unwrap().state, MarketState::ResolvedYes);
+    store
+        .update_market_state(&id, MarketState::ResolvedYes)
+        .unwrap();
+    assert_eq!(
+        store.get_market(&id).unwrap().unwrap().state,
+        MarketState::ResolvedYes
+    );
 }
 
 // ==================== Maker Order Tests ====================
@@ -382,7 +385,9 @@ fn test_maker_order_ingest_and_query_roundtrip() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
 
-    let order_id = store.ingest_maker_order(&params, Some(&[0xaa; 32]), None).unwrap();
+    let order_id = store
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .unwrap();
     assert!(order_id > 0);
 
     let info = store.get_maker_order(order_id).unwrap().unwrap();
@@ -397,11 +402,21 @@ fn test_maker_order_idempotent_ingest() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
 
-    let id1 = store.ingest_maker_order(&params, Some(&[0xaa; 32]), None).unwrap();
-    let id2 = store.ingest_maker_order(&params, Some(&[0xaa; 32]), None).unwrap();
+    let id1 = store
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .unwrap();
+    let id2 = store
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .unwrap();
     assert_eq!(id1, id2);
 
-    assert_eq!(store.list_maker_orders(&OrderFilter::default()).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .list_maker_orders(&OrderFilter::default())
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -423,8 +438,12 @@ fn test_get_nonexistent_order() {
 #[test]
 fn test_list_maker_orders_filters() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    store.ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None).unwrap();
-    store.ingest_maker_order(&test_maker_order_params_2(), Some(&[0xaa; 32]), None).unwrap();
+    store
+        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None)
+        .unwrap();
+    store
+        .ingest_maker_order(&test_maker_order_params_2(), Some(&[0xaa; 32]), None)
+        .unwrap();
 
     // Filter by direction
     let filter = OrderFilter {
@@ -457,7 +476,9 @@ fn test_list_maker_orders_filters() {
 fn test_filter_orders_by_maker_pubkey() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
-    store.ingest_maker_order(&params, Some(&[0xaa; 32]), None).unwrap();
+    store
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .unwrap();
     store.ingest_maker_order(&params, None, None).unwrap();
 
     let filter = OrderFilter {
@@ -472,25 +493,45 @@ fn test_filter_orders_by_maker_pubkey() {
 #[test]
 fn test_list_maker_orders_with_limit() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    store.ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None).unwrap();
-    store.ingest_maker_order(&test_maker_order_params_2(), Some(&[0xaa; 32]), None).unwrap();
+    store
+        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None)
+        .unwrap();
+    store
+        .ingest_maker_order(&test_maker_order_params_2(), Some(&[0xaa; 32]), None)
+        .unwrap();
 
-    let filter = OrderFilter { limit: Some(1), ..Default::default() };
+    let filter = OrderFilter {
+        limit: Some(1),
+        ..Default::default()
+    };
     assert_eq!(store.list_maker_orders(&filter).unwrap().len(), 1);
 }
 
 #[test]
 fn test_update_order_status() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    let id = store.ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None).unwrap();
+    let id = store
+        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None)
+        .unwrap();
 
-    assert_eq!(store.get_maker_order(id).unwrap().unwrap().status, OrderStatus::Pending);
+    assert_eq!(
+        store.get_maker_order(id).unwrap().unwrap().status,
+        OrderStatus::Pending
+    );
 
     store.update_order_status(id, OrderStatus::Active).unwrap();
-    assert_eq!(store.get_maker_order(id).unwrap().unwrap().status, OrderStatus::Active);
+    assert_eq!(
+        store.get_maker_order(id).unwrap().unwrap().status,
+        OrderStatus::Active
+    );
 
-    store.update_order_status(id, OrderStatus::Cancelled).unwrap();
-    assert_eq!(store.get_maker_order(id).unwrap().unwrap().status, OrderStatus::Cancelled);
+    store
+        .update_order_status(id, OrderStatus::Cancelled)
+        .unwrap();
+    assert_eq!(
+        store.get_maker_order(id).unwrap().unwrap().status,
+        OrderStatus::Cancelled
+    );
 }
 
 // ==================== UTXO Tests ====================
@@ -502,16 +543,24 @@ fn test_utxo_add_query_mark_spent_lifecycle() {
 
     let utxo = test_utxo_with_outpoint([0xAA; 32], 0, [0xbb; 32], 100_000);
 
-    store.add_market_utxo(&market_id, MarketState::Dormant, &utxo, Some(100)).unwrap();
+    store
+        .add_market_utxo(&market_id, MarketState::Dormant, &utxo, Some(100))
+        .unwrap();
 
-    let utxos = store.get_market_utxos(&market_id, Some(MarketState::Dormant)).unwrap();
+    let utxos = store
+        .get_market_utxos(&market_id, Some(MarketState::Dormant))
+        .unwrap();
     assert_eq!(utxos.len(), 1);
     assert_eq!(utxos[0].value, 100_000);
     assert_eq!(utxos[0].asset_id, [0xbb; 32]);
 
-    store.mark_spent(&[0xAA; 32], 0, &[0xFF; 32], Some(200)).unwrap();
+    store
+        .mark_spent(&[0xAA; 32], 0, &[0xFF; 32], Some(200))
+        .unwrap();
 
-    let utxos = store.get_market_utxos(&market_id, Some(MarketState::Dormant)).unwrap();
+    let utxos = store
+        .get_market_utxos(&market_id, Some(MarketState::Dormant))
+        .unwrap();
     assert_eq!(utxos.len(), 0);
 }
 
@@ -522,11 +571,18 @@ fn test_utxo_add_idempotent() {
 
     let utxo = test_utxo_with_outpoint([0xAA; 32], 0, [0xbb; 32], 100_000);
 
-    store.add_market_utxo(&market_id, MarketState::Dormant, &utxo, Some(100)).unwrap();
-    store.add_market_utxo(&market_id, MarketState::Dormant, &utxo, Some(100)).unwrap();
+    store
+        .add_market_utxo(&market_id, MarketState::Dormant, &utxo, Some(100))
+        .unwrap();
+    store
+        .add_market_utxo(&market_id, MarketState::Dormant, &utxo, Some(100))
+        .unwrap();
 
     assert_eq!(
-        store.get_market_utxos(&market_id, Some(MarketState::Dormant)).unwrap().len(),
+        store
+            .get_market_utxos(&market_id, Some(MarketState::Dormant))
+            .unwrap()
+            .len(),
         1
     );
 }
@@ -534,7 +590,9 @@ fn test_utxo_add_idempotent() {
 #[test]
 fn test_order_utxo_lifecycle() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    let order_id = store.ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None).unwrap();
+    let order_id = store
+        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None)
+        .unwrap();
 
     let utxo = test_utxo_with_outpoint([0xBB; 32], 1, [0x01; 32], 50_000);
     store.add_order_utxo(order_id, &utxo, Some(100)).unwrap();
@@ -554,19 +612,27 @@ fn test_get_market_utxos_filter_by_state() {
     let utxo1 = test_utxo_with_outpoint([0xAA; 32], 0, [0xbb; 32], 100_000);
     let utxo2 = test_utxo_with_outpoint([0xBB; 32], 0, [0xbb; 32], 200_000);
 
-    store.add_market_utxo(&market_id, MarketState::Dormant, &utxo1, None).unwrap();
-    store.add_market_utxo(&market_id, MarketState::Unresolved, &utxo2, None).unwrap();
+    store
+        .add_market_utxo(&market_id, MarketState::Dormant, &utxo1, None)
+        .unwrap();
+    store
+        .add_market_utxo(&market_id, MarketState::Unresolved, &utxo2, None)
+        .unwrap();
 
     // All states
     assert_eq!(store.get_market_utxos(&market_id, None).unwrap().len(), 2);
 
     // Dormant only
-    let dormant = store.get_market_utxos(&market_id, Some(MarketState::Dormant)).unwrap();
+    let dormant = store
+        .get_market_utxos(&market_id, Some(MarketState::Dormant))
+        .unwrap();
     assert_eq!(dormant.len(), 1);
     assert_eq!(dormant[0].value, 100_000);
 
     // Unresolved only
-    let unresolved = store.get_market_utxos(&market_id, Some(MarketState::Unresolved)).unwrap();
+    let unresolved = store
+        .get_market_utxos(&market_id, Some(MarketState::Unresolved))
+        .unwrap();
     assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].value, 200_000);
 }
@@ -582,11 +648,15 @@ fn test_watched_script_pubkeys() {
     store.ingest_market(&test_params()).unwrap();
     assert_eq!(store.watched_script_pubkeys().unwrap().len(), 4);
 
-    store.ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None).unwrap();
+    store
+        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None)
+        .unwrap();
     assert_eq!(store.watched_script_pubkeys().unwrap().len(), 5);
 
     // Order without pubkey -> no covenant_spk -> no additional watched SPK
-    store.ingest_maker_order(&test_maker_order_params_2(), None, None).unwrap();
+    store
+        .ingest_maker_order(&test_maker_order_params_2(), None, None)
+        .unwrap();
     assert_eq!(store.watched_script_pubkeys().unwrap().len(), 5);
 }
 
@@ -601,7 +671,10 @@ fn test_last_synced_height() {
 #[test]
 fn test_sync_empty_store() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
-    let chain = MockChainSource { block_height: 500, ..Default::default() };
+    let chain = MockChainSource {
+        block_height: 500,
+        ..Default::default()
+    };
 
     let report = store.sync(&chain).unwrap();
     assert_eq!(report.new_utxos, 0);
@@ -620,7 +693,10 @@ fn test_sync_discovers_utxos() {
 
     let dormant_spk = get_market_spk(&mut store, &params, MarketState::Dormant);
 
-    let mut chain = MockChainSource { block_height: 500, ..Default::default() };
+    let mut chain = MockChainSource {
+        block_height: 500,
+        ..Default::default()
+    };
     chain.unspent.insert(
         dormant_spk,
         vec![make_chain_utxo([0xDD; 32], 0, [0xbb; 32], 100_000)],
@@ -630,7 +706,9 @@ fn test_sync_discovers_utxos() {
     assert_eq!(report.new_utxos, 1);
     assert_eq!(report.block_height, 500);
 
-    let utxos = store.get_market_utxos(&market_id, Some(MarketState::Dormant)).unwrap();
+    let utxos = store
+        .get_market_utxos(&market_id, Some(MarketState::Dormant))
+        .unwrap();
     assert_eq!(utxos.len(), 1);
     assert_eq!(utxos[0].value, 100_000);
 
@@ -644,16 +722,24 @@ fn test_sync_marks_spent() {
     let market_id = store.ingest_market(&params).unwrap();
 
     let utxo = test_utxo_with_outpoint([0xDD; 32], 0, [0xbb; 32], 100_000);
-    store.add_market_utxo(&market_id, MarketState::Dormant, &utxo, Some(100)).unwrap();
+    store
+        .add_market_utxo(&market_id, MarketState::Dormant, &utxo, Some(100))
+        .unwrap();
 
-    let mut chain = MockChainSource { block_height: 600, ..Default::default() };
+    let mut chain = MockChainSource {
+        block_height: 600,
+        ..Default::default()
+    };
     chain.spent.insert(([0xDD; 32], 0), [0xEE; 32]);
 
     let report = store.sync(&chain).unwrap();
     assert_eq!(report.spent_utxos, 1);
 
     assert_eq!(
-        store.get_market_utxos(&market_id, Some(MarketState::Dormant)).unwrap().len(),
+        store
+            .get_market_utxos(&market_id, Some(MarketState::Dormant))
+            .unwrap()
+            .len(),
         0
     );
 }
@@ -666,7 +752,10 @@ fn test_sync_derives_market_state() {
 
     let unresolved_spk = get_market_spk(&mut store, &params, MarketState::Unresolved);
 
-    let mut chain = MockChainSource { block_height: 700, ..Default::default() };
+    let mut chain = MockChainSource {
+        block_height: 700,
+        ..Default::default()
+    };
     chain.unspent.insert(
         unresolved_spk,
         vec![make_chain_utxo([0xDD; 32], 0, [0xbb; 32], 100_000)],
@@ -675,21 +764,35 @@ fn test_sync_derives_market_state() {
     let report = store.sync(&chain).unwrap();
 
     assert_eq!(report.market_state_changes.len(), 1);
-    assert_eq!(report.market_state_changes[0].old_state, MarketState::Dormant);
-    assert_eq!(report.market_state_changes[0].new_state, MarketState::Unresolved);
+    assert_eq!(
+        report.market_state_changes[0].old_state,
+        MarketState::Dormant
+    );
+    assert_eq!(
+        report.market_state_changes[0].new_state,
+        MarketState::Unresolved
+    );
 
-    assert_eq!(store.get_market(&market_id).unwrap().unwrap().state, MarketState::Unresolved);
+    assert_eq!(
+        store.get_market(&market_id).unwrap().unwrap().state,
+        MarketState::Unresolved
+    );
 }
 
 #[test]
 fn test_sync_derives_order_status_active() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
-    let order_id = store.ingest_maker_order(&params, Some(&[0xaa; 32]), None).unwrap();
+    let order_id = store
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .unwrap();
 
     let order_spk = get_order_spk(&mut store, &params, &[0xaa; 32]);
 
-    let mut chain = MockChainSource { block_height: 800, ..Default::default() };
+    let mut chain = MockChainSource {
+        block_height: 800,
+        ..Default::default()
+    };
     chain.unspent.insert(
         order_spk,
         vec![make_chain_utxo([0xEE; 32], 0, [0x01; 32], 50_000)],
@@ -698,74 +801,119 @@ fn test_sync_derives_order_status_active() {
     let report = store.sync(&chain).unwrap();
 
     assert_eq!(report.order_status_changes.len(), 1);
-    assert_eq!(report.order_status_changes[0].old_status, OrderStatus::Pending);
-    assert_eq!(report.order_status_changes[0].new_status, OrderStatus::Active);
+    assert_eq!(
+        report.order_status_changes[0].old_status,
+        OrderStatus::Pending
+    );
+    assert_eq!(
+        report.order_status_changes[0].new_status,
+        OrderStatus::Active
+    );
 
-    assert_eq!(store.get_maker_order(order_id).unwrap().unwrap().status, OrderStatus::Active);
+    assert_eq!(
+        store.get_maker_order(order_id).unwrap().unwrap().status,
+        OrderStatus::Active
+    );
 }
 
 #[test]
 fn test_sync_derives_order_fully_filled() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
-    let order_id = store.ingest_maker_order(&params, Some(&[0xaa; 32]), None).unwrap();
+    let order_id = store
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .unwrap();
 
     // Manually add a UTXO then mark it spent (simulates a fill)
     let utxo = test_utxo_with_outpoint([0xEE; 32], 0, [0x01; 32], 50_000);
     store.add_order_utxo(order_id, &utxo, Some(100)).unwrap();
-    store.mark_spent(&[0xEE; 32], 0, &[0xFF; 32], Some(200)).unwrap();
+    store
+        .mark_spent(&[0xEE; 32], 0, &[0xFF; 32], Some(200))
+        .unwrap();
 
     // Now sync with empty chain (no new UTXOs, nothing to check)
-    let chain = MockChainSource { block_height: 300, ..Default::default() };
+    let chain = MockChainSource {
+        block_height: 300,
+        ..Default::default()
+    };
     let report = store.sync(&chain).unwrap();
 
     assert_eq!(report.order_status_changes.len(), 1);
-    assert_eq!(report.order_status_changes[0].new_status, OrderStatus::FullyFilled);
+    assert_eq!(
+        report.order_status_changes[0].new_status,
+        OrderStatus::FullyFilled
+    );
 
-    assert_eq!(store.get_maker_order(order_id).unwrap().unwrap().status, OrderStatus::FullyFilled);
+    assert_eq!(
+        store.get_maker_order(order_id).unwrap().unwrap().status,
+        OrderStatus::FullyFilled
+    );
 }
 
 #[test]
 fn test_sync_derives_order_partially_filled() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
-    let order_id = store.ingest_maker_order(&params, Some(&[0xaa; 32]), None).unwrap();
+    let order_id = store
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .unwrap();
 
     // Two UTXOs: one spent (filled), one unspent (still live)
     let utxo1 = test_utxo_with_outpoint([0xEE; 32], 0, [0x01; 32], 50_000);
     let utxo2 = test_utxo_with_outpoint([0xEE; 32], 1, [0x01; 32], 30_000);
     store.add_order_utxo(order_id, &utxo1, Some(100)).unwrap();
     store.add_order_utxo(order_id, &utxo2, Some(100)).unwrap();
-    store.mark_spent(&[0xEE; 32], 0, &[0xFF; 32], Some(200)).unwrap();
+    store
+        .mark_spent(&[0xEE; 32], 0, &[0xFF; 32], Some(200))
+        .unwrap();
 
-    let chain = MockChainSource { block_height: 300, ..Default::default() };
+    let chain = MockChainSource {
+        block_height: 300,
+        ..Default::default()
+    };
     let report = store.sync(&chain).unwrap();
 
     assert_eq!(report.order_status_changes.len(), 1);
-    assert_eq!(report.order_status_changes[0].new_status, OrderStatus::PartiallyFilled);
+    assert_eq!(
+        report.order_status_changes[0].new_status,
+        OrderStatus::PartiallyFilled
+    );
 
-    assert_eq!(store.get_maker_order(order_id).unwrap().unwrap().status, OrderStatus::PartiallyFilled);
+    assert_eq!(
+        store.get_maker_order(order_id).unwrap().unwrap().status,
+        OrderStatus::PartiallyFilled
+    );
 }
 
 #[test]
 fn test_sync_cancelled_order_excluded() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
-    let order_id = store.ingest_maker_order(&params, Some(&[0xaa; 32]), None).unwrap();
+    let order_id = store
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .unwrap();
 
     // Cancel the order
-    store.update_order_status(order_id, OrderStatus::Cancelled).unwrap();
+    store
+        .update_order_status(order_id, OrderStatus::Cancelled)
+        .unwrap();
 
     // Add a UTXO (shouldn't affect status since cancelled is terminal)
     let utxo = test_utxo_with_outpoint([0xEE; 32], 0, [0x01; 32], 50_000);
     store.add_order_utxo(order_id, &utxo, Some(100)).unwrap();
 
-    let chain = MockChainSource { block_height: 300, ..Default::default() };
+    let chain = MockChainSource {
+        block_height: 300,
+        ..Default::default()
+    };
     let report = store.sync(&chain).unwrap();
 
     // No status changes — cancelled is terminal
     assert_eq!(report.order_status_changes.len(), 0);
-    assert_eq!(store.get_maker_order(order_id).unwrap().unwrap().status, OrderStatus::Cancelled);
+    assert_eq!(
+        store.get_maker_order(order_id).unwrap().unwrap().status,
+        OrderStatus::Cancelled
+    );
 }
 
 #[test]
@@ -776,7 +924,10 @@ fn test_sync_idempotent() {
 
     let dormant_spk = get_market_spk(&mut store, &params, MarketState::Dormant);
 
-    let mut chain = MockChainSource { block_height: 500, ..Default::default() };
+    let mut chain = MockChainSource {
+        block_height: 500,
+        ..Default::default()
+    };
     chain.unspent.insert(
         dormant_spk,
         vec![make_chain_utxo([0xDD; 32], 0, [0xbb; 32], 100_000)],
@@ -789,7 +940,10 @@ fn test_sync_idempotent() {
     assert_eq!(report2.new_utxos, 0);
 
     assert_eq!(
-        store.get_market_utxos(&market_id, Some(MarketState::Dormant)).unwrap().len(),
+        store
+            .get_market_utxos(&market_id, Some(MarketState::Dormant))
+            .unwrap()
+            .len(),
         1
     );
 }
@@ -803,7 +957,10 @@ fn test_sync_multi_round_discover_then_spend() {
     let dormant_spk = get_market_spk(&mut store, &params, MarketState::Dormant);
 
     // Round 1: discover UTXO
-    let mut chain = MockChainSource { block_height: 500, ..Default::default() };
+    let mut chain = MockChainSource {
+        block_height: 500,
+        ..Default::default()
+    };
     chain.unspent.insert(
         dormant_spk.clone(),
         vec![make_chain_utxo([0xDD; 32], 0, [0xbb; 32], 100_000)],
@@ -813,7 +970,10 @@ fn test_sync_multi_round_discover_then_spend() {
     assert_eq!(store.get_market_utxos(&market_id, None).unwrap().len(), 1);
 
     // Round 2: UTXO is now spent, no longer in unspent set
-    let mut chain2 = MockChainSource { block_height: 600, ..Default::default() };
+    let mut chain2 = MockChainSource {
+        block_height: 600,
+        ..Default::default()
+    };
     chain2.spent.insert(([0xDD; 32], 0), [0xEE; 32]);
     let r2 = store.sync(&chain2).unwrap();
     assert_eq!(r2.spent_utxos, 1);
@@ -830,7 +990,10 @@ fn test_sync_market_utxos_at_multiple_states() {
     let unresolved_spk = get_market_spk(&mut store, &params, MarketState::Unresolved);
 
     // UTXOs at both dormant and unresolved addresses
-    let mut chain = MockChainSource { block_height: 700, ..Default::default() };
+    let mut chain = MockChainSource {
+        block_height: 700,
+        ..Default::default()
+    };
     chain.unspent.insert(
         dormant_spk,
         vec![make_chain_utxo([0xAA; 32], 0, [0xbb; 32], 50_000)],
@@ -845,9 +1008,15 @@ fn test_sync_market_utxos_at_multiple_states() {
 
     // Highest state with UTXOs (Unresolved=1) should win
     assert_eq!(report.market_state_changes.len(), 1);
-    assert_eq!(report.market_state_changes[0].new_state, MarketState::Unresolved);
+    assert_eq!(
+        report.market_state_changes[0].new_state,
+        MarketState::Unresolved
+    );
 
-    assert_eq!(store.get_market(&market_id).unwrap().unwrap().state, MarketState::Unresolved);
+    assert_eq!(
+        store.get_market(&market_id).unwrap().unwrap().state,
+        MarketState::Unresolved
+    );
 }
 
 #[test]
@@ -875,7 +1044,9 @@ fn test_sync_transaction_atomicity() {
 
     // Add a UTXO so sync_spent_utxos has work to do
     let utxo = test_utxo_with_outpoint([0xDD; 32], 0, [0xbb; 32], 100_000);
-    store.add_market_utxo(&market_id, MarketState::Dormant, &utxo, Some(100)).unwrap();
+    store
+        .add_market_utxo(&market_id, MarketState::Dormant, &utxo, Some(100))
+        .unwrap();
 
     // Chain source that fails on is_spent (after list_unspent succeeds)
     let chain = MockChainSource {
@@ -889,7 +1060,10 @@ fn test_sync_transaction_atomicity() {
 
     // The pre-existing UTXO should still be there (not modified by failed sync)
     assert_eq!(
-        store.get_market_utxos(&market_id, Some(MarketState::Dormant)).unwrap().len(),
+        store
+            .get_market_utxos(&market_id, Some(MarketState::Dormant))
+            .unwrap()
+            .len(),
         1
     );
     // Sync height should not have advanced
@@ -993,41 +1167,48 @@ fn test_set_market_issuance_data() {
 
 /// Build a minimal Elements transaction with issuance fields on the inputs.
 /// Each entry in `issuances` is: (prevout_txid, prevout_vout, contract_hash_bytes, amount, inflation_keys_amount, blinding_nonce)
-fn build_mock_issuance_tx(
-    issuances: &[([u8; 32], u32, [u8; 32], u64, u64, Tweak)],
-) -> Vec<u8> {
+fn build_mock_issuance_tx(issuances: &[([u8; 32], u32, [u8; 32], u64, u64, Tweak)]) -> Vec<u8> {
     let inputs: Vec<TxIn> = issuances
         .iter()
-        .map(|(prevout_txid, prevout_vout, contract_hash, amount, inflation_keys, blinding_nonce)| {
-            let asset_entropy = if *blinding_nonce == ZERO_TWEAK {
-                // Initial issuance: asset_entropy field is the contract hash
-                *contract_hash
-            } else {
-                // Reissuance: asset_entropy field is the actual entropy
-                *contract_hash
-            };
+        .map(
+            |(
+                prevout_txid,
+                prevout_vout,
+                contract_hash,
+                amount,
+                inflation_keys,
+                blinding_nonce,
+            )| {
+                let asset_entropy = if *blinding_nonce == ZERO_TWEAK {
+                    // Initial issuance: asset_entropy field is the contract hash
+                    *contract_hash
+                } else {
+                    // Reissuance: asset_entropy field is the actual entropy
+                    *contract_hash
+                };
 
-            TxIn {
-                previous_output: OutPoint::new(
-                    Txid::from_byte_array(*prevout_txid),
-                    *prevout_vout,
-                ),
-                is_pegin: false,
-                script_sig: Script::new(),
-                sequence: Sequence::MAX,
-                asset_issuance: AssetIssuance {
-                    asset_blinding_nonce: *blinding_nonce,
-                    asset_entropy,
-                    amount: ConfValue::Explicit(*amount),
-                    inflation_keys: if *inflation_keys > 0 {
-                        ConfValue::Explicit(*inflation_keys)
-                    } else {
-                        ConfValue::Null
+                TxIn {
+                    previous_output: OutPoint::new(
+                        Txid::from_byte_array(*prevout_txid),
+                        *prevout_vout,
+                    ),
+                    is_pegin: false,
+                    script_sig: Script::new(),
+                    sequence: Sequence::MAX,
+                    asset_issuance: AssetIssuance {
+                        asset_blinding_nonce: *blinding_nonce,
+                        asset_entropy,
+                        amount: ConfValue::Explicit(*amount),
+                        inflation_keys: if *inflation_keys > 0 {
+                            ConfValue::Explicit(*inflation_keys)
+                        } else {
+                            ConfValue::Null
+                        },
                     },
-                },
-                witness: TxInWitness::default(),
-            }
-        })
+                    witness: TxInWitness::default(),
+                }
+            },
+        )
         .collect();
 
     let tx = Transaction {
@@ -1093,8 +1274,22 @@ fn test_sync_extracts_issuance_entropy() {
     let utxo_txid = [0xDD; 32];
 
     let raw_tx = build_mock_issuance_tx(&[
-        (yes_prevout_txid, yes_prevout_vout, yes_contract_hash, 1000, 1, ZERO_TWEAK),
-        (no_prevout_txid, no_prevout_vout, no_contract_hash, 1000, 1, ZERO_TWEAK),
+        (
+            yes_prevout_txid,
+            yes_prevout_vout,
+            yes_contract_hash,
+            1000,
+            1,
+            ZERO_TWEAK,
+        ),
+        (
+            no_prevout_txid,
+            no_prevout_vout,
+            no_contract_hash,
+            1000,
+            1,
+            ZERO_TWEAK,
+        ),
     ]);
 
     let mut chain = MockChainSource {
@@ -1165,8 +1360,22 @@ fn test_sync_extracts_entropy_from_creation_tx() {
 
     // Build tx with initial issuances (ZERO_TWEAK = initial)
     let raw_tx = build_mock_issuance_tx(&[
-        (yes_prevout_txid, yes_prevout_vout, yes_contract_hash, 500, 1, ZERO_TWEAK),
-        (no_prevout_txid, no_prevout_vout, no_contract_hash, 500, 1, ZERO_TWEAK),
+        (
+            yes_prevout_txid,
+            yes_prevout_vout,
+            yes_contract_hash,
+            500,
+            1,
+            ZERO_TWEAK,
+        ),
+        (
+            no_prevout_txid,
+            no_prevout_vout,
+            no_contract_hash,
+            500,
+            1,
+            ZERO_TWEAK,
+        ),
     ]);
 
     let mut chain = MockChainSource {
@@ -1182,7 +1391,9 @@ fn test_sync_extracts_entropy_from_creation_tx() {
     store.sync(&chain).unwrap();
 
     let info = store.get_market(&market_id).unwrap().unwrap();
-    let issuance = info.issuance.expect("issuance should be populated from creation tx");
+    let issuance = info
+        .issuance
+        .expect("issuance should be populated from creation tx");
     assert_eq!(issuance.yes_entropy, yes_entropy.to_byte_array());
     assert_eq!(issuance.no_entropy, no_entropy.to_byte_array());
 }
@@ -1191,19 +1402,15 @@ fn test_sync_extracts_entropy_from_creation_tx() {
 fn test_sync_skips_entropy_when_tx_unavailable() {
     let yes_prevout_txid = [0xC1; 32];
     let yes_outpoint = OutPoint::new(Txid::from_byte_array(yes_prevout_txid), 0);
-    let yes_entropy = AssetId::generate_asset_entropy(
-        yes_outpoint,
-        ContractHash::from_byte_array([0xE1; 32]),
-    );
+    let yes_entropy =
+        AssetId::generate_asset_entropy(yes_outpoint, ContractHash::from_byte_array([0xE1; 32]));
     let yes_asset = AssetId::from_entropy(yes_entropy);
     let yes_token = AssetId::reissuance_token_from_entropy(yes_entropy, false);
 
     let no_prevout_txid = [0xC2; 32];
     let no_outpoint = OutPoint::new(Txid::from_byte_array(no_prevout_txid), 1);
-    let no_entropy = AssetId::generate_asset_entropy(
-        no_outpoint,
-        ContractHash::from_byte_array([0xE2; 32]),
-    );
+    let no_entropy =
+        AssetId::generate_asset_entropy(no_outpoint, ContractHash::from_byte_array([0xE2; 32]));
     let no_asset = AssetId::from_entropy(no_entropy);
     let no_token = AssetId::reissuance_token_from_entropy(no_entropy, false);
 

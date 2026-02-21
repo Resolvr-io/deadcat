@@ -156,10 +156,7 @@ pub fn build_attestation_event(
             EventId::from_hex(announcement_event_id)
                 .map_err(|e| format!("invalid event id: {e}"))?,
         ),
-        Tag::custom(
-            TagKind::custom("outcome"),
-            vec![outcome_str.to_string()],
-        ),
+        Tag::custom(TagKind::custom("outcome"), vec![outcome_str.to_string()]),
         Tag::custom(TagKind::custom("network"), vec![NETWORK_TAG.to_string()]),
     ];
 
@@ -422,9 +419,7 @@ mod tests {
         let pk_bytes = hex::decode(&pk_hex).unwrap();
         let xonly = secp256k1::XOnlyPublicKey::from_slice(&pk_bytes).unwrap();
         let schnorr_sig = secp256k1::schnorr::Signature::from_slice(&sig).unwrap();
-        assert!(secp
-            .verify_schnorr(&schnorr_sig, &message, &xonly)
-            .is_ok());
+        assert!(secp.verify_schnorr(&schnorr_sig, &message, &xonly).is_ok());
     }
 
     #[test]

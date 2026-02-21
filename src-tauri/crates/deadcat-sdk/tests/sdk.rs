@@ -145,10 +145,7 @@ fn test_address_derivation() {
         addr0_again.address().to_string()
     );
     // Different indices produce different addresses.
-    assert_ne!(
-        addr0.address().to_string(),
-        addr1.address().to_string()
-    );
+    assert_ne!(addr0.address().to_string(), addr1.address().to_string());
 }
 
 #[test]
@@ -158,10 +155,7 @@ fn test_empty_wallet_state() {
 
     let balance = sdk.balance().unwrap();
     // A fresh wallet has no balance (or zero policy asset).
-    assert!(
-        balance.is_empty()
-            || *balance.get(&regtest_policy_asset()).unwrap_or(&0) == 0
-    );
+    assert!(balance.is_empty() || *balance.get(&regtest_policy_asset()).unwrap_or(&0) == 0);
 
     let utxos = sdk.utxos().unwrap();
     assert!(utxos.is_empty());
@@ -364,13 +358,10 @@ fn test_create_contract_insufficient_utxos() {
     // Only fund 1 UTXO — creation needs at least 2.
     fixture.fund_and_sync(1, 100_000);
 
-    let result = fixture.sdk.create_contract_onchain(
-        test_oracle_pubkey(),
-        10_000,
-        500_000,
-        1_000,
-        500,
-    );
+    let result =
+        fixture
+            .sdk
+            .create_contract_onchain(test_oracle_pubkey(), 10_000, 500_000, 1_000, 500);
     assert!(result.is_err());
 }
 
@@ -428,13 +419,7 @@ fn test_subsequent_issuance_from_unresolved() {
 
     let (creation_txid, params) = fixture
         .sdk
-        .create_contract_onchain(
-            test_oracle_pubkey(),
-            10_000,
-            500_000,
-            1_000,
-            500,
-        )
+        .create_contract_onchain(test_oracle_pubkey(), 10_000, 500_000, 1_000, 500)
         .unwrap();
 
     fixture.env.elementsd_generate(1);

@@ -412,10 +412,7 @@ impl BoltzService {
         })
     }
 
-    pub async fn get_swap_status(
-        &self,
-        id: &str,
-    ) -> Result<BoltzSwapStatusResponse, PaymentError> {
+    pub async fn get_swap_status(&self, id: &str) -> Result<BoltzSwapStatusResponse, PaymentError> {
         let swap = self.client.get_swap(id).await.map_err(map_boltz_err)?;
         Ok(BoltzSwapStatusResponse {
             id: id.to_string(),
@@ -424,9 +421,7 @@ impl BoltzService {
         })
     }
 
-    pub async fn get_chain_swap_pairs_info(
-        &self,
-    ) -> Result<BoltzChainSwapPairsInfo, PaymentError> {
+    pub async fn get_chain_swap_pairs_info(&self) -> Result<BoltzChainSwapPairsInfo, PaymentError> {
         let pairs = self.client.get_chain_pairs().await.map_err(map_boltz_err)?;
 
         let btc_to_lbtc = pairs.get_btc_to_lbtc_pair().ok_or_else(|| {
@@ -494,9 +489,8 @@ fn map_boltz_err(err: boltz_client::error::Error) -> PaymentError {
 }
 
 fn parse_invoice_amount_sat(invoice: &str) -> Result<u64, PaymentError> {
-    let invoice = Bolt11Invoice::from_str(invoice).map_err(|e| {
-        PaymentError::InvalidParameters(format!("Invalid BOLT11 invoice: {}", e))
-    })?;
+    let invoice = Bolt11Invoice::from_str(invoice)
+        .map_err(|e| PaymentError::InvalidParameters(format!("Invalid BOLT11 invoice: {}", e)))?;
     let amount_msat = invoice.amount_milli_satoshis().ok_or_else(|| {
         PaymentError::InvalidParameters(
             "Invoice is missing amount (zero-amount invoices are not yet supported)".to_string(),
@@ -506,16 +500,14 @@ fn parse_invoice_amount_sat(invoice: &str) -> Result<u64, PaymentError> {
 }
 
 fn parse_invoice_expiry(invoice: &str) -> Result<(u64, String), PaymentError> {
-    let invoice = Bolt11Invoice::from_str(invoice).map_err(|e| {
-        PaymentError::InvalidParameters(format!("Invalid BOLT11 invoice: {}", e))
-    })?;
+    let invoice = Bolt11Invoice::from_str(invoice)
+        .map_err(|e| PaymentError::InvalidParameters(format!("Invalid BOLT11 invoice: {}", e)))?;
     let expiry_seconds = invoice.expiry_time().as_secs();
     let expires_at = invoice.expires_at().ok_or_else(|| {
         PaymentError::InvalidParameters("Invoice expiry timestamp overflow".to_string())
     })?;
-    let expires_at_unix = i64::try_from(expires_at.as_secs()).map_err(|_| {
-        PaymentError::InvalidParameters("Invoice expiry out of range".to_string())
-    })?;
+    let expires_at_unix = i64::try_from(expires_at.as_secs())
+        .map_err(|_| PaymentError::InvalidParameters("Invoice expiry out of range".to_string()))?;
     let expires_at_rfc3339 = chrono::Utc
         .timestamp_opt(expires_at_unix, 0)
         .single()

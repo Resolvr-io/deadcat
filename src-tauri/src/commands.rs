@@ -5,8 +5,8 @@ use nostr_sdk::prelude::*;
 use tauri::{Emitter, Manager};
 
 use crate::discovery::{
-    self, AttestationResult, ContractMetadata, CreateContractRequest,
-    DiscoveredMarket, IdentityResponse,
+    self, AttestationResult, ContractMetadata, CreateContractRequest, DiscoveredMarket,
+    IdentityResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -66,7 +66,10 @@ pub async fn init_nostr_identity(
 
     let response = IdentityResponse {
         pubkey_hex: keys.public_key().to_hex(),
-        npub: keys.public_key().to_bech32().map_err(|e| format!("bech32 error: {e}"))?,
+        npub: keys
+            .public_key()
+            .to_bech32()
+            .map_err(|e| format!("bech32 error: {e}"))?,
     };
 
     {
@@ -92,7 +95,10 @@ pub fn get_nostr_identity(
     match nostr_keys.as_ref() {
         Some(keys) => Ok(Some(IdentityResponse {
             pubkey_hex: keys.public_key().to_hex(),
-            npub: keys.public_key().to_bech32().map_err(|e| format!("bech32 error: {e}"))?,
+            npub: keys
+                .public_key()
+                .to_bech32()
+                .map_err(|e| format!("bech32 error: {e}"))?,
         })),
         None => Ok(None),
     }
@@ -120,15 +126,17 @@ pub async fn publish_contract(
             .nostr_keys
             .lock()
             .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        nostr_keys
-            .clone()
-            .ok_or_else(|| "nostr identity not initialized — call init_nostr_identity first".to_string())?
+        nostr_keys.clone().ok_or_else(|| {
+            "nostr identity not initialized — call init_nostr_identity first".to_string()
+        })?
     };
 
     let oracle_pubkey_bytes: [u8; 32] = {
         let hex_str = keys.public_key().to_hex();
         let bytes = hex::decode(&hex_str).map_err(|e| format!("hex decode error: {e}"))?;
-        bytes.try_into().map_err(|_| "pubkey must be 32 bytes".to_string())?
+        bytes
+            .try_into()
+            .map_err(|_| "pubkey must be 32 bytes".to_string())?
     };
 
     let wallet_network: crate::WalletNetwork = {
@@ -183,9 +191,12 @@ pub async fn publish_contract(
 
     let market = discovery::parse_announcement_event(&event)?;
 
-    let nevent = nostr_sdk::nips::nip19::Nip19Event::new(event_id, discovery::DEFAULT_RELAYS.iter().map(|r| r.to_string()))
-        .to_bech32()
-        .unwrap_or_default();
+    let nevent = nostr_sdk::nips::nip19::Nip19Event::new(
+        event_id,
+        discovery::DEFAULT_RELAYS.iter().map(|r| r.to_string()),
+    )
+    .to_bech32()
+    .unwrap_or_default();
 
     Ok(DiscoveredMarket {
         id: event_id.to_hex(),
@@ -277,9 +288,9 @@ pub async fn create_contract_onchain(
             .nostr_keys
             .lock()
             .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        nostr_keys
-            .clone()
-            .ok_or_else(|| "nostr identity not initialized — call init_nostr_identity first".to_string())?
+        nostr_keys.clone().ok_or_else(|| {
+            "nostr identity not initialized — call init_nostr_identity first".to_string()
+        })?
     };
 
     let oracle_pubkey_bytes: [u8; 32] = {
@@ -317,7 +328,9 @@ pub async fn create_contract_onchain(
         let mut mgr = manager
             .lock()
             .map_err(|_| "wallet lock failed".to_string())?;
-        let wallet = mgr.wallet_mut().ok_or_else(|| "wallet not initialized".to_string())?;
+        let wallet = mgr
+            .wallet_mut()
+            .ok_or_else(|| "wallet not initialized".to_string())?;
 
         if wallet.status() != crate::wallet::types::WalletStatus::Unlocked {
             return Err("wallet must be unlocked to create a contract".to_string());
@@ -364,9 +377,12 @@ pub async fn create_contract_onchain(
     let event_id = discovery::publish_event(&client, event.clone()).await?;
     let market = discovery::parse_announcement_event(&event)?;
 
-    let nevent = nostr_sdk::nips::nip19::Nip19Event::new(event_id, discovery::DEFAULT_RELAYS.iter().map(|r| r.to_string()))
-        .to_bech32()
-        .unwrap_or_default();
+    let nevent = nostr_sdk::nips::nip19::Nip19Event::new(
+        event_id,
+        discovery::DEFAULT_RELAYS.iter().map(|r| r.to_string()),
+    )
+    .to_bech32()
+    .unwrap_or_default();
 
     Ok(DiscoveredMarket {
         id: event_id.to_hex(),
