@@ -85,17 +85,6 @@ pub fn maker_order_control_block(cmr: &Cmr, maker_base_pubkey: &[u8; 32]) -> Vec
     cb
 }
 
-/// Compute the taptweak scalar for key-path spending (cancel).
-///
-/// The maker needs this to derive their tweaked private key:
-/// ```text
-/// d_tweaked = d_maker + tweak
-/// ```
-pub fn maker_order_taptweak(cmr: &Cmr, maker_base_pubkey: &[u8; 32]) -> [u8; 32] {
-    let leaf = simplicity_leaf_hash(cmr);
-    taptweak_hash(maker_base_pubkey, &leaf)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,14 +132,5 @@ mod tests {
         assert_eq!(cb.len(), 33);
         assert_eq!(cb[0] & 0xfe, SIMPLICITY_LEAF_VERSION);
         assert_eq!(&cb[1..33], &pubkey);
-    }
-
-    #[test]
-    fn taptweak_deterministic() {
-        let cmr = test_cmr();
-        let pubkey = [0xaa; 32];
-        let t1 = maker_order_taptweak(&cmr, &pubkey);
-        let t2 = maker_order_taptweak(&cmr, &pubkey);
-        assert_eq!(t1, t2);
     }
 }

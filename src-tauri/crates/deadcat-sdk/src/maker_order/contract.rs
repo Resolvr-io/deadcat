@@ -73,9 +73,4 @@ impl CompiledMakerOrder {
     pub fn control_block(&self, maker_base_pubkey: &[u8; 32]) -> Vec<u8> {
         taproot::maker_order_control_block(&self.cmr, maker_base_pubkey)
     }
-
-    /// Compute the taptweak scalar for key-path spending (cancel).
-    pub fn taptweak(&self, maker_base_pubkey: &[u8; 32]) -> [u8; 32] {
-        taproot::maker_order_taptweak(&self.cmr, maker_base_pubkey)
-    }
 }

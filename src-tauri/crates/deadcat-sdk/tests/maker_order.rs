@@ -1,7 +1,9 @@
 use deadcat_sdk::elements::AddressParams;
 use deadcat_sdk::elements::confidential::{Asset, Nonce, Value as ConfValue};
 use deadcat_sdk::elements::{AssetId, Script, TxOut, TxOutWitness};
-use deadcat_sdk::maker_order::witness::{satisfy_maker_order, serialize_satisfied};
+use deadcat_sdk::maker_order::witness::{
+    build_maker_order_cancel_witness, satisfy_maker_order, serialize_satisfied,
+};
 use deadcat_sdk::pset::UnblindedUtxo;
 use deadcat_sdk::{
     CancelOrderParams, CompiledMakerOrder, CreateOrderParams, FillOrderParams, MakerOrderFill,
@@ -298,6 +300,9 @@ fn fill_sell_base_full() {
             receive_destination: Script::new(),
             receive_amount: 10,
             receive_asset_id: BASE_ASSET,
+            change_destination: None,
+            change_amount: 0,
+            change_asset_id: [0u8; 32],
         }],
         orders: vec![MakerOrderFill {
             contract: CompiledMakerOrder::new(params).unwrap(),
@@ -329,6 +334,9 @@ fn fill_sell_base_partial() {
             receive_destination: Script::new(),
             receive_amount: 5,
             receive_asset_id: BASE_ASSET,
+            change_destination: None,
+            change_amount: 0,
+            change_asset_id: [0u8; 32],
         }],
         orders: vec![MakerOrderFill {
             contract: CompiledMakerOrder::new(params).unwrap(),
@@ -359,6 +367,9 @@ fn fill_sell_quote_full() {
             receive_destination: Script::new(),
             receive_amount: 500_000,
             receive_asset_id: QUOTE_ASSET,
+            change_destination: None,
+            change_amount: 0,
+            change_asset_id: [0u8; 32],
         }],
         orders: vec![MakerOrderFill {
             contract: CompiledMakerOrder::new(params).unwrap(),
@@ -389,6 +400,9 @@ fn fill_sell_quote_partial() {
             receive_destination: Script::new(),
             receive_amount: 250_000,
             receive_asset_id: QUOTE_ASSET,
+            change_destination: None,
+            change_amount: 0,
+            change_asset_id: [0u8; 32],
         }],
         orders: vec![MakerOrderFill {
             contract: CompiledMakerOrder::new(params).unwrap(),
@@ -419,12 +433,18 @@ fn fill_batch_two_takers_two_orders() {
                 receive_destination: Script::new(),
                 receive_amount: 10,
                 receive_asset_id: BASE_ASSET,
+                change_destination: None,
+                change_amount: 0,
+                change_asset_id: [0u8; 32],
             },
             TakerFill {
                 funding_utxo: test_utxo(QUOTE_ASSET, 500_000),
                 receive_destination: Script::new(),
                 receive_amount: 10,
                 receive_asset_id: BASE_ASSET,
+                change_destination: None,
+                change_amount: 0,
+                change_asset_id: [0u8; 32],
             },
         ],
         orders: vec![
@@ -479,6 +499,9 @@ fn fill_below_minimum_rejected() {
             receive_destination: Script::new(),
             receive_amount: 2,
             receive_asset_id: BASE_ASSET,
+            change_destination: None,
+            change_amount: 0,
+            change_asset_id: [0u8; 32],
         }],
         orders: vec![MakerOrderFill {
             contract: CompiledMakerOrder::new(params).unwrap(),
@@ -518,6 +541,9 @@ fn remainder_below_minimum_rejected() {
             receive_destination: Script::new(),
             receive_amount: 8,
             receive_asset_id: BASE_ASSET,
+            change_destination: None,
+            change_amount: 0,
+            change_asset_id: [0u8; 32],
         }],
         orders: vec![MakerOrderFill {
             contract: CompiledMakerOrder::new(params).unwrap(),
@@ -549,6 +575,9 @@ fn conservation_violation_rejected() {
             receive_destination: Script::new(),
             receive_amount: 10,
             receive_asset_id: BASE_ASSET,
+            change_destination: None,
+            change_amount: 0,
+            change_asset_id: [0u8; 32],
         }],
         orders: vec![MakerOrderFill {
             contract: CompiledMakerOrder::new(params).unwrap(),
@@ -603,6 +632,9 @@ fn fill_insufficient_fee_rejected() {
             receive_destination: Script::new(),
             receive_amount: 10,
             receive_asset_id: BASE_ASSET,
+            change_destination: None,
+            change_amount: 0,
+            change_asset_id: [0u8; 32],
         }],
         orders: vec![MakerOrderFill {
             contract: CompiledMakerOrder::new(params).unwrap(),
@@ -631,6 +663,9 @@ fn partial_fill_not_last_rejected() {
             receive_destination: Script::new(),
             receive_amount: 10,
             receive_asset_id: BASE_ASSET,
+            change_destination: None,
+            change_amount: 0,
+            change_asset_id: [0u8; 32],
         }],
         orders: vec![
             MakerOrderFill {
@@ -769,6 +804,9 @@ fn fill_with_fee_change() {
             receive_destination: Script::new(),
             receive_amount: 10,
             receive_asset_id: BASE_ASSET,
+            change_destination: None,
+            change_amount: 0,
+            change_asset_id: [0u8; 32],
         }],
         orders: vec![MakerOrderFill {
             contract: CompiledMakerOrder::new(params).unwrap(),
@@ -798,6 +836,9 @@ fn fill_overflow_rejected() {
             receive_destination: Script::new(),
             receive_amount: u64::MAX,
             receive_asset_id: BASE_ASSET,
+            change_destination: None,
+            change_amount: 0,
+            change_asset_id: [0u8; 32],
         }],
         orders: vec![MakerOrderFill {
             contract: CompiledMakerOrder::new(params).unwrap(),
@@ -884,6 +925,9 @@ fn fill_no_orders_rejected() {
             receive_destination: Script::new(),
             receive_amount: 10,
             receive_asset_id: BASE_ASSET,
+            change_destination: None,
+            change_amount: 0,
+            change_asset_id: [0u8; 32],
         }],
         orders: vec![],
         fee_utxo: test_utxo(FEE_ASSET, 500),
@@ -932,4 +976,38 @@ fn cancel_order_excess_fee_no_change_rejected() {
         result,
         Err(deadcat_sdk::Error::MissingChangeDestination)
     ));
+}
+
+// ============================================================================
+// Cancel witness satisfaction test
+// ============================================================================
+
+#[test]
+fn cancel_witness_satisfies() {
+    let params = sell_base_params();
+    let contract = CompiledMakerOrder::new(params).unwrap();
+    let dummy_sig = [0xab; 64];
+    let witness = build_maker_order_cancel_witness(&dummy_sig);
+    let satisfied = contract
+        .program()
+        .satisfy(witness)
+        .expect("cancel witness should satisfy the contract");
+    let (prog, wit) = serialize_satisfied(&satisfied);
+    assert!(!prog.is_empty());
+    assert!(!wit.is_empty());
+}
+
+#[test]
+fn cancel_witness_satisfies_sell_quote() {
+    let params = sell_quote_params();
+    let contract = CompiledMakerOrder::new(params).unwrap();
+    let dummy_sig = [0xcd; 64];
+    let witness = build_maker_order_cancel_witness(&dummy_sig);
+    let satisfied = contract
+        .program()
+        .satisfy(witness)
+        .expect("cancel witness should satisfy sell-quote contract");
+    let (prog, wit) = serialize_satisfied(&satisfied);
+    assert!(!prog.is_empty());
+    assert!(!wit.is_empty());
 }
