@@ -1421,6 +1421,7 @@ dependencies = [
  "lwk_signer",
  "lwk_test_util",
  "lwk_wollet",
+ "nostr-sdk",
  "rand 0.8.5",
  "serde",
  "serde_json",

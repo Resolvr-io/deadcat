@@ -101,6 +101,9 @@ pub enum Error {
 
     #[error("witness satisfaction failed: {0}")]
     Witness(String),
+
+    #[error("maker order error: {0}")]
+    MakerOrder(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

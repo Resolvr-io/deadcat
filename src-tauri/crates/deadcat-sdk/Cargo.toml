@@ -16,6 +16,7 @@ hex = "0.4"
 log = "0.4"
 electrum-client = "0.21"
 serde_json = "1"
+nostr-sdk = "0.38"
 
 [features]
 testing = []

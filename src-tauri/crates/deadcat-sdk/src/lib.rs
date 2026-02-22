@@ -9,6 +9,8 @@ pub mod error;
 pub mod maker_order;
 pub mod network;
 pub mod oracle;
+pub mod order_announcement;
+pub mod order_discovery;
 pub mod params;
 pub mod pset;
 pub mod sdk;
@@ -30,7 +32,10 @@ pub use contract::CompiledContract;
 pub use error::{Error, Result};
 pub use network::Network;
 pub use params::{ContractParams, IssuanceAssets, MarketId, compute_issuance_assets};
-pub use sdk::{CancellationResult, DeadcatSdk, IssuanceResult, RedemptionResult, ResolutionResult};
+pub use sdk::{
+    CancelOrderResult, CancellationResult, CreateOrderResult, DeadcatSdk, FillOrderResult,
+    IssuanceResult, RedemptionResult, ResolutionResult,
+};
 pub use state::MarketState;
 
 // Re-export LWK for app-layer use
@@ -71,9 +76,16 @@ pub use maker_order::pset::fill_order::{
 };
 pub use maker_order::taproot::{
     maker_order_address, maker_order_control_block, maker_order_script_hash,
-    maker_order_script_pubkey, maker_order_taptweak,
+    maker_order_script_pubkey,
 };
 pub use maker_order::witness::{
-    build_maker_order_witness, satisfy_maker_order,
-    serialize_satisfied as serialize_maker_order_satisfied,
+    build_maker_order_cancel_witness, build_maker_order_fill_witness, build_maker_order_witness,
+    satisfy_maker_order, serialize_satisfied as serialize_maker_order_satisfied,
+};
+
+// Order announcement and discovery
+pub use order_announcement::{DiscoveredOrder, OrderAnnouncement};
+pub use order_discovery::{
+    build_order_event, build_order_filter, connect_client as connect_order_client, fetch_orders,
+    parse_order_event, publish_order,
 };

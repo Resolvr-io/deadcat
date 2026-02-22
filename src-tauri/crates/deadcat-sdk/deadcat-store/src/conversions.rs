@@ -168,6 +168,12 @@ impl TryFrom<&MakerOrderRow> for MakerOrderParams {
     type Error = StoreError;
 
     fn try_from(row: &MakerOrderRow) -> std::result::Result<Self, Self::Error> {
+        let maker_pubkey = row
+            .maker_base_pubkey
+            .as_ref()
+            .map(|v| vec_to_array32(v, "maker_base_pubkey"))
+            .transpose()?
+            .unwrap_or([0u8; 32]);
         Ok(MakerOrderParams {
             base_asset_id: vec_to_array32(&row.base_asset_id, "base_asset_id")?,
             quote_asset_id: vec_to_array32(&row.quote_asset_id, "quote_asset_id")?,
@@ -180,6 +186,7 @@ impl TryFrom<&MakerOrderRow> for MakerOrderParams {
                 "maker_receive_spk_hash",
             )?,
             cosigner_pubkey: vec_to_array32(&row.cosigner_pubkey, "cosigner_pubkey")?,
+            maker_pubkey,
         })
     }
 }
