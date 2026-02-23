@@ -51,8 +51,8 @@ async fn get_or_connect_nostr_client(sdk_state: &SdkState) -> Result<nostr_sdk::
     if nostr_client.is_none() {
         let relays = sdk_state
             .relay_list
-            .lock()
-            .map_err(|_| "failed to lock relay_list".to_string())?
+            .read()
+            .map_err(|_| "failed to read relay_list".to_string())?
             .clone();
         let c = discovery::connect_multi_relay_client(&relays).await?;
         *nostr_client = Some(c);
@@ -313,7 +313,7 @@ pub async fn restore_mnemonic_from_nostr(
     let filter = discovery::build_backup_query_filter(&keys.public_key());
 
     let events = client
-        .fetch_events(vec![filter], Duration::from_secs(15))
+        .fetch_events(vec![filter], Duration::from_secs(8))
         .await
         .map_err(|e| format!("failed to fetch backup: {e}"))?;
 
@@ -345,34 +345,45 @@ pub async fn check_nostr_backup(
 
     let relays = state
         .relay_list
-        .lock()
-        .map_err(|_| "failed to lock relay_list".to_string())?
+        .read()
+        .map_err(|_| "failed to read relay_list".to_string())?
         .clone();
 
     let filter = discovery::build_backup_query_filter(&keys.public_key());
+
+    // Check all relays in parallel instead of serially
+    let mut tasks = tokio::task::JoinSet::new();
+    for url in relays {
+        let f = filter.clone();
+        tasks.spawn(async move {
+            let found = match discovery::connect_multi_relay_client(&[url.clone()]).await {
+                Ok(per_relay_client) => {
+                    match per_relay_client
+                        .fetch_events(vec![f], Duration::from_secs(8))
+                        .await
+                    {
+                        Ok(events) => events.iter().next().is_some(),
+                        Err(_) => false,
+                    }
+                }
+                Err(_) => false,
+            };
+            discovery::RelayBackupResult {
+                url,
+                has_backup: found,
+            }
+        });
+    }
+
     let mut relay_results = Vec::new();
     let mut any_found = false;
-
-    for url in &relays {
-        let found = match discovery::connect_multi_relay_client(&[url.clone()]).await {
-            Ok(per_relay_client) => {
-                match per_relay_client
-                    .fetch_events(vec![filter.clone()], Duration::from_secs(8))
-                    .await
-                {
-                    Ok(events) => events.iter().next().is_some(),
-                    Err(_) => false,
-                }
+    while let Some(result) = tasks.join_next().await {
+        if let Ok(r) = result {
+            if r.has_backup {
+                any_found = true;
             }
-            Err(_) => false,
-        };
-        if found {
-            any_found = true;
+            relay_results.push(r);
         }
-        relay_results.push(discovery::RelayBackupResult {
-            url: url.clone(),
-            has_backup: found,
-        });
     }
 
     Ok(discovery::NostrBackupStatus {
@@ -414,8 +425,8 @@ pub fn get_relay_list(
 ) -> Result<Vec<discovery::RelayEntry>, String> {
     let relays = state
         .relay_list
-        .lock()
-        .map_err(|_| "failed to lock relay_list".to_string())?
+        .read()
+        .map_err(|_| "failed to read relay_list".to_string())?
         .clone();
 
     Ok(relays
@@ -441,8 +452,8 @@ pub async fn set_relay_list(
     {
         let mut list = state
             .relay_list
-            .lock()
-            .map_err(|_| "failed to lock relay_list".to_string())?;
+            .write()
+            .map_err(|_| "failed to write relay_list".to_string())?;
         *list = normalized.clone();
     }
 
@@ -491,8 +502,8 @@ pub async fn fetch_nip65_relay_list(
             {
                 let mut list = state
                     .relay_list
-                    .lock()
-                    .map_err(|_| "failed to lock relay_list".to_string())?;
+                    .write()
+                    .map_err(|_| "failed to write relay_list".to_string())?;
                 *list = relays.clone();
             }
             // Reset client so next call uses the new relay list
@@ -506,8 +517,8 @@ pub async fn fetch_nip65_relay_list(
             // No NIP-65 event found, return current defaults
             let relays = state
                 .relay_list
-                .lock()
-                .map_err(|_| "failed to lock relay_list".to_string())?
+                .read()
+                .map_err(|_| "failed to read relay_list".to_string())?
                 .clone();
             Ok(relays)
         }
@@ -524,8 +535,8 @@ pub async fn add_relay(
     let new_list = {
         let mut list = state
             .relay_list
-            .lock()
-            .map_err(|_| "failed to lock relay_list".to_string())?;
+            .write()
+            .map_err(|_| "failed to write relay_list".to_string())?;
         if !list.contains(&normalized) {
             list.push(normalized);
         }
@@ -565,8 +576,8 @@ pub async fn remove_relay(
     let new_list = {
         let mut list = state
             .relay_list
-            .lock()
-            .map_err(|_| "failed to lock relay_list".to_string())?;
+            .write()
+            .map_err(|_| "failed to write relay_list".to_string())?;
         list.retain(|u| u != &normalized);
         if list.is_empty() {
             *list = discovery::DEFAULT_RELAYS
@@ -761,7 +772,7 @@ pub async fn oracle_attest(
         .hashtag(discovery::CONTRACT_TAG);
 
     let events = client
-        .fetch_events(vec![filter], Duration::from_secs(15))
+        .fetch_events(vec![filter], Duration::from_secs(8))
         .await
         .map_err(|e| format!("failed to fetch announcement: {e}"))?;
 
