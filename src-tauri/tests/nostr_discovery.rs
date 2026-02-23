@@ -1,9 +1,11 @@
 use std::time::Duration;
 
-use deadcat_lib::discovery::{
-    self, build_announcement_event, build_attestation_event, build_contract_filter,
-    parse_announcement_event, sign_attestation, ContractAnnouncement, ContractMetadata,
+use deadcat_sdk::discovery::{
+    build_announcement_event, build_attestation_event, build_attestation_filter,
+    build_contract_filter, parse_announcement_event, sign_attestation,
+    AttestationContent,
 };
+use deadcat_sdk::announcement::{ContractAnnouncement, ContractMetadata};
 use deadcat_sdk::params::{ContractParams, MarketId};
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
@@ -151,7 +153,7 @@ async fn oracle_attestation_roundtrip() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Fetch attestation events
-    let att_filter = discovery::build_attestation_filter(&market_id_hex);
+    let att_filter = build_attestation_filter(&market_id_hex);
     let att_events = client
         .fetch_events(vec![att_filter], Duration::from_secs(5))
         .await
@@ -160,7 +162,7 @@ async fn oracle_attestation_roundtrip() {
     assert!(!att_events.is_empty(), "should find attestation event");
 
     let att_ev = att_events.iter().next().unwrap();
-    let content: discovery::AttestationContent = serde_json::from_str(&att_ev.content).unwrap();
+    let content: AttestationContent = serde_json::from_str(&att_ev.content).unwrap();
 
     assert_eq!(content.market_id, market_id_hex);
     assert!(content.outcome_yes);

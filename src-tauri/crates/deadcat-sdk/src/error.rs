@@ -101,6 +101,54 @@ pub enum Error {
 
     #[error("witness satisfaction failed: {0}")]
     Witness(String),
+
+    #[error("maker order error: {0}")]
+    MakerOrder(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Errors produced by [`DeadcatNode`](crate::node::DeadcatNode) combined operations.
+#[derive(Debug)]
+pub enum NodeError {
+    /// The wallet has not been unlocked yet.
+    WalletLocked,
+    /// Attempted to unlock a wallet that is already unlocked.
+    WalletAlreadyUnlocked,
+    /// The internal SDK mutex was poisoned by a prior panic.
+    MutexPoisoned,
+    /// An SDK (on-chain) operation failed.
+    Sdk(Error),
+    /// A discovery (Nostr) operation failed.
+    Discovery(String),
+    /// A `spawn_blocking` task failed to join.
+    Task(String),
+}
+
+impl std::fmt::Display for NodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NodeError::WalletLocked => write!(f, "wallet is locked"),
+            NodeError::WalletAlreadyUnlocked => write!(f, "wallet is already unlocked"),
+            NodeError::MutexPoisoned => write!(f, "internal mutex poisoned by a prior panic"),
+            NodeError::Sdk(e) => write!(f, "sdk error: {e}"),
+            NodeError::Discovery(e) => write!(f, "discovery error: {e}"),
+            NodeError::Task(e) => write!(f, "task join error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for NodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            NodeError::Sdk(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<Error> for NodeError {
+    fn from(e: Error) -> Self {
+        NodeError::Sdk(e)
+    }
+}

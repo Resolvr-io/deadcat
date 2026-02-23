@@ -264,3 +264,47 @@ pub fn assemble_issuance_for_env(
 
     Ok((tx, utxos, spending_path))
 }
+
+// ---------------------------------------------------------------------------
+// In-memory discovery store for tests
+// ---------------------------------------------------------------------------
+
+use crate::discovery::store_trait::{ContractMetadataInput, DiscoveryStore};
+use crate::maker_order::params::MakerOrderParams;
+use crate::params::ContractParams;
+
+/// Minimal in-memory store implementing `DiscoveryStore` for integration tests.
+///
+/// Deduplicates markets by `market_id` and stores orders as-is.
+#[derive(Debug, Default)]
+pub struct TestStore {
+    pub markets: Vec<ContractParams>,
+    pub orders: Vec<(MakerOrderParams, Option<String>)>,
+}
+
+impl DiscoveryStore for TestStore {
+    fn ingest_market(
+        &mut self,
+        params: &ContractParams,
+        _meta: Option<&ContractMetadataInput>,
+    ) -> std::result::Result<(), String> {
+        let mid = params.market_id();
+        if !self.markets.iter().any(|p| p.market_id() == mid) {
+            self.markets.push(*params);
+        }
+        Ok(())
+    }
+
+    fn ingest_maker_order(
+        &mut self,
+        params: &MakerOrderParams,
+        _maker_pubkey: Option<&[u8; 32]>,
+        _nonce: Option<&[u8; 32]>,
+        nostr_event_id: Option<&str>,
+        _nostr_event_json: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        self.orders
+            .push((*params, nostr_event_id.map(|s| s.to_string())));
+        Ok(())
+    }
+}

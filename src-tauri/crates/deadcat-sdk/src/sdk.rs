@@ -4,22 +4,34 @@ use std::path::Path;
 use lwk_common::Signer;
 use lwk_signer::SwSigner;
 use lwk_wollet::elements::confidential::Asset;
+use lwk_wollet::elements::hashes::Hash as _;
 use lwk_wollet::elements::pset::PartiallySignedTransaction;
 use lwk_wollet::elements::secp256k1_zkp::{self, Keypair};
 use lwk_wollet::elements::{AssetId, OutPoint, Script, Transaction, TxOut, Txid};
 use lwk_wollet::{
     ElectrumClient, ElectrumUrl, TxBuilder, WalletTx, WalletTxOut, Wollet, WolletDescriptor,
 };
+use rand::RngCore;
 use rand::thread_rng;
 
 use crate::assembly::{
     CollateralSource, IssuanceAssemblyInputs, assemble_cancellation, assemble_expiry_redemption,
     assemble_issuance, assemble_oracle_resolve, assemble_post_resolution_redemption,
-    compute_issuance_entropy,
+    compute_issuance_entropy, txout_secrets_from_unblinded,
 };
 use crate::chain::{ChainBackend, ElectrumBackend};
 use crate::contract::CompiledContract;
 use crate::error::{Error, Result};
+use crate::maker_order::contract::CompiledMakerOrder;
+use crate::maker_order::params::{
+    MakerOrderParams, OrderDirection, derive_maker_receive, maker_receive_script_pubkey,
+};
+use crate::maker_order::pset::cancel_order::{CancelOrderParams, build_cancel_order_pset};
+use crate::maker_order::pset::create_order::{CreateOrderParams, build_create_order_pset};
+use crate::maker_order::pset::fill_order::{
+    FillOrderParams, MakerOrderFill, TakerFill, build_fill_order_pset,
+};
+use crate::maker_order::witness::serialize_satisfied as serialize_maker_order_satisfied;
 use crate::network::Network;
 use crate::params::ContractParams;
 use crate::pset::UnblindedUtxo;
@@ -29,6 +41,7 @@ use crate::pset::expiry_redemption::ExpiryRedemptionParams;
 use crate::pset::oracle_resolve::OracleResolveParams;
 use crate::pset::post_resolution_redemption::PostResolutionRedemptionParams;
 use crate::state::MarketState;
+use crate::taproot::NUMS_KEY_BYTES;
 
 /// Result of a successful token issuance.
 #[derive(Debug, Clone)]
@@ -65,6 +78,32 @@ pub struct RedemptionResult {
     pub previous_state: MarketState,
     pub tokens_redeemed: u64,
     pub payout_sats: u64,
+}
+
+/// Result of a successful limit order creation.
+#[derive(Debug, Clone)]
+pub struct CreateOrderResult {
+    pub txid: Txid,
+    pub order_params: MakerOrderParams,
+    pub maker_base_pubkey: [u8; 32],
+    pub order_nonce: [u8; 32],
+    pub covenant_address: String,
+    pub order_amount: u64,
+}
+
+/// Result of a successful limit order fill.
+#[derive(Debug, Clone)]
+pub struct FillOrderResult {
+    pub txid: Txid,
+    pub lots_filled: u64,
+    pub is_partial: bool,
+}
+
+/// Result of a successful limit order cancellation.
+#[derive(Debug, Clone)]
+pub struct CancelOrderResult {
+    pub txid: Txid,
+    pub refunded_amount: u64,
 }
 
 pub struct DeadcatSdk {
@@ -933,6 +972,658 @@ impl DeadcatSdk {
         })
     }
 
+    // ── Maker order key derivation ─────────────────────────────────────
+
+    /// Derive a secp256k1 keypair for maker orders at the given index.
+    ///
+    /// Path: `m/86'/{network}'/1'/0/{order_index}` where `1'` = maker order account.
+    fn derive_maker_keypair(&self, order_index: u32) -> Result<Keypair> {
+        let network_path = if self.network.is_mainnet() { 1776 } else { 1 };
+        let path_str = format!("m/86'/{network_path}'/1'/0/{order_index}");
+        let path: lwk_wollet::bitcoin::bip32::DerivationPath = path_str
+            .parse()
+            .map_err(|e| Error::Signer(format!("{}", e)))?;
+        let derived = self
+            .signer
+            .derive_xprv(&path)
+            .map_err(|e| Error::Signer(format!("{:?}", e)))?;
+        let secp = secp256k1_zkp::Secp256k1::new();
+        let secret = secp256k1_zkp::SecretKey::from_slice(&derived.private_key.secret_bytes())
+            .map_err(|e| Error::Signer(format!("{}", e)))?;
+        Ok(Keypair::from_secret_key(&secp, &secret))
+    }
+
+    /// Select a wallet UTXO for a specific asset with enough value, excluding certain outpoints.
+    fn select_funding_utxo(
+        &self,
+        asset_id: &[u8; 32],
+        required_amount: u64,
+        exclude: &[OutPoint],
+    ) -> Result<UnblindedUtxo> {
+        let target_asset = AssetId::from_slice(asset_id)
+            .map_err(|e| Error::Query(format!("bad asset id: {e}")))?;
+        let raw_utxos = self.utxos()?;
+
+        let wallet_utxo = raw_utxos
+            .iter()
+            .filter(|u| {
+                !u.is_spent
+                    && u.unblinded.asset == target_asset
+                    && u.unblinded.value >= required_amount
+                    && !exclude.contains(&u.outpoint)
+            })
+            .min_by_key(|u| u.unblinded.value)
+            .ok_or_else(|| {
+                Error::InsufficientUtxos(format!(
+                    "need UTXO of asset {} with >= {} (excluding {} outpoints)",
+                    hex::encode(asset_id),
+                    required_amount,
+                    exclude.len()
+                ))
+            })?
+            .clone();
+
+        let tx = self.fetch_transaction(&wallet_utxo.outpoint.txid)?;
+        let txout = tx
+            .output
+            .get(wallet_utxo.outpoint.vout as usize)
+            .ok_or_else(|| Error::Query("funding UTXO vout out of range".into()))?
+            .clone();
+
+        Ok(wallet_txout_to_unblinded(&wallet_utxo, &txout))
+    }
+
+    /// Select a fee UTXO excluding certain outpoints, returning it with a change address.
+    fn select_fee_utxo_excluding(
+        &mut self,
+        fee_amount: u64,
+        exclude: &[OutPoint],
+    ) -> Result<(UnblindedUtxo, lwk_wollet::elements::Address)> {
+        let policy_asset = self.policy_asset();
+        let raw_utxos = self.utxos()?;
+
+        let fee_wallet_utxo = raw_utxos
+            .iter()
+            .filter(|u| {
+                !u.is_spent
+                    && u.unblinded.asset == policy_asset
+                    && u.unblinded.value >= fee_amount
+                    && !exclude.contains(&u.outpoint)
+            })
+            .min_by_key(|u| u.unblinded.value)
+            .ok_or_else(|| {
+                Error::InsufficientUtxos(format!(
+                    "need an L-BTC UTXO with >= {} sats for the fee (excluding {} outpoints)",
+                    fee_amount,
+                    exclude.len()
+                ))
+            })?
+            .clone();
+
+        let fee_tx = self.fetch_transaction(&fee_wallet_utxo.outpoint.txid)?;
+        let fee_txout = fee_tx
+            .output
+            .get(fee_wallet_utxo.outpoint.vout as usize)
+            .ok_or_else(|| Error::Query("fee UTXO vout out of range".into()))?
+            .clone();
+
+        let fee_unblinded = wallet_txout_to_unblinded(&fee_wallet_utxo, &fee_txout);
+
+        let addr_result = self.address(None)?;
+        let change_addr: lwk_wollet::elements::Address = addr_result
+            .address()
+            .to_string()
+            .parse()
+            .map_err(|e| Error::Query(format!("bad change address: {}", e)))?;
+
+        Ok((fee_unblinded, change_addr))
+    }
+
+    // ── Limit order blinding helper ────────────────────────────────────
+
+    /// Blind wallet-destination outputs in a maker order PSET.
+    ///
+    /// `wallet_inputs`: the wallet UTXOs used as PSET inputs (in order).
+    /// `first_wallet_output`: index of the first output to blind (all subsequent
+    ///   non-fee outputs are also blinded).
+    fn blind_order_pset(
+        &self,
+        pset: &mut PartiallySignedTransaction,
+        wallet_inputs: &[UnblindedUtxo],
+        blind_output_indices: &[usize],
+        change_addr: &lwk_wollet::elements::Address,
+    ) -> Result<()> {
+        let blinding_pk = change_addr
+            .blinding_pubkey
+            .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
+        let pset_blinding_key = lwk_wollet::elements::bitcoin::PublicKey {
+            inner: blinding_pk,
+            compressed: true,
+        };
+
+        // Mark only the specified wallet-destination outputs for blinding
+        let outputs = pset.outputs_mut();
+        for &idx in blind_output_indices {
+            outputs[idx].blinding_key = Some(pset_blinding_key);
+            outputs[idx].blinder_index = Some(0);
+        }
+
+        // Provide input txout secrets for ALL inputs (both confidential and explicit).
+        // blind_last needs secrets for every input to compute surjection proofs.
+        let mut inp_txout_sec = HashMap::new();
+        for (idx, utxo) in wallet_inputs.iter().enumerate() {
+            let asset_id = AssetId::from_slice(&utxo.asset_id)
+                .map_err(|e| Error::Blinding(format!("input {idx} asset: {e}")))?;
+            inp_txout_sec.insert(idx, txout_secrets_from_unblinded(utxo, asset_id)?);
+        }
+
+        let secp = secp256k1_zkp::Secp256k1::new();
+        let mut rng = thread_rng();
+        pset.blind_last(&mut rng, &secp, &inp_txout_sec)
+            .map_err(|e| Error::Blinding(format!("{e:?}")))?;
+
+        Ok(())
+    }
+
+    // ── Limit order methods ─────────────────────────────────────────────
+
+    /// Create a limit order by locking the offered asset in a maker order covenant.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_limit_order(
+        &mut self,
+        base_asset_id: [u8; 32],
+        quote_asset_id: [u8; 32],
+        price: u64,
+        order_amount: u64,
+        direction: OrderDirection,
+        min_fill_lots: u64,
+        min_remainder_lots: u64,
+        order_index: u32,
+        fee_amount: u64,
+    ) -> Result<CreateOrderResult> {
+        self.sync()?;
+
+        // 1. Derive maker keypair
+        let maker_keypair = self.derive_maker_keypair(order_index)?;
+        let (maker_xonly, _parity) = maker_keypair.x_only_public_key();
+        let maker_base_pubkey: [u8; 32] = maker_xonly.serialize();
+
+        // 2. Generate random order nonce
+        let mut order_nonce = [0u8; 32];
+        thread_rng().fill_bytes(&mut order_nonce);
+
+        // 3. Build MakerOrderParams
+        let (params, _p_order) = MakerOrderParams::new(
+            base_asset_id,
+            quote_asset_id,
+            price,
+            min_fill_lots,
+            min_remainder_lots,
+            direction,
+            NUMS_KEY_BYTES,
+            &maker_base_pubkey,
+            &order_nonce,
+        );
+
+        // 4. Compile the contract
+        let contract = CompiledMakerOrder::new(params)?;
+
+        // 5. Determine offered asset and select funding UTXO
+        let offered_asset = match direction {
+            OrderDirection::SellBase => &base_asset_id,
+            OrderDirection::SellQuote => &quote_asset_id,
+        };
+
+        let funding_utxo = self.select_funding_utxo(offered_asset, order_amount, &[])?;
+
+        // 6. Select fee UTXO (exclude funding outpoint)
+        let (fee_utxo, change_addr) =
+            self.select_fee_utxo_excluding(fee_amount, &[funding_utxo.outpoint])?;
+        let change_spk = change_addr.script_pubkey();
+        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
+
+        // 7. Build PSET
+        let input_utxos = [funding_utxo.clone(), fee_utxo.clone()];
+
+        let create_params = CreateOrderParams {
+            funding_utxo,
+            fee_utxo,
+            order_amount,
+            fee_amount,
+            fee_asset_id: policy_bytes,
+            change_destination: Some(change_spk.clone()),
+            fee_change_destination: Some(change_spk),
+            maker_base_pubkey,
+        };
+
+        let mut pset = build_create_order_pset(&contract, &create_params)?;
+
+        // 7b. Blind change outputs (inputs are confidential wallet UTXOs).
+        // Output 0 = covenant (explicit), Output 1 = fee (skip).
+        // Outputs 2+ are optional funding/fee change — blind all of them.
+        let num_outputs = pset.n_outputs();
+        let blind_indices: Vec<usize> = (2..num_outputs).collect();
+        self.blind_order_pset(&mut pset, &input_utxos, &blind_indices, &change_addr)?;
+
+        // 8. Sign and broadcast
+        let tx = self.sign_pset(pset)?;
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        let covenant_address = contract
+            .address(&maker_base_pubkey, self.network.address_params())
+            .to_string();
+
+        Ok(CreateOrderResult {
+            txid,
+            order_params: params,
+            maker_base_pubkey,
+            order_nonce,
+            covenant_address,
+            order_amount,
+        })
+    }
+
+    /// Cancel a limit order by script-path spending the covenant UTXO.
+    ///
+    /// Uses the Simplicity cancel path (Right branch) with a BIP-340 signature
+    /// over SHA256(prev_outpoint) to authorize reclaiming funds.
+    pub fn cancel_limit_order(
+        &mut self,
+        params: &MakerOrderParams,
+        maker_base_pubkey: [u8; 32],
+        order_index: u32,
+        fee_amount: u64,
+    ) -> Result<CancelOrderResult> {
+        self.sync()?;
+
+        // 1. Derive maker keypair
+        let maker_keypair = self.derive_maker_keypair(order_index)?;
+
+        // 2. Compile the contract
+        let contract = CompiledMakerOrder::new(*params)?;
+        let cmr = *contract.cmr();
+        let cb_bytes = contract.control_block(&maker_base_pubkey);
+
+        // 3. Compute covenant SPK and scan for order UTXO
+        let covenant_spk = contract.script_pubkey(&maker_base_pubkey);
+        let covenant_utxos = self.scan_covenant_utxos(&covenant_spk)?;
+        let (order_outpoint, order_txout) = covenant_utxos
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::MakerOrder("no UTXO found at order covenant address".into()))?;
+
+        // 4. Convert to UnblindedUtxo (explicit asset, zeroed blinding factors)
+        let order_value = order_txout.value.explicit().unwrap_or(0);
+        let order_asset = match params.direction {
+            OrderDirection::SellBase => params.base_asset_id,
+            OrderDirection::SellQuote => params.quote_asset_id,
+        };
+        let order_utxo = UnblindedUtxo {
+            outpoint: order_outpoint,
+            txout: order_txout,
+            asset_id: order_asset,
+            value: order_value,
+            asset_blinding_factor: [0u8; 32],
+            value_blinding_factor: [0u8; 32],
+        };
+
+        // 5. Select fee UTXO
+        let (fee_utxo, change_addr) =
+            self.select_fee_utxo_excluding(fee_amount, &[order_outpoint])?;
+        let change_spk = change_addr.script_pubkey();
+        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
+
+        // 6. Build cancel PSET
+        let input_utxos = [order_utxo.clone(), fee_utxo.clone()];
+
+        let cancel_params = CancelOrderParams {
+            order_utxo,
+            fee_utxo,
+            fee_amount,
+            fee_asset_id: policy_bytes,
+            order_asset_id: order_asset,
+            refund_destination: change_spk.clone(),
+            fee_change_destination: Some(change_spk),
+        };
+
+        let mut pset = build_cancel_order_pset(&cancel_params)?;
+
+        // 6b. Blind wallet-destination outputs.
+        // Output 0 = refund (blind), Output 1 = fee (skip), Output 2 = fee change (blind).
+        let mut blind_indices = vec![0usize]; // refund
+        let num_outputs = pset.n_outputs();
+        if num_outputs > 2 {
+            blind_indices.push(2); // fee change
+        }
+        self.blind_order_pset(&mut pset, &input_utxos, &blind_indices, &change_addr)?;
+
+        // 7. Compute maker cancel signature: SHA256(txid || vout) of the order outpoint
+        let secp = secp256k1_zkp::Secp256k1::new();
+        let sighash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(order_outpoint.txid.to_byte_array());
+            hasher.update(order_outpoint.vout.to_be_bytes());
+            let hash: [u8; 32] = hasher.finalize().into();
+            hash
+        };
+        let msg = secp256k1_zkp::Message::from_digest(sighash);
+        let sig = secp.sign_schnorr_no_aux_rand(&msg, &maker_keypair);
+        let sig_bytes: [u8; 64] = sig.serialize();
+
+        // 8. Attach Simplicity cancel witness to covenant input (input 0)
+        {
+            use crate::assembly::pset_to_pruning_transaction;
+            use simplicityhl::elements::taproot::ControlBlock;
+            use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
+
+            let tx = std::sync::Arc::new(pset_to_pruning_transaction(&pset)?);
+            let utxos: Vec<ElementsUtxo> = pset
+                .inputs()
+                .iter()
+                .enumerate()
+                .map(|(i, inp)| {
+                    inp.witness_utxo
+                        .as_ref()
+                        .map(|u| ElementsUtxo::from(u.clone()))
+                        .ok_or_else(|| Error::Pset(format!("input {i} missing witness_utxo")))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let control_block = ControlBlock::from_slice(&cb_bytes)
+                .map_err(|e| Error::Witness(format!("control block: {e}")))?;
+
+            let env = ElementsEnv::new(
+                std::sync::Arc::clone(&tx),
+                utxos,
+                0, // covenant is input 0 for cancel
+                cmr,
+                control_block,
+                None,
+                self.wollet.network().genesis_block_hash(),
+            );
+
+            let witness_values =
+                crate::maker_order::witness::build_maker_order_cancel_witness(&sig_bytes);
+            let satisfied = CompiledMakerOrder::new(*params)?
+                .program()
+                .satisfy_with_env(witness_values, Some(&env))
+                .map_err(|e| {
+                    Error::Compilation(format!("maker order cancel witness satisfaction: {e}"))
+                })?;
+            let (program_bytes, witness_bytes) = serialize_maker_order_satisfied(&satisfied);
+            let cmr_bytes = cmr.to_byte_array().to_vec();
+
+            pset.inputs_mut()[0].final_script_witness =
+                Some(vec![witness_bytes, program_bytes, cmr_bytes, cb_bytes]);
+        }
+
+        // 9. Sign fee input via normal signer
+        self.wollet
+            .add_details(&mut pset)
+            .map_err(|e| Error::Signer(format!("add_details: {}", e)))?;
+        self.signer
+            .sign(&mut pset)
+            .map_err(|e| Error::Signer(format!("{:?}", e)))?;
+        let tx = self
+            .wollet
+            .finalize(&mut pset)
+            .map_err(|e| Error::Finalize(e.to_string()))?;
+
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        Ok(CancelOrderResult {
+            txid,
+            refunded_amount: order_value,
+        })
+    }
+
+    /// Fill a limit order by spending the covenant UTXO via Simplicity script-path.
+    pub fn fill_limit_order(
+        &mut self,
+        params: &MakerOrderParams,
+        maker_base_pubkey: [u8; 32],
+        order_nonce: [u8; 32],
+        lots_to_fill: u64,
+        fee_amount: u64,
+    ) -> Result<FillOrderResult> {
+        self.sync()?;
+
+        // 1. Compile the contract
+        let contract = CompiledMakerOrder::new(*params)?;
+
+        // 2. Scan for order UTXO
+        let covenant_spk = contract.script_pubkey(&maker_base_pubkey);
+        let covenant_utxos = self.scan_covenant_utxos(&covenant_spk)?;
+        let (order_outpoint, order_txout) = covenant_utxos
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::MakerOrder("no UTXO found at order covenant address".into()))?;
+
+        let order_value = order_txout.value.explicit().unwrap_or(0);
+        let order_asset = match params.direction {
+            OrderDirection::SellBase => params.base_asset_id,
+            OrderDirection::SellQuote => params.quote_asset_id,
+        };
+        let order_utxo = UnblindedUtxo {
+            outpoint: order_outpoint,
+            txout: order_txout,
+            asset_id: order_asset,
+            value: order_value,
+            asset_blinding_factor: [0u8; 32],
+            value_blinding_factor: [0u8; 32],
+        };
+
+        // 3. Compute fill amounts based on direction
+        let (
+            taker_pays_amount,
+            taker_pays_asset,
+            taker_receives_amount,
+            taker_receives_asset,
+            maker_receive_amount,
+            is_partial,
+            remainder_amount,
+        ) = match params.direction {
+            OrderDirection::SellBase => {
+                // Maker sells BASE lots, taker pays QUOTE
+                let taker_payment = lots_to_fill
+                    .checked_mul(params.price)
+                    .ok_or(Error::MakerOrderOverflow)?;
+                let is_partial = lots_to_fill < order_value;
+                let remainder = if is_partial {
+                    order_value - lots_to_fill
+                } else {
+                    0
+                };
+                (
+                    taker_payment,
+                    params.quote_asset_id,
+                    lots_to_fill,
+                    params.base_asset_id,
+                    taker_payment,
+                    is_partial,
+                    remainder,
+                )
+            }
+            OrderDirection::SellQuote => {
+                // Maker sells QUOTE, taker pays BASE lots
+                let quote_consumed = lots_to_fill
+                    .checked_mul(params.price)
+                    .ok_or(Error::MakerOrderOverflow)?;
+                let is_partial = quote_consumed < order_value;
+                let remainder = if is_partial {
+                    order_value - quote_consumed
+                } else {
+                    0
+                };
+                (
+                    lots_to_fill,
+                    params.base_asset_id,
+                    quote_consumed,
+                    params.quote_asset_id,
+                    lots_to_fill,
+                    is_partial,
+                    remainder,
+                )
+            }
+        };
+
+        // 4. Select taker funding UTXO
+        let taker_funding =
+            self.select_funding_utxo(&taker_pays_asset, taker_pays_amount, &[order_outpoint])?;
+
+        // Compute taker change (excess from overfunded UTXO)
+        let taker_change_amount = taker_funding.value - taker_pays_amount;
+
+        // 5. Select fee UTXO
+        let (fee_utxo, change_addr) =
+            self.select_fee_utxo_excluding(fee_amount, &[order_outpoint, taker_funding.outpoint])?;
+        let change_spk = change_addr.script_pubkey();
+        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
+
+        // 6. Compute maker receive script
+        let (p_order, _spk_hash) = derive_maker_receive(&maker_base_pubkey, &order_nonce, params);
+        let maker_receive_spk_bytes = maker_receive_script_pubkey(&p_order);
+        let maker_receive_script = Script::from(maker_receive_spk_bytes);
+
+        // 7. Build TakerFill and MakerOrderFill
+        // Save wallet inputs for blinding (in PSET input order: taker, order, fee)
+        let input_utxos = [taker_funding.clone(), order_utxo.clone(), fee_utxo.clone()];
+
+        let taker_fill = TakerFill {
+            funding_utxo: taker_funding,
+            receive_destination: change_spk.clone(),
+            receive_amount: taker_receives_amount,
+            receive_asset_id: taker_receives_asset,
+            change_destination: if taker_change_amount > 0 {
+                Some(change_spk.clone())
+            } else {
+                None
+            },
+            change_amount: taker_change_amount,
+            change_asset_id: taker_pays_asset,
+        };
+
+        // 7b. Save contract data needed for witness before moving into MakerOrderFill
+        let cmr = *contract.cmr();
+        let cb_bytes = contract.control_block(&maker_base_pubkey);
+
+        let maker_fill = MakerOrderFill {
+            contract,
+            order_utxo,
+            maker_base_pubkey,
+            maker_receive_amount,
+            maker_receive_script,
+            is_partial,
+            remainder_amount,
+        };
+
+        let fill_params = FillOrderParams {
+            takers: vec![taker_fill],
+            orders: vec![maker_fill],
+            fee_utxo,
+            fee_amount,
+            fee_asset_id: policy_bytes,
+            fee_change_destination: Some(change_spk),
+        };
+
+        let mut pset = build_fill_order_pset(&fill_params)?;
+
+        // 7c. Blind wallet-destination outputs.
+        // Fill output layout:
+        //   [taker_receive, maker_receive, (remainder), (taker_change), fee, (fee_change)]
+        // Blind: output 0 (taker receive) + any taker change + fee change (all ours).
+        // Do NOT blind: maker_receive, remainder (explicit covenant outputs).
+        let num_outputs = pset.n_outputs();
+        let mut blind_indices = vec![0usize]; // taker receive
+        for idx in 0..num_outputs {
+            let out = &pset.outputs()[idx];
+            // Skip output 0 (already added), fee outputs (empty script), and outputs
+            // at covenant-controlled positions (1 = maker_receive, 2 = remainder if partial).
+            if idx == 0 || out.script_pubkey.is_empty() {
+                continue;
+            }
+            // Outputs 1 and (if partial fill) 2 are covenant outputs — skip them.
+            if idx == 1 {
+                continue;
+            }
+            if is_partial && idx == 2 {
+                continue;
+            }
+            // Everything else is a wallet output — blind it.
+            blind_indices.push(idx);
+        }
+        self.blind_order_pset(&mut pset, &input_utxos, &blind_indices, &change_addr)?;
+
+        // 8. Attach Simplicity witness with pruning to covenant input (input 1)
+        let covenant_input_idx = 1; // takers-first: input 0 = taker, input 1 = maker order
+        {
+            use crate::assembly::pset_to_pruning_transaction;
+            use simplicityhl::elements::taproot::ControlBlock;
+            use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
+
+            let tx = std::sync::Arc::new(pset_to_pruning_transaction(&pset)?);
+            let utxos: Vec<ElementsUtxo> = pset
+                .inputs()
+                .iter()
+                .enumerate()
+                .map(|(i, inp)| {
+                    inp.witness_utxo
+                        .as_ref()
+                        .map(|u| ElementsUtxo::from(u.clone()))
+                        .ok_or_else(|| Error::Pset(format!("input {i} missing witness_utxo")))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let control_block = ControlBlock::from_slice(&cb_bytes)
+                .map_err(|e| Error::Witness(format!("control block: {e}")))?;
+
+            let env = ElementsEnv::new(
+                std::sync::Arc::clone(&tx),
+                utxos,
+                covenant_input_idx as u32,
+                cmr,
+                control_block,
+                None,
+                self.wollet.network().genesis_block_hash(),
+            );
+
+            let witness_values =
+                crate::maker_order::witness::build_maker_order_fill_witness(&[0u8; 64]);
+            let satisfied = CompiledMakerOrder::new(*params)?
+                .program()
+                .satisfy_with_env(witness_values, Some(&env))
+                .map_err(|e| {
+                    Error::Compilation(format!("maker order witness satisfaction: {e}"))
+                })?;
+            let (program_bytes, witness_bytes) = serialize_maker_order_satisfied(&satisfied);
+            let cmr_bytes = cmr.to_byte_array().to_vec();
+
+            pset.inputs_mut()[covenant_input_idx].final_script_witness =
+                Some(vec![witness_bytes, program_bytes, cmr_bytes, cb_bytes]);
+        }
+
+        // 9. Sign taker + fee inputs via normal signer
+        self.wollet
+            .add_details(&mut pset)
+            .map_err(|e| Error::Signer(format!("add_details: {}", e)))?;
+        self.signer
+            .sign(&mut pset)
+            .map_err(|e| Error::Signer(format!("{:?}", e)))?;
+        let tx = self
+            .wollet
+            .finalize(&mut pset)
+            .map_err(|e| Error::Finalize(e.to_string()))?;
+
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        Ok(FillOrderResult {
+            txid,
+            lots_filled: lots_to_fill,
+            is_partial,
+        })
+    }
+
     /// Find the explicit collateral UTXO from a set of covenant UTXOs.
     fn find_collateral_utxo(
         covenant_utxos: &[(OutPoint, TxOut)],
@@ -1063,40 +1754,7 @@ impl DeadcatSdk {
         &mut self,
         fee_amount: u64,
     ) -> Result<(UnblindedUtxo, lwk_wollet::elements::Address)> {
-        let policy_asset = self.policy_asset();
-        let raw_utxos = self.utxos()?;
-
-        let fee_wallet_utxo = raw_utxos
-            .iter()
-            .filter(|u| {
-                !u.is_spent && u.unblinded.asset == policy_asset && u.unblinded.value >= fee_amount
-            })
-            .min_by_key(|u| u.unblinded.value)
-            .ok_or_else(|| {
-                Error::InsufficientUtxos(format!(
-                    "need an L-BTC UTXO with >= {} sats for the fee",
-                    fee_amount
-                ))
-            })?
-            .clone();
-
-        let fee_tx = self.fetch_transaction(&fee_wallet_utxo.outpoint.txid)?;
-        let fee_txout = fee_tx
-            .output
-            .get(fee_wallet_utxo.outpoint.vout as usize)
-            .ok_or_else(|| Error::Query("fee UTXO vout out of range".into()))?
-            .clone();
-
-        let fee_unblinded = wallet_txout_to_unblinded(&fee_wallet_utxo, &fee_txout);
-
-        let addr_result = self.address(None)?;
-        let change_addr: lwk_wollet::elements::Address = addr_result
-            .address()
-            .to_string()
-            .parse()
-            .map_err(|e| Error::Query(format!("bad change address: {}", e)))?;
-
-        Ok((fee_unblinded, change_addr))
+        self.select_fee_utxo_excluding(fee_amount, &[])
     }
 
     // ── Covenant scanning helpers ───────────────────────────────────────
@@ -1313,5 +1971,54 @@ mod tests {
         let pa = policy_asset();
         let result = select_defining_utxos(&[], pa, 300);
         assert!(result.is_err());
+    }
+
+    /// Verify the cancel sighash byte-order conventions.
+    ///
+    /// The Simplicity contract computes: `SHA256(txid_u256 || vout_u32)`
+    /// via `sha_256_ctx_8_add_32` (big-endian u256) + `sha_256_ctx_8_add_4` (big-endian u32).
+    ///
+    /// The Rust side must match: `SHA256(Txid::to_byte_array() || vout.to_be_bytes())`.
+    #[test]
+    fn cancel_sighash_byte_order() {
+        use sha2::{Digest, Sha256};
+
+        // vout must be serialized as big-endian to match sha_256_ctx_8_add_4
+        assert_eq!(0u32.to_be_bytes(), [0, 0, 0, 0]);
+        assert_eq!(1u32.to_be_bytes(), [0, 0, 0, 1]);
+        assert_eq!(256u32.to_be_bytes(), [0, 0, 1, 0]);
+
+        // Different txids must produce different sighashes
+        let hash_a: [u8; 32] = {
+            let mut h = Sha256::new();
+            h.update([0x01u8; 32]);
+            h.update(0u32.to_be_bytes());
+            h.finalize().into()
+        };
+        let hash_b: [u8; 32] = {
+            let mut h = Sha256::new();
+            h.update([0x02u8; 32]);
+            h.update(0u32.to_be_bytes());
+            h.finalize().into()
+        };
+        assert_ne!(hash_a, hash_b, "different txids must produce different hashes");
+
+        // Different vouts must produce different sighashes
+        let hash_c: [u8; 32] = {
+            let mut h = Sha256::new();
+            h.update([0x01u8; 32]);
+            h.update(1u32.to_be_bytes());
+            h.finalize().into()
+        };
+        assert_ne!(hash_a, hash_c, "different vouts must produce different hashes");
+
+        // Determinism
+        let hash_a2: [u8; 32] = {
+            let mut h = Sha256::new();
+            h.update([0x01u8; 32]);
+            h.update(0u32.to_be_bytes());
+            h.finalize().into()
+        };
+        assert_eq!(hash_a, hash_a2);
     }
 }

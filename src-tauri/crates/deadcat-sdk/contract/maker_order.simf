@@ -84,6 +84,19 @@ fn nums_key() -> u256 {
 }
 
 // ============================================================================
+// Cancel check
+// ============================================================================
+
+fn check_cancel(i: u32, sig: Signature) {
+    let ctx: Ctx8 = jet::sha_256_ctx_8_init();
+    let (txid, vout): (u256, u32) = unwrap(jet::input_prev_outpoint(i));
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, txid);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_4(ctx, vout);
+    let msg: u256 = jet::sha_256_ctx_8_finalize(ctx);
+    jet::bip_0340_verify((param::MAKER_PUBKEY, msg), sig);
+}
+
+// ============================================================================
 // Cosigner check
 // ============================================================================
 
@@ -203,20 +216,25 @@ fn validate_sell_quote_fill(i: u32, i_rem: u32) {
 // ============================================================================
 
 fn main() {
-    let cosigner_sig: Signature = witness::COSIGNER_SIGNATURE;
     let i: u32 = jet::current_index();
-    let i_rem: u32 = safe_add_32(i, 1);
 
-    // Cosigner check (skipped if COSIGNER_PUBKEY == NUMS)
-    check_cosigner(i, cosigner_sig);
-
-    // Verify maker receive output script hash
-    let out_spk_hash: u256 = get_output_script_hash(i);
-    assert!(jet::eq_256(out_spk_hash, param::MAKER_RECEIVE_SPK_HASH));
-
-    // Direction branch
-    match param::IS_SELL_BASE {
-        true => validate_sell_base_fill(i, i_rem),
-        false => validate_sell_quote_fill(i, i_rem),
+    match witness::PATH {
+        Left(u: ()) => {
+            // Fill path (existing logic)
+            let cosigner_sig: Signature = witness::COSIGNER_SIGNATURE;
+            let i_rem: u32 = safe_add_32(i, 1);
+            check_cosigner(i, cosigner_sig);
+            let out_spk_hash: u256 = get_output_script_hash(i);
+            assert!(jet::eq_256(out_spk_hash, param::MAKER_RECEIVE_SPK_HASH));
+            match param::IS_SELL_BASE {
+                true => validate_sell_base_fill(i, i_rem),
+                false => validate_sell_quote_fill(i, i_rem),
+            };
+        },
+        Right(u: ()) => {
+            // Cancel path — maker signature authorizes reclaiming funds
+            let maker_sig: Signature = witness::MAKER_CANCEL_SIGNATURE;
+            check_cancel(i, maker_sig);
+        },
     };
 }

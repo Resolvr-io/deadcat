@@ -22,6 +22,8 @@ pub struct MakerOrderRow {
     pub updated_at: String,
     pub order_nonce: Option<Vec<u8>>,
     pub maker_receive_spk: Option<Vec<u8>>,
+    pub nostr_event_id: Option<String>,
+    pub nostr_event_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -40,4 +42,6 @@ pub struct NewMakerOrderRow {
     pub covenant_spk: Option<Vec<u8>>,
     pub order_nonce: Option<Vec<u8>>,
     pub maker_receive_spk: Option<Vec<u8>>,
+    pub nostr_event_id: Option<String>,
+    pub nostr_event_json: Option<String>,
 }

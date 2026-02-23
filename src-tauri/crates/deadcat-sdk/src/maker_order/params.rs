@@ -39,6 +39,8 @@ pub struct MakerOrderParams {
     pub maker_receive_spk_hash: [u8; 32],
     /// Optional cosigner x-only pubkey. NUMS key bytes = no cosigner.
     pub cosigner_pubkey: [u8; 32],
+    /// Maker's x-only public key (for cancel path signature verification).
+    pub maker_pubkey: [u8; 32],
 }
 
 impl MakerOrderParams {
@@ -70,6 +72,7 @@ impl MakerOrderParams {
             direction,
             maker_receive_spk_hash: [0; 32],
             cosigner_pubkey,
+            maker_pubkey: *maker_base_pubkey,
         };
         let (p_order, spk_hash) = derive_maker_receive(maker_base_pubkey, order_nonce, &params);
         params.maker_receive_spk_hash = spk_hash;
@@ -115,6 +118,10 @@ impl MakerOrderParams {
             (
                 WitnessName::from_str_unchecked("COSIGNER_PUBKEY"),
                 Value::u256(U256::from_byte_array(self.cosigner_pubkey)),
+            ),
+            (
+                WitnessName::from_str_unchecked("MAKER_PUBKEY"),
+                Value::u256(U256::from_byte_array(self.maker_pubkey)),
             ),
         ]);
         Arguments::from(map)

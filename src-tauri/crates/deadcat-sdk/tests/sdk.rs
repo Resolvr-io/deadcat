@@ -1,5 +1,5 @@
 use deadcat_sdk::params::ContractParams;
-use deadcat_sdk::{DeadcatSdk, MarketState};
+use deadcat_sdk::{DeadcatSdk, MarketState, OrderDirection};
 use lwk_signer::SwSigner;
 use lwk_test_util::{
     TEST_MNEMONIC, TestEnv, TestEnvBuilder, generate_mnemonic, regtest_policy_asset,
@@ -623,7 +623,8 @@ fn test_oracle_resolve_and_redeem_yes() {
     fixture.fund_and_sync(20, 500_000);
 
     let (oracle_pubkey, keypair) = generate_oracle_keypair();
-    let (_creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
+    let (_creation_txid, params) =
+        create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
 
     // Oracle resolves YES
     let signature = oracle_sign(&params, true, &keypair);
@@ -664,7 +665,8 @@ fn test_oracle_resolve_and_redeem_no() {
     fixture.fund_and_sync(20, 500_000);
 
     let (oracle_pubkey, keypair) = generate_oracle_keypair();
-    let (_creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
+    let (_creation_txid, params) =
+        create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
 
     // Oracle resolves NO
     let signature = oracle_sign(&params, false, &keypair);
@@ -861,4 +863,213 @@ fn test_redeem_wrong_state() {
     // Market is Unresolved — post-resolution redemption should fail
     let result = fixture.sdk.redeem_tokens(&params, 5, 500);
     assert!(result.is_err(), "redeem should fail in Unresolved state");
+}
+
+// ── Limit order integration tests ───────────────────────────────────────
+
+/// Helper: create a market, issue tokens, and return the params + asset IDs.
+fn issue_market_tokens(fixture: &mut TestFixture, pairs: u64) -> (Txid, ContractParams) {
+    let (oracle_pubkey, _keypair) = generate_oracle_keypair();
+    create_and_issue(fixture, oracle_pubkey, 10_000, 500_000, pairs)
+}
+
+#[test]
+fn test_create_and_cancel_limit_order() {
+    let mut fixture = TestFixture::new();
+    fixture.fund_and_sync(20, 500_000);
+
+    let (_creation_txid, params) = issue_market_tokens(&mut fixture, 10);
+
+    let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
+    let lbtc = regtest_policy_asset();
+
+    // Verify we have 10 YES tokens
+    let balance_before = fixture.sdk.balance().unwrap();
+    assert_eq!(*balance_before.get(&yes_asset).unwrap_or(&0), 10);
+    let _lbtc_before = *balance_before.get(&lbtc).unwrap();
+
+    // Create a SellBase limit order: sell 5 YES tokens at price 1000 sats/token
+    let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
+    let create_result = fixture
+        .sdk
+        .create_limit_order(
+            params.yes_token_asset,
+            lbtc_bytes,
+            1_000, // price: 1000 sats per YES token
+            5,     // order_amount: 5 YES tokens
+            OrderDirection::SellBase,
+            1,   // min_fill_lots
+            1,   // min_remainder_lots
+            0,   // order_index
+            500, // fee_amount
+        )
+        .unwrap();
+
+    assert_eq!(create_result.order_amount, 5);
+    assert!(!create_result.covenant_address.is_empty());
+
+    fixture.env.elementsd_generate(1);
+    std::thread::sleep(Duration::from_secs(2));
+    fixture.sdk.sync().unwrap();
+
+    // 5 YES tokens should be locked in the covenant, 5 remain in wallet
+    let balance_after_create = fixture.sdk.balance().unwrap();
+    assert_eq!(*balance_after_create.get(&yes_asset).unwrap_or(&0), 5);
+
+    // Cancel the order — should refund the 5 YES tokens
+    let cancel_result = fixture
+        .sdk
+        .cancel_limit_order(
+            &create_result.order_params,
+            create_result.maker_base_pubkey,
+            0,   // order_index (same key)
+            500, // fee_amount
+        )
+        .unwrap();
+
+    assert_eq!(cancel_result.refunded_amount, 5);
+
+    fixture.env.elementsd_generate(1);
+    std::thread::sleep(Duration::from_secs(2));
+    fixture.sdk.sync().unwrap();
+
+    // All 10 YES tokens should be back in the wallet
+    let balance_after_cancel = fixture.sdk.balance().unwrap();
+    assert_eq!(*balance_after_cancel.get(&yes_asset).unwrap_or(&0), 10);
+}
+
+#[test]
+fn test_create_and_full_fill_limit_order() {
+    let mut fixture = TestFixture::new();
+    fixture.fund_and_sync(25, 500_000);
+
+    let (_creation_txid, params) = issue_market_tokens(&mut fixture, 10);
+
+    let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
+    let lbtc = regtest_policy_asset();
+    let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
+
+    // Create a SellBase limit order: sell 5 YES tokens at price 1000 sats/token
+    let create_result = fixture
+        .sdk
+        .create_limit_order(
+            params.yes_token_asset,
+            lbtc_bytes,
+            1_000, // price
+            5,     // order_amount
+            OrderDirection::SellBase,
+            1,   // min_fill_lots
+            1,   // min_remainder_lots
+            0,   // order_index
+            500, // fee_amount
+        )
+        .unwrap();
+
+    fixture.env.elementsd_generate(1);
+    std::thread::sleep(Duration::from_secs(2));
+    fixture.sdk.sync().unwrap();
+
+    // Fill the entire order (self-fill: same wallet pays L-BTC to get YES tokens back)
+    let fill_result = fixture
+        .sdk
+        .fill_limit_order(
+            &create_result.order_params,
+            create_result.maker_base_pubkey,
+            create_result.order_nonce,
+            5,   // lots_to_fill: fill all 5
+            500, // fee_amount
+        )
+        .unwrap();
+
+    assert_eq!(fill_result.lots_filled, 5);
+    assert!(!fill_result.is_partial);
+
+    fixture.env.elementsd_generate(1);
+    std::thread::sleep(Duration::from_secs(2));
+    fixture.sdk.sync().unwrap();
+
+    // All 10 YES tokens should be back in the wallet (5 never left + 5 received from fill)
+    let balance = fixture.sdk.balance().unwrap();
+    assert_eq!(*balance.get(&yes_asset).unwrap_or(&0), 10);
+
+    // L-BTC should have decreased by the payment amount (5 * 1000 = 5000) plus fees
+    // The maker receives 5000 sats at the P_order address (not in our wallet),
+    // so our L-BTC goes down by ~5000 + fees.
+}
+
+#[test]
+fn test_partial_fill_limit_order() {
+    let mut fixture = TestFixture::new();
+    fixture.fund_and_sync(25, 500_000);
+
+    let (_creation_txid, params) = issue_market_tokens(&mut fixture, 10);
+
+    let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
+    let lbtc = regtest_policy_asset();
+    let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
+
+    // Create a SellBase limit order: sell 5 YES tokens at price 1000 sats/token
+    let create_result = fixture
+        .sdk
+        .create_limit_order(
+            params.yes_token_asset,
+            lbtc_bytes,
+            1_000, // price
+            5,     // order_amount
+            OrderDirection::SellBase,
+            1,   // min_fill_lots
+            1,   // min_remainder_lots
+            0,   // order_index
+            500, // fee_amount
+        )
+        .unwrap();
+
+    fixture.env.elementsd_generate(1);
+    std::thread::sleep(Duration::from_secs(2));
+    fixture.sdk.sync().unwrap();
+
+    // Partial fill: take only 3 of the 5 tokens
+    let fill_result = fixture
+        .sdk
+        .fill_limit_order(
+            &create_result.order_params,
+            create_result.maker_base_pubkey,
+            create_result.order_nonce,
+            3,   // lots_to_fill: partial — 3 of 5
+            500, // fee_amount
+        )
+        .unwrap();
+
+    assert_eq!(fill_result.lots_filled, 3);
+    assert!(fill_result.is_partial);
+
+    fixture.env.elementsd_generate(1);
+    std::thread::sleep(Duration::from_secs(2));
+    fixture.sdk.sync().unwrap();
+
+    // Wallet should have: 5 (kept) + 3 (received from fill) = 8 YES tokens
+    let balance = fixture.sdk.balance().unwrap();
+    assert_eq!(*balance.get(&yes_asset).unwrap_or(&0), 8);
+
+    // The remaining 2 YES tokens are still locked in the covenant.
+    // Cancel the remainder.
+    let cancel_result = fixture
+        .sdk
+        .cancel_limit_order(
+            &create_result.order_params,
+            create_result.maker_base_pubkey,
+            0,   // order_index
+            500, // fee_amount
+        )
+        .unwrap();
+
+    assert_eq!(cancel_result.refunded_amount, 2);
+
+    fixture.env.elementsd_generate(1);
+    std::thread::sleep(Duration::from_secs(2));
+    fixture.sdk.sync().unwrap();
+
+    // All 10 tokens back in wallet
+    let balance = fixture.sdk.balance().unwrap();
+    assert_eq!(*balance.get(&yes_asset).unwrap_or(&0), 10);
 }

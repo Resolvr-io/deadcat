@@ -5,9 +5,11 @@ pub mod announcement;
 pub mod assembly;
 pub mod chain;
 pub mod contract;
+pub mod discovery;
 pub mod error;
 pub mod maker_order;
 pub mod network;
+pub mod node;
 pub mod oracle;
 pub mod params;
 pub mod pset;
@@ -27,10 +29,14 @@ pub use assembly::{
 };
 pub use chain::{ChainBackend, ElectrumBackend};
 pub use contract::CompiledContract;
-pub use error::{Error, Result};
+pub use error::{Error, NodeError, Result};
 pub use network::Network;
 pub use params::{ContractParams, IssuanceAssets, MarketId, compute_issuance_assets};
-pub use sdk::{CancellationResult, DeadcatSdk, IssuanceResult, RedemptionResult, ResolutionResult};
+pub use sdk::{
+    CancelOrderResult, CancellationResult, CreateOrderResult, DeadcatSdk, FillOrderResult,
+    IssuanceResult, RedemptionResult, ResolutionResult,
+};
+pub use node::DeadcatNode;
 pub use state::MarketState;
 
 // Re-export LWK for app-layer use
@@ -71,9 +77,33 @@ pub use maker_order::pset::fill_order::{
 };
 pub use maker_order::taproot::{
     maker_order_address, maker_order_control_block, maker_order_script_hash,
-    maker_order_script_pubkey, maker_order_taptweak,
+    maker_order_script_pubkey,
 };
 pub use maker_order::witness::{
-    build_maker_order_witness, satisfy_maker_order,
-    serialize_satisfied as serialize_maker_order_satisfied,
+    build_maker_order_cancel_witness, build_maker_order_fill_witness, build_maker_order_witness,
+    satisfy_maker_order, serialize_satisfied as serialize_maker_order_satisfied,
+};
+
+// Discovery (replaces order_announcement + order_discovery)
+pub use discovery::{
+    // Types
+    DiscoveredMarket, DiscoveredOrder, OrderAnnouncement,
+    DiscoveryConfig, DiscoveryEvent, DiscoveryService,
+    AttestationContent, AttestationResult,
+    ContractMetadataInput, DiscoveryStore,
+    // Order builders
+    build_order_event, build_order_filter, parse_order_event,
+    fetch_orders,
+    // Market builders
+    build_announcement_event, build_contract_filter, parse_announcement_event,
+    fetch_announcements, discovered_market_to_contract_params,
+    // Attestation builders
+    build_attestation_event, build_attestation_filter, parse_attestation_event,
+    sign_attestation,
+    // Relay helpers
+    connect_client, publish_event,
+    // Constants
+    APP_EVENT_KIND,
+    CONTRACT_TAG, ORDER_TAG, ATTESTATION_TAG,
+    NETWORK_TAG, DEFAULT_RELAYS,
 };

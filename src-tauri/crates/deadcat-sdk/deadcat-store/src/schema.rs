@@ -31,6 +31,8 @@ diesel::table! {
         creator_pubkey -> Nullable<Binary>,
         creation_txid -> Nullable<Text>,
         nevent -> Nullable<Text>,
+        nostr_event_id -> Nullable<Text>,
+        nostr_event_json -> Nullable<Text>,
     }
 }
 
@@ -53,6 +55,8 @@ diesel::table! {
         updated_at -> Text,
         order_nonce -> Nullable<Binary>,
         maker_receive_spk -> Nullable<Binary>,
+        nostr_event_id -> Nullable<Text>,
+        nostr_event_json -> Nullable<Text>,
     }
 }
 
