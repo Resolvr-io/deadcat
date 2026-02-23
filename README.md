@@ -24,14 +24,15 @@ The app will open a native desktop window with the frontend dev server on `http:
 
 ## Features
 
+- First-run onboarding wizard for Nostr identity and wallet setup
 - Browse and filter prediction markets by category (Bitcoin, Politics, Sports, Culture, Weather, Macro)
 - Trade YES/NO outcome tokens with market or limit orders
 - Issue, redeem, and cancel market positions
 - Integrated Liquid wallet with mnemonic encryption (create, import, or restore from Nostr backup)
 - Encrypted wallet backup to Nostr relays (NIP-44 self-encryption + NIP-78 addressable storage)
-- User-configurable relay list with NIP-65 relay list metadata
-- Automatic relay backup scanning during onboarding
-- Nostr profile display (kind 0 metadata)
+- Wallet backup deletion via NIP-09 event deletion
+- User-configurable relay list with NIP-65 relay list metadata and per-relay backup indicators
+- Nostr profile picture and display name from kind 0 metadata
 - Market discovery and settlement via Nostr
 - Lightning, Liquid, and Bitcoin payment flows via Boltz swaps
 
@@ -41,8 +42,9 @@ The app will open a native desktop window with the frontend dev server on `http:
 |-----|------|---------|
 | [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md) | — | Basic protocol: event signing, relay communication, subscriptions |
 | [NIP-19](https://github.com/nostr-protocol/nips/blob/master/19.md) | — | Bech32 encoding for keys and identifiers (`npub`, `nsec`) |
+| [NIP-09](https://github.com/nostr-protocol/nips/blob/master/09.md) | 5 | Event deletion — remove wallet backup from relays |
 | [NIP-44](https://github.com/nostr-protocol/nips/blob/master/44.md) | — | Versioned encryption (XChaCha20 + secp256k1 ECDH) for wallet backup |
-| [NIP-65](https://github.com/nostr-protocol/nips/blob/master/65.md) | 10002 | Relay list metadata — user-configurable relay preferences with read/write markers |
+| [NIP-65](https://github.com/nostr-protocol/nips/blob/master/65.md) | 10002 | Relay list metadata — user-configurable relay preferences |
 | [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md) | 30078 | Application-specific data — encrypted wallet mnemonic backup storage |
 | Kind 0 | 0 | User profile metadata — profile picture, display name |
 
