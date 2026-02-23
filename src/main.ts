@@ -2123,7 +2123,7 @@ function renderBackupModal(loading: boolean): string {
   } else {
     body =
       '<p class="text-sm text-slate-400">Enter your wallet password to reveal your recovery phrase.</p>' +
-      '<input id="wallet-backup-password" type="password" value="' + state.walletBackupPassword + '" placeholder="Wallet password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
+      '<input id="wallet-backup-password" type="password" maxlength="32" value="' + state.walletBackupPassword + '" placeholder="Wallet password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
       '<button data-action="export-backup" class="w-full rounded-xl bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300"' + (loading ? " disabled" : "") + '>Show Recovery Phrase</button>';
   }
 
@@ -2426,7 +2426,7 @@ function renderWallet(): string {
                 <label for="wallet-password" class="text-xs font-medium text-slate-400">Encryption Password</label>
                 <p class="mt-0.5 text-[11px] text-slate-500">Used to encrypt your wallet on this device.</p>
               </div>
-              <input id="wallet-password" type="password" value="${state.walletPassword}" placeholder="Enter a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+              <input id="wallet-password" type="password" maxlength="32" value="${state.walletPassword}" placeholder="Enter a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
               <button data-action="create-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Creating..." : "Create Wallet"}</button>
             </div>
           ` : `
@@ -2440,7 +2440,7 @@ function renderWallet(): string {
                 <label for="wallet-password" class="text-xs font-medium text-slate-400">Encryption Password</label>
                 <p class="mt-0.5 text-[11px] text-slate-500">Set a password to encrypt the restored wallet.</p>
               </div>
-              <input id="wallet-password" type="password" value="${state.walletPassword}" placeholder="Enter a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+              <input id="wallet-password" type="password" maxlength="32" value="${state.walletPassword}" placeholder="Enter a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
               <button data-action="restore-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Restoring..." : "Restore Wallet"}</button>
             </div>
           `}
@@ -2458,7 +2458,7 @@ function renderWallet(): string {
           ${errorHtml}
           ${loadingHtml}
           <div class="space-y-4 rounded-lg border border-slate-700 bg-slate-900/50 p-6">
-            <input id="wallet-password" type="password" value="${state.walletPassword}" placeholder="Password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+            <input id="wallet-password" type="password" maxlength="32" value="${state.walletPassword}" placeholder="Password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
             <button data-action="unlock-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Unlocking..." : "Unlock"}</button>
           </div>
         </div>
@@ -2753,13 +2753,13 @@ function renderOnboarding(): string {
       </div>
       ${modeCreate ? `
         <div class="mt-5 space-y-3">
-          <input id="onboarding-wallet-password" type="password" value="${state.onboardingWalletPassword}" placeholder="Set a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+          <input id="onboarding-wallet-password" type="password" maxlength="32" value="${state.onboardingWalletPassword}" placeholder="Set a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
           <button data-action="onboarding-create-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Creating..." : "Create Wallet"}</button>
         </div>
       ` : `
         <div class="mt-5 space-y-3">
           <textarea id="onboarding-wallet-mnemonic" placeholder="Enter your 12-word recovery phrase" rows="3" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""}>${state.onboardingWalletMnemonic}</textarea>
-          <input id="onboarding-wallet-password" type="password" value="${state.onboardingWalletPassword}" placeholder="Set a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+          <input id="onboarding-wallet-password" type="password" maxlength="32" value="${state.onboardingWalletPassword}" placeholder="Set a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
           <button data-action="onboarding-restore-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Restoring..." : "Restore & Finish"}</button>
         </div>
       `}
