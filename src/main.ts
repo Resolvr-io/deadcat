@@ -830,17 +830,18 @@ function getFilteredMarkets(): Market[] {
 }
 
 function chartSkeleton(market: Market): string {
-  const chartLogoPath = LOADER_CAT_SVG.match(/d="([^"]+)"/)?.[1] ?? "";
+  // Outer silhouette only (no face details) for small chart markers
+  const chartLogoPath = "M0.146484 9.04605C0.146484 1.23441 10.9146 -3.16002 16.7881 2.6984L86.5566 71.7336C100.142 68.0294 114.765 66.0128 130 66.0128C145.239 66.0128 159.865 68.0306 173.453 71.7365L243.212 2.71207C249.085 -3.14676 259.854 1.24698 259.854 9.05875V161.26C259.949 162.835 260 164.42 260 166.013C260 221.241 201.797 266.013 130 266.013C58.203 266.013 0 221.241 0 166.013C1.54644e-06 164.42 0.0506677 162.835 0.146484 161.26V9.04605Z";
   const markerWidth = 4.8;
   const markerHeight = (markerWidth * 267) / 260;
   const markerAt = (x: number, y: number, fill: string): string => `
     <g transform="translate(${x - markerWidth / 2} ${y - markerHeight / 2}) scale(${markerWidth / 260} ${markerHeight / 267})">
-      <path fill-rule="evenodd" clip-rule="evenodd" d="${chartLogoPath}" fill="${fill}" />
+      <path d="${chartLogoPath}" fill="${fill}" />
     </g>
   `;
   const legendIcon = (fill: string): string => `
     <svg viewBox="0 0 260 267" class="h-[11px] w-[11px] shrink-0" aria-hidden="true">
-      <path fill-rule="evenodd" clip-rule="evenodd" d="${chartLogoPath}" fill="${fill}" />
+      <path d="${chartLogoPath}" fill="${fill}" />
     </svg>
   `;
 
