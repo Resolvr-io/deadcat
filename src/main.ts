@@ -830,6 +830,20 @@ function getFilteredMarkets(): Market[] {
 }
 
 function chartSkeleton(market: Market): string {
+  const chartLogoPath = LOADER_CAT_SVG.match(/d="([^"]+)"/)?.[1] ?? "";
+  const markerWidth = 4.8;
+  const markerHeight = (markerWidth * 267) / 260;
+  const markerAt = (x: number, y: number, fill: string): string => `
+    <g transform="translate(${x - markerWidth / 2} ${y - markerHeight / 2}) scale(${markerWidth / 260} ${markerHeight / 267})">
+      <path fill-rule="evenodd" clip-rule="evenodd" d="${chartLogoPath}" fill="${fill}" />
+    </g>
+  `;
+  const legendIcon = (fill: string): string => `
+    <svg viewBox="0 0 260 267" class="h-[11px] w-[11px] shrink-0" aria-hidden="true">
+      <path fill-rule="evenodd" clip-rule="evenodd" d="${chartLogoPath}" fill="${fill}" />
+    </svg>
+  `;
+
   const yes = market.yesPrice;
   const now = new Date();
   const xLabels = [
@@ -860,8 +874,8 @@ function chartSkeleton(market: Market): string {
   return `
     <div class="chart-grid relative h-64 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
       <div class="mb-2 flex items-center gap-4 text-xs text-slate-300">
-        <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-emerald-300"></span>Yes ${yesPct}%</span>
-        <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-rose-400"></span>No ${noPct}%</span>
+        <span class="inline-flex items-center gap-1">${legendIcon("#5eead4")}Yes ${yesPct}%</span>
+        <span class="inline-flex items-center gap-1">${legendIcon("#fb7185")}No ${noPct}%</span>
         <span class="text-slate-500">Yes + No = ${SATS_PER_FULL_CONTRACT} sats</span>
         ${
           market.isLive
@@ -879,8 +893,8 @@ function chartSkeleton(market: Market): string {
           <circle class="chartLivePulse chartLivePulseNo" cx="${noEnd.x}" cy="${noEnd.y}" r="1.8" />`
               : ""
           }
-          <circle cx="${yesEnd.x}" cy="${yesEnd.y}" r="1.8" fill="#5eead4" />
-          <circle cx="${noEnd.x}" cy="${noEnd.y}" r="1.8" fill="#fb7185" />
+          ${markerAt(yesEnd.x, yesEnd.y, "#5eead4")}
+          ${markerAt(noEnd.x, noEnd.y, "#fb7185")}
         </svg>
         <div class="absolute text-[12px] font-semibold text-emerald-300" style="left: calc(${yesEnd.x}% - 56px); top: calc(${yesEnd.y}% - 8px)">Yes ${yesPct}%</div>
         <div class="absolute text-[12px] font-semibold text-rose-400" style="left: calc(${noEnd.x}% - 50px); top: calc(${noEnd.y}% - 8px)">No ${noPct}%</div>
