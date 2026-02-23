@@ -49,7 +49,7 @@ bip39 = "2"
 # SDK & Nostr
 deadcat-sdk = { path = "crates/deadcat-sdk" }
 deadcat-store = { path = "crates/deadcat-sdk/deadcat-store" }
-nostr-sdk = "0.38"
+nostr-sdk = { version = "0.38", features = ["nip44"] }
 nostr-relay-builder = "0.38"
 
 # Crypto
