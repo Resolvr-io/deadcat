@@ -6,7 +6,7 @@ mod state;
 pub mod wallet;
 mod wallet_store;
 
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -20,7 +20,7 @@ pub struct SdkState {
     pub wallet_store: wallet_store::WalletStore,
     pub nostr_keys: Mutex<Option<nostr_sdk::Keys>>,
     pub nostr_client: tokio::sync::Mutex<Option<nostr_sdk::Client>>,
-    pub relay_list: Mutex<Vec<String>>,
+    pub relay_list: RwLock<Vec<String>>,
 }
 
 impl Default for SdkState {
@@ -29,7 +29,7 @@ impl Default for SdkState {
             wallet_store: wallet_store::WalletStore::default(),
             nostr_keys: Mutex::new(None),
             nostr_client: tokio::sync::Mutex::new(None),
-            relay_list: Mutex::new(
+            relay_list: RwLock::new(
                 discovery::DEFAULT_RELAYS
                     .iter()
                     .map(|s| s.to_string())
