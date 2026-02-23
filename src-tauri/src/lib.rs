@@ -155,18 +155,22 @@ fn restore_wallet(
 }
 
 #[tauri::command]
-fn unlock_wallet(
-    password: String,
-    manager: State<Mutex<AppStateManager>>,
-    app: AppHandle,
-) -> Result<AppState, String> {
-    let mut manager = manager.lock().expect("state manager mutex");
-    let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
-    wallet.unlock(&password).map_err(|e| e.to_string())?;
-    manager.bump_revision();
-    let state = manager.snapshot();
-    emit_state(&app, &state);
-    Ok(state)
+async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, String> {
+    let app_handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_handle.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr
+            .wallet_mut()
+            .ok_or_else(|| "Wallet not initialized".to_string())?;
+        wallet.unlock(&password).map_err(|e| e.to_string())?;
+        mgr.bump_revision();
+        let state = mgr.snapshot();
+        let _ = app_handle.emit(APP_STATE_UPDATED_EVENT, &state);
+        Ok(state)
+    })
+    .await
+    .map_err(|e| format!("unlock task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -182,14 +186,36 @@ fn lock_wallet(manager: State<Mutex<AppStateManager>>, app: AppHandle) -> Result
 }
 
 #[tauri::command]
-fn sync_wallet(manager: State<Mutex<AppStateManager>>, app: AppHandle) -> Result<AppState, String> {
+fn delete_wallet(
+    manager: State<Mutex<AppStateManager>>,
+    app: AppHandle,
+) -> Result<AppState, String> {
     let mut manager = manager.lock().expect("state manager mutex");
     let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
-    wallet.sync().map_err(|e| e.to_string())?;
+    wallet.delete_wallet().map_err(|e| e.to_string())?;
     manager.bump_revision();
     let state = manager.snapshot();
     emit_state(&app, &state);
     Ok(state)
+}
+
+#[tauri::command]
+async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
+    let app_handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_handle.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr
+            .wallet_mut()
+            .ok_or_else(|| "Wallet not initialized".to_string())?;
+        wallet.sync().map_err(|e| e.to_string())?;
+        mgr.bump_revision();
+        let state = mgr.snapshot();
+        let _ = app_handle.emit(APP_STATE_UPDATED_EVENT, &state);
+        Ok(state)
+    })
+    .await
+    .map_err(|e| format!("sync task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -244,10 +270,10 @@ fn get_wallet_mnemonic(
     password: String,
     manager: State<Mutex<AppStateManager>>,
 ) -> Result<String, String> {
-    let manager = manager.lock().expect("state manager mutex");
-    let wallet = manager.wallet().ok_or("Wallet not initialized")?;
+    let mut manager = manager.lock().expect("state manager mutex");
+    let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
     let mnemonic = wallet
-        .persister()
+        .persister_mut()
         .load(&password)
         .map_err(|e| e.to_string())?;
     Ok(mnemonic)
@@ -630,7 +656,17 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                .level(log::LevelFilter::Info)
+                .level_for("rustls", log::LevelFilter::Warn)
+                .level_for("tungstenite", log::LevelFilter::Warn)
+                .level_for("tokio_tungstenite", log::LevelFilter::Warn)
+                .level_for("reqwest", log::LevelFilter::Warn)
+                .level_for("tao", log::LevelFilter::Warn)
+                .level_for("lwk_wollet", log::LevelFilter::Warn)
+                .build(),
+        )
         .setup(|app| {
             let app_data_dir = app
                 .path()
@@ -662,6 +698,7 @@ pub fn run() {
             restore_wallet,
             unlock_wallet,
             lock_wallet,
+            delete_wallet,
             sync_wallet,
             get_wallet_balance,
             get_wallet_address,
@@ -680,12 +717,22 @@ pub fn run() {
             fetch_chain_tip,
             // SDK / Nostr
             commands::init_nostr_identity,
+            commands::generate_nostr_identity,
             commands::get_nostr_identity,
+            commands::export_nostr_nsec,
+            commands::delete_nostr_identity,
+            commands::import_nostr_nsec,
             commands::discover_contracts,
             commands::publish_contract,
             commands::oracle_attest,
             commands::create_contract_onchain,
             commands::issue_tokens,
+            commands::cancel_tokens,
+            commands::resolve_market,
+            commands::redeem_tokens,
+            commands::redeem_expired,
+            commands::get_market_state,
+            commands::get_wallet_utxos,
             commands::ingest_discovered_markets,
             commands::list_contracts,
             // Wallet store (SDK)
