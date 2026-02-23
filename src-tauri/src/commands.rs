@@ -49,7 +49,12 @@ async fn compute_tip_and_now(
 async fn get_or_connect_nostr_client(sdk_state: &SdkState) -> Result<nostr_sdk::Client, String> {
     let mut nostr_client = sdk_state.nostr_client.lock().await;
     if nostr_client.is_none() {
-        let c = discovery::connect_client(None).await?;
+        let relays = sdk_state
+            .relay_list
+            .lock()
+            .map_err(|_| "failed to lock relay_list".to_string())?
+            .clone();
+        let c = discovery::connect_multi_relay_client(&relays).await?;
         *nostr_client = Some(c);
     }
     Ok(nostr_client.as_ref().unwrap().clone())
@@ -239,6 +244,388 @@ pub async fn delete_nostr_identity(
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// NIP-44 wallet backup commands
+// ---------------------------------------------------------------------------
+
+/// Encrypt the wallet mnemonic with NIP-44 and publish to relays as kind 30078.
+#[tauri::command]
+pub async fn backup_mnemonic_to_nostr(
+    state: tauri::State<'_, SdkState>,
+    app: tauri::AppHandle,
+    password: String,
+) -> Result<String, String> {
+    let keys = {
+        let nostr_keys = state
+            .nostr_keys
+            .lock()
+            .map_err(|_| "failed to lock nostr_keys".to_string())?;
+        nostr_keys
+            .clone()
+            .ok_or_else(|| "Nostr identity not initialized".to_string())?
+    };
+
+    // Get the mnemonic: use cached version if wallet is unlocked, otherwise decrypt with password
+    let mnemonic = {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr
+            .wallet_mut()
+            .ok_or_else(|| "Wallet not initialized".to_string())?;
+        if let Some(cached) = wallet.persister_mut().cached() {
+            cached.to_string()
+        } else {
+            wallet
+                .persister_mut()
+                .load(&password)
+                .map_err(|e| e.to_string())?
+        }
+    };
+
+    let encrypted = discovery::nip44_encrypt_to_self(&keys, &mnemonic)?;
+    let event = discovery::build_wallet_backup_event(&keys, &encrypted)?;
+
+    let client = get_or_connect_nostr_client(&state).await?;
+    let event_id = discovery::publish_event(&client, event).await?;
+
+    Ok(event_id.to_hex())
+}
+
+/// Fetch and decrypt the wallet mnemonic backup from relays.
+#[tauri::command]
+pub async fn restore_mnemonic_from_nostr(
+    state: tauri::State<'_, SdkState>,
+) -> Result<String, String> {
+    let keys = {
+        let nostr_keys = state
+            .nostr_keys
+            .lock()
+            .map_err(|_| "failed to lock nostr_keys".to_string())?;
+        nostr_keys
+            .clone()
+            .ok_or_else(|| "Nostr identity not initialized".to_string())?
+    };
+
+    let client = get_or_connect_nostr_client(&state).await?;
+    let filter = discovery::build_backup_query_filter(&keys.public_key());
+
+    let events = client
+        .fetch_events(vec![filter], Duration::from_secs(15))
+        .await
+        .map_err(|e| format!("failed to fetch backup: {e}"))?;
+
+    let encrypted_content = {
+        let mut iter = events.iter();
+        let event = iter
+            .next()
+            .ok_or_else(|| "No wallet backup found on relays".to_string())?;
+        event.content.clone()
+    };
+
+    discovery::nip44_decrypt_from_self(&keys, &encrypted_content)
+}
+
+/// Check whether a wallet backup exists on each relay.
+#[tauri::command]
+pub async fn check_nostr_backup(
+    state: tauri::State<'_, SdkState>,
+) -> Result<discovery::NostrBackupStatus, String> {
+    let keys = {
+        let nostr_keys = state
+            .nostr_keys
+            .lock()
+            .map_err(|_| "failed to lock nostr_keys".to_string())?;
+        nostr_keys
+            .clone()
+            .ok_or_else(|| "Nostr identity not initialized".to_string())?
+    };
+
+    let relays = state
+        .relay_list
+        .lock()
+        .map_err(|_| "failed to lock relay_list".to_string())?
+        .clone();
+
+    let filter = discovery::build_backup_query_filter(&keys.public_key());
+    let mut relay_results = Vec::new();
+    let mut any_found = false;
+
+    for url in &relays {
+        let found = match discovery::connect_multi_relay_client(&[url.clone()]).await {
+            Ok(per_relay_client) => {
+                match per_relay_client
+                    .fetch_events(vec![filter.clone()], Duration::from_secs(8))
+                    .await
+                {
+                    Ok(events) => events.iter().next().is_some(),
+                    Err(_) => false,
+                }
+            }
+            Err(_) => false,
+        };
+        if found {
+            any_found = true;
+        }
+        relay_results.push(discovery::RelayBackupResult {
+            url: url.clone(),
+            has_backup: found,
+        });
+    }
+
+    Ok(discovery::NostrBackupStatus {
+        has_backup: any_found,
+        relay_results,
+    })
+}
+
+/// Delete the wallet backup from all relays (NIP-09 deletion event).
+#[tauri::command]
+pub async fn delete_nostr_backup(
+    state: tauri::State<'_, SdkState>,
+) -> Result<String, String> {
+    let keys = {
+        let nostr_keys = state
+            .nostr_keys
+            .lock()
+            .map_err(|_| "failed to lock nostr_keys".to_string())?;
+        nostr_keys
+            .clone()
+            .ok_or_else(|| "Nostr identity not initialized".to_string())?
+    };
+
+    let event = discovery::build_backup_deletion_event(&keys)?;
+    let client = get_or_connect_nostr_client(&state).await?;
+    let event_id = discovery::publish_event(&client, event).await?;
+
+    Ok(event_id.to_hex())
+}
+
+// ---------------------------------------------------------------------------
+// NIP-65 relay management commands
+// ---------------------------------------------------------------------------
+
+/// Get the current in-memory relay list.
+#[tauri::command]
+pub fn get_relay_list(
+    state: tauri::State<'_, SdkState>,
+) -> Result<Vec<discovery::RelayEntry>, String> {
+    let relays = state
+        .relay_list
+        .lock()
+        .map_err(|_| "failed to lock relay_list".to_string())?
+        .clone();
+
+    Ok(relays
+        .into_iter()
+        .map(|url| discovery::RelayEntry {
+            url,
+            has_backup: false,
+        })
+        .collect())
+}
+
+/// Overwrite the relay list, reset the client, and publish kind 10002.
+#[tauri::command]
+pub async fn set_relay_list(
+    state: tauri::State<'_, SdkState>,
+    relays: Vec<String>,
+) -> Result<(), String> {
+    let normalized: Vec<String> = relays
+        .iter()
+        .map(|u| discovery::normalize_relay_url(u))
+        .collect();
+
+    {
+        let mut list = state
+            .relay_list
+            .lock()
+            .map_err(|_| "failed to lock relay_list".to_string())?;
+        *list = normalized.clone();
+    }
+
+    // Force client reconnect with new relays
+    {
+        let mut nostr_client = state.nostr_client.lock().await;
+        *nostr_client = None;
+    }
+
+    // Publish kind 10002 if we have keys
+    let keys = {
+        state
+            .nostr_keys
+            .lock()
+            .map_err(|_| "failed to lock nostr_keys".to_string())?
+            .clone()
+    };
+    if let Some(keys) = keys {
+        let client = get_or_connect_nostr_client(&state).await?;
+        let event = discovery::build_relay_list_event(&keys, &normalized)?;
+        discovery::publish_event(&client, event).await?;
+    }
+
+    Ok(())
+}
+
+/// Fetch the user's NIP-65 relay list from connected relays and update state.
+#[tauri::command]
+pub async fn fetch_nip65_relay_list(
+    state: tauri::State<'_, SdkState>,
+) -> Result<Vec<String>, String> {
+    let keys = {
+        let nostr_keys = state
+            .nostr_keys
+            .lock()
+            .map_err(|_| "failed to lock nostr_keys".to_string())?;
+        nostr_keys
+            .clone()
+            .ok_or_else(|| "Nostr identity not initialized".to_string())?
+    };
+
+    let client = get_or_connect_nostr_client(&state).await?;
+
+    match discovery::fetch_relay_list(&client, &keys.public_key()).await? {
+        Some(relays) => {
+            {
+                let mut list = state
+                    .relay_list
+                    .lock()
+                    .map_err(|_| "failed to lock relay_list".to_string())?;
+                *list = relays.clone();
+            }
+            // Reset client so next call uses the new relay list
+            {
+                let mut nostr_client = state.nostr_client.lock().await;
+                *nostr_client = None;
+            }
+            Ok(relays)
+        }
+        None => {
+            // No NIP-65 event found, return current defaults
+            let relays = state
+                .relay_list
+                .lock()
+                .map_err(|_| "failed to lock relay_list".to_string())?
+                .clone();
+            Ok(relays)
+        }
+    }
+}
+
+/// Add a single relay, reset client, and publish updated kind 10002.
+#[tauri::command]
+pub async fn add_relay(
+    state: tauri::State<'_, SdkState>,
+    url: String,
+) -> Result<Vec<String>, String> {
+    let normalized = discovery::normalize_relay_url(&url);
+    let new_list = {
+        let mut list = state
+            .relay_list
+            .lock()
+            .map_err(|_| "failed to lock relay_list".to_string())?;
+        if !list.contains(&normalized) {
+            list.push(normalized);
+        }
+        list.clone()
+    };
+
+    // Force reconnect
+    {
+        let mut nostr_client = state.nostr_client.lock().await;
+        *nostr_client = None;
+    }
+
+    // Publish updated relay list if we have keys
+    let keys = {
+        state
+            .nostr_keys
+            .lock()
+            .map_err(|_| "failed to lock nostr_keys".to_string())?
+            .clone()
+    };
+    if let Some(keys) = keys {
+        let client = get_or_connect_nostr_client(&state).await?;
+        let event = discovery::build_relay_list_event(&keys, &new_list)?;
+        discovery::publish_event(&client, event).await?;
+    }
+
+    Ok(new_list)
+}
+
+/// Remove a relay, reset client, and publish updated kind 10002.
+#[tauri::command]
+pub async fn remove_relay(
+    state: tauri::State<'_, SdkState>,
+    url: String,
+) -> Result<Vec<String>, String> {
+    let normalized = discovery::normalize_relay_url(&url);
+    let new_list = {
+        let mut list = state
+            .relay_list
+            .lock()
+            .map_err(|_| "failed to lock relay_list".to_string())?;
+        list.retain(|u| u != &normalized);
+        if list.is_empty() {
+            *list = discovery::DEFAULT_RELAYS
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        }
+        list.clone()
+    };
+
+    // Force reconnect
+    {
+        let mut nostr_client = state.nostr_client.lock().await;
+        *nostr_client = None;
+    }
+
+    // Publish updated relay list if we have keys
+    let keys = {
+        state
+            .nostr_keys
+            .lock()
+            .map_err(|_| "failed to lock nostr_keys".to_string())?
+            .clone()
+    };
+    if let Some(keys) = keys {
+        let client = get_or_connect_nostr_client(&state).await?;
+        let event = discovery::build_relay_list_event(&keys, &new_list)?;
+        discovery::publish_event(&client, event).await?;
+    }
+
+    Ok(new_list)
+}
+
+// ---------------------------------------------------------------------------
+// Kind 0 profile command
+// ---------------------------------------------------------------------------
+
+/// Fetch the user's kind 0 Nostr profile metadata.
+#[tauri::command]
+pub async fn fetch_nostr_profile(
+    state: tauri::State<'_, SdkState>,
+) -> Result<Option<discovery::NostrProfile>, String> {
+    let keys = {
+        let nostr_keys = state
+            .nostr_keys
+            .lock()
+            .map_err(|_| "failed to lock nostr_keys".to_string())?;
+        nostr_keys
+            .clone()
+            .ok_or_else(|| "Nostr identity not initialized".to_string())?
+    };
+
+    let client = get_or_connect_nostr_client(&state).await?;
+    discovery::fetch_profile(&client, &keys.public_key()).await
+}
+
+// ---------------------------------------------------------------------------
+// Contract discovery commands
+// ---------------------------------------------------------------------------
 
 #[tauri::command]
 pub async fn discover_contracts(
