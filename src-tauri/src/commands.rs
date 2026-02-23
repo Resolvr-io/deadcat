@@ -7,7 +7,7 @@ use tauri::{Emitter, Manager};
 
 use crate::discovery::{
     self, AttestationResult, ContractMetadata, CreateContractRequest, DiscoveredMarket,
-    IdentityResponse,
+    IdentityResponse, discovered_market_to_contract_params,
 };
 use serde::{Deserialize, Serialize};
 
@@ -234,7 +234,7 @@ pub async fn oracle_attest(
     let client = get_or_connect_nostr_client(&state).await?;
 
     let filter = nostr_sdk::Filter::new()
-        .kind(discovery::CONTRACT_EVENT_KIND)
+        .kind(discovery::APP_EVENT_KIND)
         .identifier(&market_id_hex)
         .hashtag(discovery::CONTRACT_TAG);
 
@@ -483,7 +483,7 @@ pub fn ingest_discovered_markets(
 
     let mut count = 0u32;
     for market in &markets {
-        let params = match discovered_to_contract_params(market) {
+        let params = match discovered_market_to_contract_params(market) {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("skipping market {}: {e}", market.market_id);
@@ -500,6 +500,8 @@ pub fn ingest_discovered_markets(
             creator_pubkey: hex::decode(&market.creator_pubkey).ok(),
             creation_txid: market.creation_txid.clone(),
             nevent: Some(market.nevent.clone()),
+            nostr_event_id: Some(market.id.clone()),
+            nostr_event_json: market.nostr_event_json.clone(),
         };
 
         match wallet.ingest_market(&params, Some(&metadata)) {
@@ -538,29 +540,6 @@ pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, St
     Ok(result)
 }
 
-/// Convert a `DiscoveredMarket` (frontend type) into SDK `ContractParams`.
-fn discovered_to_contract_params(
-    m: &DiscoveredMarket,
-) -> Result<deadcat_sdk::ContractParams, String> {
-    let decode32 = |hex_str: &str, name: &str| -> Result<[u8; 32], String> {
-        let bytes = hex::decode(hex_str).map_err(|e| format!("{name}: hex decode: {e}"))?;
-        bytes
-            .try_into()
-            .map_err(|_| format!("{name}: expected 32 bytes"))
-    };
-
-    Ok(deadcat_sdk::ContractParams {
-        oracle_public_key: decode32(&m.oracle_pubkey, "oracle_pubkey")?,
-        collateral_asset_id: decode32(&m.collateral_asset_id, "collateral_asset_id")?,
-        yes_token_asset: decode32(&m.yes_asset_id, "yes_asset_id")?,
-        no_token_asset: decode32(&m.no_asset_id, "no_asset_id")?,
-        yes_reissuance_token: decode32(&m.yes_reissuance_token, "yes_reissuance_token")?,
-        no_reissuance_token: decode32(&m.no_reissuance_token, "no_reissuance_token")?,
-        collateral_per_token: m.cpt_sats,
-        expiry_time: m.expiry_height,
-    })
-}
-
 /// Convert a `MarketInfo` (store type) back to `DiscoveredMarket` (frontend type).
 fn market_info_to_discovered(info: &deadcat_store::MarketInfo) -> DiscoveredMarket {
     let p = &info.params;
@@ -591,6 +570,7 @@ fn market_info_to_discovered(info: &deadcat_store::MarketInfo) -> DiscoveredMark
         created_at: parse_iso_datetime_to_unix(&info.created_at),
         creation_txid: info.creation_txid.clone(),
         state: info.state.as_u64() as u8,
+        nostr_event_json: info.nostr_event_json.clone(),
     }
 }
 

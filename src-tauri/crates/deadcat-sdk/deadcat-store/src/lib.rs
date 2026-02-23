@@ -6,9 +6,9 @@ mod store;
 mod sync;
 
 pub use error::StoreError;
+pub use deadcat_sdk::discovery::ContractMetadataInput;
 pub use store::{
-    ContractMetadataInput, DeadcatStore, IssuanceData, MakerOrderInfo, MarketFilter, MarketInfo,
-    OrderFilter, OrderStatus,
+    DeadcatStore, IssuanceData, MakerOrderInfo, MarketFilter, MarketInfo, OrderFilter, OrderStatus,
 };
 pub use sync::{ChainSource, ChainUtxo, MarketStateChange, OrderStatusChange, SyncReport};
 

@@ -5,12 +5,12 @@ pub mod announcement;
 pub mod assembly;
 pub mod chain;
 pub mod contract;
+pub mod discovery;
 pub mod error;
 pub mod maker_order;
 pub mod network;
+pub mod node;
 pub mod oracle;
-pub mod order_announcement;
-pub mod order_discovery;
 pub mod params;
 pub mod pset;
 pub mod sdk;
@@ -29,13 +29,14 @@ pub use assembly::{
 };
 pub use chain::{ChainBackend, ElectrumBackend};
 pub use contract::CompiledContract;
-pub use error::{Error, Result};
+pub use error::{Error, NodeError, Result};
 pub use network::Network;
 pub use params::{ContractParams, IssuanceAssets, MarketId, compute_issuance_assets};
 pub use sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, DeadcatSdk, FillOrderResult,
     IssuanceResult, RedemptionResult, ResolutionResult,
 };
+pub use node::DeadcatNode;
 pub use state::MarketState;
 
 // Re-export LWK for app-layer use
@@ -83,9 +84,26 @@ pub use maker_order::witness::{
     satisfy_maker_order, serialize_satisfied as serialize_maker_order_satisfied,
 };
 
-// Order announcement and discovery
-pub use order_announcement::{DiscoveredOrder, OrderAnnouncement};
-pub use order_discovery::{
-    build_order_event, build_order_filter, connect_client as connect_order_client, fetch_orders,
-    parse_order_event, publish_order,
+// Discovery (replaces order_announcement + order_discovery)
+pub use discovery::{
+    // Types
+    DiscoveredMarket, DiscoveredOrder, OrderAnnouncement,
+    DiscoveryConfig, DiscoveryEvent, DiscoveryService,
+    AttestationContent, AttestationResult,
+    ContractMetadataInput, DiscoveryStore,
+    // Order builders
+    build_order_event, build_order_filter, parse_order_event,
+    fetch_orders,
+    // Market builders
+    build_announcement_event, build_contract_filter, parse_announcement_event,
+    fetch_announcements, discovered_market_to_contract_params,
+    // Attestation builders
+    build_attestation_event, build_attestation_filter, parse_attestation_event,
+    sign_attestation,
+    // Relay helpers
+    connect_client, publish_event,
+    // Constants
+    APP_EVENT_KIND,
+    CONTRACT_TAG, ORDER_TAG, ATTESTATION_TAG,
+    NETWORK_TAG, DEFAULT_RELAYS,
 };
