@@ -159,7 +159,9 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
     let app_handle = app.clone();
     tokio::task::spawn_blocking(move || {
         let manager = app_handle.state::<Mutex<AppStateManager>>();
-        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "wallet lock failed".to_string())?;
         let wallet = mgr
             .wallet_mut()
             .ok_or_else(|| "Wallet not initialized".to_string())?;
@@ -204,7 +206,9 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
     let app_handle = app.clone();
     tokio::task::spawn_blocking(move || {
         let manager = app_handle.state::<Mutex<AppStateManager>>();
-        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "wallet lock failed".to_string())?;
         let wallet = mgr
             .wallet_mut()
             .ok_or_else(|| "Wallet not initialized".to_string())?;

@@ -153,8 +153,8 @@ pub async fn import_nostr_nsec(
     state: tauri::State<'_, SdkState>,
     app_handle: tauri::AppHandle,
 ) -> Result<IdentityResponse, String> {
-    let secret_key = SecretKey::from_bech32(nsec.trim())
-        .map_err(|e| format!("invalid nsec: {e}"))?;
+    let secret_key =
+        SecretKey::from_bech32(nsec.trim()).map_err(|e| format!("invalid nsec: {e}"))?;
     let keys = Keys::new(secret_key);
 
     // Persist to disk
@@ -193,9 +193,7 @@ pub async fn import_nostr_nsec(
 }
 
 #[tauri::command]
-pub fn export_nostr_nsec(
-    state: tauri::State<'_, SdkState>,
-) -> Result<String, String> {
+pub fn export_nostr_nsec(state: tauri::State<'_, SdkState>) -> Result<String, String> {
     let nostr_keys = state
         .nostr_keys
         .lock()
@@ -221,8 +219,7 @@ pub async fn delete_nostr_identity(
         .map_err(|e| format!("failed to get app data dir: {e}"))?;
     let key_path = app_data_dir.join("nostr_identity.key");
     if key_path.exists() {
-        std::fs::remove_file(&key_path)
-            .map_err(|e| format!("failed to delete key file: {e}"))?;
+        std::fs::remove_file(&key_path).map_err(|e| format!("failed to delete key file: {e}"))?;
     }
 
     // Clear in-memory keys
@@ -891,8 +888,7 @@ pub async fn get_market_state(
         let chain = sdk.chain();
         let dormant_spk = contract.script_pubkey(deadcat_sdk::state::MarketState::Dormant);
         let unresolved_spk = contract.script_pubkey(deadcat_sdk::state::MarketState::Unresolved);
-        let resolved_yes_spk =
-            contract.script_pubkey(deadcat_sdk::state::MarketState::ResolvedYes);
+        let resolved_yes_spk = contract.script_pubkey(deadcat_sdk::state::MarketState::ResolvedYes);
         let resolved_no_spk = contract.script_pubkey(deadcat_sdk::state::MarketState::ResolvedNo);
 
         let dormant = chain
@@ -941,7 +937,9 @@ pub fn get_wallet_utxos(
     let mgr = state_handle
         .lock()
         .map_err(|_| "state lock failed".to_string())?;
-    let wallet = mgr.wallet().ok_or_else(|| "wallet not initialized".to_string())?;
+    let wallet = mgr
+        .wallet()
+        .ok_or_else(|| "wallet not initialized".to_string())?;
     wallet.utxos().map_err(|e| format!("{e}"))
 }
 
