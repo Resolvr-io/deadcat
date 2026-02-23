@@ -34,17 +34,39 @@ struct EncryptedWalletFile {
 
 pub struct MnemonicPersister {
     file_path: PathBuf,
+    /// Cached mnemonic from a previous successful unlock (cleared on lock).
+    cached_mnemonic: Option<String>,
 }
 
 impl MnemonicPersister {
     pub fn new(app_data_dir: &Path, network: &str) -> Self {
         Self {
             file_path: app_data_dir.join(network).join(WALLET_FILE),
+            cached_mnemonic: None,
         }
     }
 
     pub fn exists(&self) -> bool {
         self.file_path.exists()
+    }
+
+    /// Return the cached mnemonic if available (skips Argon2 on repeat unlock).
+    pub fn cached(&self) -> Option<&str> {
+        self.cached_mnemonic.as_deref()
+    }
+
+    /// Clear the cached mnemonic (call on lock).
+    pub fn clear_cache(&mut self) {
+        self.cached_mnemonic = None;
+    }
+
+    /// Remove the encrypted wallet file from disk and clear cache.
+    pub fn delete(&mut self) -> Result<(), WalletPersistError> {
+        if self.file_path.exists() {
+            std::fs::remove_file(&self.file_path)?;
+        }
+        self.cached_mnemonic = None;
+        Ok(())
     }
 
     pub fn save(&self, mnemonic: &str, password: &str) -> Result<(), WalletPersistError> {
@@ -77,7 +99,7 @@ impl MnemonicPersister {
         Ok(())
     }
 
-    pub fn load(&self, password: &str) -> Result<String, WalletPersistError> {
+    pub fn load(&mut self, password: &str) -> Result<String, WalletPersistError> {
         let contents = fs::read_to_string(&self.file_path)?;
         let file: EncryptedWalletFile = serde_json::from_str(&contents)?;
 
@@ -104,6 +126,9 @@ impl MnemonicPersister {
             .decrypt(nonce, ciphertext.as_ref())
             .map_err(|_| WalletPersistError::WrongPassword)?;
 
-        String::from_utf8(plaintext).map_err(|e| WalletPersistError::Crypto(e.to_string()))
+        let mnemonic =
+            String::from_utf8(plaintext).map_err(|e| WalletPersistError::Crypto(e.to_string()))?;
+        self.cached_mnemonic = Some(mnemonic.clone());
+        Ok(mnemonic)
     }
 }

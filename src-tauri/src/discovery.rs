@@ -306,10 +306,8 @@ pub async fn fetch_announcements(client: &Client) -> Result<Vec<DiscoveredMarket
 // Identity persistence
 // ---------------------------------------------------------------------------
 
-/// Load or generate a Nostr keypair.
-///
-/// Persists the secret key as hex in `<app_data_dir>/nostr_identity.key`.
-pub fn load_or_generate_keys(app_data_dir: &std::path::Path) -> Result<Keys, String> {
+/// Load an existing Nostr keypair from disk. Returns `None` if no key file exists.
+pub fn load_keys(app_data_dir: &std::path::Path) -> Result<Option<Keys>, String> {
     let key_path = app_data_dir.join("nostr_identity.key");
 
     if key_path.exists() {
@@ -317,18 +315,24 @@ pub fn load_or_generate_keys(app_data_dir: &std::path::Path) -> Result<Keys, Str
             .map_err(|e| format!("failed to read key file: {e}"))?;
         let secret_key = SecretKey::from_hex(hex_str.trim())
             .map_err(|e| format!("failed to parse secret key: {e}"))?;
-        Ok(Keys::new(secret_key))
+        Ok(Some(Keys::new(secret_key)))
     } else {
-        let keys = Keys::generate();
-        let secret_hex = keys.secret_key().to_secret_hex();
-        if let Some(parent) = key_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create data dir: {e}"))?;
-        }
-        std::fs::write(&key_path, secret_hex)
-            .map_err(|e| format!("failed to write key file: {e}"))?;
-        Ok(keys)
+        Ok(None)
     }
+}
+
+/// Generate a new Nostr keypair, persist to disk, and return it.
+pub fn generate_keys(app_data_dir: &std::path::Path) -> Result<Keys, String> {
+    let key_path = app_data_dir.join("nostr_identity.key");
+    let keys = Keys::generate();
+    let secret_hex = keys.secret_key().to_secret_hex();
+    if let Some(parent) = key_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create data dir: {e}"))?;
+    }
+    std::fs::write(&key_path, secret_hex)
+        .map_err(|e| format!("failed to write key file: {e}"))?;
+    Ok(keys)
 }
 
 // ---------------------------------------------------------------------------
