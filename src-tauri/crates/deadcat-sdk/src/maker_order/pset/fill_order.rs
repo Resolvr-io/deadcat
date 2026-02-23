@@ -18,6 +18,12 @@ pub struct TakerFill {
     pub receive_amount: u64,
     /// Asset ID of what the taker receives.
     pub receive_asset_id: [u8; 32],
+    /// Change destination for the taker's funding UTXO (if overfunded).
+    pub change_destination: Option<Script>,
+    /// Change amount returned to the taker.
+    pub change_amount: u64,
+    /// Asset ID of the taker's change (same as funding asset).
+    pub change_asset_id: [u8; 32],
 }
 
 /// A single maker order to be filled.
@@ -153,6 +159,18 @@ pub fn build_fill_order_pset(params: &FillOrderParams) -> Result<PartiallySigned
             &mut pset,
             explicit_txout(remainder_asset, last.remainder_amount, &covenant_spk),
         );
+    }
+
+    // Taker change outputs (for overfunded taker UTXOs)
+    for taker in &params.takers {
+        if taker.change_amount > 0 {
+            if let Some(ref change_spk) = taker.change_destination {
+                add_pset_output(
+                    &mut pset,
+                    explicit_txout(&taker.change_asset_id, taker.change_amount, change_spk),
+                );
+            }
+        }
     }
 
     // Fee output

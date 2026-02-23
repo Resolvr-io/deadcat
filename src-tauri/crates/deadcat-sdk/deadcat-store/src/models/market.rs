@@ -34,6 +34,8 @@ pub struct MarketRow {
     pub creator_pubkey: Option<Vec<u8>>,
     pub creation_txid: Option<String>,
     pub nevent: Option<String>,
+    pub nostr_event_id: Option<String>,
+    pub nostr_event_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -61,4 +63,6 @@ pub struct NewMarketRow {
     pub creator_pubkey: Option<Vec<u8>>,
     pub creation_txid: Option<String>,
     pub nevent: Option<String>,
+    pub nostr_event_id: Option<String>,
+    pub nostr_event_json: Option<String>,
 }

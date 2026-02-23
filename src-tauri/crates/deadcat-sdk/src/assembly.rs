@@ -341,7 +341,7 @@ pub fn recover_blinding_factors(
 ///
 /// The resulting transaction has the correct structure (inputs, outputs, locktime)
 /// matching what will be broadcast, but with empty witnesses.
-fn pset_to_pruning_transaction(pset: &PartiallySignedTransaction) -> Result<Transaction> {
+pub(crate) fn pset_to_pruning_transaction(pset: &PartiallySignedTransaction) -> Result<Transaction> {
     let outputs: Vec<_> = pset.outputs().iter().map(|o| o.to_txout()).collect();
 
     let mut inputs = Vec::new();
@@ -967,7 +967,7 @@ fn build_input_refs<'a>(
     refs
 }
 
-fn txout_secrets_from_unblinded(
+pub(crate) fn txout_secrets_from_unblinded(
     utxo: &UnblindedUtxo,
     expected_asset: AssetId,
 ) -> Result<lwk_wollet::elements::TxOutSecrets> {

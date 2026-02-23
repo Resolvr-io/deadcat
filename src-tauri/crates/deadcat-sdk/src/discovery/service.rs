@@ -1,0 +1,484 @@
+use std::sync::{Arc, Mutex};
+
+use nostr_sdk::prelude::*;
+use tokio::sync::broadcast;
+
+use crate::announcement::ContractAnnouncement;
+use crate::params::MarketId;
+
+use super::attestation::{
+    AttestationContent, AttestationResult, build_attestation_event, build_attestation_filter,
+    build_attestation_subscription_filter, parse_attestation_event, sign_attestation,
+};
+use super::config::DiscoveryConfig;
+use super::events::DiscoveryEvent;
+use super::market::{
+    DiscoveredMarket, build_announcement_event, build_contract_filter,
+    parse_announcement_event,
+};
+use super::store_trait::{ContractMetadataInput, DiscoveryStore};
+use super::{
+    DiscoveredOrder, OrderAnnouncement, build_order_event, build_order_filter, parse_order_event,
+    ATTESTATION_TAG, CONTRACT_TAG, ORDER_TAG,
+};
+
+/// Unified Nostr discovery service for markets, orders, and attestations.
+///
+/// Subscribes to Nostr relays, pushes real-time `DiscoveryEvent` notifications
+/// via `tokio::broadcast`, and optionally persists discovered data to a shared store.
+pub struct DiscoveryService<S: DiscoveryStore = NoopStore> {
+    client: Client,
+    keys: Keys,
+    config: DiscoveryConfig,
+    store: Option<Arc<Mutex<S>>>,
+    tx: broadcast::Sender<DiscoveryEvent>,
+}
+
+/// A no-op store implementation for when persistence is not needed.
+pub struct NoopStore;
+
+impl DiscoveryStore for NoopStore {
+    fn ingest_market(
+        &mut self,
+        _params: &crate::params::ContractParams,
+        _meta: Option<&ContractMetadataInput>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn ingest_maker_order(
+        &mut self,
+        _params: &crate::maker_order::params::MakerOrderParams,
+        _maker_pubkey: Option<&[u8; 32]>,
+        _nonce: Option<&[u8; 32]>,
+        _nostr_event_id: Option<&str>,
+        _nostr_event_json: Option<&str>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+impl DiscoveryService<NoopStore> {
+    /// Create a new `DiscoveryService` without store persistence.
+    ///
+    /// Returns the service and a broadcast receiver for discovery events.
+    pub fn new(
+        keys: Keys,
+        config: DiscoveryConfig,
+    ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
+        let (tx, rx) = broadcast::channel(256);
+        let client = Client::new(keys.clone());
+        (
+            Self {
+                client,
+                keys,
+                config,
+                store: None,
+                tx,
+            },
+            rx,
+        )
+    }
+}
+
+impl<S: DiscoveryStore> DiscoveryService<S> {
+    /// Create a new `DiscoveryService` with store persistence.
+    ///
+    /// Returns the service and a broadcast receiver for discovery events.
+    pub fn with_store(
+        keys: Keys,
+        store: Arc<Mutex<S>>,
+        config: DiscoveryConfig,
+    ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
+        let (tx, rx) = broadcast::channel(256);
+        let client = Client::new(keys.clone());
+        (
+            Self {
+                client,
+                keys,
+                config,
+                store: Some(store),
+                tx,
+            },
+            rx,
+        )
+    }
+
+    /// Get an additional broadcast receiver for discovery events.
+    pub fn subscribe(&self) -> broadcast::Receiver<DiscoveryEvent> {
+        self.tx.subscribe()
+    }
+
+    /// Connect to configured relays and start the background subscription loop.
+    ///
+    /// Spawns a tokio task that subscribes to market + order filters and
+    /// processes incoming events. Returns a `JoinHandle` the caller can
+    /// abort to stop the loop.
+    pub async fn start(&self) -> Result<tokio::task::JoinHandle<()>, String> {
+        // Add relays and connect
+        for url in &self.config.relays {
+            self.client
+                .add_relay(url.as_str())
+                .await
+                .map_err(|e| format!("failed to add relay {url}: {e}"))?;
+        }
+        self.client.connect().await;
+
+        let client = self.client.clone();
+        let store = self.store.clone();
+        let tx = self.tx.clone();
+
+        let handle = tokio::spawn(async move {
+            run_subscription_loop(client, store, tx).await;
+        });
+
+        Ok(handle)
+    }
+
+    /// One-shot: fetch all markets from relays, optionally persist, and return.
+    pub async fn fetch_markets(&self) -> Result<Vec<DiscoveredMarket>, String> {
+        self.ensure_connected().await?;
+
+        let filter = build_contract_filter();
+        let events = self
+            .client
+            .fetch_events(vec![filter], self.config.fetch_timeout)
+            .await
+            .map_err(|e| format!("failed to fetch events: {e}"))?;
+
+        let mut markets = Vec::new();
+        for event in events.iter() {
+            match parse_announcement_event(event) {
+                Ok(mut market) => {
+                    market.nostr_event_json = serde_json::to_string(event).ok();
+                    self.persist_market(&market);
+                    markets.push(market);
+                }
+                Err(e) => {
+                    log::warn!("skipping unparseable announcement {}: {e}", event.id);
+                }
+            }
+        }
+
+        Ok(markets)
+    }
+
+    /// One-shot: fetch orders from relays, optionally for a specific market.
+    pub async fn fetch_orders(
+        &self,
+        market_id_hex: Option<&str>,
+    ) -> Result<Vec<DiscoveredOrder>, String> {
+        self.ensure_connected().await?;
+
+        let filter = build_order_filter(market_id_hex);
+        let events = self
+            .client
+            .fetch_events(vec![filter], self.config.fetch_timeout)
+            .await
+            .map_err(|e| format!("failed to fetch order events: {e}"))?;
+
+        let mut orders = Vec::new();
+        for event in events.iter() {
+            match parse_order_event(event) {
+                Ok(mut order) => {
+                    order.nostr_event_json = serde_json::to_string(event).ok();
+                    self.persist_order(&order);
+                    orders.push(order);
+                }
+                Err(e) => {
+                    log::warn!("skipping unparseable order event {}: {e}", event.id);
+                }
+            }
+        }
+
+        Ok(orders)
+    }
+
+    /// One-shot: fetch attestation for a specific market.
+    pub async fn fetch_attestation(
+        &self,
+        market_id_hex: &str,
+    ) -> Result<Option<AttestationContent>, String> {
+        self.ensure_connected().await?;
+
+        let filter = build_attestation_filter(market_id_hex);
+        let events = self
+            .client
+            .fetch_events(vec![filter], self.config.fetch_timeout)
+            .await
+            .map_err(|e| format!("failed to fetch attestation events: {e}"))?;
+
+        match events.iter().next() {
+            Some(event) => {
+                let content = parse_attestation_event(event)?;
+                Ok(Some(content))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Publish a market announcement to relays.
+    pub async fn announce_market(
+        &self,
+        announcement: &ContractAnnouncement,
+    ) -> Result<EventId, String> {
+        self.ensure_connected().await?;
+
+        let event = build_announcement_event(&self.keys, announcement)?;
+        let output = self
+            .client
+            .send_event(event)
+            .await
+            .map_err(|e| format!("failed to send event: {e}"))?;
+        Ok(*output.id())
+    }
+
+    /// Publish a limit order announcement to relays.
+    pub async fn announce_order(
+        &self,
+        announcement: &OrderAnnouncement,
+    ) -> Result<EventId, String> {
+        self.ensure_connected().await?;
+
+        let event = build_order_event(&self.keys, announcement)?;
+        let output = self
+            .client
+            .send_event(event)
+            .await
+            .map_err(|e| format!("failed to send order event: {e}"))?;
+        Ok(*output.id())
+    }
+
+    /// Sign and publish an oracle attestation.
+    pub async fn publish_attestation(
+        &self,
+        market_id: &MarketId,
+        announcement_event_id: &str,
+        outcome_yes: bool,
+    ) -> Result<AttestationResult, String> {
+        self.ensure_connected().await?;
+
+        let market_id_hex = hex::encode(market_id.as_bytes());
+
+        let (sig_bytes, msg_bytes) = sign_attestation(&self.keys, market_id, outcome_yes)?;
+        let sig_hex = hex::encode(sig_bytes);
+        let msg_hex = hex::encode(msg_bytes);
+
+        let event = build_attestation_event(
+            &self.keys,
+            &market_id_hex,
+            announcement_event_id,
+            outcome_yes,
+            &sig_hex,
+            &msg_hex,
+        )?;
+
+        let output = self
+            .client
+            .send_event(event)
+            .await
+            .map_err(|e| format!("failed to send attestation event: {e}"))?;
+
+        Ok(AttestationResult {
+            market_id: market_id_hex,
+            outcome_yes,
+            signature_hex: sig_hex,
+            nostr_event_id: output.id().to_hex(),
+        })
+    }
+
+    /// Get a reference to the underlying Nostr client.
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
+    /// Get a reference to the keys.
+    pub fn keys(&self) -> &Keys {
+        &self.keys
+    }
+
+    // --- internal helpers ---
+
+    async fn ensure_connected(&self) -> Result<(), String> {
+        if self.client.relays().await.is_empty() {
+            for url in &self.config.relays {
+                self.client
+                    .add_relay(url.as_str())
+                    .await
+                    .map_err(|e| format!("failed to add relay {url}: {e}"))?;
+            }
+            self.client.connect().await;
+        }
+        Ok(())
+    }
+
+    fn persist_market(&self, market: &DiscoveredMarket) {
+        persist_market_to_store(&self.store, market);
+    }
+
+    fn persist_order(&self, order: &DiscoveredOrder) {
+        persist_order_to_store(&self.store, order);
+    }
+}
+
+/// Convert a DiscoveredMarket into ContractParams for store ingestion.
+pub fn discovered_market_to_contract_params(
+    m: &DiscoveredMarket,
+) -> Result<crate::params::ContractParams, String> {
+    let decode32 = |hex_str: &str, name: &str| -> Result<[u8; 32], String> {
+        let bytes = hex::decode(hex_str).map_err(|e| format!("{name}: hex decode: {e}"))?;
+        bytes
+            .try_into()
+            .map_err(|_| format!("{name}: expected 32 bytes"))
+    };
+
+    Ok(crate::params::ContractParams {
+        oracle_public_key: decode32(&m.oracle_pubkey, "oracle_pubkey")?,
+        collateral_asset_id: decode32(&m.collateral_asset_id, "collateral_asset_id")?,
+        yes_token_asset: decode32(&m.yes_asset_id, "yes_asset_id")?,
+        no_token_asset: decode32(&m.no_asset_id, "no_asset_id")?,
+        yes_reissuance_token: decode32(&m.yes_reissuance_token, "yes_reissuance_token")?,
+        no_reissuance_token: decode32(&m.no_reissuance_token, "no_reissuance_token")?,
+        collateral_per_token: m.cpt_sats,
+        expiry_time: m.expiry_height,
+    })
+}
+
+/// Convert a DiscoveredOrder into MakerOrderParams for store ingestion.
+fn discovered_order_to_maker_params(
+    o: &DiscoveredOrder,
+) -> Result<crate::maker_order::params::MakerOrderParams, String> {
+    let decode32 = |hex_str: &str, name: &str| -> Result<[u8; 32], String> {
+        let bytes = hex::decode(hex_str).map_err(|e| format!("{name}: hex decode: {e}"))?;
+        bytes
+            .try_into()
+            .map_err(|_| format!("{name}: expected 32 bytes"))
+    };
+
+    let direction = match o.direction.as_str() {
+        "sell-base" => crate::maker_order::params::OrderDirection::SellBase,
+        "sell-quote" => crate::maker_order::params::OrderDirection::SellQuote,
+        other => return Err(format!("unknown direction: {other}")),
+    };
+
+    let maker_pubkey = decode32(&o.maker_base_pubkey, "maker_base_pubkey")?;
+
+    Ok(crate::maker_order::params::MakerOrderParams {
+        base_asset_id: decode32(&o.base_asset_id, "base_asset_id")?,
+        quote_asset_id: decode32(&o.quote_asset_id, "quote_asset_id")?,
+        price: o.price,
+        min_fill_lots: o.min_fill_lots,
+        min_remainder_lots: o.min_remainder_lots,
+        direction,
+        maker_receive_spk_hash: decode32(&o.maker_receive_spk_hash, "maker_receive_spk_hash")?,
+        cosigner_pubkey: decode32(&o.cosigner_pubkey, "cosigner_pubkey")?,
+        maker_pubkey,
+    })
+}
+
+/// Background subscription loop that listens for Nostr events and dispatches them.
+async fn run_subscription_loop<S: DiscoveryStore>(
+    client: Client,
+    store: Option<Arc<Mutex<S>>>,
+    tx: broadcast::Sender<DiscoveryEvent>,
+) {
+    // Set up the notification receiver BEFORE subscribing so we don't miss events
+    let mut notifications = client.notifications();
+
+    let market_filter = build_contract_filter();
+    let order_filter = build_order_filter(None);
+    let attestation_filter = build_attestation_subscription_filter();
+
+    if let Err(e) = client
+        .subscribe(vec![market_filter, order_filter, attestation_filter], None)
+        .await
+    {
+        log::error!("failed to subscribe: {e}");
+        return;
+    }
+
+    while let Ok(notification) = notifications.recv().await {
+        if let RelayPoolNotification::Event { event, .. } = notification {
+            let hashtags: Vec<String> = event
+                .tags
+                .iter()
+                .filter_map(|t| {
+                    let tag_vec = t.as_slice();
+                    if tag_vec.len() >= 2 && tag_vec[0] == "t" {
+                        Some(tag_vec[1].to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if hashtags.iter().any(|t| t == CONTRACT_TAG) {
+                if let Ok(mut market) = parse_announcement_event(&event) {
+                    market.nostr_event_json = serde_json::to_string(&*event).ok();
+                    persist_market_to_store(&store, &market);
+                    let _ = tx.send(DiscoveryEvent::MarketDiscovered(market));
+                }
+            } else if hashtags.iter().any(|t| t == ORDER_TAG) {
+                if let Ok(mut order) = parse_order_event(&event) {
+                    order.nostr_event_json = serde_json::to_string(&*event).ok();
+                    persist_order_to_store(&store, &order);
+                    let _ = tx.send(DiscoveryEvent::OrderDiscovered(order));
+                }
+            } else if hashtags.iter().any(|t| t == ATTESTATION_TAG) {
+                if let Ok(attestation) = parse_attestation_event(&event) {
+                    let _ = tx.send(DiscoveryEvent::AttestationDiscovered(attestation));
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn persist_market_to_store<S: DiscoveryStore>(
+    store: &Option<Arc<Mutex<S>>>,
+    market: &DiscoveredMarket,
+) {
+    let Some(store) = store else { return };
+    let Ok(params) = discovered_market_to_contract_params(market) else {
+        return;
+    };
+    let meta = ContractMetadataInput {
+        question: Some(market.question.clone()),
+        description: Some(market.description.clone()),
+        category: Some(market.category.clone()),
+        resolution_source: Some(market.resolution_source.clone()),
+        starting_yes_price: Some(market.starting_yes_price),
+        creator_pubkey: hex::decode(&market.creator_pubkey).ok(),
+        creation_txid: market.creation_txid.clone(),
+        nevent: Some(market.nevent.clone()),
+        nostr_event_id: Some(market.id.clone()),
+        nostr_event_json: market.nostr_event_json.clone(),
+    };
+    if let Ok(mut s) = store.lock() {
+        let _ = s.ingest_market(&params, Some(&meta));
+    }
+}
+
+fn persist_order_to_store<S: DiscoveryStore>(
+    store: &Option<Arc<Mutex<S>>>,
+    order: &DiscoveredOrder,
+) {
+    let Some(store) = store else { return };
+    let Ok(params) = discovered_order_to_maker_params(order) else {
+        return;
+    };
+    let maker_pubkey = hex::decode(&order.maker_base_pubkey)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+    let nonce = hex::decode(&order.order_nonce)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+    if let Ok(mut s) = store.lock() {
+        let _ = s.ingest_maker_order(
+            &params,
+            maker_pubkey.as_ref(),
+            nonce.as_ref(),
+            Some(&order.id),
+            order.nostr_event_json.as_deref(),
+        );
+    }
+}

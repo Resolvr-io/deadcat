@@ -10,7 +10,8 @@ use crate::error::StoreError;
 use crate::models::{
     MakerOrderRow, MarketRow, NewMakerOrderRow, NewMarketRow, NewUtxoRow, UtxoRow,
 };
-use crate::store::{ContractMetadataInput, IssuanceData, MakerOrderInfo, MarketInfo, OrderStatus};
+use crate::store::{IssuanceData, MakerOrderInfo, MarketInfo, OrderStatus};
+use deadcat_sdk::discovery::ContractMetadataInput;
 
 pub fn vec_to_array32(v: &[u8], field: &str) -> std::result::Result<[u8; 32], StoreError> {
     v.try_into().map_err(|_| {
@@ -112,6 +113,8 @@ impl TryFrom<&MarketRow> for MarketInfo {
             creator_pubkey: row.creator_pubkey.clone(),
             creation_txid: row.creation_txid.clone(),
             nevent: row.nevent.clone(),
+            nostr_event_id: row.nostr_event_id.clone(),
+            nostr_event_json: row.nostr_event_json.clone(),
         })
     }
 }
@@ -159,6 +162,8 @@ pub fn new_market_row(
         creator_pubkey: metadata.and_then(|m| m.creator_pubkey.clone()),
         creation_txid: metadata.and_then(|m| m.creation_txid.clone()),
         nevent: metadata.and_then(|m| m.nevent.clone()),
+        nostr_event_id: metadata.and_then(|m| m.nostr_event_id.clone()),
+        nostr_event_json: metadata.and_then(|m| m.nostr_event_json.clone()),
     }
 }
 
@@ -168,6 +173,12 @@ impl TryFrom<&MakerOrderRow> for MakerOrderParams {
     type Error = StoreError;
 
     fn try_from(row: &MakerOrderRow) -> std::result::Result<Self, Self::Error> {
+        let maker_pubkey = row
+            .maker_base_pubkey
+            .as_ref()
+            .map(|v| vec_to_array32(v, "maker_base_pubkey"))
+            .transpose()?
+            .unwrap_or([0u8; 32]);
         Ok(MakerOrderParams {
             base_asset_id: vec_to_array32(&row.base_asset_id, "base_asset_id")?,
             quote_asset_id: vec_to_array32(&row.quote_asset_id, "quote_asset_id")?,
@@ -180,6 +191,7 @@ impl TryFrom<&MakerOrderRow> for MakerOrderParams {
                 "maker_receive_spk_hash",
             )?,
             cosigner_pubkey: vec_to_array32(&row.cosigner_pubkey, "cosigner_pubkey")?,
+            maker_pubkey,
         })
     }
 }
@@ -203,6 +215,8 @@ impl TryFrom<&MakerOrderRow> for MakerOrderInfo {
                 .as_ref()
                 .map(|v| vec_to_array32(v, "order_nonce"))
                 .transpose()?,
+            nostr_event_id: row.nostr_event_id.clone(),
+            nostr_event_json: row.nostr_event_json.clone(),
             created_at: row.created_at.clone(),
             updated_at: row.updated_at.clone(),
         })
@@ -216,6 +230,8 @@ pub fn new_maker_order_row(
     compiled: &CompiledMakerOrder,
     maker_base_pubkey: Option<&[u8; 32]>,
     order_nonce: Option<&[u8; 32]>,
+    nostr_event_id: Option<&str>,
+    nostr_event_json: Option<&str>,
 ) -> NewMakerOrderRow {
     let covenant_spk = maker_base_pubkey.map(|pk| compiled.script_pubkey(pk).as_bytes().to_vec());
 
@@ -242,6 +258,8 @@ pub fn new_maker_order_row(
         covenant_spk,
         order_nonce: order_nonce.map(|n| n.to_vec()),
         maker_receive_spk,
+        nostr_event_id: nostr_event_id.map(|s| s.to_string()),
+        nostr_event_json: nostr_event_json.map(|s| s.to_string()),
     }
 }
 
