@@ -20,6 +20,7 @@ pub struct SdkState {
     pub wallet_store: wallet_store::WalletStore,
     pub nostr_keys: Mutex<Option<nostr_sdk::Keys>>,
     pub nostr_client: tokio::sync::Mutex<Option<nostr_sdk::Client>>,
+    pub relay_list: Mutex<Vec<String>>,
 }
 
 impl Default for SdkState {
@@ -28,6 +29,12 @@ impl Default for SdkState {
             wallet_store: wallet_store::WalletStore::default(),
             nostr_keys: Mutex::new(None),
             nostr_client: tokio::sync::Mutex::new(None),
+            relay_list: Mutex::new(
+                discovery::DEFAULT_RELAYS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
         }
     }
 }
@@ -729,6 +736,16 @@ pub fn run() {
             commands::discover_contracts,
             commands::publish_contract,
             commands::oracle_attest,
+            commands::backup_mnemonic_to_nostr,
+            commands::restore_mnemonic_from_nostr,
+            commands::check_nostr_backup,
+            commands::delete_nostr_backup,
+            commands::get_relay_list,
+            commands::set_relay_list,
+            commands::fetch_nip65_relay_list,
+            commands::add_relay,
+            commands::remove_relay,
+            commands::fetch_nostr_profile,
             commands::create_contract_onchain,
             commands::issue_tokens,
             commands::cancel_tokens,
