@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import QRCode from "qrcode";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
+const DEV_MODE = import.meta.env.DEV;
 
 // ── Deadcat loader SVG markup (reused for overlay) ──
 
@@ -11,16 +12,17 @@ const LOADER_CAT_SVG = `<svg viewBox="0 0 260 267" fill="none" xmlns="http://www
 
 const LOADER_BAG_SVG = `<svg viewBox="0 0 298 376" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M11.897 1.04645L36.1423 14.835L60.3877 1.04645C62.8491 -0.348818 65.8439 -0.348818 68.3053 1.04645L92.5507 14.835L116.796 1.04645C119.257 -0.348818 122.252 -0.348818 124.714 1.04645L148.959 14.835L173.204 1.04645C175.666 -0.348818 178.661 -0.348818 181.122 1.04645L205.367 14.835L229.613 1.04645C232.074 -0.348818 235.069 -0.348818 237.53 1.04645L261.776 14.835L286.021 1.04645C288.523 -0.348818 291.559 -0.348818 294.021 1.08749C296.482 2.5238 298 5.1502 298 8.02282V350.973C298 364.228 287.252 375.02 273.96 375.02H24.0402C10.7894 375.02 0 364.269 0 350.973V8.02282C0 5.19123 1.5179 2.56484 3.97935 1.12853C6.4408 -0.307781 9.4766 -0.307781 11.9791 1.08749H11.9381L11.897 1.04645Z" fill="#1e293b"/></svg>`;
 
-function loaderHtml(): string {
-  return `<div class="deadcat-loader"><div class="deadcat-loader-scene"><div class="deadcat-loader-clip"><div class="deadcat-loader-cat">${LOADER_CAT_SVG}</div></div><div class="deadcat-loader-bag">${LOADER_BAG_SVG}</div></div></div>`;
+function loaderHtml(message?: string): string {
+  const msgHtml = message ? `<p class="mt-4 text-sm text-slate-300 animate-pulse">${message}</p>` : "";
+  return `<div class="deadcat-loader"><div class="deadcat-loader-scene"><div class="deadcat-loader-clip"><div class="deadcat-loader-cat">${LOADER_CAT_SVG}</div></div><div class="deadcat-loader-bag">${LOADER_BAG_SVG}</div></div>${msgHtml}</div>`;
 }
 
-function showOverlayLoader(): void {
+function showOverlayLoader(message?: string): void {
   if (document.getElementById("deadcat-overlay")) return;
   const el = document.createElement("div");
   el.id = "deadcat-overlay";
   el.className = "deadcat-overlay";
-  el.innerHTML = loaderHtml();
+  el.innerHTML = loaderHtml(message);
   document.body.appendChild(el);
 }
 
@@ -29,6 +31,15 @@ function hideOverlayLoader(): void {
   if (!el) return;
   el.classList.add("fade-out");
   el.addEventListener("transitionend", () => el.remove(), { once: true });
+}
+
+function updateOverlayMessage(message: string): void {
+  const el = document.getElementById("deadcat-overlay");
+  if (!el) return;
+  const msgEl = el.querySelector("p");
+  if (msgEl) {
+    msgEl.textContent = message;
+  }
 }
 
 type NavCategory =
@@ -187,7 +198,6 @@ type PathAvailability = {
 
 const EXECUTION_FEE_RATE = 0.01;
 const WIN_FEE_RATE = 0.02;
-const LARGE_ORDER_SATS_GUARDRAIL = 10000;
 
 const categories: NavCategory[] = [
   "Trending",
@@ -372,8 +382,35 @@ const state: {
   settingsOpen: boolean;
   logoutOpen: boolean;
   nostrPubkey: string | null;
+  nostrNpub: string | null;
+  nostrNsecRevealed: string | null;
+  nostrImportNsec: string;
+  nostrImporting: boolean;
+  nostrReplacePrompt: boolean;
+  nostrReplacePanel: boolean;
+  nostrReplaceConfirm: string;
+  walletDeletePrompt: boolean;
+  walletDeleteConfirm: string;
+  devResetPrompt: boolean;
+  devResetConfirm: string;
+  // Onboarding
+  onboardingStep: "nostr" | "wallet" | null;
+  onboardingNostrMode: "generate" | "import";
+  onboardingNostrNsec: string;
+  onboardingNostrGeneratedNsec: string;
+  onboardingNsecRevealed: boolean;
+  onboardingNostrDone: boolean;
+  onboardingWalletMode: "create" | "restore";
+  onboardingWalletPassword: string;
+  onboardingWalletMnemonic: string;
+  onboardingError: string;
+  onboardingLoading: boolean;
   marketCreating: boolean;
   marketsLoading: boolean;
+  lastAttestationSig: string | null;
+  lastAttestationOutcome: boolean | null;
+  lastAttestationMarketId: string | null;
+  resolutionExecuting: boolean;
 } = {
   view: "home",
   activeCategory: "Trending",
@@ -449,19 +486,45 @@ const state: {
   settingsOpen: false,
   logoutOpen: false,
   nostrPubkey: null,
+  nostrNpub: null,
+  nostrNsecRevealed: null,
+  nostrImportNsec: "",
+  nostrImporting: false,
+  nostrReplacePrompt: false,
+  nostrReplacePanel: false,
+  nostrReplaceConfirm: "",
+  walletDeletePrompt: false,
+  walletDeleteConfirm: "",
+  devResetPrompt: false,
+  devResetConfirm: "",
+  onboardingStep: null,
+  onboardingNostrMode: "generate",
+  onboardingNostrNsec: "",
+  onboardingNostrGeneratedNsec: "",
+  onboardingNsecRevealed: false,
+  onboardingNostrDone: false,
+  onboardingWalletMode: "create",
+  onboardingWalletPassword: "",
+  onboardingWalletMnemonic: "",
+  onboardingError: "",
+  onboardingLoading: false,
   marketsLoading: true,
+  lastAttestationSig: null,
+  lastAttestationOutcome: null,
+  lastAttestationMarketId: null,
+  resolutionExecuting: false,
 };
 
 // ── Toast notifications ──────────────────────────────────────────────
 function showToast(message: string, kind: "success" | "error" | "info" = "info") {
   const el = document.createElement("div");
-  const bg =
+  const style =
     kind === "success"
-      ? "bg-emerald-600"
+      ? "border-emerald-500/50 text-emerald-300"
       : kind === "error"
-        ? "bg-red-600"
-        : "bg-slate-700";
-  el.className = `fixed bottom-6 left-1/2 -translate-x-1/2 z-[999] max-w-lg w-[90vw] px-4 py-3 rounded-lg ${bg} text-white text-sm shadow-lg transition-opacity duration-300`;
+        ? "border-red-500/50 text-red-300"
+        : "border-slate-600 text-slate-300";
+  el.className = `fixed bottom-6 left-1/2 -translate-x-1/2 z-[999] max-w-lg w-[90vw] px-4 py-3 rounded-lg border bg-slate-950 ${style} text-sm shadow-lg transition-opacity duration-300`;
   el.style.opacity = "0";
   el.style.userSelect = "text";
   el.style.wordBreak = "break-all";
@@ -555,10 +618,19 @@ function satsToFiatStr(sats: number): string {
 }
 
 function stateLabel(value: CovenantState): string {
-  if (value === 0) return "UNINITIALIZED";
+  if (value === 0) return "DORMANT";
   if (value === 1) return "UNRESOLVED";
-  if (value === 2) return "RESOLVED_YES";
-  return "RESOLVED_NO";
+  if (value === 2) return "RESOLVED YES";
+  return "RESOLVED NO";
+}
+
+function stateBadge(value: CovenantState): string {
+  const label = stateLabel(value);
+  const colors = value === 0 ? "bg-slate-600/30 text-slate-300"
+    : value === 1 ? "bg-emerald-500/20 text-emerald-300"
+    : value === 2 ? "bg-emerald-500/30 text-emerald-200"
+    : "bg-rose-500/30 text-rose-200";
+  return `<span class="rounded-full px-2.5 py-0.5 text-xs font-medium ${colors}">${label}</span>`;
 }
 
 function isExpired(market: Market): boolean {
@@ -931,8 +1003,15 @@ function renderTopShell(): string {
               <button data-action="toggle-user-menu" class="flex h-9 w-9 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200">
                 <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
               </button>
-              ${state.userMenuOpen ? `<div class="absolute right-0 top-full z-50 mt-2 w-48 rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
-                <div class="px-3 pb-1 pt-3">
+              ${state.userMenuOpen ? `<div class="absolute right-0 top-full z-50 mt-2 w-64 rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
+                ${state.nostrNpub ? `<div class="px-3 pb-1 pt-3">
+                  <div class="mb-1.5 text-[11px] text-slate-500">Nostr Publishing ID</div>
+                  <button data-action="copy-nostr-npub" class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-slate-800" title="Click to copy npub">
+                    <span class="mono min-w-0 truncate text-xs text-slate-300">${state.nostrNpub}</span>
+                    <svg class="h-3.5 w-3.5 shrink-0 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </button>
+                </div>` : ""}
+                <div class="px-3 pb-1 ${state.nostrNpub ? "pt-1 border-t border-slate-800" : "pt-3"}">
                   <div class="mb-1.5 text-[11px] text-slate-500">Display currency</div>
                   <div class="grid grid-cols-3 gap-1">
                     ${baseCurrencyOptions.map(c => `<button data-action="set-currency" data-currency="${c}" class="rounded-md px-2 py-1 text-xs transition ${c === state.baseCurrency ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"}">${c}</button>`).join("")}
@@ -950,7 +1029,6 @@ function renderTopShell(): string {
                 </div>
               </div>` : ""}
             </div>
-            ${state.nostrPubkey ? `<span class="hidden whitespace-nowrap rounded-full border border-slate-700 px-3 py-2 text-xs text-slate-400 md:inline-block" title="${state.nostrPubkey}">${state.nostrPubkey.slice(0, 8)}...</span>` : ""}
           </div>
         </div>
       </div>
@@ -989,19 +1067,129 @@ function renderTopShell(): string {
         <p class="mt-4 text-sm text-slate-400">Help content coming soon.</p>
       </div>
     </div>` : ""}
-    ${state.settingsOpen ? `<div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
-      <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-8">
+    ${state.settingsOpen ? `<div class="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/80 backdrop-blur-sm py-8">
+      <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-8 my-auto">
+        ${state.nostrReplacePanel ? `
+        <div class="flex items-center justify-between">
+          <button data-action="nostr-replace-back" class="flex items-center gap-1 text-sm text-slate-400 hover:text-slate-200 transition">
+            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+            Back
+          </button>
+          <button data-action="close-settings" class="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200">
+            <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="mt-5 space-y-5">
+          <div>
+            <p class="text-xs font-medium uppercase tracking-wider text-slate-500">${state.nostrNpub ? "Replace Nostr Keys" : "Set Up Nostr Identity"}</p>
+            <p class="mt-1 text-xs text-slate-400">${state.nostrNpub ? "Your current identity will be permanently deleted. Choose how to set up your new identity." : "Import an existing key or generate a new one."}</p>
+          </div>
+          <div class="space-y-3">
+            <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Import existing nsec</p>
+            <div class="flex items-center gap-2">
+              <input id="nostr-import-nsec" type="password" value="${state.nostrImportNsec}" placeholder="nsec1..." class="h-9 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2 mono" />
+              <button data-action="import-nostr-nsec" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition" ${state.nostrImporting ? "disabled" : ""}>${state.nostrImporting ? "Importing..." : "Import"}</button>
+            </div>
+          </div>
+          <div class="border-t border-slate-800 pt-4 space-y-3">
+            <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Or generate a fresh keypair</p>
+            <button data-action="generate-new-nostr-key" class="w-full rounded-lg bg-emerald-400 px-4 py-2.5 text-sm font-medium text-slate-950 hover:bg-emerald-300 transition">Generate New Keypair</button>
+          </div>
+        </div>
+        ` : `
         <div class="flex items-center justify-between">
           <h2 class="text-lg font-medium text-slate-100">Settings</h2>
           <button data-action="close-settings" class="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200">
             <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
           </button>
         </div>
-        <p class="mt-4 text-sm text-slate-400">Settings content coming soon.</p>
-        <div class="mt-6 border-t border-slate-800 pt-4">
-          <p class="text-xs font-medium uppercase tracking-wider text-slate-500">Dev</p>
-          <button data-action="dev-restart" class="mt-2 rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition">Restart App</button>
+        <div class="mt-5 space-y-5">
+          <div>
+            <p class="text-xs font-medium uppercase tracking-wider text-slate-500">Nostr Publishing Keys</p>
+            <p class="mt-1 text-xs text-slate-500">Used to publish markets and oracle attestations on Nostr.</p>
+            <div class="mt-3 space-y-2">
+              <div class="flex items-center gap-2">
+                <div class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
+                  <div class="text-[10px] text-slate-500">npub (public)</div>
+                  <div class="mono truncate text-xs text-slate-300">${state.nostrNpub ?? "Not initialized"}</div>
+                </div>
+                ${state.nostrNpub ? `<button data-action="copy-nostr-npub" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition">Copy</button>` : ""}
+              </div>
+              ${state.nostrNpub ? `<div class="flex items-center gap-2">
+                <div class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
+                  <div class="text-[10px] text-slate-500">nsec (secret)</div>
+                  ${state.nostrNsecRevealed
+                    ? `<div class="mono truncate text-xs text-rose-300">${state.nostrNsecRevealed}</div>`
+                    : `<div class="text-xs text-slate-500">Hidden</div>`}
+                </div>
+                ${state.nostrNsecRevealed
+                  ? `<button data-action="copy-nostr-nsec" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition">Copy</button>`
+                  : `<button data-action="reveal-nostr-nsec" class="shrink-0 rounded-lg border border-amber-700/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-300 hover:bg-amber-900/30 transition">Reveal</button>`}
+              </div>` : ""}
+            </div>
+            ${state.nostrNpub ? `<div class="mt-2 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2">
+              <p class="text-[11px] text-amber-300/90">Back up your nsec in a safe place — if lost, you cannot resolve markets you created.</p>
+            </div>` : ""}
+            ${!state.nostrNpub
+              ? `<div class="mt-3 space-y-3">
+                  <div>
+                    <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Import existing nsec</p>
+                    <div class="mt-1 flex items-center gap-2">
+                      <input id="nostr-import-nsec" type="password" value="${state.nostrImportNsec}" placeholder="nsec1..." class="h-9 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2 mono" />
+                      <button data-action="import-nostr-nsec" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition" ${state.nostrImporting ? "disabled" : ""}>${state.nostrImporting ? "Importing..." : "Import"}</button>
+                    </div>
+                  </div>
+                  <div class="border-t border-slate-800 pt-3">
+                    <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Or generate a fresh keypair</p>
+                    <button data-action="generate-new-nostr-key" class="mt-1 w-full rounded-lg bg-emerald-400 px-4 py-2.5 text-sm font-medium text-slate-950 hover:bg-emerald-300 transition">Generate New Keypair</button>
+                  </div>
+                </div>`
+              : state.nostrReplacePrompt
+                ? `<div class="mt-3 rounded-lg border border-rose-700/40 bg-rose-950/20 p-3 space-y-2">
+                    <p class="text-[11px] text-rose-300">This will permanently erase your current Nostr identity. Type <strong>DELETE</strong> to confirm.</p>
+                    <div class="flex items-center gap-2">
+                      <input id="nostr-replace-confirm" type="text" value="${state.nostrReplaceConfirm}" placeholder="Type DELETE" class="h-9 min-w-0 flex-1 rounded-lg border border-rose-700/40 bg-slate-900 px-3 text-xs text-rose-300 outline-none ring-rose-400 transition focus:ring-2 uppercase" autocomplete="off" />
+                      <button data-action="nostr-replace-confirm" class="shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${state.nostrReplaceConfirm.trim().toUpperCase() === "DELETE" ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}" ${state.nostrReplaceConfirm.trim().toUpperCase() !== "DELETE" ? "disabled" : ""}>Continue</button>
+                      <button data-action="nostr-replace-cancel" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 transition">Cancel</button>
+                    </div>
+                  </div>`
+                : `<button data-action="nostr-replace-start" class="mt-3 w-full rounded-lg border border-rose-700/40 px-4 py-2 text-xs text-rose-400 hover:bg-rose-900/20 transition">Replace Nostr Keys</button>`}
+          </div>
+          <div class="border-t border-slate-800 pt-4">
+            <p class="text-xs font-medium uppercase tracking-wider text-slate-500">Wallet</p>
+            ${state.walletStatus === "not_created"
+              ? `<p class="mt-1 text-xs text-slate-500">No wallet configured on this device.</p>
+                 <button data-action="open-wallet" class="mt-2 w-full rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 transition">Set Up Wallet</button>`
+              : `<p class="mt-1 text-xs text-slate-500">Remove the current wallet from this device. You can recreate or restore from a recovery phrase.</p>
+                ${state.walletDeletePrompt
+                  ? `<div class="mt-2 rounded-lg border border-rose-700/40 bg-rose-950/20 p-3 space-y-2">
+                      <p class="text-[11px] text-rose-300">This will permanently remove your wallet. Type <strong>DELETE</strong> to confirm.</p>
+                      <div class="flex items-center gap-2">
+                        <input id="wallet-delete-confirm" type="text" value="${state.walletDeleteConfirm}" placeholder="Type DELETE" class="h-9 min-w-0 flex-1 rounded-lg border border-rose-700/40 bg-slate-900 px-3 text-xs text-rose-300 outline-none ring-rose-400 transition focus:ring-2 uppercase" autocomplete="off" />
+                        <button data-action="wallet-delete-confirm" class="shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${state.walletDeleteConfirm.trim().toUpperCase() === "DELETE" ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}" ${state.walletDeleteConfirm.trim().toUpperCase() !== "DELETE" ? "disabled" : ""}>Continue</button>
+                        <button data-action="wallet-delete-cancel" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 transition">Cancel</button>
+                      </div>
+                    </div>`
+                  : `<button data-action="wallet-delete-start" class="mt-2 w-full rounded-lg border border-rose-700/40 px-4 py-2 text-xs text-rose-400 hover:bg-rose-900/20 transition">Remove Wallet</button>`}`}
+          </div>
+          ${DEV_MODE ? `<div class="border-t border-slate-800 pt-4">
+            <p class="text-xs font-medium uppercase tracking-wider text-slate-500">Dev</p>
+            <div class="mt-2 space-y-2">
+              <button data-action="dev-restart" class="w-full rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-400 hover:bg-slate-800 transition">Restart App</button>
+              ${state.devResetPrompt
+                ? `<div class="rounded-lg border border-rose-700/40 bg-rose-950/20 p-3 space-y-2">
+                    <p class="text-[11px] text-rose-300">This will erase your <strong>Nostr identity</strong> and <strong>wallet</strong>. Type <strong>RESET</strong> to confirm.</p>
+                    <div class="flex items-center gap-2">
+                      <input id="dev-reset-confirm" type="text" value="${state.devResetConfirm}" placeholder="Type RESET" class="h-9 min-w-0 flex-1 rounded-lg border border-rose-700/40 bg-slate-900 px-3 text-xs text-rose-300 outline-none ring-rose-400 transition focus:ring-2 uppercase" autocomplete="off" />
+                      <button data-action="dev-reset-confirm" class="shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${state.devResetConfirm.trim().toUpperCase() === "RESET" ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}" ${state.devResetConfirm.trim().toUpperCase() !== "RESET" ? "disabled" : ""}>Confirm</button>
+                      <button data-action="dev-reset-cancel" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 transition">Cancel</button>
+                    </div>
+                  </div>`
+                : `<button data-action="dev-reset-start" class="w-full rounded-lg border border-rose-700/40 px-4 py-2 text-xs text-rose-400 hover:bg-rose-900/20 transition">Erase All App Data</button>`}
+            </div>
+          </div>` : ""}
         </div>
+        `}
       </div>
     </div>` : ""}
     ${state.logoutOpen ? `<div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
@@ -1058,6 +1246,10 @@ function renderHome(): string {
       <div class="phi-container py-16 text-center">
         <h2 class="mb-3 text-2xl font-semibold text-slate-100">No markets discovered</h2>
         <p class="mb-6 text-base text-slate-400">Be the first to create a prediction market on Liquid Testnet.</p>
+        ${state.walletStatus !== "unlocked" ? `
+          <p class="mb-4 text-sm text-amber-300">Set up your wallet first to start trading</p>
+          <button data-action="nav-wallet" class="mr-3 rounded-xl border border-slate-600 px-6 py-3 text-base font-medium text-slate-200">Set Up Wallet</button>
+        ` : ""}
         <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950">Create New Market</button>
         ${state.nostrPubkey ? `<p class="mt-4 text-xs text-slate-500">Identity: ${state.nostrPubkey.slice(0, 8)}...${state.nostrPubkey.slice(-8)}</p>` : ""}
       </div>
@@ -1579,7 +1771,7 @@ function renderDetail(): string {
         <section class="space-y-[21px]">
           <div class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
             <button data-action="go-home" class="mb-4 rounded-lg border border-slate-700 px-3 py-1 text-sm text-slate-300">Back to markets</button>
-            <p class="mb-1 text-sm text-slate-400">${market.category} · Prediction contract · <button data-action="open-nostr-event" data-nevent="${market.nevent}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">View on Nostr</button>${market.creationTxid ? ` · <button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">Creation Tx</button>` : ""}</p>
+            <p class="mb-1 text-sm text-slate-400">${market.category} · ${stateBadge(market.state)} ${market.creationTxid ? `<button data-action="refresh-market-state" class="text-slate-500 hover:text-slate-300 text-xs transition cursor-pointer">[refresh]</button>` : ""} · <button data-action="open-nostr-event" data-nevent="${market.nevent}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">View on Nostr</button>${market.creationTxid ? ` · <button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">Creation Tx</button>` : ""}</p>
             <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${market.question}</h1>
             <p class="mb-3 text-base text-slate-400">${market.description}</p>
 
@@ -1637,6 +1829,12 @@ function renderDetail(): string {
                   <button data-action="oracle-attest-yes" class="rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950">Resolve YES</button>
                   <button data-action="oracle-attest-no" class="rounded-lg bg-rose-400 px-4 py-2 text-sm font-semibold text-slate-950">Resolve NO</button>
                 </div>
+              </div>` : ""}
+              ${state.lastAttestationSig && state.lastAttestationMarketId === market.marketId && market.state === 1 ? `
+              <div class="mt-3 rounded-lg border border-emerald-700/60 bg-emerald-950/20 p-3">
+                <p class="mb-2 text-sm font-semibold text-emerald-200">Attestation published — execute on-chain resolution</p>
+                <p class="mb-2 text-xs text-slate-300">Outcome: ${state.lastAttestationOutcome ? "YES" : "NO"} | Sig: ${state.lastAttestationSig.slice(0, 24)}...</p>
+                <button data-action="execute-resolution" ${state.resolutionExecuting ? "disabled" : ""} class="w-full rounded-lg ${state.resolutionExecuting ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 text-sm font-semibold">${state.resolutionExecuting ? "Executing..." : "Execute Resolution On-Chain"}</button>
               </div>` : ""}
             </section>
 
@@ -1813,7 +2011,7 @@ async function fetchWalletStatus(): Promise<void> {
 async function refreshWallet(): Promise<void> {
   state.walletLoading = true;
   state.walletError = "";
-  showOverlayLoader();
+  showOverlayLoader("Syncing wallet...");
   render();
   try {
     await invoke("sync_wallet");
@@ -2188,7 +2386,7 @@ function renderWallet(): string {
           <div class="mx-auto max-w-lg space-y-6">
             <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet Created ${networkBadge}</h2>
             <div class="rounded-lg border border-slate-600 bg-slate-900/40 p-4 space-y-3">
-              <p class="text-sm font-medium text-slate-200">Back up your recovery phrase! You will not see this again.</p>
+              <p class="text-sm font-medium text-slate-200">Back up your recovery phrase in a safe place.</p>
               ${renderMnemonicGrid(state.walletMnemonic)}
               <button data-action="copy-mnemonic" class="mt-2 w-full rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">Copy to clipboard</button>
             </div>
@@ -2199,29 +2397,52 @@ function renderWallet(): string {
       `;
     }
 
+    const isCreate = !state.walletShowRestore;
+    const isRestore = state.walletShowRestore;
+
     return `
       <div class="phi-container py-8">
         <div class="mx-auto max-w-lg space-y-6">
           <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet ${networkBadge}</h2>
-          <p class="text-sm text-slate-400">No wallet found. Create a new Liquid (L-BTC) wallet or restore from a recovery phrase.</p>
+          <p class="text-sm text-slate-400">Set up a Liquid (L-BTC) wallet to participate in markets.</p>
           ${errorHtml}
-          ${loadingHtml}
 
-          ${!state.walletShowRestore ? `
-            <div class="space-y-4 rounded-lg border border-slate-700 bg-slate-900/50 p-6">
-              <h3 class="font-semibold text-slate-100">Create New Wallet</h3>
-              <input id="wallet-password" type="password" value="${state.walletPassword}" placeholder="Set a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2" />
-              <button data-action="create-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300" ${loading ? "disabled" : ""}>Create Wallet</button>
+          <div class="grid grid-cols-2 gap-3">
+            <button data-action="${isCreate || loading ? "" : "toggle-restore"}" class="rounded-xl border ${isCreate ? "border-emerald-500/50 bg-emerald-500/10" : "border-slate-700 bg-slate-900/50 hover:border-slate-600"} p-4 text-left transition ${loading ? "opacity-50 cursor-not-allowed" : ""}" ${loading ? "disabled" : ""}>
+              <svg class="h-6 w-6 ${isCreate ? "text-emerald-400" : "text-slate-500"}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+              <p class="mt-2 text-sm font-medium ${isCreate ? "text-emerald-300" : "text-slate-300"}">Create New</p>
+              <p class="mt-0.5 text-xs ${isCreate ? "text-emerald-400/60" : "text-slate-500"}">Generate a fresh wallet</p>
+            </button>
+            <button data-action="${isRestore || loading ? "" : "toggle-restore"}" class="rounded-xl border ${isRestore ? "border-emerald-500/50 bg-emerald-500/10" : "border-slate-700 bg-slate-900/50 hover:border-slate-600"} p-4 text-left transition ${loading ? "opacity-50 cursor-not-allowed" : ""}" ${loading ? "disabled" : ""}>
+              <svg class="h-6 w-6 ${isRestore ? "text-emerald-400" : "text-slate-500"}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3"/></svg>
+              <p class="mt-2 text-sm font-medium ${isRestore ? "text-emerald-300" : "text-slate-300"}">Restore</p>
+              <p class="mt-0.5 text-xs ${isRestore ? "text-emerald-400/60" : "text-slate-500"}">From recovery phrase</p>
+            </button>
+          </div>
+
+          ${isCreate ? `
+            <div class="space-y-4 rounded-xl border border-slate-700 bg-slate-900/50 p-6">
+              <div>
+                <label for="wallet-password" class="text-xs font-medium text-slate-400">Encryption Password</label>
+                <p class="mt-0.5 text-[11px] text-slate-500">Used to encrypt your wallet on this device.</p>
+              </div>
+              <input id="wallet-password" type="password" value="${state.walletPassword}" placeholder="Enter a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+              <button data-action="create-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Creating..." : "Create Wallet"}</button>
             </div>
-            <button data-action="toggle-restore" class="text-sm text-slate-400 hover:text-slate-200 underline">Restore from recovery phrase instead</button>
           ` : `
-            <div class="space-y-4 rounded-lg border border-slate-700 bg-slate-900/50 p-6">
-              <h3 class="font-semibold text-slate-100">Restore Wallet</h3>
-              <textarea id="wallet-restore-mnemonic" placeholder="Enter your 12-word recovery phrase" rows="3" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm outline-none ring-emerald-400 focus:ring-2">${state.walletRestoreMnemonic}</textarea>
-              <input id="wallet-password" type="password" value="${state.walletPassword}" placeholder="Set a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2" />
-              <button data-action="restore-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300" ${loading ? "disabled" : ""}>Restore Wallet</button>
+            <div class="space-y-4 rounded-xl border border-slate-700 bg-slate-900/50 p-6">
+              <div>
+                <label for="wallet-restore-mnemonic" class="text-xs font-medium text-slate-400">Recovery Phrase</label>
+                <p class="mt-0.5 text-[11px] text-slate-500">Enter your 12-word recovery phrase to restore your wallet.</p>
+              </div>
+              <textarea id="wallet-restore-mnemonic" placeholder="word1 word2 word3 ..." rows="3" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm outline-none ring-emerald-400 focus:ring-2 mono disabled:opacity-50" ${loading ? "disabled" : ""}>${state.walletRestoreMnemonic}</textarea>
+              <div>
+                <label for="wallet-password" class="text-xs font-medium text-slate-400">Encryption Password</label>
+                <p class="mt-0.5 text-[11px] text-slate-500">Set a password to encrypt the restored wallet.</p>
+              </div>
+              <input id="wallet-password" type="password" value="${state.walletPassword}" placeholder="Enter a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+              <button data-action="restore-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Restoring..." : "Restore Wallet"}</button>
             </div>
-            <button data-action="toggle-restore" class="text-sm text-slate-400 hover:text-slate-200 underline">Create new wallet instead</button>
           `}
         </div>
       </div>
@@ -2237,8 +2458,8 @@ function renderWallet(): string {
           ${errorHtml}
           ${loadingHtml}
           <div class="space-y-4 rounded-lg border border-slate-700 bg-slate-900/50 p-6">
-            <input id="wallet-password" type="password" value="${state.walletPassword}" placeholder="Password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2" />
-            <button data-action="unlock-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300" ${loading ? "disabled" : ""}>Unlock</button>
+            <input id="wallet-password" type="password" value="${state.walletPassword}" placeholder="Password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+            <button data-action="unlock-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Unlocking..." : "Unlock"}</button>
           </div>
         </div>
       </div>
@@ -2345,6 +2566,14 @@ function renderWallet(): string {
           </div>
         </div>
 
+        ${tokenPositions.length === 0 && !state.walletBalanceHidden ? `
+        <!-- No Positions -->
+        <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6 text-center">
+          <p class="text-sm text-slate-400">No token positions yet</p>
+          <p class="mt-1 text-xs text-slate-500">Issue tokens on a market to start trading</p>
+        </div>
+        ` : ""}
+
         ${tokenPositions.length > 0 && !state.walletBalanceHidden ? `
         <!-- Token Positions -->
         <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
@@ -2406,13 +2635,150 @@ function renderWallet(): string {
   `;
 }
 
+function renderOnboarding(): string {
+  const step = state.onboardingStep!;
+  const loading = state.onboardingLoading;
+  const errorHtml = state.onboardingError ? `<p class="text-sm text-red-400">${state.onboardingError}</p>` : "";
+
+  const stepIndicator = `
+    <div class="flex items-center gap-3 mb-6">
+      <div class="flex items-center gap-2">
+        <div class="h-8 w-8 rounded-full ${step === "nostr" || state.onboardingNostrDone ? "bg-emerald-400 text-slate-950" : "border border-slate-700 text-slate-500"} flex items-center justify-center text-sm font-medium">${state.onboardingNostrDone && step !== "nostr" ? '<svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>' : "1"}</div>
+        <span class="text-sm ${step === "nostr" ? "text-slate-100" : "text-slate-500"}">Nostr Identity</span>
+      </div>
+      <div class="h-px flex-1 ${step === "wallet" ? "bg-emerald-400" : "bg-slate-700"}"></div>
+      <div class="flex items-center gap-2">
+        <div class="h-8 w-8 rounded-full ${step === "wallet" ? "bg-emerald-400 text-slate-950" : "border border-slate-700 text-slate-500"} flex items-center justify-center text-sm font-medium">2</div>
+        <span class="text-sm ${step === "wallet" ? "text-slate-100" : "text-slate-500"}">Liquid Wallet</span>
+      </div>
+    </div>
+  `;
+
+  if (step === "nostr") {
+    // After generation — show keys for backup
+    if (state.onboardingNostrDone) {
+      const nsecHtml = state.onboardingNostrGeneratedNsec
+        ? `<div class="flex items-center gap-2">
+            <div class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
+              <div class="text-[10px] text-slate-500">nsec (secret)</div>
+              ${state.onboardingNsecRevealed
+                ? `<div class="mono truncate text-xs text-rose-300">${state.onboardingNostrGeneratedNsec}</div>`
+                : `<div class="text-xs text-slate-500">Hidden</div>`}
+            </div>
+            ${state.onboardingNsecRevealed
+              ? `<button data-action="onboarding-copy-nsec" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition">Copy</button>`
+              : `<button data-action="onboarding-reveal-nsec" class="shrink-0 rounded-lg border border-amber-700/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-300 hover:bg-amber-900/30 transition">Reveal</button>`}
+          </div>`
+        : `<div class="flex items-center gap-2">
+            <div class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
+              <div class="text-[10px] text-slate-500">nsec (secret)</div>
+              <div class="text-xs text-slate-500">Copied</div>
+            </div>
+          </div>`;
+
+      return `
+        <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-8">
+          ${stepIndicator}
+          <h2 class="text-xl font-medium text-slate-100">Nostr Identity Created</h2>
+          <p class="mt-2 text-sm text-slate-400">Back up your secret key (nsec) now. You will need it to resolve markets you create.</p>
+          <div class="mt-4 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2">
+            <p class="text-[11px] text-amber-300/90">Save your nsec in a secure location. If you lose it, you cannot resolve markets created with this identity.</p>
+          </div>
+          <div class="mt-4 space-y-2">
+            <div class="flex items-center gap-2">
+              <div class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
+                <div class="text-[10px] text-slate-500">npub (public)</div>
+                <div class="mono truncate text-xs text-slate-300">${state.nostrNpub}</div>
+              </div>
+              <button data-action="onboarding-copy-npub" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition">Copy</button>
+            </div>
+            ${nsecHtml}
+          </div>
+          <button data-action="onboarding-nostr-continue" class="mt-6 w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300">Continue to Wallet Setup</button>
+        </div>
+      `;
+    }
+
+    // Initial nostr step — choose generate or import
+    const modeGenerate = state.onboardingNostrMode === "generate";
+    return `
+      <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-8">
+        ${stepIndicator}
+        <h2 class="text-xl font-medium text-slate-100">Welcome to Deadcat Live!</h2>
+        <p class="mt-2 text-sm text-slate-400">Set up your Nostr identity. This keypair is used to publish and resolve prediction markets.</p>
+        ${errorHtml}
+        <div class="mt-5 flex gap-2">
+          <button data-action="onboarding-set-nostr-mode" data-mode="generate" class="flex-1 rounded-lg border px-4 py-2 text-sm transition ${modeGenerate ? "border-emerald-400 bg-emerald-400/10 text-emerald-300" : "border-slate-700 text-slate-400 hover:bg-slate-800"}">Generate new</button>
+          <button data-action="onboarding-set-nostr-mode" data-mode="import" class="flex-1 rounded-lg border px-4 py-2 text-sm transition ${!modeGenerate ? "border-emerald-400 bg-emerald-400/10 text-emerald-300" : "border-slate-700 text-slate-400 hover:bg-slate-800"}">Import existing</button>
+        </div>
+        ${modeGenerate ? `
+          <button data-action="onboarding-generate-nostr" class="mt-5 w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300" ${loading ? "disabled" : ""}>${loading ? "Generating..." : "Generate Keypair"}</button>
+        ` : `
+          <div class="mt-5 space-y-3">
+            <input id="onboarding-nostr-nsec" type="password" value="${state.onboardingNostrNsec}" placeholder="nsec1..." class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 mono" />
+            <button data-action="onboarding-import-nostr" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300" ${loading ? "disabled" : ""}>${loading ? "Importing..." : "Import & Continue"}</button>
+          </div>
+        `}
+      </div>
+    `;
+  }
+
+  // Step 2: Wallet
+  if (state.onboardingWalletMnemonic && state.onboardingWalletMode === "create") {
+    // Show mnemonic backup after creation
+    return `
+      <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-8">
+        ${stepIndicator}
+        <h2 class="text-xl font-medium text-slate-100">Wallet Created</h2>
+        <p class="mt-2 text-sm text-slate-400">Back up your recovery phrase in a safe place.</p>
+        <div class="mt-4 rounded-lg border border-slate-600 bg-slate-900/40 p-4 space-y-3">
+          ${renderMnemonicGrid(state.onboardingWalletMnemonic)}
+          <button data-action="onboarding-copy-mnemonic" class="w-full rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">Copy to clipboard</button>
+        </div>
+        <button data-action="onboarding-wallet-done" class="mt-5 w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300">I've saved my recovery phrase</button>
+      </div>
+    `;
+  }
+
+  const modeCreate = state.onboardingWalletMode === "create";
+  return `
+    <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-8">
+      ${stepIndicator}
+      <h2 class="text-xl font-medium text-slate-100">Set Up Your Wallet</h2>
+      <p class="mt-2 text-sm text-slate-400">Create a new Liquid (L-BTC) wallet or restore from an existing recovery phrase.</p>
+      ${errorHtml}
+      <div class="mt-5 flex gap-2">
+        <button data-action="${modeCreate || loading ? "" : "onboarding-set-wallet-mode"}" data-mode="create" class="flex-1 rounded-lg border px-4 py-2 text-sm transition ${modeCreate ? "border-emerald-400 bg-emerald-400/10 text-emerald-300" : "border-slate-700 text-slate-400 hover:bg-slate-800"} ${loading ? "opacity-50 cursor-not-allowed" : ""}" ${loading ? "disabled" : ""}>Create new</button>
+        <button data-action="${!modeCreate || loading ? "" : "onboarding-set-wallet-mode"}" data-mode="restore" class="flex-1 rounded-lg border px-4 py-2 text-sm transition ${!modeCreate ? "border-emerald-400 bg-emerald-400/10 text-emerald-300" : "border-slate-700 text-slate-400 hover:bg-slate-800"} ${loading ? "opacity-50 cursor-not-allowed" : ""}" ${loading ? "disabled" : ""}>Restore existing</button>
+      </div>
+      ${modeCreate ? `
+        <div class="mt-5 space-y-3">
+          <input id="onboarding-wallet-password" type="password" value="${state.onboardingWalletPassword}" placeholder="Set a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+          <button data-action="onboarding-create-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Creating..." : "Create Wallet"}</button>
+        </div>
+      ` : `
+        <div class="mt-5 space-y-3">
+          <textarea id="onboarding-wallet-mnemonic" placeholder="Enter your 12-word recovery phrase" rows="3" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""}>${state.onboardingWalletMnemonic}</textarea>
+          <input id="onboarding-wallet-password" type="password" value="${state.onboardingWalletPassword}" placeholder="Set a password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+          <button data-action="onboarding-restore-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Restoring..." : "Restore & Finish"}</button>
+        </div>
+      `}
+    </div>
+  `;
+}
+
 function render(): void {
-  app.innerHTML = `
+  if (state.onboardingStep !== null) {
+    app.innerHTML = `<div class="min-h-screen text-slate-100 flex items-center justify-center">${renderOnboarding()}</div>`;
+    return;
+  }
+  const html = `
     <div class="min-h-screen text-slate-100">
       ${renderTopShell()}
       <main>${state.view === "wallet" ? renderWallet() : state.view === "home" ? renderHome() : state.view === "detail" ? renderDetail() : renderCreateMarket()}</main>
     </div>
   `;
+  app.innerHTML = html;
 }
 
 async function syncCurrentHeightFromLwk(network: WalletNetwork): Promise<void> {
@@ -2488,6 +2854,28 @@ function ticketActionAllowed(market: Market, tab: ActionTab): boolean {
   return paths.cancel;
 }
 
+async function finishOnboarding(): Promise<void> {
+  state.onboardingStep = null;
+  state.onboardingWalletPassword = "";
+  state.onboardingWalletMnemonic = "";
+  state.onboardingNostrNsec = "";
+  state.onboardingNostrGeneratedNsec = "";
+  state.onboardingNsecRevealed = false;
+  state.onboardingNostrDone = false;
+  state.onboardingError = "";
+
+  await fetchWalletStatus();
+  render();
+
+  if (state.walletStatus === "unlocked") {
+    void refreshWallet();
+  }
+  await loadMarkets();
+  state.marketsLoading = false;
+  render();
+  void syncCurrentHeightFromLwk("liquid-testnet");
+}
+
 async function initApp(): Promise<void> {
   render();
   updateEstClockLabels();
@@ -2500,18 +2888,38 @@ async function initApp(): Promise<void> {
     splash.addEventListener("transitionend", () => splash.remove(), { once: true });
   }, 4800);
 
-  void fetchWalletStatus().then(() => {
-    render();
-    if (state.walletStatus === "unlocked") {
-      void refreshWallet();
-    }
-  });
-
+  // 1. Try to load existing Nostr identity (no auto-generation)
+  let hasNostrIdentity = false;
   try {
-    const identity = await invoke<IdentityResponse>("init_nostr_identity");
-    state.nostrPubkey = identity.pubkey_hex;
+    const identity = await invoke<IdentityResponse | null>("init_nostr_identity");
+    if (identity) {
+      state.nostrPubkey = identity.pubkey_hex;
+      state.nostrNpub = identity.npub;
+      hasNostrIdentity = true;
+    }
   } catch (error) {
-    console.warn("Failed to init nostr identity:", error);
+    console.warn("Failed to load nostr identity:", error);
+  }
+
+  // 2. Fetch wallet status
+  await fetchWalletStatus();
+
+  // 3. Determine onboarding state
+  const needsNostr = !hasNostrIdentity;
+  const needsWallet = state.walletStatus === "not_created";
+
+  if (needsNostr || needsWallet) {
+    state.onboardingStep = needsNostr ? "nostr" : "wallet";
+    if (!needsNostr) {
+      state.onboardingNostrDone = true;
+    }
+    render();
+    return; // Don't load markets or start background tasks yet
+  }
+
+  // 4. Normal boot — both identity and wallet exist
+  if (state.walletStatus === "unlocked") {
+    void refreshWallet();
   }
 
   await loadMarkets();
@@ -2524,7 +2932,24 @@ async function initApp(): Promise<void> {
 initApp();
 setInterval(updateEstClockLabels, 1_000);
 setInterval(() => {
-  void syncCurrentHeightFromLwk("liquid-testnet");
+  if (state.onboardingStep === null) {
+    void syncCurrentHeightFromLwk("liquid-testnet");
+  }
+}, 60_000);
+
+// Auto-refresh wallet balance every 60s when unlocked (cached only, no Electrum sync)
+setInterval(() => {
+  if (state.onboardingStep === null && state.walletStatus === "unlocked" && !state.walletLoading) {
+    (async () => {
+      try {
+        const balance = await invoke<{ assets: Record<string, number> }>("get_wallet_balance");
+        state.walletBalance = balance.assets;
+        render();
+      } catch (_) {
+        // Silent — don't disrupt the user
+      }
+    })();
+  }
 }, 60_000);
 
 app.addEventListener("click", (event) => {
@@ -2579,7 +3004,7 @@ app.addEventListener("click", (event) => {
   const tab = tabEl?.getAttribute("data-tab") as ActionTab | null;
 
   // Close user menu on any click that isn't inside the menu
-  if (state.userMenuOpen && action !== "toggle-user-menu" && action !== "user-settings" && action !== "user-logout" && action !== "set-currency") {
+  if (state.userMenuOpen && action !== "toggle-user-menu" && action !== "user-settings" && action !== "user-logout" && action !== "set-currency" && action !== "copy-nostr-npub") {
     // Check if click is inside the dropdown
     const inMenu = target.closest("[data-action='toggle-user-menu']")?.parentElement?.contains(target);
     if (!inMenu) {
@@ -2610,6 +3035,173 @@ app.addEventListener("click", (event) => {
     });
     return;
   }
+
+  // ── Onboarding actions ────────────────────────────────────────────
+
+  if (action === "onboarding-set-nostr-mode") {
+    state.onboardingNostrMode = (actionEl?.getAttribute("data-mode") ?? "generate") as "generate" | "import";
+    state.onboardingError = "";
+    render();
+    return;
+  }
+
+  if (action === "onboarding-generate-nostr") {
+    state.onboardingLoading = true;
+    state.onboardingError = "";
+    render();
+    (async () => {
+      try {
+        const identity = await invoke<IdentityResponse>("generate_nostr_identity");
+        state.nostrPubkey = identity.pubkey_hex;
+        state.nostrNpub = identity.npub;
+        const nsec = await invoke<string>("export_nostr_nsec");
+        state.onboardingNostrGeneratedNsec = nsec;
+        state.onboardingNostrDone = true;
+      } catch (e) {
+        state.onboardingError = String(e);
+      }
+      state.onboardingLoading = false;
+      render();
+    })();
+    return;
+  }
+
+  if (action === "onboarding-import-nostr") {
+    const nsecInput = state.onboardingNostrNsec.trim();
+    if (!nsecInput) {
+      state.onboardingError = "Paste an nsec to import.";
+      render();
+      return;
+    }
+    state.onboardingLoading = true;
+    state.onboardingError = "";
+    render();
+    (async () => {
+      try {
+        const identity = await invoke<IdentityResponse>("import_nostr_nsec", { nsec: nsecInput });
+        state.nostrPubkey = identity.pubkey_hex;
+        state.nostrNpub = identity.npub;
+        state.onboardingNostrDone = true;
+        state.onboardingStep = "wallet";
+      } catch (e) {
+        state.onboardingError = String(e);
+      }
+      state.onboardingLoading = false;
+      render();
+    })();
+    return;
+  }
+
+  if (action === "onboarding-copy-npub") {
+    if (state.nostrNpub) {
+      void navigator.clipboard.writeText(state.nostrNpub);
+      showToast("Copied npub to clipboard");
+    }
+    return;
+  }
+
+  if (action === "onboarding-reveal-nsec") {
+    state.onboardingNsecRevealed = true;
+    render();
+    return;
+  }
+
+  if (action === "onboarding-copy-nsec") {
+    if (state.onboardingNostrGeneratedNsec) {
+      void navigator.clipboard.writeText(state.onboardingNostrGeneratedNsec);
+      state.onboardingNsecRevealed = false;
+      state.onboardingNostrGeneratedNsec = "";
+      showToast("Copied nsec to clipboard");
+      render();
+    }
+    return;
+  }
+
+  if (action === "onboarding-nostr-continue") {
+    state.onboardingStep = "wallet";
+    state.onboardingError = "";
+    render();
+    return;
+  }
+
+  if (action === "onboarding-set-wallet-mode") {
+    state.onboardingWalletMode = (actionEl?.getAttribute("data-mode") ?? "create") as "create" | "restore";
+    state.onboardingError = "";
+    render();
+    return;
+  }
+
+  if (action === "onboarding-create-wallet") {
+    if (!state.onboardingWalletPassword) {
+      state.onboardingError = "Password is required.";
+      render();
+      return;
+    }
+    state.onboardingLoading = true;
+    state.onboardingError = "";
+    showOverlayLoader("Creating wallet...");
+    render();
+    (async () => {
+      try {
+        const mnemonic = await invoke<string>("create_wallet", { password: state.onboardingWalletPassword });
+        state.onboardingWalletMnemonic = mnemonic;
+      } catch (e) {
+        state.onboardingError = String(e);
+      }
+      state.onboardingLoading = false;
+      hideOverlayLoader();
+      render();
+    })();
+    return;
+  }
+
+  if (action === "onboarding-copy-mnemonic") {
+    if (state.onboardingWalletMnemonic) {
+      void navigator.clipboard.writeText(state.onboardingWalletMnemonic);
+      showToast("Copied recovery phrase to clipboard");
+    }
+    return;
+  }
+
+  if (action === "onboarding-wallet-done") {
+    (async () => {
+      await finishOnboarding();
+    })();
+    return;
+  }
+
+  if (action === "onboarding-restore-wallet") {
+    if (!state.onboardingWalletMnemonic.trim() || !state.onboardingWalletPassword) {
+      state.onboardingError = "Recovery phrase and password are required.";
+      render();
+      return;
+    }
+    state.onboardingLoading = true;
+    state.onboardingError = "";
+    showOverlayLoader("Restoring wallet...");
+    render();
+    (async () => {
+      try {
+        await invoke("restore_wallet", {
+          mnemonic: state.onboardingWalletMnemonic.trim(),
+          password: state.onboardingWalletPassword,
+        });
+        updateOverlayMessage("Scanning blockchain...");
+        await invoke("sync_wallet");
+        hideOverlayLoader();
+        showToast("Wallet restored!", "success");
+        await finishOnboarding();
+      } catch (e) {
+        state.onboardingError = String(e);
+        state.onboardingLoading = false;
+        hideOverlayLoader();
+        render();
+      }
+    })();
+    return;
+  }
+
+  // ── App actions ──────────────────────────────────────────────────
 
   if (action === "go-home") {
     state.view = "home";
@@ -2647,6 +3239,14 @@ app.addEventListener("click", (event) => {
     return;
   }
 
+  if (action === "copy-nostr-npub") {
+    if (state.nostrNpub) {
+      void navigator.clipboard.writeText(state.nostrNpub);
+      showToast("Copied npub to clipboard");
+    }
+    return;
+  }
+
   if (action === "set-currency") {
     const currency = actionEl?.getAttribute("data-currency") as BaseCurrency | null;
     if (currency) { state.baseCurrency = currency; render(); }
@@ -2662,7 +3262,126 @@ app.addEventListener("click", (event) => {
 
   if (action === "close-settings") {
     state.settingsOpen = false;
+    state.nostrNsecRevealed = null;
+    state.nostrReplacePrompt = false;
+    state.nostrReplacePanel = false;
+    state.nostrReplaceConfirm = "";
+    state.nostrImportNsec = "";
+    state.walletDeletePrompt = false;
+    state.walletDeleteConfirm = "";
+    state.devResetPrompt = false;
+    state.devResetConfirm = "";
     render();
+    return;
+  }
+
+  if (action === "reveal-nostr-nsec") {
+    (async () => {
+      try {
+        const nsec = await invoke<string>("export_nostr_nsec");
+        state.nostrNsecRevealed = nsec;
+        render();
+      } catch (e) {
+        showToast("Failed to export nsec: " + String(e), "error");
+      }
+    })();
+    return;
+  }
+
+  if (action === "copy-nostr-nsec") {
+    if (state.nostrNsecRevealed) {
+      void navigator.clipboard.writeText(state.nostrNsecRevealed);
+      state.nostrNsecRevealed = null;
+      showToast("Copied nsec to clipboard");
+      render();
+    }
+    return;
+  }
+
+  if (action === "nostr-replace-start") {
+    state.nostrReplacePrompt = true;
+    state.nostrReplaceConfirm = "";
+    render();
+    const input = document.getElementById("nostr-replace-confirm") as HTMLInputElement | null;
+    input?.focus();
+    return;
+  }
+
+  if (action === "nostr-replace-cancel") {
+    state.nostrReplacePrompt = false;
+    state.nostrReplaceConfirm = "";
+    render();
+    return;
+  }
+
+  if (action === "nostr-replace-confirm") {
+    if (state.nostrReplaceConfirm.trim().toUpperCase() !== "DELETE") return;
+    (async () => {
+      try {
+        await invoke("delete_nostr_identity");
+        state.nostrPubkey = null;
+        state.nostrNpub = null;
+        state.nostrNsecRevealed = null;
+        state.nostrReplacePanel = true;
+        state.nostrReplacePrompt = false;
+        state.nostrReplaceConfirm = "";
+      } catch (e) {
+        showToast("Failed to delete identity: " + String(e), "error");
+      }
+      render();
+    })();
+    return;
+  }
+
+  if (action === "nostr-replace-back") {
+    state.nostrReplacePanel = false;
+    state.nostrImportNsec = "";
+    render();
+    return;
+  }
+
+  if (action === "import-nostr-nsec") {
+    const nsecInput = state.nostrImportNsec.trim();
+    if (!nsecInput) {
+      showToast("Paste an nsec to import", "error");
+      return;
+    }
+    state.nostrImporting = true;
+    render();
+    (async () => {
+      try {
+        const identity = await invoke<{ pubkey_hex: string; npub: string }>("import_nostr_nsec", { nsec: nsecInput });
+        state.nostrPubkey = identity.pubkey_hex;
+        state.nostrNpub = identity.npub;
+        state.nostrImportNsec = "";
+        state.nostrNsecRevealed = null;
+        state.nostrReplacePanel = false;
+        state.nostrReplaceConfirm = "";
+        showToast("Nostr key imported successfully", "success");
+      } catch (e) {
+        showToast("Import failed: " + String(e), "error");
+      }
+      state.nostrImporting = false;
+      render();
+    })();
+    return;
+  }
+
+  if (action === "generate-new-nostr-key") {
+    (async () => {
+      try {
+        const identity = await invoke<IdentityResponse>("generate_nostr_identity");
+        state.nostrPubkey = identity.pubkey_hex;
+        state.nostrNpub = identity.npub;
+        state.nostrNsecRevealed = null;
+        state.nostrReplacePanel = false;
+        state.nostrReplaceConfirm = "";
+        showToast("New Nostr keypair generated", "success");
+      } catch (e) {
+        showToast("Failed: " + String(e), "error");
+      }
+      render();
+    })();
     return;
   }
 
@@ -2677,6 +3396,48 @@ app.addEventListener("click", (event) => {
       splash.classList.add("fade-out");
       splash.addEventListener("transitionend", () => splash.remove(), { once: true });
     }, 4800);
+    return;
+  }
+
+  if (action === "dev-reset-start") {
+    state.devResetPrompt = true;
+    state.devResetConfirm = "";
+    render();
+    return;
+  }
+
+  if (action === "dev-reset-cancel") {
+    state.devResetPrompt = false;
+    state.devResetConfirm = "";
+    render();
+    return;
+  }
+
+  if (action === "dev-reset-confirm") {
+    if (state.devResetConfirm.trim().toUpperCase() !== "RESET") return;
+    (async () => {
+      try {
+        await invoke("delete_nostr_identity");
+        try { await invoke("delete_wallet"); } catch (_) { /* no wallet is fine */ }
+        state.nostrPubkey = null;
+        state.nostrNpub = null;
+        state.nostrNsecRevealed = null;
+        state.walletBalance = null;
+        state.walletTransactions = [];
+        state.walletSwaps = [];
+        state.walletPassword = "";
+        state.walletMnemonic = "";
+        state.settingsOpen = false;
+        state.devResetPrompt = false;
+        state.devResetConfirm = "";
+        await fetchWalletStatus();
+        state.onboardingStep = "nostr";
+        render();
+        showToast("App data erased", "success");
+      } catch (e) {
+        showToast("Reset failed: " + String(e), "error");
+      }
+    })();
     return;
   }
 
@@ -2695,8 +3456,26 @@ app.addEventListener("click", (event) => {
 
   if (action === "confirm-logout") {
     state.logoutOpen = false;
-    // TODO: actual logout logic
-    render();
+    (async () => {
+      try {
+        await invoke("lock_wallet");
+        await fetchWalletStatus();
+        state.walletBalance = null;
+        state.walletTransactions = [];
+        state.walletSwaps = [];
+        state.walletPassword = "";
+        state.walletModal = "none";
+        state.walletShowBackup = false;
+        state.walletBackupMnemonic = "";
+        state.walletBackupPassword = "";
+        resetReceiveState();
+        resetSendState();
+        state.view = "home";
+      } catch (e) {
+        console.warn("Failed to lock wallet:", e);
+      }
+      render();
+    })();
     return;
   }
 
@@ -2709,16 +3488,26 @@ app.addEventListener("click", (event) => {
   if (action === "open-wallet") {
     state.walletError = "";
     state.walletPassword = "";
-    state.walletBalance = null;
-    state.walletTransactions = [];
-    state.walletSwaps = [];
-    void fetchWalletStatus().then(() => {
-      state.view = "wallet";
-      render();
-      if (state.walletStatus === "unlocked") {
-        void refreshWallet();
-      }
-    });
+    state.settingsOpen = false;
+    state.view = "wallet";
+    render();
+    // If already unlocked with cached balance, just do a silent background sync
+    if (state.walletStatus === "unlocked" && state.walletBalance) {
+      void invoke("sync_wallet").then(async () => {
+        const balance = await invoke<{ assets: Record<string, number> }>("get_wallet_balance");
+        state.walletBalance = balance.assets;
+        const txs = await invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions");
+        state.walletTransactions = txs;
+        render();
+      }).catch(() => {});
+    } else {
+      void fetchWalletStatus().then(() => {
+        render();
+        if (state.walletStatus === "unlocked") {
+          void refreshWallet();
+        }
+      });
+    }
     return;
   }
 
@@ -2730,7 +3519,7 @@ app.addEventListener("click", (event) => {
     }
     state.walletLoading = true;
     state.walletError = "";
-    showOverlayLoader();
+    showOverlayLoader("Creating wallet...");
     render();
     (async () => {
       try {
@@ -2773,7 +3562,7 @@ app.addEventListener("click", (event) => {
     }
     state.walletLoading = true;
     state.walletError = "";
-    showOverlayLoader();
+    showOverlayLoader("Restoring wallet...");
     render();
     (async () => {
       try {
@@ -2783,8 +3572,19 @@ app.addEventListener("click", (event) => {
         });
         state.walletRestoreMnemonic = "";
         state.walletPassword = "";
+        updateOverlayMessage("Scanning blockchain...");
+        await invoke("sync_wallet");
         await fetchWalletStatus();
-        await refreshWallet();
+        if (state.walletStatus === "unlocked") {
+          const balance = await invoke<{ assets: Record<string, number> }>("get_wallet_balance");
+          state.walletBalance = balance.assets;
+          const txs = await invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions");
+          state.walletTransactions = txs;
+        }
+        state.walletLoading = false;
+        hideOverlayLoader();
+        render();
+        showToast("Wallet restored successfully", "success");
       } catch (e) {
         state.walletError = String(e);
         state.walletLoading = false;
@@ -2803,14 +3603,31 @@ app.addEventListener("click", (event) => {
     }
     state.walletLoading = true;
     state.walletError = "";
-    showOverlayLoader();
+    showOverlayLoader("Unlocking wallet...");
     render();
     (async () => {
       try {
         await invoke("unlock_wallet", { password: state.walletPassword });
         state.walletPassword = "";
         await fetchWalletStatus();
-        await refreshWallet();
+        // Load cached wallet data instantly (no Electrum sync)
+        const balance = await invoke<{ assets: Record<string, number> }>("get_wallet_balance");
+        state.walletBalance = balance.assets;
+        const txs = await invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions");
+        state.walletTransactions = txs;
+        const swaps = await invoke<PaymentSwap[]>("list_payment_swaps");
+        state.walletSwaps = swaps;
+        state.walletLoading = false;
+        hideOverlayLoader();
+        render();
+        // Background Electrum sync — updates balances when done
+        invoke("sync_wallet").then(async () => {
+          const freshBalance = await invoke<{ assets: Record<string, number> }>("get_wallet_balance");
+          state.walletBalance = freshBalance.assets;
+          const freshTxs = await invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions");
+          state.walletTransactions = freshTxs;
+          render();
+        }).catch(() => { /* silent background sync failure */ });
       } catch (e) {
         state.walletError = String(e);
         state.walletLoading = false;
@@ -2841,6 +3658,49 @@ app.addEventListener("click", (event) => {
         state.walletError = String(e);
         render();
       }
+    })();
+    return;
+  }
+
+  if (action === "wallet-delete-start") {
+    state.walletDeletePrompt = true;
+    state.walletDeleteConfirm = "";
+    render();
+    return;
+  }
+
+  if (action === "wallet-delete-cancel") {
+    state.walletDeletePrompt = false;
+    state.walletDeleteConfirm = "";
+    render();
+    return;
+  }
+
+  if (action === "wallet-delete-confirm") {
+    if (state.walletDeleteConfirm.trim().toUpperCase() !== "DELETE") return;
+    (async () => {
+      try {
+        await invoke("delete_wallet");
+        await fetchWalletStatus();
+        state.walletBalance = null;
+        state.walletTransactions = [];
+        state.walletSwaps = [];
+        state.walletPassword = "";
+        state.walletMnemonic = "";
+        state.walletModal = "none";
+        state.walletShowBackup = false;
+        state.walletBackupMnemonic = "";
+        state.walletBackupPassword = "";
+        resetReceiveState();
+        resetSendState();
+        state.walletDeletePrompt = false;
+        state.walletDeleteConfirm = "";
+        state.settingsOpen = false;
+        showToast("Wallet removed", "success");
+      } catch (e) {
+        showToast("Failed to remove wallet: " + String(e), "error");
+      }
+      render();
     })();
     return;
   }
@@ -3116,7 +3976,7 @@ app.addEventListener("click", (event) => {
     }
     state.walletLoading = true;
     state.walletError = "";
-    showOverlayLoader();
+    showOverlayLoader("Decrypting backup...");
     render();
     (async () => {
       try {
@@ -3160,7 +4020,10 @@ app.addEventListener("click", (event) => {
           marketIdHex: market.marketId,
           outcomeYes,
         });
-        market.state = outcomeYes ? 2 : 3;
+        // Save attestation for on-chain execution
+        state.lastAttestationSig = result.signature_hex;
+        state.lastAttestationOutcome = outcomeYes;
+        state.lastAttestationMarketId = market.marketId;
         market.resolveTx = {
           txid: result.nostr_event_id,
           outcome: outcomeYes ? "yes" : "no",
@@ -3168,9 +4031,69 @@ app.addEventListener("click", (event) => {
           height: market.currentHeight,
           signatureHash: result.signature_hex.slice(0, 16) + "...",
         };
+        showToast(`Attestation published to Nostr! Now execute on-chain to finalize.`, "success");
         render();
       } catch (error) {
         window.alert(`Failed to attest: ${error}`);
+      }
+    })();
+    return;
+  }
+
+  if (action === "execute-resolution") {
+    const market = getSelectedMarket();
+    if (!state.lastAttestationSig || state.lastAttestationOutcome === null) {
+      showToast("No attestation available to execute", "error");
+      return;
+    }
+    const outcomeYes = state.lastAttestationOutcome;
+    const confirmed = window.confirm(
+      `Execute on-chain resolution for "${market.question}"?\n\nOutcome: ${outcomeYes ? "YES" : "NO"}\nThis submits a Liquid transaction that transitions the covenant state.`,
+    );
+    if (!confirmed) return;
+
+    state.resolutionExecuting = true;
+    render();
+    (async () => {
+      try {
+        const result = await invoke<{ txid: string; previous_state: number; new_state: number; outcome_yes: boolean }>("resolve_market", {
+          contractParamsJson: marketToContractParamsJson(market),
+          outcomeYes,
+          oracleSignatureHex: state.lastAttestationSig,
+        });
+        market.state = result.outcome_yes ? 2 : 3;
+        state.lastAttestationSig = null;
+        state.lastAttestationOutcome = null;
+        state.lastAttestationMarketId = null;
+        showToast(`Resolution executed! txid: ${result.txid.slice(0, 16)}... State: ${result.new_state}`, "success");
+        await refreshWallet();
+      } catch (error) {
+        showToast(`Resolution failed: ${error}`, "error");
+      } finally {
+        state.resolutionExecuting = false;
+        render();
+      }
+    })();
+    return;
+  }
+
+  if (action === "refresh-market-state") {
+    const market = getSelectedMarket();
+    if (!market.creationTxid) {
+      showToast("Market has no on-chain creation tx", "error");
+      return;
+    }
+    showToast("Querying on-chain market state...", "info");
+    (async () => {
+      try {
+        const result = await invoke<{ state: number }>("get_market_state", {
+          contractParamsJson: marketToContractParamsJson(market),
+        });
+        market.state = result.state as CovenantState;
+        showToast(`Market state: ${stateLabel(market.state)}`, "success");
+        render();
+      } catch (error) {
+        showToast(`State query failed: ${error}`, "error");
       }
     })();
     return;
@@ -3427,33 +4350,64 @@ app.addEventListener("click", (event) => {
     const market = getSelectedMarket();
     if (action === "submit-trade") {
       const preview = getTradePreview(market);
-      if (state.orderType === "market" && preview.fill.filledContracts <= 0) {
-        window.alert("Order is currently not fillable. Adjust price or size.");
-        return;
-      }
-      if (
-        state.tradeIntent === "close" &&
-        preview.requestedContracts > preview.positionContracts + 0.0001
-      ) {
-        window.alert("Close size exceeds your available position.");
-        return;
-      }
+      const pairs = Math.max(1, Math.floor(preview.requestedContracts));
 
-      const needsGuardrailConfirm =
-        state.orderType === "market" &&
-        (preview.slippagePct >= 5 ||
-          preview.executedSats >= LARGE_ORDER_SATS_GUARDRAIL);
-
-      if (needsGuardrailConfirm) {
+      if (state.tradeIntent === "open") {
+        // Buy = Issue pairs (mint YES+NO tokens, user keeps the side they want)
+        if (!market.creationTxid) {
+          showToast("Market has no creation txid — cannot trade", "error");
+          return;
+        }
+        const paths = getPathAvailability(market);
+        if (!paths.issue && !paths.initialIssue) {
+          showToast("Market is not in a tradeable state for issuance", "error");
+          return;
+        }
+        const collateralNeeded = pairs * 2 * market.cptSats;
         const confirmed = window.confirm(
-          `Large market ${state.tradeIntent} detected.\nEstimated slippage: ${preview.slippagePct.toFixed(1)}%\nEstimated notional: ${formatSats(preview.executedSats)}\nYes + No = ${SATS_PER_FULL_CONTRACT} sats.\nProceed?`,
+          `Issue ${pairs} token pair(s) for "${market.question.slice(0, 50)}"?\n\nYou will receive ${pairs} YES + ${pairs} NO tokens.\nCollateral required: ${formatSats(collateralNeeded)}\n\nProceed?`,
         );
         if (!confirmed) return;
-      }
 
-      window.alert(
-        `Prepared trade tx for ${market.marketId}.\nIntent: ${state.tradeIntent.toUpperCase()} ${state.selectedSide.toUpperCase()}\nOrder: ${state.orderType.toUpperCase()}\nEstimated fill now: ${preview.fill.filledContracts.toFixed(2)} contracts\nEstimated notional: ${formatSats(preview.executedSats)}\nYes + No = ${SATS_PER_FULL_CONTRACT} sats.`,
-      );
+        showToast(`Issuing ${pairs} pair(s)...`, "info");
+        (async () => {
+          try {
+            const result = await issueTokens(market, pairs);
+            showToast(`Tokens issued! txid: ${result.txid.slice(0, 16)}...`, "success");
+            await refreshWallet();
+          } catch (error) {
+            showToast(`Issuance failed: ${error}`, "error");
+          }
+        })();
+      } else {
+        // Sell = Cancel pairs (burn equal YES+NO → reclaim collateral)
+        const position = getPositionContracts(market);
+        const maxPairs = Math.min(position.yes, position.no);
+        if (maxPairs <= 0) {
+          showToast("You need both YES and NO tokens to cancel pairs. Use Advanced Actions for single-side operations.", "error");
+          return;
+        }
+        const actualPairs = Math.min(pairs, maxPairs);
+        const refund = actualPairs * 2 * market.cptSats;
+        const confirmed = window.confirm(
+          `Cancel ${actualPairs} token pair(s) for "${market.question.slice(0, 50)}"?\n\nBurns ${actualPairs} YES + ${actualPairs} NO tokens.\nCollateral refund: ${formatSats(refund)}\n\nProceed?`,
+        );
+        if (!confirmed) return;
+
+        showToast(`Cancelling ${actualPairs} pair(s)...`, "info");
+        (async () => {
+          try {
+            const result = await invoke<{ txid: string; previous_state: number; new_state: number; pairs_burned: number; is_full_cancellation: boolean }>("cancel_tokens", {
+              contractParamsJson: marketToContractParamsJson(market),
+              pairs: actualPairs,
+            });
+            showToast(`Pairs cancelled! txid: ${result.txid.slice(0, 16)}... (${result.is_full_cancellation ? "full" : "partial"})`, "success");
+            await refreshWallet();
+          } catch (error) {
+            showToast(`Cancellation failed: ${error}`, "error");
+          }
+        })();
+      }
       return;
     }
 
@@ -3475,14 +4429,87 @@ app.addEventListener("click", (event) => {
       return;
     }
 
-    window.alert(
-      `Prepared ${action.replace("submit-", "")} transaction for ${market.marketId}.`,
-    );
+    if (action === "submit-cancel") {
+      const pairs = Math.max(1, Math.floor(state.pairsInput));
+      showToast(`Cancelling ${pairs} pair(s) for ${market.question.slice(0, 40)}...`, "info");
+      (async () => {
+        try {
+          const result = await invoke<{ txid: string; previous_state: number; new_state: number; pairs_burned: number; is_full_cancellation: boolean }>("cancel_tokens", {
+            contractParamsJson: marketToContractParamsJson(market),
+            pairs,
+          });
+          showToast(`Tokens cancelled! txid: ${result.txid.slice(0, 16)}... (${result.is_full_cancellation ? "full" : "partial"})`, "success");
+          await refreshWallet();
+        } catch (error) {
+          showToast(`Cancellation failed: ${error}`, "error");
+        }
+      })();
+      return;
+    }
+
+    if (action === "submit-redeem") {
+      const tokens = Math.max(1, Math.floor(state.tokensInput));
+      const paths = getPathAvailability(market);
+
+      if (paths.redeem) {
+        showToast(`Redeeming ${tokens} winning token(s)...`, "info");
+        (async () => {
+          try {
+            const result = await invoke<{ txid: string; previous_state: number; tokens_redeemed: number; payout_sats: number }>("redeem_tokens", {
+              contractParamsJson: marketToContractParamsJson(market),
+              tokens,
+            });
+            showToast(`Redeemed! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}`, "success");
+            await refreshWallet();
+          } catch (error) {
+            showToast(`Redemption failed: ${error}`, "error");
+          }
+        })();
+      } else if (paths.expiryRedeem) {
+        // For expiry redemption, determine which token side the user holds
+        const yesBalance = state.walletBalance?.[reverseHex(market.yesAssetId)] ?? 0;
+        // Use whichever side the user holds (prefer YES if both)
+        const tokenAssetHex = yesBalance > 0 ? market.yesAssetId : market.noAssetId;
+
+        showToast(`Redeeming ${tokens} expired token(s)...`, "info");
+        (async () => {
+          try {
+            const result = await invoke<{ txid: string; previous_state: number; tokens_redeemed: number; payout_sats: number }>("redeem_expired", {
+              contractParamsJson: marketToContractParamsJson(market),
+              tokenAssetHex: tokenAssetHex,
+              tokens,
+            });
+            showToast(`Expired tokens redeemed! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}`, "success");
+            await refreshWallet();
+          } catch (error) {
+            showToast(`Expiry redemption failed: ${error}`, "error");
+          }
+        })();
+      } else {
+        showToast("No redemption path available for this market", "error");
+      }
+      return;
+    }
   }
 });
 
 app.addEventListener("input", (event) => {
   const target = event.target as HTMLInputElement;
+
+  if (target.id === "onboarding-nostr-nsec") {
+    state.onboardingNostrNsec = target.value;
+    return;
+  }
+
+  if (target.id === "onboarding-wallet-password") {
+    state.onboardingWalletPassword = target.value;
+    return;
+  }
+
+  if (target.id === "onboarding-wallet-mnemonic") {
+    state.onboardingWalletMnemonic = (target as unknown as HTMLTextAreaElement).value;
+    return;
+  }
 
   if (target.id === "global-search" || target.id === "global-search-mobile") {
     state.search = target.value;
@@ -3535,6 +4562,44 @@ app.addEventListener("input", (event) => {
 
   if (target.id === "wallet-restore-mnemonic") {
     state.walletRestoreMnemonic = (target as unknown as HTMLTextAreaElement).value;
+    return;
+  }
+
+  if (target.id === "nostr-import-nsec") {
+    state.nostrImportNsec = target.value;
+    return;
+  }
+
+  if (target.id === "nostr-replace-confirm") {
+    state.nostrReplaceConfirm = target.value;
+    const confirmBtn = document.querySelector("[data-action='nostr-replace-confirm']") as HTMLButtonElement | null;
+    if (confirmBtn) {
+      const enabled = target.value.trim().toUpperCase() === "DELETE";
+      confirmBtn.disabled = !enabled;
+      confirmBtn.className = `shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${enabled ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`;
+    }
+    return;
+  }
+
+  if (target.id === "wallet-delete-confirm") {
+    state.walletDeleteConfirm = target.value;
+    const confirmBtn = document.querySelector("[data-action='wallet-delete-confirm']") as HTMLButtonElement | null;
+    if (confirmBtn) {
+      const enabled = target.value.trim().toUpperCase() === "DELETE";
+      confirmBtn.disabled = !enabled;
+      confirmBtn.className = `shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${enabled ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`;
+    }
+    return;
+  }
+
+  if (target.id === "dev-reset-confirm") {
+    state.devResetConfirm = target.value;
+    const confirmBtn = document.querySelector("[data-action='dev-reset-confirm']") as HTMLButtonElement | null;
+    if (confirmBtn) {
+      const enabled = target.value.trim().toUpperCase() === "RESET";
+      confirmBtn.disabled = !enabled;
+      confirmBtn.className = `shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${enabled ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`;
+    }
     return;
   }
 
@@ -3606,6 +4671,48 @@ app.addEventListener("input", (event) => {
 app.addEventListener("keydown", (event) => {
   const target = event.target as HTMLInputElement;
   if (event.key !== "Enter") return;
+
+  if (target.id === "onboarding-nostr-nsec") {
+    event.preventDefault();
+    const btn = document.querySelector("[data-action='onboarding-import-nostr']") as HTMLElement | null;
+    btn?.click();
+    return;
+  }
+
+  if (target.id === "onboarding-wallet-password") {
+    event.preventDefault();
+    const actionName = state.onboardingWalletMode === "create" ? "onboarding-create-wallet" : "onboarding-restore-wallet";
+    const btn = document.querySelector(`[data-action='${actionName}']`) as HTMLElement | null;
+    btn?.click();
+    return;
+  }
+
+  if (target.id === "nostr-replace-confirm") {
+    event.preventDefault();
+    if (state.nostrReplaceConfirm.trim().toUpperCase() === "DELETE") {
+      const btn = document.querySelector("[data-action='nostr-replace-confirm']") as HTMLElement | null;
+      btn?.click();
+    }
+    return;
+  }
+
+  if (target.id === "wallet-delete-confirm") {
+    event.preventDefault();
+    if (state.walletDeleteConfirm.trim().toUpperCase() === "DELETE") {
+      const btn = document.querySelector("[data-action='wallet-delete-confirm']") as HTMLElement | null;
+      btn?.click();
+    }
+    return;
+  }
+
+  if (target.id === "dev-reset-confirm") {
+    event.preventDefault();
+    if (state.devResetConfirm.trim().toUpperCase() === "RESET") {
+      const btn = document.querySelector("[data-action='dev-reset-confirm']") as HTMLElement | null;
+      btn?.click();
+    }
+    return;
+  }
 
   if (target.id === "wallet-backup-password") {
     event.preventDefault();
