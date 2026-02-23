@@ -387,7 +387,7 @@ fn test_maker_order_ingest_and_query_roundtrip() {
     let params = test_maker_order_params();
 
     let order_id = store
-        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None, None, None)
         .unwrap();
     assert!(order_id > 0);
 
@@ -404,10 +404,10 @@ fn test_maker_order_idempotent_ingest() {
     let params = test_maker_order_params();
 
     let id1 = store
-        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None, None, None)
         .unwrap();
     let id2 = store
-        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None, None, None)
         .unwrap();
     assert_eq!(id1, id2);
 
@@ -425,7 +425,7 @@ fn test_maker_order_ingest_without_pubkey() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
 
-    let order_id = store.ingest_maker_order(&params, None, None).unwrap();
+    let order_id = store.ingest_maker_order(&params, None, None, None, None).unwrap();
     let info = store.get_maker_order(order_id).unwrap().unwrap();
     assert!(info.maker_base_pubkey.is_none());
 }
@@ -440,10 +440,10 @@ fn test_get_nonexistent_order() {
 fn test_list_maker_orders_filters() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     store
-        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None, None, None)
         .unwrap();
     store
-        .ingest_maker_order(&test_maker_order_params_2(), Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&test_maker_order_params_2(), Some(&[0xaa; 32]), None, None, None)
         .unwrap();
 
     // Filter by direction
@@ -478,9 +478,9 @@ fn test_filter_orders_by_maker_pubkey() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
     store
-        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None, None, None)
         .unwrap();
-    store.ingest_maker_order(&params, None, None).unwrap();
+    store.ingest_maker_order(&params, None, None, None, None).unwrap();
 
     let filter = OrderFilter {
         maker_base_pubkey: Some([0xaa; 32]),
@@ -495,10 +495,10 @@ fn test_filter_orders_by_maker_pubkey() {
 fn test_list_maker_orders_with_limit() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     store
-        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None, None, None)
         .unwrap();
     store
-        .ingest_maker_order(&test_maker_order_params_2(), Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&test_maker_order_params_2(), Some(&[0xaa; 32]), None, None, None)
         .unwrap();
 
     let filter = OrderFilter {
@@ -512,7 +512,7 @@ fn test_list_maker_orders_with_limit() {
 fn test_update_order_status() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let id = store
-        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None, None, None)
         .unwrap();
 
     assert_eq!(
@@ -592,7 +592,7 @@ fn test_utxo_add_idempotent() {
 fn test_order_utxo_lifecycle() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let order_id = store
-        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None, None, None)
         .unwrap();
 
     let utxo = test_utxo_with_outpoint([0xBB; 32], 1, [0x01; 32], 50_000);
@@ -650,13 +650,13 @@ fn test_watched_script_pubkeys() {
     assert_eq!(store.watched_script_pubkeys().unwrap().len(), 4);
 
     store
-        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None, None, None)
         .unwrap();
     assert_eq!(store.watched_script_pubkeys().unwrap().len(), 5);
 
     // Order without pubkey -> no covenant_spk -> no additional watched SPK
     store
-        .ingest_maker_order(&test_maker_order_params_2(), None, None)
+        .ingest_maker_order(&test_maker_order_params_2(), None, None, None, None)
         .unwrap();
     assert_eq!(store.watched_script_pubkeys().unwrap().len(), 5);
 }
@@ -785,7 +785,7 @@ fn test_sync_derives_order_status_active() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
     let order_id = store
-        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None, None, None)
         .unwrap();
 
     let order_spk = get_order_spk(&mut store, &params, &[0xaa; 32]);
@@ -822,7 +822,7 @@ fn test_sync_derives_order_fully_filled() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
     let order_id = store
-        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None, None, None)
         .unwrap();
 
     // Manually add a UTXO then mark it spent (simulates a fill)
@@ -856,7 +856,7 @@ fn test_sync_derives_order_partially_filled() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
     let order_id = store
-        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None, None, None)
         .unwrap();
 
     // Two UTXOs: one spent (filled), one unspent (still live)
@@ -891,7 +891,7 @@ fn test_sync_cancelled_order_excluded() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
     let order_id = store
-        .ingest_maker_order(&params, Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None, None, None)
         .unwrap();
 
     // Cancel the order
@@ -1081,7 +1081,7 @@ fn test_ingest_maker_order_with_nonce() {
     let params = test_maker_order_params();
 
     let order_id = store
-        .ingest_maker_order(&params, Some(&pubkey), Some(&nonce))
+        .ingest_maker_order(&params, Some(&pubkey), Some(&nonce), None, None)
         .unwrap();
     let info = store.get_maker_order(order_id).unwrap().unwrap();
 
@@ -1104,11 +1104,11 @@ fn test_maker_receive_script_pubkeys() {
 
     // Order with nonce → has maker_receive_spk
     store
-        .ingest_maker_order(&params, Some(&[0xaa; 32]), Some(&[0x11; 32]))
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), Some(&[0x11; 32]), None, None)
         .unwrap();
     // Order without nonce → no maker_receive_spk
     store
-        .ingest_maker_order(&params2, Some(&[0xaa; 32]), None)
+        .ingest_maker_order(&params2, Some(&[0xaa; 32]), None, None, None)
         .unwrap();
 
     let spks = store.maker_receive_script_pubkeys().unwrap();
@@ -1123,11 +1123,11 @@ fn test_idempotent_ingest_preserves_nonce() {
     let params = test_maker_order_params();
 
     let id1 = store
-        .ingest_maker_order(&params, Some(&pubkey), Some(&nonce))
+        .ingest_maker_order(&params, Some(&pubkey), Some(&nonce), None, None)
         .unwrap();
     // Re-ingest same order (idempotent, returns existing)
     let id2 = store
-        .ingest_maker_order(&params, Some(&pubkey), None)
+        .ingest_maker_order(&params, Some(&pubkey), None, None, None)
         .unwrap();
     assert_eq!(id1, id2);
 
@@ -1466,6 +1466,7 @@ fn test_ingest_market_with_metadata_roundtrip() {
         creator_pubkey: Some(vec![0xdd; 32]),
         creation_txid: Some("abc123def456".to_string()),
         nevent: Some("nevent1qtest".to_string()),
+        ..Default::default()
     };
 
     let market_id = store.ingest_market(&params, Some(&metadata)).unwrap();
@@ -1554,4 +1555,70 @@ fn test_list_markets_includes_metadata() {
         .collect();
     assert!(questions.contains(&"Question 1"));
     assert!(questions.contains(&"Question 2"));
+}
+
+// ==================== Nostr Event JSON Tests ====================
+
+#[test]
+fn test_market_nostr_event_json_roundtrip() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_params();
+
+    let event_json = r#"{"id":"abc123","content":"test"}"#;
+    let metadata = ContractMetadataInput {
+        question: Some("Test question".to_string()),
+        nostr_event_id: Some("abc123".to_string()),
+        nostr_event_json: Some(event_json.to_string()),
+        ..Default::default()
+    };
+
+    let market_id = store.ingest_market(&params, Some(&metadata)).unwrap();
+    let info = store.get_market(&market_id).unwrap().unwrap();
+
+    assert_eq!(info.nostr_event_id.as_deref(), Some("abc123"));
+    assert_eq!(info.nostr_event_json.as_deref(), Some(event_json));
+}
+
+#[test]
+fn test_market_nostr_event_json_none_by_default() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let market_id = store.ingest_market(&test_params(), None).unwrap();
+    let info = store.get_market(&market_id).unwrap().unwrap();
+
+    assert!(info.nostr_event_id.is_none());
+    assert!(info.nostr_event_json.is_none());
+}
+
+#[test]
+fn test_maker_order_nostr_event_json_roundtrip() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_maker_order_params();
+
+    let event_json = r#"{"id":"order123","kind":30078}"#;
+    let order_id = store
+        .ingest_maker_order(
+            &params,
+            Some(&[0xaa; 32]),
+            None,
+            Some("order123"),
+            Some(event_json),
+        )
+        .unwrap();
+
+    let info = store.get_maker_order(order_id).unwrap().unwrap();
+    assert_eq!(info.nostr_event_id.as_deref(), Some("order123"));
+    assert_eq!(info.nostr_event_json.as_deref(), Some(event_json));
+}
+
+#[test]
+fn test_maker_order_nostr_event_json_none_by_default() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_maker_order_params();
+
+    let order_id = store
+        .ingest_maker_order(&params, Some(&[0xaa; 32]), None, None, None)
+        .unwrap();
+
+    let info = store.get_maker_order(order_id).unwrap().unwrap();
+    assert!(info.nostr_event_json.is_none());
 }

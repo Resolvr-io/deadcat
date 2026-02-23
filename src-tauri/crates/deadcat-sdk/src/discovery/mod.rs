@@ -1,15 +1,39 @@
+//! Unified Nostr discovery service for markets, orders, and attestations.
+//!
+//! This module consolidates all Nostr-based discovery (previously split between
+//! `order_announcement`, `order_discovery`, and the app-layer `discovery.rs`)
+//! into a single SDK-owned module.
+
+pub mod attestation;
+pub mod config;
+pub mod events;
+pub mod market;
+pub mod service;
+pub mod store_trait;
+
 use std::time::Duration;
 
 use nostr_sdk::prelude::*;
+use serde::{Deserialize, Serialize};
 
-use crate::maker_order::params::OrderDirection;
-use crate::order_announcement::{DiscoveredOrder, OrderAnnouncement};
+use crate::maker_order::params::{MakerOrderParams, OrderDirection};
+
+// ---------------------------------------------------------------------------
+// Shared constants
+// ---------------------------------------------------------------------------
 
 /// Nostr event kind for app-specific data (NIP-78).
-pub const ORDER_EVENT_KIND: Kind = Kind::Custom(30078);
+/// Used for both contract announcements and order announcements.
+pub const APP_EVENT_KIND: Kind = Kind::Custom(30078);
+
+/// Tag value identifying a deadcat contract announcement.
+pub const CONTRACT_TAG: &str = "deadcat-contract";
 
 /// Tag value identifying a deadcat limit order.
 pub const ORDER_TAG: &str = "deadcat-order";
+
+/// Tag value identifying a deadcat oracle attestation.
+pub const ATTESTATION_TAG: &str = "deadcat-attestation";
 
 /// Network tag value for Liquid Testnet.
 pub const NETWORK_TAG: &str = "liquid-testnet";
@@ -17,7 +41,76 @@ pub const NETWORK_TAG: &str = "liquid-testnet";
 /// Default relay URLs.
 pub const DEFAULT_RELAYS: &[&str] = &["wss://relay.damus.io", "wss://relay.primal.net"];
 
-fn bytes_to_hex(bytes: &[u8]) -> String {
+// ---------------------------------------------------------------------------
+// Re-exports: market
+// ---------------------------------------------------------------------------
+
+pub use market::{DiscoveredMarket, build_announcement_event, build_contract_filter, parse_announcement_event};
+
+// ---------------------------------------------------------------------------
+// Re-exports: attestation
+// ---------------------------------------------------------------------------
+
+pub use attestation::{
+    AttestationContent, AttestationResult, build_attestation_event, build_attestation_filter,
+    build_attestation_subscription_filter, parse_attestation_event, sign_attestation,
+};
+
+// ---------------------------------------------------------------------------
+// Re-exports: config, events, service, store_trait
+// ---------------------------------------------------------------------------
+
+pub use config::DiscoveryConfig;
+pub use events::DiscoveryEvent;
+pub use service::{DiscoveryService, discovered_market_to_contract_params};
+pub use store_trait::{ContractMetadataInput, DiscoveryStore};
+
+// ---------------------------------------------------------------------------
+// Order types (moved from order_announcement.rs)
+// ---------------------------------------------------------------------------
+
+/// Published to Nostr, contains maker order params + discovery metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderAnnouncement {
+    pub version: u8,
+    pub params: MakerOrderParams,
+    pub market_id: String,
+    pub maker_base_pubkey: String,
+    pub order_nonce: String,
+    pub covenant_address: String,
+    pub offered_amount: u64,
+    pub direction_label: String,
+}
+
+/// Parsed from a Nostr event — what the taker sees.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveredOrder {
+    pub id: String,
+    pub market_id: String,
+    pub base_asset_id: String,
+    pub quote_asset_id: String,
+    pub price: u64,
+    pub min_fill_lots: u64,
+    pub min_remainder_lots: u64,
+    pub direction: String,
+    pub direction_label: String,
+    pub maker_base_pubkey: String,
+    pub order_nonce: String,
+    pub covenant_address: String,
+    pub offered_amount: u64,
+    pub cosigner_pubkey: String,
+    pub maker_receive_spk_hash: String,
+    pub creator_pubkey: String,
+    pub created_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nostr_event_json: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Order event building / parsing (moved from order_discovery.rs)
+// ---------------------------------------------------------------------------
+
+pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     hex::encode(bytes)
 }
 
@@ -43,7 +136,7 @@ pub fn build_order_event(keys: &Keys, announcement: &OrderAnnouncement) -> Resul
         ),
     ];
 
-    let event = EventBuilder::new(ORDER_EVENT_KIND, &content)
+    let event = EventBuilder::new(APP_EVENT_KIND, &content)
         .tags(tags)
         .sign_with_keys(keys)
         .map_err(|e| format!("failed to build event: {e}"))?;
@@ -55,7 +148,7 @@ pub fn build_order_event(keys: &Keys, announcement: &OrderAnnouncement) -> Resul
 ///
 /// If `market_id_hex` is provided, filters to orders for that specific market.
 pub fn build_order_filter(market_id_hex: Option<&str>) -> Filter {
-    let mut filter = Filter::new().kind(ORDER_EVENT_KIND).hashtag(ORDER_TAG);
+    let mut filter = Filter::new().kind(APP_EVENT_KIND).hashtag(ORDER_TAG);
 
     if let Some(market_id) = market_id_hex {
         filter = filter.hashtag(market_id);
@@ -92,8 +185,13 @@ pub fn parse_order_event(event: &Event) -> Result<DiscoveredOrder, String> {
         maker_receive_spk_hash: bytes_to_hex(&announcement.params.maker_receive_spk_hash),
         creator_pubkey: event.pubkey.to_hex(),
         created_at: event.created_at.as_u64(),
+        nostr_event_json: None,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Relay interaction helpers
+// ---------------------------------------------------------------------------
 
 /// Connect a Nostr client to the default relays (or a custom one).
 pub async fn connect_client(relay_url: Option<&str>) -> Result<Client, String> {
@@ -115,13 +213,34 @@ pub async fn connect_client(relay_url: Option<&str>) -> Result<Client, String> {
     Ok(client)
 }
 
-/// Publish a signed order event to relays.
-pub async fn publish_order(client: &Client, event: Event) -> Result<EventId, String> {
+/// Publish an event to the connected relays.
+pub async fn publish_event(client: &Client, event: Event) -> Result<EventId, String> {
     let output = client
         .send_event(event)
         .await
-        .map_err(|e| format!("failed to send order event: {e}"))?;
+        .map_err(|e| format!("failed to send event: {e}"))?;
     Ok(*output.id())
+}
+
+/// Fetch contract announcements from relays.
+pub async fn fetch_announcements(client: &Client) -> Result<Vec<DiscoveredMarket>, String> {
+    let filter = build_contract_filter();
+    let events = client
+        .fetch_events(vec![filter], Duration::from_secs(15))
+        .await
+        .map_err(|e| format!("failed to fetch events: {e}"))?;
+
+    let mut markets = Vec::new();
+    for event in events.iter() {
+        match parse_announcement_event(event) {
+            Ok(market) => markets.push(market),
+            Err(e) => {
+                log::warn!("skipping unparseable announcement {}: {e}", event.id);
+            }
+        }
+    }
+
+    Ok(markets)
 }
 
 /// Fetch limit orders from relays, optionally filtered by market ID.
@@ -148,10 +267,13 @@ pub async fn fetch_orders(
     Ok(orders)
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::maker_order::params::MakerOrderParams;
     use crate::taproot::NUMS_KEY_BYTES;
 
     fn test_announcement() -> OrderAnnouncement {

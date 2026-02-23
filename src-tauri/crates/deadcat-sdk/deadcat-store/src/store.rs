@@ -3,6 +3,7 @@ use diesel::sql_types::Integer;
 use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
+use deadcat_sdk::discovery::ContractMetadataInput;
 use deadcat_sdk::{
     CompiledContract, CompiledMakerOrder, ContractParams, MakerOrderParams, MarketId, MarketState,
     OrderDirection, UnblindedUtxo,
@@ -61,19 +62,6 @@ pub struct IssuanceData {
     pub no_blinding_nonce: [u8; 32],
 }
 
-/// Optional Nostr/UI metadata to attach when ingesting a market.
-#[derive(Debug, Clone, Default)]
-pub struct ContractMetadataInput {
-    pub question: Option<String>,
-    pub description: Option<String>,
-    pub category: Option<String>,
-    pub resolution_source: Option<String>,
-    pub starting_yes_price: Option<u8>,
-    pub creator_pubkey: Option<Vec<u8>>,
-    pub creation_txid: Option<String>,
-    pub nevent: Option<String>,
-}
-
 #[derive(Debug, Clone)]
 pub struct MarketInfo {
     pub market_id: MarketId,
@@ -91,6 +79,8 @@ pub struct MarketInfo {
     pub creator_pubkey: Option<Vec<u8>>,
     pub creation_txid: Option<String>,
     pub nevent: Option<String>,
+    pub nostr_event_id: Option<String>,
+    pub nostr_event_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +91,8 @@ pub struct MakerOrderInfo {
     pub cmr: [u8; 32],
     pub maker_base_pubkey: Option<[u8; 32]>,
     pub order_nonce: Option<[u8; 32]>,
+    pub nostr_event_id: Option<String>,
+    pub nostr_event_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -197,6 +189,8 @@ impl DeadcatStore {
         params: &MakerOrderParams,
         maker_pubkey: Option<&[u8; 32]>,
         order_nonce: Option<&[u8; 32]>,
+        nostr_event_id: Option<&str>,
+        nostr_event_json: Option<&str>,
     ) -> crate::Result<i32> {
         let compiled = CompiledMakerOrder::new(*params)?;
         let cmr_bytes = compiled.cmr().as_ref().to_vec();
@@ -226,7 +220,7 @@ impl DeadcatStore {
             return Ok(row.id);
         }
 
-        let row = new_maker_order_row(params, &compiled, maker_pubkey, order_nonce);
+        let row = new_maker_order_row(params, &compiled, maker_pubkey, order_nonce, nostr_event_id, nostr_event_json);
 
         diesel::insert_into(maker_orders::table)
             .values(&row)
@@ -543,6 +537,33 @@ impl DeadcatStore {
 
             Ok(report)
         })
+    }
+}
+
+// ==================== DiscoveryStore trait impl ====================
+
+impl deadcat_sdk::discovery::DiscoveryStore for DeadcatStore {
+    fn ingest_market(
+        &mut self,
+        params: &ContractParams,
+        meta: Option<&ContractMetadataInput>,
+    ) -> Result<(), String> {
+        self.ingest_market(params, meta)
+            .map(|_| ())
+            .map_err(|e| format!("{e}"))
+    }
+
+    fn ingest_maker_order(
+        &mut self,
+        params: &MakerOrderParams,
+        maker_pubkey: Option<&[u8; 32]>,
+        nonce: Option<&[u8; 32]>,
+        nostr_event_id: Option<&str>,
+        nostr_event_json: Option<&str>,
+    ) -> Result<(), String> {
+        self.ingest_maker_order(params, maker_pubkey, nonce, nostr_event_id, nostr_event_json)
+            .map(|_| ())
+            .map_err(|e| format!("{e}"))
     }
 }
 
