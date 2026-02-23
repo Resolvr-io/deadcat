@@ -113,6 +113,12 @@ impl WalletManager {
     }
 
     pub fn unlock(&mut self, password: &str) -> Result<(), WalletError> {
+        // Use cached mnemonic if available (skips expensive Argon2 KDF)
+        if let Some(cached) = self.persister.cached() {
+            let cached = cached.to_string();
+            self.init_sdk(&cached)?;
+            return Ok(());
+        }
         let mnemonic_str = self.persister.load(password)?;
         self.init_sdk(&mnemonic_str)?;
         Ok(())
@@ -120,6 +126,13 @@ impl WalletManager {
 
     pub fn lock(&mut self) {
         self.sdk = None;
+        self.persister.clear_cache();
+    }
+
+    pub fn delete_wallet(&mut self) -> Result<(), WalletError> {
+        self.sdk = None;
+        self.persister.delete()?;
+        Ok(())
     }
 
     fn init_sdk(&mut self, mnemonic_str: &str) -> Result<(), WalletError> {
@@ -240,6 +253,10 @@ impl WalletManager {
 
     pub fn persister(&self) -> &MnemonicPersister {
         &self.persister
+    }
+
+    pub fn persister_mut(&mut self) -> &mut MnemonicPersister {
+        &mut self.persister
     }
 
     // ── Market store delegation ──────────────────────────────────────────
