@@ -327,11 +327,9 @@ pub fn generate_keys(app_data_dir: &std::path::Path) -> Result<Keys, String> {
     let keys = Keys::generate();
     let secret_hex = keys.secret_key().to_secret_hex();
     if let Some(parent) = key_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create data dir: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create data dir: {e}"))?;
     }
-    std::fs::write(&key_path, secret_hex)
-        .map_err(|e| format!("failed to write key file: {e}"))?;
+    std::fs::write(&key_path, secret_hex).map_err(|e| format!("failed to write key file: {e}"))?;
     Ok(keys)
 }
 

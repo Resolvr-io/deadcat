@@ -623,7 +623,8 @@ fn test_oracle_resolve_and_redeem_yes() {
     fixture.fund_and_sync(20, 500_000);
 
     let (oracle_pubkey, keypair) = generate_oracle_keypair();
-    let (_creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
+    let (_creation_txid, params) =
+        create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
 
     // Oracle resolves YES
     let signature = oracle_sign(&params, true, &keypair);
@@ -664,7 +665,8 @@ fn test_oracle_resolve_and_redeem_no() {
     fixture.fund_and_sync(20, 500_000);
 
     let (oracle_pubkey, keypair) = generate_oracle_keypair();
-    let (_creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
+    let (_creation_txid, params) =
+        create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
 
     // Oracle resolves NO
     let signature = oracle_sign(&params, false, &keypair);
