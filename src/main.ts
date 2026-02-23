@@ -586,8 +586,21 @@ const formatVolumeBtc = (value: number): string =>
     : `${value.toFixed(1)} BTC`;
 const formatBlockHeight = (value: number): string =>
   value.toLocaleString("en-US");
+const _dateFmtCache = new Map<string, Intl.DateTimeFormat>();
+const _numFmtCache = new Map<string, Intl.NumberFormat>();
+function cachedDateFmt(key: string, locale: string, opts: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  let f = _dateFmtCache.get(key);
+  if (!f) { f = new Intl.DateTimeFormat(locale, opts); _dateFmtCache.set(key, f); }
+  return f;
+}
+function cachedNumFmt(key: string, locale: string, opts: Intl.NumberFormatOptions): Intl.NumberFormat {
+  let f = _numFmtCache.get(key);
+  if (!f) { f = new Intl.NumberFormat(locale, opts); _numFmtCache.set(key, f); }
+  return f;
+}
+
 const formatEstTime = (date: Date): string =>
-  new Intl.DateTimeFormat("en-US", {
+  cachedDateFmt("est-time", "en-US", {
     timeZone: "America/New_York",
     hour: "numeric",
     minute: "2-digit",
@@ -596,7 +609,7 @@ const formatEstTime = (date: Date): string =>
     .format(date)
     .toLowerCase();
 const formatSettlementDateTime = (date: Date): string =>
-  `${new Intl.DateTimeFormat("en-US", {
+  `${cachedDateFmt("settlement", "en-US", {
     timeZone: "America/New_York",
     weekday: "short",
     month: "short",
@@ -633,14 +646,14 @@ function satsToFiat(sats: number, currency: BaseCurrency): number {
 
 function formatFiat(value: number, currency: BaseCurrency): string {
   switch (currency) {
-    case "USD": return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
-    case "EUR": return new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" }).format(value);
-    case "GBP": return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(value);
-    case "JPY": return new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY", maximumFractionDigits: 0 }).format(value);
-    case "CNY": return new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format(value);
-    case "CHF": return new Intl.NumberFormat("de-CH", { style: "currency", currency: "CHF" }).format(value);
-    case "AUD": return new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(value);
-    case "CAD": return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(value);
+    case "USD": return cachedNumFmt("USD", "en-US", { style: "currency", currency: "USD" }).format(value);
+    case "EUR": return cachedNumFmt("EUR", "de-DE", { style: "currency", currency: "EUR" }).format(value);
+    case "GBP": return cachedNumFmt("GBP", "en-GB", { style: "currency", currency: "GBP" }).format(value);
+    case "JPY": return cachedNumFmt("JPY", "ja-JP", { style: "currency", currency: "JPY", maximumFractionDigits: 0 }).format(value);
+    case "CNY": return cachedNumFmt("CNY", "zh-CN", { style: "currency", currency: "CNY" }).format(value);
+    case "CHF": return cachedNumFmt("CHF", "de-CH", { style: "currency", currency: "CHF" }).format(value);
+    case "AUD": return cachedNumFmt("AUD", "en-AU", { style: "currency", currency: "AUD" }).format(value);
+    case "CAD": return cachedNumFmt("CAD", "en-CA", { style: "currency", currency: "CAD" }).format(value);
     default: return "";
   }
 }
@@ -2129,11 +2142,13 @@ async function refreshWallet(): Promise<void> {
   render();
   try {
     await invoke("sync_wallet");
-    const balance = await invoke<{ assets: Record<string, number> }>("get_wallet_balance");
+    const [balance, txs, swaps] = await Promise.all([
+      invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
+      invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions"),
+      invoke<PaymentSwap[]>("list_payment_swaps"),
+    ]);
     state.walletBalance = balance.assets;
-    const txs = await invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions");
     state.walletTransactions = txs;
-    const swaps = await invoke<PaymentSwap[]>("list_payment_swaps");
     state.walletSwaps = swaps;
   } catch (e) {
     state.walletError = String(e);
@@ -3083,19 +3098,51 @@ async function finishOnboarding(): Promise<void> {
   state.marketsLoading = false;
   render();
   void syncCurrentHeightFromLwk("liquid-testnet");
+
+  // Fetch relay list + backup status in background (same as initApp boot path)
+  if (state.nostrNpub) {
+    invoke<string[]>("fetch_nip65_relay_list")
+      .then((relays) => {
+        state.relays = relays.map(u => ({ url: u, has_backup: false }));
+        invoke<NostrBackupStatus>("check_nostr_backup")
+          .then((status) => {
+            state.nostrBackupStatus = status;
+            if (status.relay_results) {
+              state.relays = state.relays.map(r => ({
+                ...r,
+                has_backup: status.relay_results.find((rr: RelayBackupResult) => rr.url === r.url)?.has_backup ?? false,
+              }));
+            }
+            render();
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+
+    invoke<NostrProfile | null>("fetch_nostr_profile")
+      .then((profile) => {
+        if (profile) {
+          state.nostrProfile = profile;
+          render();
+        }
+      })
+      .catch(() => {});
+  }
+}
+
+function dismissSplash(): void {
+  const splash = document.getElementById("splash");
+  if (!splash) return;
+  splash.classList.add("fade-out");
+  splash.addEventListener("transitionend", () => splash.remove(), { once: true });
 }
 
 async function initApp(): Promise<void> {
   render();
   updateEstClockLabels();
 
-  // Dismiss splash screen after 2 full animation cycles (2.4s × 2 = 4.8s)
-  setTimeout(() => {
-    const splash = document.getElementById("splash");
-    if (!splash) return;
-    splash.classList.add("fade-out");
-    splash.addEventListener("transitionend", () => splash.remove(), { once: true });
-  }, 4800);
+  // Track when the minimum loader animation time has elapsed (2 full cycles = 4.8s)
+  const splashReady = new Promise<void>(r => setTimeout(r, 4800));
 
   // 1. Try to load existing Nostr identity (no auto-generation)
   let hasNostrIdentity = false;
@@ -3162,6 +3209,9 @@ async function initApp(): Promise<void> {
       state.onboardingNostrDone = true;
     }
     render();
+    // Wait for loader animation to finish before revealing onboarding
+    await splashReady;
+    dismissSplash();
     // If going straight to wallet step with existing identity, auto-scan for backup
     if (!needsNostr && needsWallet) {
       state.onboardingBackupScanning = true;
@@ -3187,9 +3237,10 @@ async function initApp(): Promise<void> {
     void refreshWallet();
   }
 
-  await loadMarkets();
+  await Promise.all([loadMarkets(), splashReady]);
   state.marketsLoading = false;
   render();
+  dismissSplash();
 
   void syncCurrentHeightFromLwk("liquid-testnet");
 }
@@ -3209,7 +3260,7 @@ setInterval(() => {
       try {
         const balance = await invoke<{ assets: Record<string, number> }>("get_wallet_balance");
         state.walletBalance = balance.assets;
-        render();
+        if (state.view === "wallet") render();
       } catch (_) {
         // Silent — don't disrupt the user
       }
@@ -4124,20 +4175,24 @@ app.addEventListener("click", (event) => {
         state.walletPassword = "";
         await fetchWalletStatus();
         // Load cached wallet data instantly (no Electrum sync)
-        const balance = await invoke<{ assets: Record<string, number> }>("get_wallet_balance");
+        const [balance, txs, swaps] = await Promise.all([
+          invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
+          invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions"),
+          invoke<PaymentSwap[]>("list_payment_swaps"),
+        ]);
         state.walletBalance = balance.assets;
-        const txs = await invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions");
         state.walletTransactions = txs;
-        const swaps = await invoke<PaymentSwap[]>("list_payment_swaps");
         state.walletSwaps = swaps;
         state.walletLoading = false;
         hideOverlayLoader();
         render();
         // Background Electrum sync — updates balances when done
         invoke("sync_wallet").then(async () => {
-          const freshBalance = await invoke<{ assets: Record<string, number> }>("get_wallet_balance");
+          const [freshBalance, freshTxs] = await Promise.all([
+            invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
+            invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions"),
+          ]);
           state.walletBalance = freshBalance.assets;
-          const freshTxs = await invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions");
           state.walletTransactions = freshTxs;
           render();
         }).catch(() => { /* silent background sync failure */ });

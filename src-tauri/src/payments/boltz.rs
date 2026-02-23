@@ -117,7 +117,7 @@ pub struct BoltzSwapStatusResponse {
 impl BoltzService {
     pub fn new(network: Network, boltz_api_url_override: Option<String>) -> Self {
         let boltz_api_url = boltz_api_url_override.unwrap_or_else(|| default_api_url(network));
-        let client = BoltzApiClientV2::new(boltz_api_url.clone(), Some(Duration::from_secs(15)));
+        let client = BoltzApiClientV2::new(boltz_api_url.clone(), Some(Duration::from_secs(8)));
         Self {
             client,
             network,
