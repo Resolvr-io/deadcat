@@ -1,16 +1,18 @@
 import "./style.css";
 import { invoke } from "@tauri-apps/api/core";
-
-import { app, state } from "./state.ts";
-import type {
-  Side,
-  TradeIntent,
-  IdentityResponse,
-  NostrBackupStatus,
-  RelayBackupResult,
-  NostrProfile,
-} from "./types.ts";
-
+import { renderCreateMarket } from "./components/create.ts";
+import { renderDetail } from "./components/detail.ts";
+import { renderHome } from "./components/home.ts";
+import { renderOnboarding } from "./components/onboarding.ts";
+// Components
+import { renderTopShell } from "./components/shell.ts";
+import { renderWallet } from "./components/wallet.ts";
+import { renderNostrEventModal } from "./components/wallet-modals.ts";
+// Handlers
+import { handleClick } from "./handlers/click.ts";
+import { handleFocusout } from "./handlers/focusout.ts";
+import { handleInput } from "./handlers/input.ts";
+import { handleKeydown } from "./handlers/keydown.ts";
 // Services
 import { loadMarkets } from "./services/markets.ts";
 import {
@@ -18,30 +20,23 @@ import {
   refreshWallet,
   syncCurrentHeightFromLwk,
 } from "./services/wallet.ts";
-
+import { app, state } from "./state.ts";
+import type {
+  IdentityResponse,
+  NostrBackupStatus,
+  NostrProfile,
+  RelayBackupResult,
+  Side,
+  TradeIntent,
+} from "./types.ts";
+import { formatEstTime, formatSatsInput } from "./utils/format.ts";
 // Utils
 import {
+  getBasePriceSats,
   getMarketById,
   getPositionContracts,
-  getBasePriceSats,
   setLimitPriceSats,
 } from "./utils/market.ts";
-import { formatSatsInput, formatEstTime } from "./utils/format.ts";
-
-// Components
-import { renderTopShell } from "./components/shell.ts";
-import { renderHome } from "./components/home.ts";
-import { renderDetail } from "./components/detail.ts";
-import { renderCreateMarket } from "./components/create.ts";
-import { renderWallet } from "./components/wallet.ts";
-import { renderNostrEventModal } from "./components/wallet-modals.ts";
-import { renderOnboarding } from "./components/onboarding.ts";
-
-// Handlers
-import { handleClick } from "./handlers/click.ts";
-import { handleInput } from "./handlers/input.ts";
-import { handleKeydown } from "./handlers/keydown.ts";
-import { handleFocusout } from "./handlers/focusout.ts";
 
 // ── Core render ──────────────────────────────────────────────────────
 
@@ -290,7 +285,10 @@ app.addEventListener("input", (e) => {
 });
 
 app.addEventListener("keydown", (e) => {
-  handleKeydown(e as KeyboardEvent, { render, openMarket: (id: string) => openMarket(id) });
+  handleKeydown(e as KeyboardEvent, {
+    render,
+    openMarket: (id: string) => openMarket(id),
+  });
 });
 
 app.addEventListener("focusout", (e) => {
@@ -303,7 +301,11 @@ initApp();
 setInterval(updateEstClockLabels, 1_000);
 setInterval(() => {
   if (state.onboardingStep === null) {
-    void syncCurrentHeightFromLwk("liquid-testnet", render, updateEstClockLabels);
+    void syncCurrentHeightFromLwk(
+      "liquid-testnet",
+      render,
+      updateEstClockLabels,
+    );
   }
 }, 60_000);
 

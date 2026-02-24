@@ -449,32 +449,65 @@ export function renderSendModal(): string {
 export function renderNostrEventModal(): string {
   if (!state.nostrEventModal || !state.nostrEventJson) return "";
 
-  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const esc = (s: string) =>
+    s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
 
-  let parsed: { id?: string; pubkey?: string; kind?: number; created_at?: number; tags?: string[][]; content?: string; sig?: string } | null = null;
-  try { parsed = JSON.parse(state.nostrEventJson); } catch { /* raw fallback */ }
+  let parsed: {
+    id?: string;
+    pubkey?: string;
+    kind?: number;
+    created_at?: number;
+    tags?: string[][];
+    content?: string;
+    sig?: string;
+  } | null = null;
+  try {
+    parsed = JSON.parse(state.nostrEventJson);
+  } catch {
+    /* raw fallback */
+  }
 
   let contentPretty: string | null = null;
   if (parsed?.content) {
-    try { contentPretty = JSON.stringify(JSON.parse(parsed.content), null, 2); } catch { contentPretty = parsed.content; }
+    try {
+      contentPretty = JSON.stringify(JSON.parse(parsed.content), null, 2);
+    } catch {
+      contentPretty = parsed.content;
+    }
   }
 
-  const truncHex = (v: string) => v.length > 16 ? v.slice(0, 8) + "\u2026" + v.slice(-8) : v;
-  const truncBech32 = (v: string) => v.length > 24 ? v.slice(0, 12) + "\u2026" + v.slice(-8) : v;
+  const truncHex = (v: string) =>
+    v.length > 16 ? `${v.slice(0, 8)}\u2026${v.slice(-8)}` : v;
+  const truncBech32 = (v: string) =>
+    v.length > 24 ? `${v.slice(0, 12)}\u2026${v.slice(-8)}` : v;
 
-  const fieldHtml = (label: string, value: string | undefined, opts?: { copyable?: boolean; displayValue?: string }) => {
+  const fieldHtml = (
+    label: string,
+    value: string | undefined,
+    opts?: { copyable?: boolean; displayValue?: string },
+  ) => {
     if (!value) return "";
     const copyable = opts?.copyable ?? false;
-    const display = opts?.displayValue ? truncBech32(opts.displayValue) : (copyable ? truncHex(value) : esc(value));
+    const display = opts?.displayValue
+      ? truncBech32(opts.displayValue)
+      : copyable
+        ? truncHex(value)
+        : esc(value);
     const copyVal = opts?.displayValue ?? value;
     return `<div class="min-w-0">
       <span class="mb-0.5 block text-xs text-slate-500">${label}</span>
-      ${copyable
-        ? `<button data-action="copy-to-clipboard" data-copy-value="${esc(copyVal)}" class="flex w-full min-w-0 items-center gap-1.5 overflow-hidden font-mono text-xs text-slate-200 transition-colors hover:text-white">
+      ${
+        copyable
+          ? `<button data-action="copy-to-clipboard" data-copy-value="${esc(copyVal)}" class="flex w-full min-w-0 items-center gap-1.5 overflow-hidden font-mono text-xs text-slate-200 transition-colors hover:text-white">
             <span class="truncate">${display}</span>
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-slate-500"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
           </button>`
-        : `<p class="truncate text-xs text-slate-200">${display}</p>`}
+          : `<p class="truncate text-xs text-slate-200">${display}</p>`
+      }
     </div>`;
   };
 
@@ -482,12 +515,23 @@ export function renderNostrEventModal(): string {
   if (parsed) {
     const neventDisplay = state.nostrEventNevent ?? parsed.id;
     const npubDisplay = parsed.pubkey ? hexToNpub(parsed.pubkey) : undefined;
-    fieldsHtml += fieldHtml("Event ID", parsed.id, { copyable: true, displayValue: neventDisplay });
-    fieldsHtml += fieldHtml("Public Key", parsed.pubkey, { copyable: true, displayValue: npubDisplay });
+    fieldsHtml += fieldHtml("Event ID", parsed.id, {
+      copyable: true,
+      displayValue: neventDisplay,
+    });
+    fieldsHtml += fieldHtml("Public Key", parsed.pubkey, {
+      copyable: true,
+      displayValue: npubDisplay,
+    });
 
     fieldsHtml += `<div class="grid grid-cols-2 gap-3">`;
     fieldsHtml += fieldHtml("Kind", parsed.kind?.toString());
-    fieldsHtml += fieldHtml("Created", parsed.created_at ? new Date(parsed.created_at * 1000).toLocaleString() : undefined);
+    fieldsHtml += fieldHtml(
+      "Created",
+      parsed.created_at
+        ? new Date(parsed.created_at * 1000).toLocaleString()
+        : undefined,
+    );
     fieldsHtml += `</div>`;
 
     if (state.relays.length > 0) {
@@ -538,10 +582,14 @@ export function renderNostrEventModal(): string {
           ${fieldsHtml}
         </div>
         <div class="flex items-center justify-end gap-2 border-t border-slate-800 px-6 py-4">
-          ${state.nostrEventNevent ? `<button data-action="copy-to-clipboard" data-copy-value="${state.nostrEventNevent}" class="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+          ${
+            state.nostrEventNevent
+              ? `<button data-action="copy-to-clipboard" data-copy-value="${state.nostrEventNevent}" class="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
             Copy Event ID
-          </button>` : ""}
+          </button>`
+              : ""
+          }
           <button data-action="copy-nostr-event-json" class="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
             Copy JSON

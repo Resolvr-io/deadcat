@@ -1,4 +1,4 @@
-import { state, SATS_PER_FULL_CONTRACT, fxRates } from "../state.ts";
+import { fxRates, SATS_PER_FULL_CONTRACT, state } from "../state.ts";
 import type { BaseCurrency } from "../types.ts";
 
 export { SATS_PER_FULL_CONTRACT };
@@ -9,7 +9,8 @@ export const formatProbabilityWithPercent = (price: number): string =>
   `${Math.round(price * 100)}% (${formatProbabilitySats(price)})`;
 export const formatPercent = (value: number): string =>
   `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
-export const formatSats = (value: number): string => `${value.toLocaleString()} sats`;
+export const formatSats = (value: number): string =>
+  `${value.toLocaleString()} sats`;
 export const formatSatsInput = (value: number): string =>
   Math.max(1, Math.floor(value)).toLocaleString("en-US");
 export const formatVolumeBtc = (value: number): string =>
@@ -76,21 +77,46 @@ export function satsToFiat(sats: number, currency: BaseCurrency): number {
 export function formatFiat(value: number, currency: BaseCurrency): string {
   switch (currency) {
     case "USD":
-      return cachedNumFmt("USD", "en-US", { style: "currency", currency: "USD" }).format(value);
+      return cachedNumFmt("USD", "en-US", {
+        style: "currency",
+        currency: "USD",
+      }).format(value);
     case "EUR":
-      return cachedNumFmt("EUR", "de-DE", { style: "currency", currency: "EUR" }).format(value);
+      return cachedNumFmt("EUR", "de-DE", {
+        style: "currency",
+        currency: "EUR",
+      }).format(value);
     case "GBP":
-      return cachedNumFmt("GBP", "en-GB", { style: "currency", currency: "GBP" }).format(value);
+      return cachedNumFmt("GBP", "en-GB", {
+        style: "currency",
+        currency: "GBP",
+      }).format(value);
     case "JPY":
-      return cachedNumFmt("JPY", "ja-JP", { style: "currency", currency: "JPY", maximumFractionDigits: 0 }).format(value);
+      return cachedNumFmt("JPY", "ja-JP", {
+        style: "currency",
+        currency: "JPY",
+        maximumFractionDigits: 0,
+      }).format(value);
     case "CNY":
-      return cachedNumFmt("CNY", "zh-CN", { style: "currency", currency: "CNY" }).format(value);
+      return cachedNumFmt("CNY", "zh-CN", {
+        style: "currency",
+        currency: "CNY",
+      }).format(value);
     case "CHF":
-      return cachedNumFmt("CHF", "de-CH", { style: "currency", currency: "CHF" }).format(value);
+      return cachedNumFmt("CHF", "de-CH", {
+        style: "currency",
+        currency: "CHF",
+      }).format(value);
     case "AUD":
-      return cachedNumFmt("AUD", "en-AU", { style: "currency", currency: "AUD" }).format(value);
+      return cachedNumFmt("AUD", "en-AU", {
+        style: "currency",
+        currency: "AUD",
+      }).format(value);
     case "CAD":
-      return cachedNumFmt("CAD", "en-CA", { style: "currency", currency: "CAD" }).format(value);
+      return cachedNumFmt("CAD", "en-CA", {
+        style: "currency",
+        currency: "CAD",
+      }).format(value);
     default:
       return "";
   }

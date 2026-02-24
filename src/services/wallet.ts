@@ -1,15 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import QRCode from "qrcode";
-import { state, markets } from "../state";
-import type { WalletNetwork, ChainTipResponse, PaymentSwap } from "../types";
-import { showOverlayLoader, hideOverlayLoader } from "../ui/loader";
+import { markets, state } from "../state";
+import type { ChainTipResponse, PaymentSwap, WalletNetwork } from "../types";
+import { hideOverlayLoader, showOverlayLoader } from "../ui/loader";
 
 export function formatLbtc(sats: number): string {
   if (state.walletUnit === "sats") {
-    return sats.toLocaleString() + " L-sats";
+    return `${sats.toLocaleString()} L-sats`;
   }
   const btc = sats / 100_000_000;
-  return btc.toFixed(8) + " L-BTC";
+  return `${btc.toFixed(8)} L-BTC`;
 }
 
 export async function fetchWalletStatus(): Promise<void> {
@@ -76,7 +76,7 @@ export async function generateQr(value: string): Promise<void> {
       scale: 8,
       color: { dark: "#0f172a", light: "#ffffff" },
     });
-    const ctx = canvas.getContext("2d")!;
+    const ctx = canvas.getContext("2d") as CanvasRenderingContext2D;
     const logoImg = new Image();
     logoImg.src = QR_LOGO_SVG;
     await new Promise<void>((resolve, reject) => {

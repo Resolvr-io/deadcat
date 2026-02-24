@@ -1,4 +1,4 @@
-import { state, categories, SATS_PER_FULL_CONTRACT } from "../state.ts";
+import { categories, SATS_PER_FULL_CONTRACT, state } from "../state.ts";
 
 export function renderCreateMarket(): string {
   const yesSats = Math.max(
