@@ -52,6 +52,7 @@ import { formatSats, formatSatsInput } from "../utils/format.ts";
 import {
   clampContractPriceSats,
   commitLimitPriceDraft,
+  commitTradeContractsDraft,
   getBasePriceSats,
   getPathAvailability,
   getPositionContracts,
@@ -133,6 +134,9 @@ export async function handleClick(
   const limitPriceDelta = Number(
     actionEl?.getAttribute("data-limit-price-delta") ?? "",
   );
+  const contractsStepDelta = Number(
+    actionEl?.getAttribute("data-contracts-step-delta") ?? "",
+  );
   const orderType = orderTypeEl?.getAttribute(
     "data-order-type",
   ) as OrderType | null;
@@ -190,6 +194,8 @@ export async function handleClick(
   if (category) {
     state.activeCategory = category;
     state.view = "home";
+    state.chartHoverMarketId = null;
+    state.chartHoverX = null;
     render();
     return;
   }
@@ -443,7 +449,26 @@ export async function handleClick(
 
   if (action === "go-home") {
     state.view = "home";
+    state.chartHoverMarketId = null;
+    state.chartHoverX = null;
     render();
+    return;
+  }
+
+  if (action === "set-chart-timescale") {
+    const scale = actionEl?.getAttribute("data-scale") as
+      | "1H"
+      | "3H"
+      | "6H"
+      | "12H"
+      | "1D"
+      | null;
+    if (scale) {
+      state.chartTimescale = scale;
+      state.chartHoverMarketId = null;
+      state.chartHoverX = null;
+      render();
+    }
     return;
   }
 
@@ -2051,6 +2076,26 @@ export async function handleClick(
         : state.limitPrice * SATS_PER_FULL_CONTRACT,
     );
     setLimitPriceSats(currentSats + Math.sign(limitPriceDelta));
+    render();
+    return;
+  }
+
+  if (
+    action === "step-trade-contracts" &&
+    Number.isFinite(contractsStepDelta) &&
+    contractsStepDelta !== 0
+  ) {
+    const market = getSelectedMarket();
+    const current = Number(state.tradeContractsDraft);
+    const baseValue = Number.isFinite(current)
+      ? current
+      : Math.max(0.01, state.tradeContracts);
+    const nextValue = Math.max(
+      0.01,
+      baseValue + Math.sign(contractsStepDelta) * 0.01,
+    );
+    state.tradeContractsDraft = nextValue.toFixed(2);
+    commitTradeContractsDraft(market);
     render();
     return;
   }
