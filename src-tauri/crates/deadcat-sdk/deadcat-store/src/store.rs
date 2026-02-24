@@ -167,6 +167,14 @@ impl DeadcatStore {
         .get_result(&mut self.conn)?;
 
         if exists {
+            // Update nostr_event_json if it was previously missing
+            if let Some(meta) = metadata {
+                if let Some(ref json) = meta.nostr_event_json {
+                    diesel::update(markets::table.filter(markets::market_id.eq(&mid_bytes)))
+                        .set(markets::nostr_event_json.eq(json))
+                        .execute(&mut self.conn)?;
+                }
+            }
             return Ok(mid);
         }
 

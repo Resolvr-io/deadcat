@@ -46,13 +46,14 @@ function updateOverlayMessage(message: string): void {
 
 type NavCategory =
   | "Trending"
+  | "My Markets"
   | "Politics"
   | "Sports"
   | "Culture"
   | "Bitcoin"
   | "Weather"
   | "Macro";
-type MarketCategory = Exclude<NavCategory, "Trending">;
+type MarketCategory = Exclude<NavCategory, "Trending" | "My Markets">;
 type ViewMode = "home" | "detail" | "create" | "wallet";
 type Side = "yes" | "no";
 type OrderType = "market" | "limit";
@@ -168,6 +169,7 @@ type DiscoveredMarket = {
   created_at: number;
   creation_txid: string | null;
   state: CovenantState;
+  nostr_event_json?: string | null;
 };
 
 type IssuanceResult = {
@@ -216,6 +218,7 @@ type Market = {
   creationTxid: string | null;
   collateralUtxos: CollateralUtxo[];
   resolveTx?: ResolveTx;
+  nostrEventJson: string | null;
   yesPrice: number;
   change24h: number;
   volumeBtc: number;
@@ -242,6 +245,7 @@ const categories: NavCategory[] = [
   "Bitcoin",
   "Weather",
   "Macro",
+  "My Markets",
 ];
 
 let markets: Market[] = [];
@@ -277,6 +281,7 @@ function discoveredToMarket(d: DiscoveredMarket): Market {
     noReissuanceToken: d.no_reissuance_token,
     creationTxid: d.creation_txid,
     collateralUtxos: [],
+    nostrEventJson: d.nostr_event_json ?? null,
     yesPrice: d.starting_yes_price / 100,
     change24h: 0,
     volumeBtc: 0,
@@ -306,6 +311,43 @@ function hexToBytes(hex: string): number[] {
     bytes.push(parseInt(hex.substring(i, i + 2), 16));
   }
   return bytes;
+}
+
+// Minimal bech32 encoder for NIP-19 npub encoding
+const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+function bech32Polymod(values: number[]): number {
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const b = chk >> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) if ((b >> i) & 1) chk ^= GEN[i];
+  }
+  return chk;
+}
+function bech32Encode(hrp: string, data5bit: number[]): string {
+  const hrpExpand = [...hrp].map((c) => c.charCodeAt(0) >> 5)
+    .concat([0])
+    .concat([...hrp].map((c) => c.charCodeAt(0) & 31));
+  const values = hrpExpand.concat(data5bit);
+  const polymod = bech32Polymod(values.concat([0, 0, 0, 0, 0, 0])) ^ 1;
+  const checksum = Array.from({ length: 6 }, (_, i) => (polymod >> (5 * (5 - i))) & 31);
+  return hrp + "1" + data5bit.concat(checksum).map((d) => BECH32_CHARSET[d]).join("");
+}
+function convertBits(data: number[], fromBits: number, toBits: number, pad: boolean): number[] {
+  let acc = 0, bits = 0;
+  const ret: number[] = [];
+  const maxv = (1 << toBits) - 1;
+  for (const value of data) {
+    acc = (acc << fromBits) | value;
+    bits += fromBits;
+    while (bits >= toBits) { bits -= toBits; ret.push((acc >> bits) & maxv); }
+  }
+  if (pad && bits > 0) ret.push((acc << (toBits - bits)) & maxv);
+  return ret;
+}
+function hexToNpub(hex: string): string {
+  return bech32Encode("npub", convertBits(hexToBytes(hex), 8, 5, true));
 }
 
 /** Reverse byte-order of a hex string (internal ↔ display order for hash-based IDs). */
@@ -479,6 +521,10 @@ const state: {
   lastAttestationOutcome: boolean | null;
   lastAttestationMarketId: string | null;
   resolutionExecuting: boolean;
+  // Nostr event viewer modal
+  nostrEventModal: boolean;
+  nostrEventJson: string | null;
+  nostrEventNevent: string | null;
 } = {
   view: "home",
   activeCategory: "Trending",
@@ -599,6 +645,9 @@ const state: {
   lastAttestationOutcome: null,
   lastAttestationMarketId: null,
   resolutionExecuting: false,
+  nostrEventModal: false,
+  nostrEventJson: null,
+  nostrEventNevent: null,
 };
 
 // ── Toast notifications ──────────────────────────────────────────────
@@ -1081,7 +1130,9 @@ function getFilteredMarkets(): Market[] {
     .filter((market) => {
       const categoryMatch =
         state.activeCategory === "Trending" ||
-        market.category === state.activeCategory;
+        (state.activeCategory === "My Markets"
+          ? state.nostrPubkey != null && market.oraclePubkey === state.nostrPubkey
+          : market.category === state.activeCategory);
       const searchMatch =
         lowered.length === 0 ||
         market.question.toLowerCase().includes(lowered) ||
@@ -1254,6 +1305,7 @@ function renderTopShell(): string {
         <div class="phi-container py-2">
           <div id="category-row" class="flex items-center gap-1 overflow-x-auto whitespace-nowrap">
             ${categories
+              .filter((category) => category !== "My Markets" || state.nostrPubkey)
               .map((category) => {
                 const active = state.activeCategory === category;
                 return `<button data-category="${category}" class="rounded-full px-3 py-1.5 text-sm font-normal transition ${
@@ -1601,8 +1653,12 @@ function renderTopShell(): string {
 }
 
 function renderHome(): string {
-  if (state.activeCategory !== "Trending") {
+  if (state.activeCategory !== "Trending" && state.activeCategory !== "My Markets") {
     return renderCategoryPage();
+  }
+
+  if (state.activeCategory === "My Markets") {
+    return renderMyMarkets();
   }
 
   if (state.marketsLoading) {
@@ -1740,6 +1796,77 @@ function renderHome(): string {
           </section>
         </aside>
       </div>
+    </div>
+  `;
+}
+
+function renderMyMarkets(): string {
+  const myMarkets = getFilteredMarkets();
+
+  if (myMarkets.length === 0) {
+    return `
+      <div class="phi-container py-16 text-center">
+        <h2 class="mb-3 text-2xl font-semibold text-slate-100">No markets created yet</h2>
+        <p class="mb-6 text-base text-slate-400">Markets you create as oracle will appear here.</p>
+        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950">Create New Market</button>
+      </div>
+    `;
+  }
+
+  const dormant = myMarkets.filter((m) => m.state === 0);
+  const active = myMarkets.filter((m) => m.state === 1);
+  const resolved = myMarkets.filter((m) => m.state === 2 || m.state === 3);
+
+  const renderMarketCard = (market: Market): string => {
+    const no = 1 - market.yesPrice;
+    return `
+      <button data-open-market="${market.id}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
+        <div class="mb-2 flex items-center justify-between text-sm">
+          <span class="text-xs text-slate-500">${market.category}</span>
+          <span>${stateBadge(market.state)}</span>
+        </div>
+        <p class="mb-3 text-base font-normal text-slate-200">${market.question}</p>
+        <div class="flex items-center justify-between text-sm">
+          <span class="text-emerald-300">Yes ${formatProbabilityWithPercent(market.yesPrice)}</span>
+          <span class="text-rose-300">No ${formatProbabilityWithPercent(no)}</span>
+        </div>
+      </button>
+    `;
+  };
+
+  const renderSection = (title: string, items: Market[]): string => {
+    if (items.length === 0) return "";
+    return `
+      <div class="mb-6">
+        <h3 class="mb-3 text-sm font-medium text-slate-400">${title} (${items.length})</h3>
+        <div class="grid gap-3 md:grid-cols-2">${items.map(renderMarketCard).join("")}</div>
+      </div>
+    `;
+  };
+
+  return `
+    <div class="phi-container py-6 lg:py-8">
+      <div class="mb-4 flex items-center justify-between">
+        <h1 class="text-xl font-medium text-slate-100">My Markets</h1>
+        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-5 py-2 text-sm font-semibold text-slate-950">Create New Market</button>
+      </div>
+      <div class="mb-4 grid gap-2 sm:grid-cols-3">
+        <div class="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+          <p class="text-xs text-slate-500">Total</p>
+          <p class="text-lg font-medium text-slate-100">${myMarkets.length}</p>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+          <p class="text-xs text-slate-500">Active</p>
+          <p class="text-lg font-medium text-emerald-300">${active.length}</p>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+          <p class="text-xs text-slate-500">Awaiting resolution</p>
+          <p class="text-lg font-medium text-amber-300">${active.filter((m) => isExpired(m)).length}</p>
+        </div>
+      </div>
+      ${renderSection("Dormant — needs initial issuance", dormant)}
+      ${renderSection("Active", active)}
+      ${renderSection("Resolved", resolved)}
     </div>
   `;
 }
@@ -1992,7 +2119,7 @@ function renderActionTicket(market: Market): string {
           ? `
       <label for="limit-price" class="mb-1 block text-xs text-slate-400">Limit price (sats)</label>
       <div class="mb-3 grid grid-cols-[42px_1fr_42px] gap-2">
-        <button data-action="step-limit-price" data-limit-price-delta="-1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Decrease limit price">-</button>
+        <button data-action="step-limit-price" data-limit-price-delta="-1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Decrease limit price">&minus;</button>
         <input id="limit-price" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="${state.limitPriceDraft}" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2" />
         <button data-action="step-limit-price" data-limit-price-delta="1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Increase limit price">+</button>
       </div>
@@ -2126,7 +2253,6 @@ function renderActionTicket(market: Market): string {
       `
           : ""
       }
-      <p class="mt-3 text-xs text-slate-500">${state.nostrPubkey ? `Nostr identity: ${state.nostrPubkey.slice(0, 12)}...` : "Nostr identity not initialized."}</p>
     </aside>
   `;
 }
@@ -2152,8 +2278,18 @@ function renderDetail(): string {
       <div class="grid gap-[21px] xl:grid-cols-[1.618fr_1fr]">
         <section class="space-y-[21px]">
           <div class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
-            <button data-action="go-home" class="mb-4 rounded-lg border border-slate-700 px-3 py-1 text-sm text-slate-300">Back to markets</button>
-            <p class="mb-1 text-sm text-slate-400">${market.category} · ${stateBadge(market.state)} ${market.creationTxid ? `<button data-action="refresh-market-state" class="text-slate-500 hover:text-slate-300 text-xs transition cursor-pointer">[refresh]</button>` : ""} · <button data-action="open-nostr-event" data-nevent="${market.nevent}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">View on Nostr</button>${market.creationTxid ? ` · <button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">Creation Tx</button>` : ""}</p>
+            <button data-action="go-home" class="mb-3 flex items-center gap-1 text-sm text-slate-400 transition hover:text-slate-200">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+              Markets
+            </button>
+            <div class="mb-3 flex items-center gap-2">
+              <span class="rounded-full bg-slate-800 px-2.5 py-0.5 text-xs text-slate-300">${market.category}</span>
+              ${stateBadge(market.state)}
+              ${market.creationTxid ? `<button data-action="refresh-market-state" class="rounded p-0.5 text-slate-500 transition hover:text-slate-300" title="Refresh state"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>` : ""}
+              <span class="text-slate-700">|</span>
+              <button data-action="open-nostr-event" data-market-id="${market.id}" data-nevent="${market.nevent}" class="text-xs text-slate-400 transition hover:text-slate-200">Nostr Event</button>
+              ${market.creationTxid ? `<button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-xs text-slate-400 transition hover:text-slate-200">Creation TX</button>` : ""}
+            </div>
             <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${market.question}</h1>
             <p class="mb-3 text-base text-slate-400">${market.description}</p>
 
@@ -2176,14 +2312,10 @@ function renderDetail(): string {
             ${chartSkeleton(market)}
           </div>
 
-          <section class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px]">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p class="panel-subtitle">Advanced</p>
-                <h3 class="panel-title text-lg">Protocol Details</h3>
-                <p class="text-sm text-slate-400">Oracle, covenant paths, and collateral mechanics. These do not change your basic yes/no order entry flow.</p>
-              </div>
-              <button data-action="toggle-advanced-details" class="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200">${state.showAdvancedDetails ? "Hide details" : "Show details"}</button>
+          <section class="rounded-[21px] border border-slate-800 bg-slate-950/55 px-[21px] py-3">
+            <div class="flex items-center justify-between gap-4">
+              <p class="text-sm text-slate-400"><span class="text-slate-200">Protocol Details</span> — oracle, covenant paths, and collateral mechanics</p>
+              <button data-action="toggle-advanced-details" class="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200">${state.showAdvancedDetails ? "Hide" : "Show"}</button>
             </div>
           </section>
 
@@ -2195,14 +2327,14 @@ function renderDetail(): string {
               <p class="panel-subtitle">Oracle</p>
               <h3 class="panel-title mb-2 text-lg">Oracle Attestation</h3>
               <div class="space-y-1 text-xs text-slate-300">
-                <div class="kv-row"><span>ORACLE_PUBLIC_KEY</span><span class="mono">${market.oraclePubkey}</span></div>
-                <div class="kv-row"><span>MARKET_ID</span><span class="mono">${market.marketId}</span></div>
-                <div class="kv-row"><span>Block target</span><span class="mono">${formatBlockHeight(market.expiryHeight)}</span></div>
-                <div class="kv-row"><span>Current height</span><span class="mono">${formatBlockHeight(market.currentHeight)}</span></div>
-                <div class="kv-row"><span>Message domain</span><span class="mono">SHA256(MARKET_ID || outcome_byte)</span></div>
-                <div class="kv-row"><span>Outcome bytes</span><span class="mono">YES=0x01, NO=0x00</span></div>
-                <div class="kv-row"><span>Resolve status</span><span class="${market.resolveTx?.sigVerified ? "text-emerald-300" : "text-slate-400"}">${market.resolveTx ? `Attested ${market.resolveTx.outcome.toUpperCase()} @ ${market.resolveTx.height}` : "Unresolved"}</span></div>
-                ${market.resolveTx ? `<div class="kv-row"><span>Signature hash</span><span class="mono">${market.resolveTx.signatureHash}</span></div><div class="kv-row"><span>Resolve tx</span><span class="mono">${market.resolveTx.txid}</span></div>` : ""}
+                <div class="kv-row"><span class="shrink-0">Oracle</span><button data-action="copy-to-clipboard" data-copy-value="${hexToNpub(market.oraclePubkey)}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${hexToNpub(market.oraclePubkey)}">${(() => { const n = hexToNpub(market.oraclePubkey); return n.slice(0, 10) + "..." + n.slice(-6); })()}</button></div>
+                <div class="kv-row"><span class="shrink-0">Market ID</span><button data-action="copy-to-clipboard" data-copy-value="${market.marketId}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.marketId}">${market.marketId.slice(0, 8)}...${market.marketId.slice(-8)}</button></div>
+                <div class="kv-row"><span class="shrink-0">Block target</span><span class="mono">${formatBlockHeight(market.expiryHeight)}</span></div>
+                <div class="kv-row"><span class="shrink-0">Current height</span><span class="mono">${formatBlockHeight(market.currentHeight)}</span></div>
+                <div class="kv-row"><span class="shrink-0">Message domain</span><span class="mono text-right">SHA256(ID || outcome)</span></div>
+                <div class="kv-row"><span class="shrink-0">Outcome bytes</span><span class="mono">YES=0x01, NO=0x00</span></div>
+                <div class="kv-row"><span class="shrink-0">Resolve status</span><span class="${market.resolveTx?.sigVerified ? "text-emerald-300" : "text-slate-400"}">${market.resolveTx ? `Attested ${market.resolveTx.outcome.toUpperCase()} @ ${market.resolveTx.height}` : "Unresolved"}</span></div>
+                ${market.resolveTx ? `<div class="kv-row"><span class="shrink-0">Sig hash</span><button data-action="copy-to-clipboard" data-copy-value="${market.resolveTx.signatureHash}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.resolveTx.signatureHash}">${market.resolveTx.signatureHash.slice(0, 8)}...${market.resolveTx.signatureHash.slice(-8)}</button></div><div class="kv-row"><span class="shrink-0">Resolve tx</span><button data-action="copy-to-clipboard" data-copy-value="${market.resolveTx.txid}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.resolveTx.txid}">${market.resolveTx.txid.slice(0, 8)}...${market.resolveTx.txid.slice(-8)}</button></div>` : ""}
               </div>
               ${
                 state.nostrPubkey &&
@@ -2237,11 +2369,11 @@ function renderDetail(): string {
               <p class="panel-subtitle">Integrity</p>
               <h3 class="panel-title mb-2 text-lg">Single-UTXO Integrity</h3>
               <p class="text-sm ${market.collateralUtxos.length === 1 ? "text-emerald-300" : "text-rose-300"}">${market.collateralUtxos.length === 1 ? "OK: exactly one collateral UTXO" : "ALERT: fragmented collateral UTXO set"}</p>
-              <div class="mt-2 space-y-2 text-xs text-slate-300">
+              <div class="mt-2 space-y-1 text-xs text-slate-300">
                 ${market.collateralUtxos
                   .map(
                     (utxo) =>
-                      `<p class="mono">${utxo.txid}:${utxo.vout} · ${formatSats(utxo.amountSats)}</p>`,
+                      `<div class="kv-row"><button data-action="copy-to-clipboard" data-copy-value="${utxo.txid}:${utxo.vout}" class="mono truncate hover:text-slate-100 transition cursor-pointer" title="${utxo.txid}:${utxo.vout}">${utxo.txid.slice(0, 8)}...${utxo.txid.slice(-8)}:${utxo.vout}</button><span class="mono shrink-0">${formatSats(utxo.amountSats)}</span></div>`,
                   )
                   .join("")}
               </div>
@@ -2961,6 +3093,113 @@ function renderSendModal(): string {
   return content;
 }
 
+function renderNostrEventModal(): string {
+  if (!state.nostrEventModal || !state.nostrEventJson) return "";
+
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+  let parsed: { id?: string; pubkey?: string; kind?: number; created_at?: number; tags?: string[][]; content?: string; sig?: string } | null = null;
+  try { parsed = JSON.parse(state.nostrEventJson); } catch { /* raw fallback */ }
+
+  let contentPretty: string | null = null;
+  if (parsed?.content) {
+    try { contentPretty = JSON.stringify(JSON.parse(parsed.content), null, 2); } catch { contentPretty = parsed.content; }
+  }
+
+  const truncHex = (v: string) => v.length > 16 ? v.slice(0, 8) + "…" + v.slice(-8) : v;
+  const truncBech32 = (v: string) => v.length > 24 ? v.slice(0, 12) + "…" + v.slice(-8) : v;
+
+  const fieldHtml = (label: string, value: string | undefined, opts?: { copyable?: boolean; displayValue?: string }) => {
+    if (!value) return "";
+    const copyable = opts?.copyable ?? false;
+    const display = opts?.displayValue ? truncBech32(opts.displayValue) : (copyable ? truncHex(value) : esc(value));
+    const copyVal = opts?.displayValue ?? value;
+    return `<div class="min-w-0">
+      <span class="mb-0.5 block text-xs text-slate-500">${label}</span>
+      ${copyable
+        ? `<button data-action="copy-to-clipboard" data-copy-value="${esc(copyVal)}" class="flex w-full min-w-0 items-center gap-1.5 overflow-hidden font-mono text-xs text-slate-200 transition-colors hover:text-white">
+            <span class="truncate">${display}</span>
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-slate-500"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+          </button>`
+        : `<p class="truncate text-xs text-slate-200">${display}</p>`}
+    </div>`;
+  };
+
+  let fieldsHtml = "";
+  if (parsed) {
+    const neventDisplay = state.nostrEventNevent ?? parsed.id;
+    const npubDisplay = parsed.pubkey ? hexToNpub(parsed.pubkey) : undefined;
+    fieldsHtml += fieldHtml("Event ID", parsed.id, { copyable: true, displayValue: neventDisplay });
+    fieldsHtml += fieldHtml("Public Key", parsed.pubkey, { copyable: true, displayValue: npubDisplay });
+
+    fieldsHtml += `<div class="grid grid-cols-2 gap-3">`;
+    fieldsHtml += fieldHtml("Kind", parsed.kind?.toString());
+    fieldsHtml += fieldHtml("Created", parsed.created_at ? new Date(parsed.created_at * 1000).toLocaleString() : undefined);
+    fieldsHtml += `</div>`;
+
+    if (state.relays.length > 0) {
+      let relayPills = "";
+      for (const relay of state.relays) {
+        const display = relay.url.replace(/^wss?:\/\//, "");
+        relayPills += `<span class="inline-flex items-center gap-1 rounded bg-slate-800/80 px-1.5 py-0.5 text-[10px] text-slate-300"><span class="h-1 w-1 rounded-full bg-emerald-400"></span>${esc(display)}</span>`;
+      }
+      fieldsHtml += `<div><span class="mb-0.5 block text-xs text-slate-500">Relays</span><div class="flex flex-wrap gap-1">${relayPills}</div></div>`;
+    }
+
+    if (parsed.tags && parsed.tags.length > 0) {
+      fieldsHtml += `<div><span class="mb-1 block text-xs text-slate-500">Tags</span><div class="flex flex-wrap gap-1.5">`;
+      for (const tag of parsed.tags) {
+        fieldsHtml += `<span class="inline-flex items-center gap-1 rounded-md bg-slate-800 px-2 py-1 font-mono text-[10px] text-slate-200"><span class="font-semibold text-violet-400">${esc(tag[0])}</span>`;
+        for (let j = 1; j < tag.length; j++) {
+          fieldsHtml += `<span class="max-w-[200px] truncate">${esc(tag[j])}</span>`;
+        }
+        fieldsHtml += `</span>`;
+      }
+      fieldsHtml += `</div></div>`;
+    }
+
+    fieldsHtml += fieldHtml("Signature", parsed.sig, { copyable: true });
+
+    if (contentPretty) {
+      fieldsHtml += `<details><summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-300">Content <span class="text-slate-600">— click to expand</span></summary><pre class="mt-1 max-h-48 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-[11px] text-slate-200 leading-relaxed">${esc(contentPretty)}</pre></details>`;
+    }
+  } else {
+    fieldsHtml = `<pre class="max-h-96 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-[11px] text-slate-200 leading-relaxed">${esc(state.nostrEventJson)}</pre>`;
+  }
+
+  return `
+    <div data-action="nostr-event-backdrop" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div class="relative mx-4 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+        <div class="flex items-center justify-between border-b border-slate-800 px-6 py-4">
+          <div class="flex items-center gap-2.5">
+            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-500/15">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-violet-400"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            </div>
+            <h3 class="text-lg font-medium text-slate-100">Nostr Event</h3>
+          </div>
+          <button data-action="close-nostr-event-modal" class="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="flex flex-col gap-3 p-6 max-h-[70vh] overflow-y-auto">
+          ${fieldsHtml}
+        </div>
+        <div class="flex items-center justify-end gap-2 border-t border-slate-800 px-6 py-4">
+          ${state.nostrEventNevent ? `<button data-action="copy-to-clipboard" data-copy-value="${state.nostrEventNevent}" class="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            Copy Event ID
+          </button>` : ""}
+          <button data-action="copy-nostr-event-json" class="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            Copy JSON
+          </button>
+          <button data-action="close-nostr-event-modal" class="rounded-lg bg-slate-800 px-4 py-1.5 text-sm text-slate-200 hover:bg-slate-700">Close</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderWalletModal(): string {
   if (state.walletModal === "none") return "";
 
@@ -3613,6 +3852,7 @@ function render(): void {
       ${renderTopShell()}
       <main>${state.view === "wallet" ? renderWallet() : state.view === "home" ? renderHome() : state.view === "detail" ? renderDetail() : renderCreateMarket()}</main>
     </div>
+    ${renderNostrEventModal()}
   `;
   app.innerHTML = html;
 }
@@ -4268,6 +4508,15 @@ app.addEventListener("click", (event) => {
     return;
   }
 
+  if (action === "copy-to-clipboard") {
+    const value = actionEl?.getAttribute("data-copy-value");
+    if (value) {
+      void navigator.clipboard.writeText(value);
+      showToast("Copied to clipboard");
+    }
+    return;
+  }
+
   if (action === "set-currency") {
     const currency = actionEl?.getAttribute(
       "data-currency",
@@ -4748,26 +4997,17 @@ app.addEventListener("click", (event) => {
     render();
     // If already unlocked with cached balance, just do a silent background sync
     if (state.walletStatus === "unlocked" && state.walletBalance) {
-      void invoke("sync_wallet")
-        .then(async () => {
-          const balance = await invoke<{ assets: Record<string, number> }>(
-            "get_wallet_balance",
-          );
-          state.walletBalance = balance.assets;
-          const txs = await invoke<
-            {
-              txid: string;
-              balanceChange: number;
-              fee: number;
-              height: number | null;
-              timestamp: number | null;
-              txType: string;
-            }[]
-          >("get_wallet_transactions");
-          state.walletTransactions = txs;
-          render();
-        })
-        .catch(() => {});
+      void invoke("sync_wallet").then(async () => {
+        const [balance, txs, swaps] = await Promise.all([
+          invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
+          invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions"),
+          invoke<PaymentSwap[]>("list_payment_swaps"),
+        ]);
+        state.walletBalance = balance.assets;
+        state.walletTransactions = txs;
+        state.walletSwaps = swaps;
+        render();
+      }).catch(() => {});
     } else {
       void fetchWalletStatus().then(() => {
         render();
@@ -5073,9 +5313,40 @@ app.addEventListener("click", (event) => {
   }
 
   if (action === "open-nostr-event") {
+    const marketId = actionEl?.getAttribute("data-market-id");
     const nevent = actionEl?.getAttribute("data-nevent");
-    if (nevent) {
-      void openUrl("https://njump.me/" + nevent);
+    const market = marketId ? markets.find(m => m.id === marketId) : null;
+    if (market?.nostrEventJson) {
+      state.nostrEventModal = true;
+      state.nostrEventJson = market.nostrEventJson;
+      state.nostrEventNevent = nevent ?? null;
+      render();
+    } else {
+      showToast("Nostr event data not available", "error");
+    }
+    return;
+  }
+
+  if (action === "nostr-event-backdrop" && actionEl === target) {
+    state.nostrEventModal = false;
+    state.nostrEventJson = null;
+    state.nostrEventNevent = null;
+    render();
+    return;
+  }
+
+  if (action === "close-nostr-event-modal") {
+    state.nostrEventModal = false;
+    state.nostrEventJson = null;
+    state.nostrEventNevent = null;
+    render();
+    return;
+  }
+
+  if (action === "copy-nostr-event-json") {
+    if (state.nostrEventJson) {
+      void navigator.clipboard.writeText(state.nostrEventJson);
+      showToast("Copied to clipboard");
     }
     return;
   }
