@@ -27,7 +27,6 @@ export function renderTopShell(): string {
             <button data-action="go-home" class="${state.view === "home" || state.view === "detail" ? "font-medium text-slate-100" : "hover:text-slate-200"}">Markets</button>
             <button class="hover:text-slate-200">Live</button>
             <button class="hover:text-slate-200">Social</button>
-            <button data-action="open-create-market" class="${state.view === "create" ? "font-medium text-slate-100" : "hover:text-slate-200"}">New Market</button>
           </nav>
           <div class="ml-auto flex shrink-0 items-center gap-2 pb-0.5">
             <input id="global-search" value="${state.search}" class="hidden h-9 w-[280px] rounded-full border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-300 transition focus:ring-2 lg:block xl:w-[380px]" placeholder="Trade on anything" />

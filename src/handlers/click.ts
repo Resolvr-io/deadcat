@@ -30,6 +30,7 @@ import type {
   DiscoveredMarket,
   IdentityResponse,
   Market,
+  MarketCategory,
   NavCategory,
   NostrBackupStatus,
   OrderType,
@@ -152,6 +153,36 @@ export async function handleClick(
       ?.parentElement?.contains(target);
     if (!inMenu) {
       state.userMenuOpen = false;
+      render();
+    }
+  }
+
+  // Close category dropdown on any click outside it
+  if (
+    state.createCategoryOpen &&
+    action !== "toggle-category-dropdown" &&
+    action !== "select-create-category"
+  ) {
+    const inDropdown = target.closest("#create-category-dropdown");
+    if (!inDropdown) {
+      state.createCategoryOpen = false;
+      render();
+    }
+  }
+
+  // Close settlement picker on any click outside it
+  if (
+    state.createSettlementPickerOpen &&
+    action !== "toggle-settlement-picker" &&
+    action !== "settlement-prev-month" &&
+    action !== "settlement-next-month" &&
+    action !== "pick-settlement-day" &&
+    action !== "toggle-settlement-dropdown" &&
+    action !== "pick-settlement-option"
+  ) {
+    const inPicker = target.closest("#settlement-picker");
+    if (!inPicker) {
+      state.createSettlementPickerOpen = false;
       render();
     }
   }
@@ -1619,7 +1650,123 @@ export async function handleClick(
     return;
   }
 
+  if (action === "toggle-category-dropdown") {
+    state.createCategoryOpen = !state.createCategoryOpen;
+    render();
+    return;
+  }
+
+  if (action === "select-create-category") {
+    const value = actionEl?.dataset.value;
+    if (value) {
+      state.createCategory = value as MarketCategory;
+      state.createCategoryOpen = false;
+      render();
+    }
+    return;
+  }
+
+  if (action === "toggle-settlement-picker") {
+    state.createSettlementPickerOpen = !state.createSettlementPickerOpen;
+    // Sync view month to currently selected date when opening
+    if (state.createSettlementPickerOpen && state.createSettlementInput) {
+      const d = new Date(state.createSettlementInput);
+      state.createSettlementViewYear = d.getFullYear();
+      state.createSettlementViewMonth = d.getMonth();
+    }
+    render();
+    return;
+  }
+
+  if (action === "settlement-prev-month") {
+    state.createSettlementViewMonth--;
+    if (state.createSettlementViewMonth < 0) {
+      state.createSettlementViewMonth = 11;
+      state.createSettlementViewYear--;
+    }
+    render();
+    return;
+  }
+
+  if (action === "settlement-next-month") {
+    state.createSettlementViewMonth++;
+    if (state.createSettlementViewMonth > 11) {
+      state.createSettlementViewMonth = 0;
+      state.createSettlementViewYear++;
+    }
+    render();
+    return;
+  }
+
+  if (action === "pick-settlement-day") {
+    const day = Number(actionEl?.dataset.day);
+    if (!day) return;
+    let hours = 12;
+    let minutes = 0;
+    if (state.createSettlementInput) {
+      const prev = new Date(state.createSettlementInput);
+      hours = prev.getHours();
+      minutes = prev.getMinutes();
+    }
+    const y = state.createSettlementViewYear;
+    const m = String(state.createSettlementViewMonth + 1).padStart(2, "0");
+    const d = String(day).padStart(2, "0");
+    const hh = String(hours).padStart(2, "0");
+    const mm = String(minutes).padStart(2, "0");
+    state.createSettlementInput = `${y}-${m}-${d}T${hh}:${mm}`;
+    render();
+    return;
+  }
+
+  if (action === "toggle-settlement-dropdown") {
+    const name = actionEl?.dataset.dropdown ?? "";
+    state.createSettlementPickerDropdown =
+      state.createSettlementPickerDropdown === name ? "" : name;
+    render();
+    return;
+  }
+
+  if (action === "pick-settlement-option") {
+    const dropdown = actionEl?.dataset.dropdown ?? "";
+    const value = actionEl?.dataset.value ?? "";
+    state.createSettlementPickerDropdown = "";
+
+    if (dropdown === "month") {
+      state.createSettlementViewMonth = Number(value);
+    } else if (dropdown === "year") {
+      state.createSettlementViewYear = Number(value);
+    } else if (
+      (dropdown === "hour" || dropdown === "minute" || dropdown === "ampm") &&
+      state.createSettlementInput
+    ) {
+      const prev = new Date(state.createSettlementInput);
+      let h = prev.getHours();
+      let min = prev.getMinutes();
+      const wasPM = h >= 12;
+      let h12 = h % 12 || 12;
+
+      if (dropdown === "hour") h12 = Number(value);
+      if (dropdown === "minute") min = Number(value);
+      let pm = wasPM;
+      if (dropdown === "ampm") pm = value === "PM";
+
+      h = (h12 % 12) + (pm ? 12 : 0);
+
+      const y = prev.getFullYear();
+      const mo = String(prev.getMonth() + 1).padStart(2, "0");
+      const d = String(prev.getDate()).padStart(2, "0");
+      const hh = String(h).padStart(2, "0");
+      const mm = String(min).padStart(2, "0");
+      state.createSettlementInput = `${y}-${mo}-${d}T${hh}:${mm}`;
+    }
+    render();
+    return;
+  }
+
   if (action === "cancel-create-market") {
+    state.createCategoryOpen = false;
+    state.createSettlementPickerOpen = false;
+    state.createSettlementPickerDropdown = "";
     state.view = "home";
     render();
     return;

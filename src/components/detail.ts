@@ -389,13 +389,14 @@ export function renderDetail(): string {
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
               Markets
             </button>
-            <div class="mb-3 flex items-center gap-2">
+            <div class="mb-2 flex items-center gap-2">
               <span class="rounded-full bg-slate-800 px-2.5 py-0.5 text-xs text-slate-300">${market.category}</span>
               ${stateBadge(market.state)}
               ${market.creationTxid ? `<button data-action="refresh-market-state" class="rounded p-0.5 text-slate-500 transition hover:text-slate-300" title="Refresh state"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>` : ""}
-              <span class="text-slate-700">|</span>
-              <button data-action="open-nostr-event" data-market-id="${market.id}" data-nevent="${market.nevent}" class="text-xs text-slate-400 transition hover:text-slate-200">Nostr Event</button>
-              ${market.creationTxid ? `<button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-xs text-slate-400 transition hover:text-slate-200">Creation TX</button>` : ""}
+            </div>
+            <div class="mb-3 flex items-center gap-2">
+              <button data-action="open-nostr-event" data-market-id="${market.id}" data-nevent="${market.nevent}" class="rounded-lg border border-slate-700 px-3 py-1 text-xs text-slate-300 transition hover:bg-slate-800 hover:text-slate-200">Nostr Event</button>
+              ${market.creationTxid ? `<button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="rounded-lg border border-slate-700 px-3 py-1 text-xs text-slate-300 transition hover:bg-slate-800 hover:text-slate-200">Creation TX</button>` : ""}
             </div>
             <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${market.question}</h1>
             <p class="mb-3 text-base text-slate-400">${market.description}</p>
