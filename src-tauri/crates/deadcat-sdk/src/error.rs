@@ -104,6 +104,21 @@ pub enum Error {
 
     #[error("maker order error: {0}")]
     MakerOrder(String),
+
+    #[error("AMM pool error: {0}")]
+    AmmPool(String),
+
+    #[error("invalid swap pair: {0}")]
+    InvalidSwapPair(u8),
+
+    #[error("reserve depleted (zero)")]
+    ReserveDepleted,
+
+    #[error("insufficient reserves for requested swap")]
+    InsufficientReserves,
+
+    #[error("issued LP count is zero")]
+    ZeroIssuedLp,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

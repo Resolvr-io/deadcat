@@ -8,6 +8,7 @@ pub mod attestation;
 pub mod config;
 pub mod events;
 pub mod market;
+pub mod pool;
 pub mod service;
 pub mod store_trait;
 
@@ -35,6 +36,9 @@ pub const ORDER_TAG: &str = "deadcat-order";
 /// Tag value identifying a deadcat oracle attestation.
 pub const ATTESTATION_TAG: &str = "deadcat-attestation";
 
+/// Tag value identifying a deadcat AMM pool.
+pub const POOL_TAG: &str = "deadcat-pool";
+
 /// Network tag value for Liquid Testnet.
 pub const NETWORK_TAG: &str = "liquid-testnet";
 
@@ -55,6 +59,12 @@ pub use attestation::{
     AttestationContent, AttestationResult, build_attestation_event, build_attestation_filter,
     build_attestation_subscription_filter, parse_attestation_event, sign_attestation,
 };
+
+// ---------------------------------------------------------------------------
+// Re-exports: pool
+// ---------------------------------------------------------------------------
+
+pub use pool::{DiscoveredPool, PoolAnnouncement, build_pool_event, build_pool_filter, parse_pool_event, fetch_pools};
 
 // ---------------------------------------------------------------------------
 // Re-exports: config, events, service, store_trait
