@@ -1,12 +1,12 @@
-import { state, markets } from "../state.ts";
-import { formatLbtc, flowLabel, formatSwapStatus } from "../services/wallet.ts";
-import { satsToFiatStr } from "../utils/format.ts";
+import { flowLabel, formatLbtc, formatSwapStatus } from "../services/wallet.ts";
+import { markets, state } from "../state.ts";
 import { reverseHex } from "../utils/crypto.ts";
+import { satsToFiatStr } from "../utils/format.ts";
 import {
+  renderMnemonicGrid,
+  renderModalTabs,
   renderReceiveModal,
   renderSendModal,
-  renderModalTabs,
-  renderMnemonicGrid,
 } from "./wallet-modals.ts";
 
 export function renderWalletModal(): string {
@@ -190,7 +190,9 @@ export function renderWallet(): string {
       : 0;
 
   const creationTxToMarket = new Map(
-    markets.filter((m) => m.creationTxid).map((m) => [m.creationTxid!, m.id]),
+    markets
+      .filter((m) => m.creationTxid)
+      .map((m) => [m.creationTxid as string, m.id]),
   );
 
   // Map token asset IDs to labels for display.
@@ -255,7 +257,7 @@ export function renderWallet(): string {
       const date = tx.timestamp
         ? new Date(tx.timestamp * 1000).toLocaleString()
         : "unconfirmed";
-      const shortTxid = tx.txid.slice(0, 10) + "..." + tx.txid.slice(-6);
+      const shortTxid = `${tx.txid.slice(0, 10)}...${tx.txid.slice(-6)}`;
       return (
         '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm select-none">' +
         '<div class="flex items-center gap-2">' +
@@ -372,8 +374,7 @@ export function renderWallet(): string {
           <h3 class="mb-3 font-semibold text-slate-100">Token Positions</h3>
           ${tokenPositions
             .map((tp) => {
-              const shortAsset =
-                tp.assetId.slice(0, 8) + "..." + tp.assetId.slice(-4);
+              const shortAsset = `${tp.assetId.slice(0, 8)}...${tp.assetId.slice(-4)}`;
               if (tp.info) {
                 const sideColor =
                   tp.info.side === "YES" ? "text-emerald-300" : "text-red-300";
@@ -383,7 +384,7 @@ export function renderWallet(): string {
                     : "bg-red-500/20";
                 const truncQ =
                   tp.info.question.length > 50
-                    ? tp.info.question.slice(0, 50) + "..."
+                    ? `${tp.info.question.slice(0, 50)}...`
                     : tp.info.question;
                 return (
                   '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +

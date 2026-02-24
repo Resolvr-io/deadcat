@@ -1,4 +1,4 @@
-import { state, SATS_PER_FULL_CONTRACT } from "../state.ts";
+import { SATS_PER_FULL_CONTRACT, state } from "../state.ts";
 import type { MarketCategory } from "../types.ts";
 
 export function handleInput(e: Event, render: () => void): void {

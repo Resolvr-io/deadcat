@@ -2,7 +2,7 @@ import { state } from "../state.ts";
 import { renderMnemonicGrid } from "./wallet-modals.ts";
 
 export function renderOnboarding(): string {
-  const step = state.onboardingStep!;
+  const step = state.onboardingStep as "nostr" | "wallet";
   const loading = state.onboardingLoading;
   const errorHtml = state.onboardingError
     ? `<p class="text-sm text-red-400">${state.onboardingError}</p>`

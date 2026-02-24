@@ -1,12 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-
+import { setMarkets } from "../state.ts";
 import type {
-  Market,
-  MarketCategory,
   DiscoveredMarket,
   IssuanceResult,
+  Market,
+  MarketCategory,
 } from "../types.ts";
-import { setMarkets } from "../state.ts";
 import { hexToBytes } from "../utils/crypto.ts";
 
 export function discoveredToMarket(d: DiscoveredMarket): Market {
