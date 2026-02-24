@@ -1,25 +1,27 @@
 import type {
+  ActionTab,
+  BaseCurrency,
+  BoltzChainSwapCreated,
+  BoltzChainSwapPairInfo,
+  BoltzLightningReceiveCreated,
+  BoltzSubmarineSwapCreated,
+  Market,
   MarketCategory,
   NavCategory,
-  Market,
-  BaseCurrency,
-  BoltzLightningReceiveCreated,
-  BoltzChainSwapCreated,
-  BoltzSubmarineSwapCreated,
-  BoltzChainSwapPairInfo,
-  PaymentSwap,
   NostrBackupStatus,
   NostrProfile,
-  RelayEntry,
-  ViewMode,
-  Side,
   OrderType,
-  ActionTab,
-  TradeIntent,
+  PaymentSwap,
+  RelayEntry,
+  Side,
   SizeMode,
+  TradeIntent,
+  ViewMode,
 } from "./types.ts";
 
-export const app = document.querySelector<HTMLDivElement>("#app")!;
+export const app = document.querySelector<HTMLDivElement>(
+  "#app",
+) as HTMLDivElement;
 export const DEV_MODE = import.meta.env.DEV;
 
 export const EXECUTION_FEE_RATE = 0.01;

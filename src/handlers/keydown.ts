@@ -1,11 +1,11 @@
-import { state, SATS_PER_FULL_CONTRACT } from "../state.ts";
+import { SATS_PER_FULL_CONTRACT, state } from "../state.ts";
 import {
   clampContractPriceSats,
-  setLimitPriceSats,
   commitLimitPriceDraft,
-  commitTradeSizeSatsDraft,
   commitTradeContractsDraft,
+  commitTradeSizeSatsDraft,
   getSelectedMarket,
+  setLimitPriceSats,
 } from "../utils/market.ts";
 
 export function handleKeydown(

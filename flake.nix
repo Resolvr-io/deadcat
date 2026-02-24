@@ -31,6 +31,7 @@
             typescript
             sqlite
             pkg-config
+            biome
           ]
           ++ lib.optional (tauriCli != null) tauriCli
           ++ lib.optional (chromium != null) chromium;

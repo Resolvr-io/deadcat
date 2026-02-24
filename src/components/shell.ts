@@ -1,6 +1,6 @@
-import { state, DEV_MODE, categories, baseCurrencyOptions } from "../state.ts";
-import type { RelayEntry, RelayBackupResult } from "../types.ts";
 import { renderBackupModal } from "../components/wallet-modals.ts";
+import { baseCurrencyOptions, categories, DEV_MODE, state } from "../state.ts";
+import type { RelayBackupResult, RelayEntry } from "../types.ts";
 
 export function settingsAccordion(
   key: string,
@@ -86,7 +86,9 @@ export function renderTopShell(): string {
         <div class="phi-container py-2">
           <div id="category-row" class="flex items-center gap-1 overflow-x-auto whitespace-nowrap">
             ${categories
-              .filter((category) => category !== "My Markets" || state.nostrPubkey)
+              .filter(
+                (category) => category !== "My Markets" || state.nostrPubkey,
+              )
               .map((category) => {
                 const active = state.activeCategory === category;
                 return `<button data-category="${category}" class="rounded-full px-3 py-1.5 text-sm font-normal transition ${

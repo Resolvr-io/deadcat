@@ -8,16 +8,16 @@ dev-manager:
 	cd src-tauri-manager && cargo tauri dev
 
 biome-lint:
-	pnpm biome lint .
+	biome lint .
 
 biome-format:
-	pnpm biome format .
+	biome format .
 
 biome-check:
-	pnpm biome check --error-on-warnings .
+	biome check --error-on-warnings .
 
 biome-fix:
-	pnpm biome check --write --unsafe .
+	biome check --write --unsafe .
 
 tsc:
 	pnpm tsc

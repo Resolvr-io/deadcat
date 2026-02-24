@@ -140,7 +140,11 @@ export type NostrBackupStatus = {
   has_backup: boolean;
   relay_results: RelayBackupResult[];
 };
-export type NostrProfile = { picture?: string; name?: string; display_name?: string };
+export type NostrProfile = {
+  picture?: string;
+  name?: string;
+  display_name?: string;
+};
 
 export type AttestationResult = {
   market_id: string;

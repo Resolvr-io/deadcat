@@ -18,22 +18,38 @@ function bech32Polymod(values: number[]): number {
   return chk;
 }
 function bech32Encode(hrp: string, data5bit: number[]): string {
-  const hrpExpand = [...hrp].map((c) => c.charCodeAt(0) >> 5)
+  const hrpExpand = [...hrp]
+    .map((c) => c.charCodeAt(0) >> 5)
     .concat([0])
     .concat([...hrp].map((c) => c.charCodeAt(0) & 31));
   const values = hrpExpand.concat(data5bit);
   const polymod = bech32Polymod(values.concat([0, 0, 0, 0, 0, 0])) ^ 1;
-  const checksum = Array.from({ length: 6 }, (_, i) => (polymod >> (5 * (5 - i))) & 31);
-  return hrp + "1" + data5bit.concat(checksum).map((d) => BECH32_CHARSET[d]).join("");
+  const checksum = Array.from(
+    { length: 6 },
+    (_, i) => (polymod >> (5 * (5 - i))) & 31,
+  );
+  return `${hrp}1${data5bit
+    .concat(checksum)
+    .map((d) => BECH32_CHARSET[d])
+    .join("")}`;
 }
-function convertBits(data: number[], fromBits: number, toBits: number, pad: boolean): number[] {
-  let acc = 0, bits = 0;
+function convertBits(
+  data: number[],
+  fromBits: number,
+  toBits: number,
+  pad: boolean,
+): number[] {
+  let acc = 0,
+    bits = 0;
   const ret: number[] = [];
   const maxv = (1 << toBits) - 1;
   for (const value of data) {
     acc = (acc << fromBits) | value;
     bits += fromBits;
-    while (bits >= toBits) { bits -= toBits; ret.push((acc >> bits) & maxv); }
+    while (bits >= toBits) {
+      bits -= toBits;
+      ret.push((acc >> bits) & maxv);
+    }
   }
   if (pad && bits > 0) ret.push((acc << (toBits - bits)) & maxv);
   return ret;

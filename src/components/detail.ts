@@ -1,30 +1,30 @@
 import {
-  state,
-  SATS_PER_FULL_CONTRACT,
   EXECUTION_FEE_RATE,
+  SATS_PER_FULL_CONTRACT,
+  state,
   WIN_FEE_RATE,
 } from "../state.ts";
 import type { Market } from "../types.ts";
+import { hexToNpub } from "../utils/crypto.ts";
 import {
-  stateLabel,
-  stateBadge,
-  isExpired,
-  getEstimatedSettlementDate,
-  getPathAvailability,
-  getSelectedMarket,
-  clampContractPriceSats,
-  getPositionContracts,
-  getOrderbookLevels,
-  getTradePreview,
-} from "../utils/market.ts";
-import {
-  formatProbabilityWithPercent,
-  formatSats,
   formatBlockHeight,
   formatEstTime,
+  formatProbabilityWithPercent,
+  formatSats,
   formatSettlementDateTime,
 } from "../utils/format.ts";
-import { hexToNpub } from "../utils/crypto.ts";
+import {
+  clampContractPriceSats,
+  getEstimatedSettlementDate,
+  getOrderbookLevels,
+  getPathAvailability,
+  getPositionContracts,
+  getSelectedMarket,
+  getTradePreview,
+  isExpired,
+  stateBadge,
+  stateLabel,
+} from "../utils/market.ts";
 
 export function chartSkeleton(market: Market): string {
   // Outer silhouette only (no face details) for small chart markers
@@ -434,7 +434,10 @@ export function renderDetail(): string {
               <p class="panel-subtitle">Oracle</p>
               <h3 class="panel-title mb-2 text-lg">Oracle Attestation</h3>
               <div class="space-y-1 text-xs text-slate-300">
-                <div class="kv-row"><span class="shrink-0">Oracle</span><button data-action="copy-to-clipboard" data-copy-value="${hexToNpub(market.oraclePubkey)}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${hexToNpub(market.oraclePubkey)}">${(() => { const n = hexToNpub(market.oraclePubkey); return n.slice(0, 10) + "..." + n.slice(-6); })()}</button></div>
+                <div class="kv-row"><span class="shrink-0">Oracle</span><button data-action="copy-to-clipboard" data-copy-value="${hexToNpub(market.oraclePubkey)}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${hexToNpub(market.oraclePubkey)}">${(() => {
+                  const n = hexToNpub(market.oraclePubkey);
+                  return `${n.slice(0, 10)}...${n.slice(-6)}`;
+                })()}</button></div>
                 <div class="kv-row"><span class="shrink-0">Market ID</span><button data-action="copy-to-clipboard" data-copy-value="${market.marketId}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.marketId}">${market.marketId.slice(0, 8)}...${market.marketId.slice(-8)}</button></div>
                 <div class="kv-row"><span class="shrink-0">Block target</span><span class="mono">${formatBlockHeight(market.expiryHeight)}</span></div>
                 <div class="kv-row"><span class="shrink-0">Current height</span><span class="mono">${formatBlockHeight(market.currentHeight)}</span></div>
