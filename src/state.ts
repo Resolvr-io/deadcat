@@ -104,8 +104,13 @@ export const state: {
   createQuestion: string;
   createDescription: string;
   createCategory: MarketCategory;
+  createCategoryOpen: boolean;
   createResolutionSource: string;
   createSettlementInput: string;
+  createSettlementPickerOpen: boolean;
+  createSettlementPickerDropdown: string;
+  createSettlementViewYear: number;
+  createSettlementViewMonth: number;
   createStartingYesSats: number;
   walletStatus: "not_created" | "locked" | "unlocked";
   walletNetwork: "mainnet" | "testnet" | "regtest";
@@ -229,8 +234,17 @@ export const state: {
   createQuestion: "",
   createDescription: "",
   createCategory: "Bitcoin",
+  createCategoryOpen: false,
   createResolutionSource: "",
   createSettlementInput: defaultSettlementInput(),
+  createSettlementPickerOpen: false,
+  createSettlementPickerDropdown: "",
+  createSettlementViewYear: new Date(
+    Date.now() + 30 * 24 * 60 * 60 * 1000,
+  ).getFullYear(),
+  createSettlementViewMonth: new Date(
+    Date.now() + 30 * 24 * 60 * 60 * 1000,
+  ).getMonth(),
   createStartingYesSats: 50,
   walletStatus: "not_created",
   walletNetwork: "testnet",
