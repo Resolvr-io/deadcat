@@ -169,6 +169,7 @@ type DiscoveredMarket = {
   created_at: number;
   creation_txid: string | null;
   state: CovenantState;
+  nostr_event_json?: string | null;
 };
 
 type IssuanceResult = {
@@ -217,6 +218,7 @@ type Market = {
   creationTxid: string | null;
   collateralUtxos: CollateralUtxo[];
   resolveTx?: ResolveTx;
+  nostrEventJson: string | null;
   yesPrice: number;
   change24h: number;
   volumeBtc: number;
@@ -279,6 +281,7 @@ function discoveredToMarket(d: DiscoveredMarket): Market {
     noReissuanceToken: d.no_reissuance_token,
     creationTxid: d.creation_txid,
     collateralUtxos: [],
+    nostrEventJson: d.nostr_event_json ?? null,
     yesPrice: d.starting_yes_price / 100,
     change24h: 0,
     volumeBtc: 0,
@@ -518,6 +521,10 @@ const state: {
   lastAttestationOutcome: boolean | null;
   lastAttestationMarketId: string | null;
   resolutionExecuting: boolean;
+  // Nostr event viewer modal
+  nostrEventModal: boolean;
+  nostrEventJson: string | null;
+  nostrEventNevent: string | null;
 } = {
   view: "home",
   activeCategory: "Trending",
@@ -638,6 +645,9 @@ const state: {
   lastAttestationOutcome: null,
   lastAttestationMarketId: null,
   resolutionExecuting: false,
+  nostrEventModal: false,
+  nostrEventJson: null,
+  nostrEventNevent: null,
 };
 
 // ── Toast notifications ──────────────────────────────────────────────
@@ -2269,7 +2279,7 @@ function renderDetail(): string {
         <section class="space-y-[21px]">
           <div class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
             <button data-action="go-home" class="mb-4 rounded-lg border border-slate-700 px-3 py-1 text-sm text-slate-300">Back to markets</button>
-            <p class="mb-1 text-sm text-slate-400">${market.category} · ${stateBadge(market.state)} ${market.creationTxid ? `<button data-action="refresh-market-state" class="text-slate-500 hover:text-slate-300 text-xs transition cursor-pointer">[refresh]</button>` : ""} · <button data-action="open-nostr-event" data-nevent="${market.nevent}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">View on Nostr</button>${market.creationTxid ? ` · <button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">Creation Tx</button>` : ""}</p>
+            <p class="mb-1 text-sm text-slate-400">${market.category} · ${stateBadge(market.state)} ${market.creationTxid ? `<button data-action="refresh-market-state" class="text-slate-500 hover:text-slate-300 text-xs transition cursor-pointer">[refresh]</button>` : ""} · <button data-action="open-nostr-event" data-market-id="${market.id}" data-nevent="${market.nevent}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">View Nostr Event</button>${market.creationTxid ? ` · <button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">Creation TX</button>` : ""}</p>
             <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${market.question}</h1>
             <p class="mb-3 text-base text-slate-400">${market.description}</p>
 
@@ -3073,6 +3083,98 @@ function renderSendModal(): string {
   return content;
 }
 
+function renderNostrEventModal(): string {
+  if (!state.nostrEventModal || !state.nostrEventJson) return "";
+
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+  let parsed: { id?: string; pubkey?: string; kind?: number; created_at?: number; tags?: string[][]; content?: string; sig?: string } | null = null;
+  try { parsed = JSON.parse(state.nostrEventJson); } catch { /* raw fallback */ }
+
+  let contentPretty: string | null = null;
+  if (parsed?.content) {
+    try { contentPretty = JSON.stringify(JSON.parse(parsed.content), null, 2); } catch { contentPretty = parsed.content; }
+  }
+
+  const truncHex = (v: string) => v.length > 16 ? v.slice(0, 8) + "…" + v.slice(-8) : v;
+
+  const fieldHtml = (label: string, value: string | undefined, copyable = false) => {
+    if (!value) return "";
+    const display = copyable ? truncHex(value) : esc(value);
+    return `<div class="min-w-0">
+      <span class="mb-0.5 block text-xs text-slate-500">${label}</span>
+      ${copyable
+        ? `<button data-action="copy-to-clipboard" data-copy-value="${esc(value)}" class="flex w-full min-w-0 items-center gap-1.5 overflow-hidden font-mono text-xs text-slate-200 transition-colors hover:text-white">
+            <span class="truncate">${display}</span>
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-slate-500"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+          </button>`
+        : `<p class="truncate text-xs text-slate-200">${display}</p>`}
+    </div>`;
+  };
+
+  let fieldsHtml = "";
+  if (parsed) {
+    fieldsHtml += fieldHtml("Event ID", parsed.id, true);
+    fieldsHtml += fieldHtml("Public Key", parsed.pubkey, true);
+    fieldsHtml += `<div class="grid grid-cols-2 gap-3">`;
+    fieldsHtml += fieldHtml("Kind", parsed.kind?.toString());
+    fieldsHtml += fieldHtml("Created", parsed.created_at ? new Date(parsed.created_at * 1000).toLocaleString() : undefined);
+    fieldsHtml += `</div>`;
+
+    if (parsed.tags && parsed.tags.length > 0) {
+      fieldsHtml += `<div><span class="mb-1 block text-xs text-slate-500">Tags</span><div class="flex flex-wrap gap-1.5">`;
+      for (const tag of parsed.tags) {
+        fieldsHtml += `<span class="inline-flex items-center gap-1 rounded-md bg-slate-800 px-2 py-1 font-mono text-[10px] text-slate-200"><span class="font-semibold text-violet-400">${esc(tag[0])}</span>`;
+        for (let j = 1; j < tag.length; j++) {
+          fieldsHtml += `<span class="max-w-[200px] truncate">${esc(tag[j])}</span>`;
+        }
+        fieldsHtml += `</span>`;
+      }
+      fieldsHtml += `</div></div>`;
+    }
+
+    if (contentPretty) {
+      fieldsHtml += `<div><span class="mb-1 block text-xs text-slate-500">Content</span><pre class="max-h-64 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-[11px] text-slate-200 leading-relaxed">${esc(contentPretty)}</pre></div>`;
+    }
+
+    fieldsHtml += fieldHtml("Signature", parsed.sig, true);
+  } else {
+    fieldsHtml = `<pre class="max-h-96 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-[11px] text-slate-200 leading-relaxed">${esc(state.nostrEventJson)}</pre>`;
+  }
+
+  return `
+    <div data-action="nostr-event-backdrop" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div class="relative mx-4 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+        <div class="flex items-center justify-between border-b border-slate-800 px-6 py-4">
+          <div class="flex items-center gap-2.5">
+            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-500/15">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-violet-400"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            </div>
+            <h3 class="text-lg font-medium text-slate-100">Nostr Event</h3>
+          </div>
+          <button data-action="close-nostr-event-modal" class="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="flex flex-col gap-3 p-6 max-h-[70vh] overflow-y-auto">
+          ${fieldsHtml}
+        </div>
+        <div class="flex items-center justify-end gap-2 border-t border-slate-800 px-6 py-4">
+          ${state.nostrEventNevent ? `<button data-action="copy-to-clipboard" data-copy-value="${state.nostrEventNevent}" class="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            Copy Event ID
+          </button>` : ""}
+          <button data-action="copy-nostr-event-json" class="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            Copy JSON
+          </button>
+          <button data-action="close-nostr-event-modal" class="rounded-lg bg-slate-800 px-4 py-1.5 text-sm text-slate-200 hover:bg-slate-700">Close</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderWalletModal(): string {
   if (state.walletModal === "none") return "";
 
@@ -3725,6 +3827,7 @@ function render(): void {
       ${renderTopShell()}
       <main>${state.view === "wallet" ? renderWallet() : state.view === "home" ? renderHome() : state.view === "detail" ? renderDetail() : renderCreateMarket()}</main>
     </div>
+    ${renderNostrEventModal()}
   `;
   app.innerHTML = html;
 }
@@ -5185,9 +5288,40 @@ app.addEventListener("click", (event) => {
   }
 
   if (action === "open-nostr-event") {
+    const marketId = actionEl?.getAttribute("data-market-id");
     const nevent = actionEl?.getAttribute("data-nevent");
-    if (nevent) {
-      void openUrl("https://njump.me/" + nevent);
+    const market = marketId ? markets.find(m => m.id === marketId) : null;
+    if (market?.nostrEventJson) {
+      state.nostrEventModal = true;
+      state.nostrEventJson = market.nostrEventJson;
+      state.nostrEventNevent = nevent ?? null;
+      render();
+    } else {
+      showToast("Nostr event data not available", "error");
+    }
+    return;
+  }
+
+  if (action === "nostr-event-backdrop" && actionEl === target) {
+    state.nostrEventModal = false;
+    state.nostrEventJson = null;
+    state.nostrEventNevent = null;
+    render();
+    return;
+  }
+
+  if (action === "close-nostr-event-modal") {
+    state.nostrEventModal = false;
+    state.nostrEventJson = null;
+    state.nostrEventNevent = null;
+    render();
+    return;
+  }
+
+  if (action === "copy-nostr-event-json") {
+    if (state.nostrEventJson) {
+      void navigator.clipboard.writeText(state.nostrEventJson);
+      showToast("Copied to clipboard");
     }
     return;
   }
