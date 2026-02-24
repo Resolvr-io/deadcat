@@ -99,7 +99,7 @@ pub fn parse_announcement_event(event: &Event) -> Result<DiscoveredMarket, Strin
         created_at: event.created_at.as_u64(),
         creation_txid: announcement.creation_txid,
         state: 0, // Default Dormant for discovered markets
-        nostr_event_json: None,
+        nostr_event_json: serde_json::to_string(event).ok(),
     })
 }
 
