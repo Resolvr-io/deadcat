@@ -34,8 +34,6 @@ export function handleFocusout(e: FocusEvent, render: () => void): void {
   if (
     target.id === "create-question" ||
     target.id === "create-description" ||
-    target.id === "create-category" ||
-    target.id === "create-settlement" ||
     target.id === "create-resolution-source" ||
     target.id === "create-yes-sats"
   ) {

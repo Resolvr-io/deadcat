@@ -1,5 +1,4 @@
 import { SATS_PER_FULL_CONTRACT, state } from "../state.ts";
-import type { MarketCategory } from "../types.ts";
 
 export function handleInput(e: Event, render: () => void): void {
   const target = e.target as HTMLInputElement;
@@ -150,6 +149,7 @@ export function handleInput(e: Event, render: () => void): void {
     return;
   }
 
+
   if (target.id === "create-question") {
     state.createQuestion = target.value;
     return;
@@ -157,16 +157,6 @@ export function handleInput(e: Event, render: () => void): void {
 
   if (target.id === "create-description") {
     state.createDescription = target.value;
-    return;
-  }
-
-  if (target.id === "create-category") {
-    state.createCategory = target.value as MarketCategory;
-    return;
-  }
-
-  if (target.id === "create-settlement") {
-    state.createSettlementInput = target.value;
     return;
   }
 
