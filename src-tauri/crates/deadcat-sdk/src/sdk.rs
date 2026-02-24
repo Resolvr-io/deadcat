@@ -1737,7 +1737,7 @@ impl DeadcatSdk {
     ) -> Result<PoolCreationResult> {
         self.sync()?;
 
-        let contract = crate::amm_pool::contract::CompiledAmmPool::new(pool_params.clone())?;
+        let contract = crate::amm_pool::contract::CompiledAmmPool::new(*pool_params)?;
 
         // Select funding UTXOs for each asset
         let yes_funding =
@@ -1802,7 +1802,7 @@ impl DeadcatSdk {
 
         Ok(PoolCreationResult {
             txid,
-            pool_params: pool_params.clone(),
+            pool_params: *pool_params,
             issued_lp: initial_issued_lp,
             covenant_address,
         })
@@ -1824,10 +1824,9 @@ impl DeadcatSdk {
         use crate::amm_pool::math::{PoolReserves, compute_swap_exact_input};
 
         self.sync()?;
-        let contract = crate::amm_pool::contract::CompiledAmmPool::new(pool_params.clone())?;
+        let contract = crate::amm_pool::contract::CompiledAmmPool::new(*pool_params)?;
 
-        let (pool_yes, pool_no, pool_lbtc, pool_rt) =
-            self.scan_pool_utxos(&contract, issued_lp)?;
+        let (pool_yes, pool_no, pool_lbtc, pool_rt) = self.scan_pool_utxos(&contract, issued_lp)?;
 
         let reserves = PoolReserves {
             r_yes: pool_yes.value,
@@ -1930,6 +1929,7 @@ impl DeadcatSdk {
     ///
     /// Selects separate funding UTXOs for each asset being deposited
     /// (YES, NO, L-BTC) as required by the three-asset pool covenant.
+    #[allow(clippy::too_many_arguments)]
     pub fn pool_lp_deposit(
         &mut self,
         pool_params: &crate::amm_pool::params::AmmPoolParams,
@@ -1943,10 +1943,9 @@ impl DeadcatSdk {
         use crate::amm_pool::math::PoolReserves;
 
         self.sync()?;
-        let contract = crate::amm_pool::contract::CompiledAmmPool::new(pool_params.clone())?;
+        let contract = crate::amm_pool::contract::CompiledAmmPool::new(*pool_params)?;
 
-        let (pool_yes, pool_no, pool_lbtc, pool_rt) =
-            self.scan_pool_utxos(&contract, issued_lp)?;
+        let (pool_yes, pool_no, pool_lbtc, pool_rt) = self.scan_pool_utxos(&contract, issued_lp)?;
 
         // Compute what the depositor needs to contribute for each asset
         let deposit_yes = new_r_yes.saturating_sub(pool_yes.value);
@@ -1958,7 +1957,8 @@ impl DeadcatSdk {
         let mut deposit_utxos = Vec::new();
 
         if deposit_yes > 0 {
-            let utxo = self.select_funding_utxo(&pool_params.yes_asset_id, deposit_yes, &exclude)?;
+            let utxo =
+                self.select_funding_utxo(&pool_params.yes_asset_id, deposit_yes, &exclude)?;
             exclude.push(utxo.outpoint);
             deposit_utxos.push(utxo);
         }
@@ -1968,7 +1968,8 @@ impl DeadcatSdk {
             deposit_utxos.push(utxo);
         }
         if deposit_lbtc > 0 {
-            let utxo = self.select_funding_utxo(&pool_params.lbtc_asset_id, deposit_lbtc, &exclude)?;
+            let utxo =
+                self.select_funding_utxo(&pool_params.lbtc_asset_id, deposit_lbtc, &exclude)?;
             exclude.push(utxo.outpoint);
             deposit_utxos.push(utxo);
         }
@@ -2044,10 +2045,9 @@ impl DeadcatSdk {
         use crate::amm_pool::math::{PoolReserves, compute_lp_proportional_withdraw};
 
         self.sync()?;
-        let contract = crate::amm_pool::contract::CompiledAmmPool::new(pool_params.clone())?;
+        let contract = crate::amm_pool::contract::CompiledAmmPool::new(*pool_params)?;
 
-        let (pool_yes, pool_no, pool_lbtc, pool_rt) =
-            self.scan_pool_utxos(&contract, issued_lp)?;
+        let (pool_yes, pool_no, pool_lbtc, pool_rt) = self.scan_pool_utxos(&contract, issued_lp)?;
 
         let reserves = PoolReserves {
             r_yes: pool_yes.value,
@@ -2057,11 +2057,17 @@ impl DeadcatSdk {
 
         let withdrawn = compute_lp_proportional_withdraw(&reserves, issued_lp, lp_burn_amount)?;
 
-        let new_r_yes = reserves.r_yes.checked_sub(withdrawn.r_yes)
+        let new_r_yes = reserves
+            .r_yes
+            .checked_sub(withdrawn.r_yes)
             .ok_or_else(|| Error::AmmPool("reserve underflow (YES)".into()))?;
-        let new_r_no = reserves.r_no.checked_sub(withdrawn.r_no)
+        let new_r_no = reserves
+            .r_no
+            .checked_sub(withdrawn.r_no)
             .ok_or_else(|| Error::AmmPool("reserve underflow (NO)".into()))?;
-        let new_r_lbtc = reserves.r_lbtc.checked_sub(withdrawn.r_lbtc)
+        let new_r_lbtc = reserves
+            .r_lbtc
+            .checked_sub(withdrawn.r_lbtc)
             .ok_or_else(|| Error::AmmPool("reserve underflow (LBTC)".into()))?;
 
         // Find LP token UTXOs in wallet
@@ -2139,18 +2145,18 @@ impl DeadcatSdk {
             .map_err(|e| Error::Unblind(format!("bad collateral asset: {e}")))?;
 
         for (outpoint, txout) in covenant_utxos {
-            if let Asset::Explicit(asset) = txout.asset {
-                if asset == collateral_id {
-                    let value = txout.value.explicit().unwrap_or(0);
-                    return Ok(UnblindedUtxo {
-                        outpoint: *outpoint,
-                        txout: txout.clone(),
-                        asset_id: params.collateral_asset_id,
-                        value,
-                        asset_blinding_factor: [0u8; 32],
-                        value_blinding_factor: [0u8; 32],
-                    });
-                }
+            if let Asset::Explicit(asset) = txout.asset
+                && asset == collateral_id
+            {
+                let value = txout.value.explicit().unwrap_or(0);
+                return Ok(UnblindedUtxo {
+                    outpoint: *outpoint,
+                    txout: txout.clone(),
+                    asset_id: params.collateral_asset_id,
+                    value,
+                    asset_blinding_factor: [0u8; 32],
+                    value_blinding_factor: [0u8; 32],
+                });
             }
         }
 
@@ -2507,7 +2513,10 @@ mod tests {
             h.update(0u32.to_be_bytes());
             h.finalize().into()
         };
-        assert_ne!(hash_a, hash_b, "different txids must produce different hashes");
+        assert_ne!(
+            hash_a, hash_b,
+            "different txids must produce different hashes"
+        );
 
         // Different vouts must produce different sighashes
         let hash_c: [u8; 32] = {
@@ -2516,7 +2525,10 @@ mod tests {
             h.update(1u32.to_be_bytes());
             h.finalize().into()
         };
-        assert_ne!(hash_a, hash_c, "different vouts must produce different hashes");
+        assert_ne!(
+            hash_a, hash_c,
+            "different vouts must produce different hashes"
+        );
 
         // Determinism
         let hash_a2: [u8; 32] = {

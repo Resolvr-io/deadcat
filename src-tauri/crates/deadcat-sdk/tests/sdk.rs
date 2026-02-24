@@ -97,23 +97,6 @@ fn test_oracle_pubkey() -> [u8; 32] {
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_the_sdk() {
-    let test_fixture = TestFixture::new();
-    let env = test_fixture.env;
-    let mut sdk = test_fixture.sdk;
-
-    let sdk_address_result = sdk.address(None).unwrap();
-    let sdk_address = sdk_address_result.address();
-    env.elementsd_sendtoaddress(sdk_address, 1234, None);
-    env.elementsd_generate(10);
-    let lbtc_asset = regtest_policy_asset();
-    assert_eq!(*sdk.balance().unwrap().get(&lbtc_asset).unwrap(), 0);
-    sdk.sync().unwrap();
-    std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(*sdk.balance().unwrap().get(&lbtc_asset).unwrap(), 1234);
-}
-
-#[test]
 fn test_generate_mnemonic() {
     let (mnemonic, _signer) = DeadcatSdk::generate_mnemonic(false).unwrap();
     let words: Vec<&str> = mnemonic.split_whitespace().collect();

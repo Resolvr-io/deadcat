@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::amm_pool::math::PoolReserves;
 use crate::amm_pool::params::AmmPoolParams;
 
-use super::{bytes_to_hex, APP_EVENT_KIND, NETWORK_TAG, POOL_TAG};
+use super::{APP_EVENT_KIND, NETWORK_TAG, POOL_TAG, bytes_to_hex};
 
 /// Published to Nostr — contains AMM pool params + discovery metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]

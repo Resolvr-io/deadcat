@@ -76,15 +76,12 @@ pub fn build_attestation_filter(market_id_hex: &str) -> Filter {
 
 /// Build a Nostr filter for subscribing to all attestation events.
 pub fn build_attestation_subscription_filter() -> Filter {
-    Filter::new()
-        .kind(APP_EVENT_KIND)
-        .hashtag(ATTESTATION_TAG)
+    Filter::new().kind(APP_EVENT_KIND).hashtag(ATTESTATION_TAG)
 }
 
 /// Parse a Nostr event into an AttestationContent.
 pub fn parse_attestation_event(event: &Event) -> Result<AttestationContent, String> {
-    serde_json::from_str(&event.content)
-        .map_err(|e| format!("failed to parse attestation: {e}"))
+    serde_json::from_str(&event.content).map_err(|e| format!("failed to parse attestation: {e}"))
 }
 
 /// Sign an oracle attestation using the Nostr keypair.

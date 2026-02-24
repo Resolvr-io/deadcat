@@ -1,5 +1,5 @@
-use simplicityhl::elements::pset::PartiallySignedTransaction;
 use simplicityhl::elements::Script;
+use simplicityhl::elements::pset::PartiallySignedTransaction;
 
 use crate::error::{Error, Result};
 use crate::pset::UnblindedUtxo;
@@ -124,7 +124,9 @@ pub fn build_lp_deposit_pset(
     // Sum deposit UTXOs per asset, subtract what was deposited, emit single change output.
     let deposited_yes = params.new_r_yes.saturating_sub(params.pool_yes_utxo.value);
     let deposited_no = params.new_r_no.saturating_sub(params.pool_no_utxo.value);
-    let deposited_lbtc = params.new_r_lbtc.saturating_sub(params.pool_lbtc_utxo.value);
+    let deposited_lbtc = params
+        .new_r_lbtc
+        .saturating_sub(params.pool_lbtc_utxo.value);
 
     let mut total_yes: u64 = 0;
     let mut total_no: u64 = 0;
@@ -186,8 +188,8 @@ mod tests {
     use super::*;
     use crate::amm_pool::params::AmmPoolParams;
     use crate::taproot::NUMS_KEY_BYTES;
-    use simplicityhl::elements::{OutPoint, Txid};
     use simplicityhl::elements::hashes::Hash;
+    use simplicityhl::elements::{OutPoint, Txid};
 
     fn test_params() -> AmmPoolParams {
         AmmPoolParams {

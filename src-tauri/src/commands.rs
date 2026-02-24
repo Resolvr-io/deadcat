@@ -6,8 +6,8 @@ use nostr_sdk::prelude::*;
 use tauri::{Emitter, Manager};
 
 use crate::discovery::{
-    self, AttestationResult, ContractMetadata, CreateContractRequest, DiscoveredMarket,
-    IdentityResponse, discovered_market_to_contract_params,
+    self, discovered_market_to_contract_params, AttestationResult, ContractMetadata,
+    CreateContractRequest, DiscoveredMarket, IdentityResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -356,18 +356,19 @@ pub async fn check_nostr_backup(
     for url in relays {
         let f = filter.clone();
         tasks.spawn(async move {
-            let found = match discovery::connect_multi_relay_client(&[url.clone()]).await {
-                Ok(per_relay_client) => {
-                    match per_relay_client
-                        .fetch_events(vec![f], Duration::from_secs(8))
-                        .await
-                    {
-                        Ok(events) => events.iter().next().is_some(),
-                        Err(_) => false,
+            let found =
+                match discovery::connect_multi_relay_client(std::slice::from_ref(&url)).await {
+                    Ok(per_relay_client) => {
+                        match per_relay_client
+                            .fetch_events(vec![f], Duration::from_secs(8))
+                            .await
+                        {
+                            Ok(events) => events.iter().next().is_some(),
+                            Err(_) => false,
+                        }
                     }
-                }
-                Err(_) => false,
-            };
+                    Err(_) => false,
+                };
             discovery::RelayBackupResult {
                 url,
                 has_backup: found,
@@ -394,9 +395,7 @@ pub async fn check_nostr_backup(
 
 /// Delete the wallet backup from all relays (NIP-09 deletion event).
 #[tauri::command]
-pub async fn delete_nostr_backup(
-    state: tauri::State<'_, SdkState>,
-) -> Result<String, String> {
+pub async fn delete_nostr_backup(state: tauri::State<'_, SdkState>) -> Result<String, String> {
     let keys = {
         let nostr_keys = state
             .nostr_keys

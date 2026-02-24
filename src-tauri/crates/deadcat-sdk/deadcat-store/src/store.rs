@@ -210,12 +210,12 @@ impl DeadcatStore {
 
         if exists {
             // Update nostr_event_json if it was previously missing
-            if let Some(meta) = metadata {
-                if let Some(ref json) = meta.nostr_event_json {
-                    diesel::update(markets::table.filter(markets::market_id.eq(&mid_bytes)))
-                        .set(markets::nostr_event_json.eq(json))
-                        .execute(&mut self.conn)?;
-                }
+            if let Some(meta) = metadata
+                && let Some(ref json) = meta.nostr_event_json
+            {
+                diesel::update(markets::table.filter(markets::market_id.eq(&mid_bytes)))
+                    .set(markets::nostr_event_json.eq(json))
+                    .execute(&mut self.conn)?;
             }
             return Ok(mid);
         }
@@ -270,7 +270,14 @@ impl DeadcatStore {
             return Ok(row.id);
         }
 
-        let row = new_maker_order_row(params, &compiled, maker_pubkey, order_nonce, nostr_event_id, nostr_event_json);
+        let row = new_maker_order_row(
+            params,
+            &compiled,
+            maker_pubkey,
+            order_nonce,
+            nostr_event_id,
+            nostr_event_json,
+        );
 
         diesel::insert_into(maker_orders::table)
             .values(&row)
@@ -522,6 +529,7 @@ impl DeadcatStore {
     pub fn watched_script_pubkeys(&mut self) -> crate::Result<Vec<Vec<u8>>> {
         let mut spks = Vec::new();
 
+        #[allow(clippy::type_complexity)]
         let market_rows: Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = markets::table
             .select((
                 markets::dormant_spk,
@@ -613,49 +621,48 @@ impl DeadcatStore {
         if exists {
             // Update issued_lp, reserves, covenant_spk, and Nostr metadata for existing pool
             let compiled = deadcat_sdk::amm_pool::contract::CompiledAmmPool::new(*params)?;
-            let update = diesel::update(
-                amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)),
-            );
+            let update =
+                diesel::update(amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)));
             // Always update issued_lp, covenant_spk, and timestamp
             let base_set = (
                 amm_pools::issued_lp.eq(issued_lp as i64),
-                amm_pools::covenant_spk
-                    .eq(compiled.script_pubkey(issued_lp).as_bytes().to_vec()),
+                amm_pools::covenant_spk.eq(compiled.script_pubkey(issued_lp).as_bytes().to_vec()),
                 amm_pools::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
             );
             update.set(base_set).execute(&mut self.conn)?;
             // Update reserves if provided
             if let Some(r) = reserves {
-                diesel::update(
-                    amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)),
-                )
-                .set((
-                    amm_pools::r_yes.eq(r.r_yes as i64),
-                    amm_pools::r_no.eq(r.r_no as i64),
-                    amm_pools::r_lbtc.eq(r.r_lbtc as i64),
-                ))
-                .execute(&mut self.conn)?;
+                diesel::update(amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)))
+                    .set((
+                        amm_pools::r_yes.eq(r.r_yes as i64),
+                        amm_pools::r_no.eq(r.r_no as i64),
+                        amm_pools::r_lbtc.eq(r.r_lbtc as i64),
+                    ))
+                    .execute(&mut self.conn)?;
             }
             // Update Nostr metadata if provided
             if let Some(eid) = nostr_event_id {
-                diesel::update(
-                    amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)),
-                )
-                .set(amm_pools::nostr_event_id.eq(Some(eid.to_string())))
-                .execute(&mut self.conn)?;
+                diesel::update(amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)))
+                    .set(amm_pools::nostr_event_id.eq(Some(eid.to_string())))
+                    .execute(&mut self.conn)?;
             }
             if let Some(ejson) = nostr_event_json {
-                diesel::update(
-                    amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)),
-                )
-                .set(amm_pools::nostr_event_json.eq(Some(ejson.to_string())))
-                .execute(&mut self.conn)?;
+                diesel::update(amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)))
+                    .set(amm_pools::nostr_event_json.eq(Some(ejson.to_string())))
+                    .execute(&mut self.conn)?;
             }
             return Ok(pool_id);
         }
 
         let compiled = deadcat_sdk::amm_pool::contract::CompiledAmmPool::new(*params)?;
-        let row = new_amm_pool_row(params, &compiled, issued_lp, reserves, nostr_event_id, nostr_event_json);
+        let row = new_amm_pool_row(
+            params,
+            &compiled,
+            issued_lp,
+            reserves,
+            nostr_event_id,
+            nostr_event_json,
+        );
 
         diesel::insert_into(amm_pools::table)
             .values(&row)
@@ -746,9 +753,15 @@ impl deadcat_sdk::discovery::DiscoveryStore for DeadcatStore {
         nostr_event_id: Option<&str>,
         nostr_event_json: Option<&str>,
     ) -> Result<(), String> {
-        self.ingest_maker_order(params, maker_pubkey, nonce, nostr_event_id, nostr_event_json)
-            .map(|_| ())
-            .map_err(|e| format!("{e}"))
+        self.ingest_maker_order(
+            params,
+            maker_pubkey,
+            nonce,
+            nostr_event_id,
+            nostr_event_json,
+        )
+        .map(|_| ())
+        .map_err(|e| format!("{e}"))
     }
 
     fn ingest_amm_pool(
@@ -759,9 +772,15 @@ impl deadcat_sdk::discovery::DiscoveryStore for DeadcatStore {
         nostr_event_id: Option<&str>,
         nostr_event_json: Option<&str>,
     ) -> Result<(), String> {
-        self.ingest_amm_pool(params, issued_lp, reserves, nostr_event_id, nostr_event_json)
-            .map(|_| ())
-            .map_err(|e| format!("{e}"))
+        self.ingest_amm_pool(
+            params,
+            issued_lp,
+            reserves,
+            nostr_event_id,
+            nostr_event_json,
+        )
+        .map(|_| ())
+        .map_err(|e| format!("{e}"))
     }
 
     fn update_pool_state(
@@ -785,6 +804,7 @@ fn sync_market_utxos<C: ChainSource>(
     chain: &C,
     report: &mut SyncReport,
 ) -> crate::Result<()> {
+    #[allow(clippy::type_complexity)]
     let rows: Vec<(
         Vec<u8>,
         Vec<u8>,
@@ -839,17 +859,17 @@ fn sync_market_utxos<C: ChainSource>(
                     report.new_utxos += 1;
 
                     // Try to extract issuance entropy from this UTXO's tx
-                    if needs_entropy {
-                        if try_extract_issuance_entropy(
+                    if needs_entropy
+                        && try_extract_issuance_entropy(
                             conn,
                             chain,
                             &cu.txid,
                             mid_bytes,
                             yes_reissuance_token,
                             no_reissuance_token,
-                        )? {
-                            needs_entropy = false;
-                        }
+                        )?
+                    {
+                        needs_entropy = false;
                     }
                 }
             }

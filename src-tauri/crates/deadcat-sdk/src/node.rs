@@ -18,12 +18,12 @@ use crate::announcement::{ContractAnnouncement, ContractMetadata};
 use crate::discovery::config::DiscoveryConfig;
 use crate::discovery::events::DiscoveryEvent;
 use crate::discovery::market::DiscoveredMarket;
+use crate::discovery::pool::{DiscoveredPool, PoolAnnouncement};
 use crate::discovery::service::{DiscoveryService, NoopStore, persist_market_to_store};
 use crate::discovery::store_trait::DiscoveryStore;
-use crate::discovery::pool::{DiscoveredPool, PoolAnnouncement};
 use crate::discovery::{
-    AttestationContent, AttestationResult, DiscoveredOrder, OrderAnnouncement,
-    DEFAULT_RELAYS, bytes_to_hex,
+    AttestationContent, AttestationResult, DEFAULT_RELAYS, DiscoveredOrder, OrderAnnouncement,
+    bytes_to_hex,
 };
 use crate::error::{Error, NodeError};
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
@@ -81,8 +81,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         store: Arc<Mutex<S>>,
         config: DiscoveryConfig,
     ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
-        let (discovery, rx) =
-            DiscoveryService::with_store(keys.clone(), store.clone(), config);
+        let (discovery, rx) = DiscoveryService::with_store(keys.clone(), store.clone(), config);
         (
             Self {
                 sdk: Arc::new(Mutex::new(None)),
@@ -123,10 +122,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     /// Returns `true` if the wallet is currently unlocked.
     pub fn is_wallet_unlocked(&self) -> bool {
-        self.sdk
-            .lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false)
+        self.sdk.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
     // ── Internal: spawn_blocking SDK helper ─────────────────────────────
@@ -172,12 +168,14 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         r_no: u64,
         r_lbtc: u64,
     ) {
-        if let Some(ref store) = self.store {
-            if let Ok(mut guard) = store.lock() {
-                let pool_id = crate::amm_pool::params::PoolId::from_params(params);
-                if let Err(e) = guard.update_pool_state(&pool_id, params, issued_lp, r_yes, r_no, r_lbtc) {
-                    log::warn!("failed to persist pool state: {e}");
-                }
+        if let Some(ref store) = self.store
+            && let Ok(mut guard) = store.lock()
+        {
+            let pool_id = crate::amm_pool::params::PoolId::from_params(params);
+            if let Err(e) =
+                guard.update_pool_state(&pool_id, params, issued_lp, r_yes, r_no, r_lbtc)
+            {
+                log::warn!("failed to persist pool state: {e}");
             }
         }
     }
@@ -440,10 +438,8 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         oracle_sig: [u8; 64],
         fee_amount: u64,
     ) -> Result<ResolutionResult, NodeError> {
-        self.with_sdk(move |sdk| {
-            sdk.resolve_market(&params, outcome_yes, oracle_sig, fee_amount)
-        })
-        .await
+        self.with_sdk(move |sdk| sdk.resolve_market(&params, outcome_yes, oracle_sig, fee_amount))
+            .await
     }
 
     // ── Redemption ──────────────────────────────────────────────────────
@@ -467,10 +463,8 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         tokens: u64,
         fee_amount: u64,
     ) -> Result<RedemptionResult, NodeError> {
-        self.with_sdk(move |sdk| {
-            sdk.redeem_expired(&params, token_asset, tokens, fee_amount)
-        })
-        .await
+        self.with_sdk(move |sdk| sdk.redeem_expired(&params, token_asset, tokens, fee_amount))
+            .await
     }
 
     /// Cancel token pairs by burning equal YES and NO tokens.
@@ -516,7 +510,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
         // 2. Build and publish Nostr announcement
         let compiled = crate::amm_pool::contract::CompiledAmmPool::new(result.pool_params)
-            .map_err(|e| NodeError::Sdk(e))?;
+            .map_err(NodeError::Sdk)?;
         let announcement = PoolAnnouncement {
             version: 1,
             params: result.pool_params,
@@ -566,6 +560,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     }
 
     /// Execute a swap against an AMM pool: on-chain TX + update Nostr + persist.
+    #[allow(clippy::too_many_arguments)]
     pub async fn pool_swap(
         &self,
         pool_params: crate::amm_pool::params::AmmPoolParams,
@@ -578,7 +573,14 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     ) -> Result<crate::sdk::PoolSwapResult, NodeError> {
         let result = self
             .with_sdk(move |sdk| {
-                sdk.pool_swap(&pool_params, issued_lp, swap_pair, delta_in, sell_a, fee_amount)
+                sdk.pool_swap(
+                    &pool_params,
+                    issued_lp,
+                    swap_pair,
+                    delta_in,
+                    sell_a,
+                    fee_amount,
+                )
             })
             .await?;
 
@@ -641,7 +643,13 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         )
         .await;
 
-        self.persist_pool_state(&pool_params, result.new_issued_lp, nr.r_yes, nr.r_no, nr.r_lbtc);
+        self.persist_pool_state(
+            &pool_params,
+            result.new_issued_lp,
+            nr.r_yes,
+            nr.r_no,
+            nr.r_lbtc,
+        );
 
         Ok(result)
     }
@@ -656,9 +664,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         market_id: String,
     ) -> Result<crate::sdk::PoolLpResult, NodeError> {
         let result = self
-            .with_sdk(move |sdk| {
-                sdk.pool_lp_withdraw(&pool_params, issued_lp, lp_burn, fee_amount)
-            })
+            .with_sdk(move |sdk| sdk.pool_lp_withdraw(&pool_params, issued_lp, lp_burn, fee_amount))
             .await?;
 
         // Use SDK-computed reserves (derived from on-chain state)
@@ -673,7 +679,13 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         )
         .await;
 
-        self.persist_pool_state(&pool_params, result.new_issued_lp, nr.r_yes, nr.r_no, nr.r_lbtc);
+        self.persist_pool_state(
+            &pool_params,
+            result.new_issued_lp,
+            nr.r_yes,
+            nr.r_no,
+            nr.r_lbtc,
+        );
 
         Ok(result)
     }
@@ -734,10 +746,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     /// Start the background Nostr subscription loop.
     pub async fn start_subscription(&self) -> Result<JoinHandle<()>, NodeError> {
-        self.discovery
-            .start()
-            .await
-            .map_err(NodeError::Discovery)
+        self.discovery.start().await.map_err(NodeError::Discovery)
     }
 
     /// Get an additional broadcast receiver for discovery events.
