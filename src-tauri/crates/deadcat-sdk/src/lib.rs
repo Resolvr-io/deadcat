@@ -1,6 +1,7 @@
 pub use simplicityhl::elements;
 pub use simplicityhl::simplicity;
 
+pub mod amm_pool;
 pub mod announcement;
 pub mod assembly;
 pub mod chain;
@@ -34,7 +35,8 @@ pub use network::Network;
 pub use params::{ContractParams, IssuanceAssets, MarketId, compute_issuance_assets};
 pub use sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, DeadcatSdk, FillOrderResult,
-    IssuanceResult, RedemptionResult, ResolutionResult,
+    IssuanceResult, PoolCreationResult, PoolLpResult, PoolSwapResult, RedemptionResult,
+    ResolutionResult,
 };
 pub use node::DeadcatNode;
 pub use state::MarketState;
@@ -84,10 +86,30 @@ pub use maker_order::witness::{
     satisfy_maker_order, serialize_satisfied as serialize_maker_order_satisfied,
 };
 
+// AMM pool types and builders
+pub use amm_pool::assembly::{AssembledPoolTransaction, attach_amm_pool_witnesses};
+pub use amm_pool::contract::CompiledAmmPool;
+pub use amm_pool::math::{
+    PoolReserves, SwapPair, SwapResult,
+    compute_swap_exact_input, compute_swap_exact_output,
+    compute_lp_deposit, compute_lp_proportional_withdraw,
+    spot_price_yes_lbtc, spot_price_no_lbtc, spot_price_yes_no,
+};
+pub use amm_pool::params::{AmmPoolParams, PoolId};
+pub use amm_pool::pset::creation::{PoolCreationParams, build_pool_creation_pset};
+pub use amm_pool::pset::lp_deposit::{LpDepositParams, build_lp_deposit_pset};
+pub use amm_pool::pset::lp_withdraw::{LpWithdrawParams, build_lp_withdraw_pset};
+pub use amm_pool::pset::swap::{SwapParams, build_swap_pset};
+pub use amm_pool::witness::{
+    AmmPoolSpendingPath, RtBlindingFactors, build_amm_pool_witness, satisfy_amm_pool,
+    satisfy_amm_pool_with_env, serialize_satisfied as serialize_amm_pool_satisfied,
+};
+
 // Discovery (replaces order_announcement + order_discovery)
 pub use discovery::{
     // Types
     DiscoveredMarket, DiscoveredOrder, OrderAnnouncement,
+    DiscoveredPool, PoolAnnouncement,
     DiscoveryConfig, DiscoveryEvent, DiscoveryService,
     AttestationContent, AttestationResult,
     ContractMetadataInput, DiscoveryStore,
@@ -97,6 +119,9 @@ pub use discovery::{
     // Market builders
     build_announcement_event, build_contract_filter, parse_announcement_event,
     fetch_announcements, discovered_market_to_contract_params,
+    // Pool builders
+    build_pool_event, build_pool_filter, parse_pool_event,
+    fetch_pools,
     // Attestation builders
     build_attestation_event, build_attestation_filter, parse_attestation_event,
     sign_attestation,
@@ -104,6 +129,6 @@ pub use discovery::{
     connect_client, publish_event,
     // Constants
     APP_EVENT_KIND,
-    CONTRACT_TAG, ORDER_TAG, ATTESTATION_TAG,
+    CONTRACT_TAG, ORDER_TAG, ATTESTATION_TAG, POOL_TAG,
     NETWORK_TAG, DEFAULT_RELAYS,
 };

@@ -1608,11 +1608,11 @@ The creation transaction must produce explicit outputs at indices 0–2 (trading
 
 ## 23. Open Questions
 
-1. **Cosigner policy.** `COSIGNER_PUBKEY` is a compile-time parameter (§4) but no spending path currently uses it. Should the swap path require a cosigner signature (like the maker order's optional cosigner)? A cosigner could gate swaps to authorized takers, but this conflicts with the permissionless design goal. If not needed, remove the parameter. Likely only useful for regulated markets.
+1. ~~**Cosigner policy.**~~ **Resolved:** `COSIGNER_PUBKEY` is preserved as a compile-time parameter but unused by any spending path. See Implementation Deviations §D2.
 
 2. **Minimum reserves.** What should the minimum reserve per asset be? Too low risks dust UTXOs and precision loss. A compile-time `MIN_RESERVE` parameter (e.g., 1,000 lots / 1,000 sats) could enforce this.
 
-3. **Nostr announcement format.** Pool discovery should follow the same Nostr event patterns as maker orders. Event schema (tags, replaceability, indexing) needs specification. The `issued_lp` state must be included in pool announcements for address derivation.
+3. ~~**Nostr announcement format.**~~ **Resolved:** Implemented as NIP-33 replaceable events with tag `deadcat-pool`, identifier = pool_id hex, and tags for market_id and network. JSON content includes `PoolAnnouncement` with version, params, issued_lp, covenant_cmr, outpoints, and reserves. See `src/discovery/pool.rs`.
 
 4. **Multi-pool routing.** When multiple pools exist for the same market, taker software needs a routing algorithm. This is an off-chain/wallet concern but affects UX design.
 
@@ -1628,3 +1628,47 @@ The creation transaction must produce explicit outputs at indices 0–2 (trading
 - **LP burn mechanism:** OP_RETURN output with `SHA256("") = 0xe3b0c44...` — same pattern as prediction_market.simf token cancellation (§18.9).
 - **Issuance amount reading:** `jet::issuance_asset_amount(index)` returns a nested Option type (see §18.9) — same jet as prediction_market.simf:240–242.
 - **Explicit vs. confidential amounts:** Trading reserves (indices 0–2) use explicit amounts; reissuance token (index 3) may be confidential with Pedersen verification (§22, §5.4).
+
+## Implementation Deviations
+
+These document intentional deviations from the original design made during implementation:
+
+### D1. LP Burn via Empty Script (Not OP_RETURN)
+
+**Original design (§9.2, §18.9):** LP tokens are burned by sending to an `OP_RETURN` output, with the covenant verifying `SHA256("") = 0xe3b0c44...`.
+
+**Implementation:** The SDK's `burn_txout()` helper uses an empty script (`Script::new()`) rather than an explicit `OP_RETURN` script. On Liquid/Elements, an output with an empty script is provably unspendable (no script path can satisfy it), and `SHA256("") = 0xe3b0c44...` is the hash of the empty byte string — so the covenant's empty-script-hash check works identically for both approaches. The empty script is simpler, saves 1 byte, and is the established pattern used by the prediction market's cancellation path (`pset/cancellation.rs`).
+
+**Risk:** None. Both approaches produce provably unspendable outputs. The covenant only checks the script hash, which is `SHA256("")` in either case.
+
+### D2. COSIGNER_PUBKEY Reserved But Unused
+
+**Original design (§4, §23 Q1):** `COSIGNER_PUBKEY` is listed as a compile-time parameter, with §23 noting it as an open question whether any spending path should require a cosigner signature.
+
+**Implementation:** The parameter is accepted during contract compilation (included in `build_arguments()` and `PoolId` derivation) but no spending path in `amm_pool.simf` uses it. The `has_cosigner()` method on `AmmPoolParams` exists for future use. All pools should set `cosigner_pubkey` to the NUMS key bytes.
+
+**Rationale:** Adding cosigner checks to the swap path would contradict the permissionless AMM design. The parameter is preserved in the contract interface for forward compatibility — if regulated markets later require gated swaps, a new contract version can add a cosigner check to the swap path without changing the parameter structure. Removing it now would break `PoolId` determinism if re-added later.
+
+### D3. Always-Explicit Reissuance Token Outputs
+
+**Original design (§5.4, §22):** The reissuance token (output index 3) may be confidential with Pedersen verification via blinding factor witnesses.
+
+**Implementation:** All RT outputs in PSET builders (`creation.rs`, `swap.rs`, `lp_deposit.rs`, `lp_withdraw.rs`) use `explicit_txout()` with amount = 1. The blinding factor witnesses (`RtBlindingFactors`) carry zero-valued ABF/VBF for the output side, matching the explicit encoding.
+
+**Rationale:** The RT has a fixed value of 1. Confidential encoding provides no privacy benefit for a known-1 asset — it would only add complexity to blinding/unblinding. The covenant's `verify_input/output_reissuance_token()` helpers check the asset ID and amount; explicit encoding satisfies both checks trivially.
+
+### D4. Bidirectional Swaps via `sell_a` Parameter
+
+**Original design (§10):** The design specifies three swap pairs (YES/NO, YES/LBTC, NO/LBTC) but does not explicitly address direction within each pair — only describing the case where the "second-named" asset is sold to receive the "first-named" asset.
+
+**Implementation:** The off-chain math (`compute_swap_exact_input`, `compute_swap_exact_output`) and SDK orchestration (`pool_swap`) accept a `sell_a: bool` parameter that controls direction within each `SwapPair`. When `sell_a = true`, the first-named asset is sold (e.g. YES→NO in `SwapPair::YesNo`); when `sell_a = false`, the second-named asset is sold (e.g. NO→YES). This gives all 6 swap directions: YES→NO, NO→YES, YES→LBTC, LBTC→YES, NO→LBTC, LBTC→NO.
+
+**Rationale:** The on-chain fee invariant (`delta_in * (10000 - fee_bps) * R_out_old <= delta_out * 10000 * R_in_old`) is symmetric — it only references the reserves that increase (in) and decrease (out), making it agnostic to which named pair the assets belong to. No on-chain changes were needed; only the off-chain `r_sell`/`r_buy` mapping required the new parameter.
+
+### D5. Pool Announcements Omit UTXO Outpoints
+
+**Original design (§14):** Pool Nostr announcements include reserve amounts but do not specify whether UTXO outpoints must be included.
+
+**Implementation:** `PoolAnnouncement.outpoints` is always set to `Vec::new()` in `update_pool_announcement`. Consumers that need to spend pool UTXOs must chain-scan for the current covenant address (derivable from the announced `covenant_cmr` and `issued_lp`).
+
+**Rationale:** Including outpoints in the announcement creates a race condition: the announcement may propagate to relays after the referenced UTXOs have already been spent by another transaction. Chain-scanning the derived covenant address is the only reliable way to find current UTXOs. The `outpoints` field is retained in the struct for forward compatibility (e.g. a future indexer service could populate it as a hint).

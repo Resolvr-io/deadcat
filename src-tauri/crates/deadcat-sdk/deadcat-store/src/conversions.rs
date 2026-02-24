@@ -1,3 +1,5 @@
+use deadcat_sdk::amm_pool::contract::CompiledAmmPool;
+use deadcat_sdk::amm_pool::params::{AmmPoolParams, PoolId};
 use deadcat_sdk::elements::encode::{deserialize as elements_deserialize, serialize};
 use deadcat_sdk::elements::hashes::Hash;
 use deadcat_sdk::elements::{OutPoint, TxOut, Txid};
@@ -8,9 +10,10 @@ use deadcat_sdk::{
 
 use crate::error::StoreError;
 use crate::models::{
-    MakerOrderRow, MarketRow, NewMakerOrderRow, NewMarketRow, NewUtxoRow, UtxoRow,
+    AmmPoolRow, MakerOrderRow, MarketRow, NewAmmPoolRow, NewMakerOrderRow, NewMarketRow,
+    NewUtxoRow, UtxoRow,
 };
-use crate::store::{IssuanceData, MakerOrderInfo, MarketInfo, OrderStatus};
+use crate::store::{AmmPoolInfo, IssuanceData, MakerOrderInfo, MarketInfo, OrderStatus, PoolStatus};
 use deadcat_sdk::discovery::ContractMetadataInput;
 
 pub fn vec_to_array32(v: &[u8], field: &str) -> std::result::Result<[u8; 32], StoreError> {
@@ -315,5 +318,89 @@ pub fn new_utxo_row(
         maker_order_id,
         market_state: market_state.map(|s| s.as_u64() as i32),
         block_height: block_height.map(|h| h as i32),
+        amm_pool_id: None,
+    }
+}
+
+// --- AmmPoolRow -> SDK types ---
+
+impl TryFrom<&AmmPoolRow> for AmmPoolParams {
+    type Error = StoreError;
+
+    fn try_from(row: &AmmPoolRow) -> std::result::Result<Self, Self::Error> {
+        Ok(AmmPoolParams {
+            yes_asset_id: vec_to_array32(&row.yes_asset_id, "yes_asset_id")?,
+            no_asset_id: vec_to_array32(&row.no_asset_id, "no_asset_id")?,
+            lbtc_asset_id: vec_to_array32(&row.lbtc_asset_id, "lbtc_asset_id")?,
+            lp_asset_id: vec_to_array32(&row.lp_asset_id, "lp_asset_id")?,
+            lp_reissuance_token_id: vec_to_array32(
+                &row.lp_reissuance_token_id,
+                "lp_reissuance_token_id",
+            )?,
+            fee_bps: row.fee_bps as u64,
+            cosigner_pubkey: vec_to_array32(&row.cosigner_pubkey, "cosigner_pubkey")?,
+        })
+    }
+}
+
+impl TryFrom<&AmmPoolRow> for PoolId {
+    type Error = StoreError;
+
+    fn try_from(row: &AmmPoolRow) -> std::result::Result<Self, Self::Error> {
+        Ok(PoolId(vec_to_array32(&row.pool_id, "pool_id")?))
+    }
+}
+
+impl TryFrom<&AmmPoolRow> for AmmPoolInfo {
+    type Error = StoreError;
+
+    fn try_from(row: &AmmPoolRow) -> std::result::Result<Self, Self::Error> {
+        Ok(AmmPoolInfo {
+            pool_id: PoolId::try_from(row)?,
+            params: AmmPoolParams::try_from(row)?,
+            status: PoolStatus::from_i32(row.pool_status)?,
+            cmr: vec_to_array32(&row.cmr, "cmr")?,
+            issued_lp: row.issued_lp as u64,
+            r_yes: row.r_yes.map(|v| v as u64),
+            r_no: row.r_no.map(|v| v as u64),
+            r_lbtc: row.r_lbtc.map(|v| v as u64),
+            covenant_spk: row.covenant_spk.clone(),
+            nostr_event_id: row.nostr_event_id.clone(),
+            nostr_event_json: row.nostr_event_json.clone(),
+            created_at: row.created_at.clone(),
+            updated_at: row.updated_at.clone(),
+        })
+    }
+}
+
+// --- AmmPoolParams + CompiledAmmPool -> NewAmmPoolRow ---
+
+pub fn new_amm_pool_row(
+    params: &AmmPoolParams,
+    compiled: &CompiledAmmPool,
+    issued_lp: u64,
+    reserves: Option<&deadcat_sdk::amm_pool::math::PoolReserves>,
+    nostr_event_id: Option<&str>,
+    nostr_event_json: Option<&str>,
+) -> NewAmmPoolRow {
+    let pool_id = PoolId::from_params(params);
+    NewAmmPoolRow {
+        pool_id: pool_id.0.to_vec(),
+        yes_asset_id: params.yes_asset_id.to_vec(),
+        no_asset_id: params.no_asset_id.to_vec(),
+        lbtc_asset_id: params.lbtc_asset_id.to_vec(),
+        lp_asset_id: params.lp_asset_id.to_vec(),
+        lp_reissuance_token_id: params.lp_reissuance_token_id.to_vec(),
+        fee_bps: params.fee_bps as i32,
+        cosigner_pubkey: params.cosigner_pubkey.to_vec(),
+        cmr: compiled.cmr().as_ref().to_vec(),
+        issued_lp: issued_lp as i64,
+        r_yes: reserves.map(|r| r.r_yes as i64),
+        r_no: reserves.map(|r| r.r_no as i64),
+        r_lbtc: reserves.map(|r| r.r_lbtc as i64),
+        covenant_spk: compiled.script_pubkey(issued_lp).as_bytes().to_vec(),
+        pool_status: PoolStatus::Active.as_i32(),
+        nostr_event_id: nostr_event_id.map(|s| s.to_string()),
+        nostr_event_json: nostr_event_json.map(|s| s.to_string()),
     }
 }

@@ -1,0 +1,597 @@
+// Three-Asset AMM Pool Covenant
+// SimplicityHL contract for Liquid
+//
+// A constant-product AMM holding YES, NO, and L-BTC reserves plus an LP
+// reissuance token. Three spending paths:
+//   1. Swap (permissionless) — fee invariant via cross-multiplication
+//   2. LP deposit/withdraw (permissionless) — cubic invariant
+//   3. Secondary covenant input — co-membership check
+
+// ============================================================================
+// Type aliases
+// ============================================================================
+
+// PATH dispatch: Either<Either<(), ()>, ()>
+//   Left(Left(()))  = Path 1: Swap
+//   Left(Right(())) = Path 2: LP deposit/withdraw
+//   Right(())       = Path 3: Secondary covenant input
+type SwapOrLp = Either<(), ()>;
+
+// ============================================================================
+// Boolean helpers
+// ============================================================================
+
+fn not(bit: bool) -> bool {
+    <u1>::into(jet::complement_1(<bool>::into(bit)))
+}
+
+fn ensure_zero_bit(b: bool) {
+    assert!(not(b));
+}
+
+// SimplicityHL only provides le_64 and eq_64 for 64-bit comparison.
+// We derive gt and lt from le:
+//   gt_64(a,b) = !(a <= b)
+//   lt_64(a,b) = !(b <= a)
+fn gt_64(a: u64, b: u64) -> bool {
+    not(jet::le_64(a, b))
+}
+
+fn lt_64(a: u64, b: u64) -> bool {
+    not(jet::le_64(b, a))
+}
+
+// ============================================================================
+// Utility functions (shared with prediction_market.simf / maker_order.simf)
+// ============================================================================
+
+fn get_input_script_hash(index: u32) -> u256 {
+    unwrap(jet::input_script_hash(index))
+}
+
+fn get_output_explicit_asset_amount(index: u32) -> (u256, u64) {
+    let (asset, amount): (Asset1, Amount1) = unwrap(jet::output_amount(index));
+    let asset_val: u256 = unwrap_right::<(u1, u256)>(asset);
+    let amount_val: u64 = unwrap_right::<(u1, u256)>(amount);
+    (asset_val, amount_val)
+}
+
+fn get_input_explicit_asset_amount(index: u32) -> (u256, u64) {
+    let (asset, amount): (Asset1, Amount1) = unwrap(jet::input_amount(index));
+    let asset_val: u256 = unwrap_right::<(u1, u256)>(asset);
+    let amount_val: u64 = unwrap_right::<(u1, u256)>(amount);
+    (asset_val, amount_val)
+}
+
+fn input_asset(index: u32) -> u256 {
+    let (asset, _): (u256, u64) = get_input_explicit_asset_amount(index);
+    asset
+}
+
+fn output_asset(index: u32) -> u256 {
+    let (asset, _): (u256, u64) = get_output_explicit_asset_amount(index);
+    asset
+}
+
+fn ensure_output_script_hash_eq(index: u32, expected: u256) {
+    let actual: u256 = unwrap(jet::output_script_hash(index));
+    assert!(jet::eq_256(actual, expected));
+}
+
+fn safe_add(a: u64, b: u64) -> u64 {
+    let (carry, sum): (bool, u64) = jet::add_64(a, b);
+    ensure_zero_bit(carry);
+    sum
+}
+
+fn safe_subtract(a: u64, b: u64) -> u64 {
+    let (borrow, diff): (bool, u64) = jet::subtract_64(a, b);
+    ensure_zero_bit(borrow);
+    diff
+}
+
+// Convert a bool carry/borrow to a u64 value (0 or 1).
+fn bool_to_u64(b: bool) -> u64 {
+    match b {
+        true => 1,
+        false => 0,
+    }
+}
+
+// ============================================================================
+// Pedersen commitment verification (reissuance token at index 3)
+// ============================================================================
+
+fn verify_token_commitment(
+    asset_commitment: (u1, u256),
+    amount_commitment: (u1, u256),
+    expected_token_id: u256,
+    abf: u256,
+    vbf: u256
+) {
+    // Asset generator: H(token_id) + abf*G
+    let h_point: Ge = jet::hash_to_curve(expected_token_id);
+    let abf_point: Gej = jet::generate(abf);
+    let asset_gen: Gej = jet::gej_ge_add(abf_point, h_point);
+
+    let asset_ge: Ge = unwrap(jet::gej_normalize(asset_gen));
+    let (asset_x, asset_y): (u256, u256) = asset_ge;
+    let (stored_asset_parity, stored_asset_x): (u1, u256) = asset_commitment;
+    assert!(jet::eq_256(asset_x, stored_asset_x));
+    assert!(jet::eq_1(<bool>::into(is_none::<u256>(jet::fe_square_root(asset_y))), stored_asset_parity));
+
+    // Value commitment: asset_gen + vbf*G  (amount = 1 for RT)
+    let vbf_point: Gej = jet::generate(vbf);
+    let value_gen: Gej = jet::gej_add(asset_gen, vbf_point);
+
+    let value_ge: Ge = unwrap(jet::gej_normalize(value_gen));
+    let (value_x, value_y): (u256, u256) = value_ge;
+    let (stored_value_parity, stored_value_x): (u1, u256) = amount_commitment;
+    assert!(jet::eq_256(value_x, stored_value_x));
+    assert!(jet::eq_1(<bool>::into(is_none::<u256>(jet::fe_square_root(value_y))), stored_value_parity));
+}
+
+fn verify_input_reissuance_token(index: u32, abf: u256, vbf: u256) {
+    let asset_commitment: (u1, u256) = unwrap_left::<u256>(unwrap(jet::input_asset(index)));
+    let (_, amount_either): (Asset1, Amount1) = unwrap(jet::input_amount(index));
+    let amount_commitment: (u1, u256) = unwrap_left::<u64>(amount_either);
+    verify_token_commitment(asset_commitment, amount_commitment, param::LP_REISSUANCE_TOKEN_ID, abf, vbf);
+}
+
+fn verify_output_reissuance_token(index: u32, abf: u256, vbf: u256) {
+    let asset_commitment: (u1, u256) = unwrap_left::<u256>(unwrap(jet::output_asset(index)));
+    let (_, amount_either): (Asset1, Amount1) = unwrap(jet::output_amount(index));
+    let amount_commitment: (u1, u256) = unwrap_left::<u64>(amount_either);
+    verify_token_commitment(asset_commitment, amount_commitment, param::LP_REISSUANCE_TOKEN_ID, abf, vbf);
+}
+
+// ============================================================================
+// Taproot address computation (tapdata state model)
+// ============================================================================
+
+fn covenant_nums_key() -> u256 {
+    0x50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0
+}
+
+fn compute_p2tr_script_hash_from_output_key(output_key: u256) -> u256 {
+    let ctx: Ctx8 = jet::sha_256_ctx_8_init();
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_2(ctx, 0x5120);
+    let ctx: Ctx8 = jet::sha_256_ctx_8_add_32(ctx, output_key);
+    jet::sha_256_ctx_8_finalize(ctx)
+}
+
+fn script_hash_for_state(issued_lp: u64) -> u256 {
+    let tap_leaf: u256 = jet::tapleaf_hash();
+    let state_ctx: Ctx8 = jet::tapdata_init();
+    let state_ctx: Ctx8 = jet::sha_256_ctx_8_add_8(state_ctx, issued_lp);
+    let state_leaf: u256 = jet::sha_256_ctx_8_finalize(state_ctx);
+    let tap_node: u256 = jet::build_tapbranch(tap_leaf, state_leaf);
+    let tweaked_key: u256 = jet::build_taptweak(covenant_nums_key(), tap_node);
+    compute_p2tr_script_hash_from_output_key(tweaked_key)
+}
+
+// ============================================================================
+// LP minting and burning helpers
+// ============================================================================
+
+fn get_issuance_amount_or_zero(index: u32) -> u64 {
+    // jet::issuance_asset_amount returns Option<Option<Either<(u1, u256), u64>>>
+    // Outer None = no issuance at this input.
+    // Inner Option unwraps to Either (confidential or explicit amount).
+    match jet::issuance_asset_amount(index) {
+        None => 0,
+        Some(inner: Option<Either<(u1, u256), u64>>) => {
+            let amount_either: Either<(u1, u256), u64> = unwrap(inner);
+            let minted: u64 = unwrap_right::<(u1, u256)>(amount_either);
+            minted
+        },
+    }
+}
+
+fn empty_script_hash() -> u256 {
+    0xe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+}
+
+fn get_lp_burn_amount_or_zero(index: u32) -> u64 {
+    let script_hash: u256 = unwrap(jet::output_script_hash(index));
+    let is_op_return: bool = jet::eq_256(script_hash, empty_script_hash());
+    match is_op_return {
+        false => 0,
+        true => {
+            let (asset, amount): (u256, u64) = get_output_explicit_asset_amount(index);
+            assert!(jet::eq_256(asset, param::LP_ASSET_ID));
+            amount
+        },
+    }
+}
+
+// ============================================================================
+// Fee invariant (swap path) — §7, §18.3
+// ============================================================================
+
+fn check_fee_invariant(old_a: u64, old_b: u64, new_a: u64, new_b: u64) {
+    // new_a * (new_b * (FEE_DENOM - FEE_BPS) + old_b * FEE_BPS)
+    //     >= old_a * old_b * FEE_DENOM
+    //
+    // All intermediate values fit in u128 (§8.1).
+    let fee_complement: u64 = safe_subtract(10000, param::FEE_BPS);
+
+    let term1: u128 = jet::multiply_64(new_b, fee_complement);
+    let term2: u128 = jet::multiply_64(old_b, param::FEE_BPS);
+
+    // lhs_inner = term1 + term2 (u128 + u128, could overflow to u129)
+    let (t1_hi, t1_lo): (u64, u64) = <u128>::into(term1);
+    let (t2_hi, t2_lo): (u64, u64) = <u128>::into(term2);
+    let (c0, inner_lo): (bool, u64) = jet::add_64(t1_lo, t2_lo);
+    let (_, inner_hi): (bool, u64) = jet::add_64(t1_hi, t2_hi);
+    let (_, inner_hi): (bool, u64) = jet::add_64(inner_hi, bool_to_u64(c0));
+
+    // lhs = new_a * lhs_inner (u64 * u128 -> u192, but we only need u128 compare)
+    // Since worst case is ~10^26 which fits u128 (§8.1), compute:
+    // new_a * inner_hi * 2^64 + new_a * inner_lo
+    let prod_lo: u128 = jet::multiply_64(new_a, inner_lo);
+    let prod_hi: u128 = jet::multiply_64(new_a, inner_hi);
+
+    let (plo_hi, plo_lo): (u64, u64) = <u128>::into(prod_lo);
+    let (phi_hi, phi_lo): (u64, u64) = <u128>::into(prod_hi);
+
+    // lhs = (phi_hi, phi_lo + plo_hi, plo_lo) — 192-bit
+    let (c1, lhs_1): (bool, u64) = jet::add_64(phi_lo, plo_hi);
+    let (_, lhs_2): (bool, u64) = jet::add_64(phi_hi, bool_to_u64(c1));
+    // lhs = (lhs_2, lhs_1, plo_lo)
+
+    // rhs = old_a * old_b * FEE_DENOM
+    let ab: u128 = jet::multiply_64(old_a, old_b);
+    let (ab_hi, ab_lo): (u64, u64) = <u128>::into(ab);
+
+    let rhs_lo_full: u128 = jet::multiply_64(ab_lo, 10000);
+    let rhs_hi_full: u128 = jet::multiply_64(ab_hi, 10000);
+
+    let (rlo_hi, rlo_lo): (u64, u64) = <u128>::into(rhs_lo_full);
+    let (rhi_hi, rhi_lo): (u64, u64) = <u128>::into(rhs_hi_full);
+
+    let (c2, rhs_1): (bool, u64) = jet::add_64(rhi_lo, rlo_hi);
+    let (_, rhs_2): (bool, u64) = jet::add_64(rhi_hi, bool_to_u64(c2));
+    // rhs = (rhs_2, rhs_1, rlo_lo)
+
+    // Compare 192-bit: lhs >= rhs (limb-by-limb from most significant)
+    // If lhs_2 > rhs_2 → pass. If lhs_2 < rhs_2 → fail.
+    // If equal, compare lhs_1 vs rhs_1. Then plo_lo vs rlo_lo.
+    let gt2: bool = gt_64(lhs_2, rhs_2);
+    let eq2: bool = jet::eq_64(lhs_2, rhs_2);
+    let gt1: bool = gt_64(lhs_1, rhs_1);
+    let eq1: bool = jet::eq_64(lhs_1, rhs_1);
+    let ge0: bool = not(lt_64(plo_lo, rlo_lo));
+
+    // lhs >= rhs iff (gt2) || (eq2 && gt1) || (eq2 && eq1 && ge0)
+    let ok1: bool = gt2;
+    let ok2: bool = <u1>::into(jet::and_1(<bool>::into(eq2), <bool>::into(gt1)));
+    let ok3a: bool = <u1>::into(jet::and_1(<bool>::into(eq2), <bool>::into(eq1)));
+    let ok3: bool = <u1>::into(jet::and_1(<bool>::into(ok3a), <bool>::into(ge0)));
+    let ok12: bool = <u1>::into(jet::or_1(<bool>::into(ok1), <bool>::into(ok2)));
+    let ok: bool = <u1>::into(jet::or_1(<bool>::into(ok12), <bool>::into(ok3)));
+    assert!(ok);
+}
+
+// ============================================================================
+// Wide arithmetic for cubic LP check — §8.3, §18.6
+// ============================================================================
+
+// mul_128x64: (u64, u64) * u64 -> (u64, u64, u64)  [u192]
+fn mul_128x64(hi: u64, lo: u64, c: u64) -> (u64, u64, u64) {
+    let lo_c: u128 = jet::multiply_64(lo, c);
+    let hi_c: u128 = jet::multiply_64(hi, c);
+
+    let (lc1, lc0): (u64, u64) = <u128>::into(lo_c);
+    let (hc1, hc0): (u64, u64) = <u128>::into(hi_c);
+
+    let (carry, w1): (bool, u64) = jet::add_64(hc0, lc1);
+    let (_, w2): (bool, u64) = jet::add_64(hc1, bool_to_u64(carry));
+
+    (w2, w1, lc0)
+}
+
+// mul_192x64: (u64, u64, u64) * u64 -> (u64, u64, u64, u64)  [u256]
+fn mul_192x64(w2: u64, w1: u64, w0: u64, d: u64) -> (u64, u64, u64, u64) {
+    let w0_d: u128 = jet::multiply_64(w0, d);
+    let w1_d: u128 = jet::multiply_64(w1, d);
+    let w2_d: u128 = jet::multiply_64(w2, d);
+
+    let (w0d_hi, r0): (u64, u64) = <u128>::into(w0_d);
+    let (w1d_hi, w1d_lo): (u64, u64) = <u128>::into(w1_d);
+    let (w2d_hi, w2d_lo): (u64, u64) = <u128>::into(w2_d);
+
+    let (c1, r1): (bool, u64) = jet::add_64(w1d_lo, w0d_hi);
+    let (c2, r2): (bool, u64) = jet::add_64(w2d_lo, w1d_hi);
+    let (c2b, r2): (bool, u64) = jet::add_64(r2, bool_to_u64(c1));
+    let (c3, r3): (bool, u64) = jet::add_64(w2d_hi, bool_to_u64(c2));
+    let (_, r3): (bool, u64) = jet::add_64(r3, bool_to_u64(c2b));
+
+    (r3, r2, r1, r0)
+}
+
+// mul_256x64: (u64, u64, u64, u64) * u64 -> (u64, u64, u64, u64, u64)  [u320]
+fn mul_256x64(
+    w3: u64, w2: u64, w1: u64, w0: u64, e: u64
+) -> (u64, u64, u64, u64, u64) {
+    let w0_e: u128 = jet::multiply_64(w0, e);
+    let w1_e: u128 = jet::multiply_64(w1, e);
+    let w2_e: u128 = jet::multiply_64(w2, e);
+    let w3_e: u128 = jet::multiply_64(w3, e);
+
+    let (w0e_hi, r0): (u64, u64) = <u128>::into(w0_e);
+    let (w1e_hi, w1e_lo): (u64, u64) = <u128>::into(w1_e);
+    let (w2e_hi, w2e_lo): (u64, u64) = <u128>::into(w2_e);
+    let (w3e_hi, w3e_lo): (u64, u64) = <u128>::into(w3_e);
+
+    let (c1, r1): (bool, u64) = jet::add_64(w1e_lo, w0e_hi);
+    let (c2, r2): (bool, u64) = jet::add_64(w2e_lo, w1e_hi);
+    let (c2b, r2): (bool, u64) = jet::add_64(r2, bool_to_u64(c1));
+    let (c3, r3): (bool, u64) = jet::add_64(w3e_lo, w2e_hi);
+    let (c3b, r3): (bool, u64) = jet::add_64(r3, bool_to_u64(c2));
+    let (c3c, r3): (bool, u64) = jet::add_64(r3, bool_to_u64(c2b));
+    let (_, r4): (bool, u64) = jet::add_64(w3e_hi, bool_to_u64(c3));
+    let (_, r4): (bool, u64) = jet::add_64(r4, bool_to_u64(c3b));
+    let (_, r4): (bool, u64) = jet::add_64(r4, bool_to_u64(c3c));
+
+    (r4, r3, r2, r1, r0)
+}
+
+// mul_320x64: (u64*5) * u64 -> (u64*6)  [u384]
+fn mul_320x64(
+    w4: u64, w3: u64, w2: u64, w1: u64, w0: u64, f: u64
+) -> (u64, u64, u64, u64, u64, u64) {
+    let w0_f: u128 = jet::multiply_64(w0, f);
+    let w1_f: u128 = jet::multiply_64(w1, f);
+    let w2_f: u128 = jet::multiply_64(w2, f);
+    let w3_f: u128 = jet::multiply_64(w3, f);
+    let w4_f: u128 = jet::multiply_64(w4, f);
+
+    let (w0f_hi, r0): (u64, u64) = <u128>::into(w0_f);
+    let (w1f_hi, w1f_lo): (u64, u64) = <u128>::into(w1_f);
+    let (w2f_hi, w2f_lo): (u64, u64) = <u128>::into(w2_f);
+    let (w3f_hi, w3f_lo): (u64, u64) = <u128>::into(w3_f);
+    let (w4f_hi, w4f_lo): (u64, u64) = <u128>::into(w4_f);
+
+    let (c1, r1): (bool, u64) = jet::add_64(w1f_lo, w0f_hi);
+    let (c2, r2): (bool, u64) = jet::add_64(w2f_lo, w1f_hi);
+    let (c2b, r2): (bool, u64) = jet::add_64(r2, bool_to_u64(c1));
+    let (c3, r3): (bool, u64) = jet::add_64(w3f_lo, w2f_hi);
+    let (c3b, r3): (bool, u64) = jet::add_64(r3, bool_to_u64(c2));
+    let (c3c, r3): (bool, u64) = jet::add_64(r3, bool_to_u64(c2b));
+    let (c4, r4): (bool, u64) = jet::add_64(w4f_lo, w3f_hi);
+    let (c4b, r4): (bool, u64) = jet::add_64(r4, bool_to_u64(c3));
+    let (c4c, r4): (bool, u64) = jet::add_64(r4, bool_to_u64(c3b));
+    let (c4d, r4): (bool, u64) = jet::add_64(r4, bool_to_u64(c3c));
+    let (_, r5): (bool, u64) = jet::add_64(w4f_hi, bool_to_u64(c4));
+    let (_, r5): (bool, u64) = jet::add_64(r5, bool_to_u64(c4b));
+    let (_, r5): (bool, u64) = jet::add_64(r5, bool_to_u64(c4c));
+    let (_, r5): (bool, u64) = jet::add_64(r5, bool_to_u64(c4d));
+
+    (r5, r4, r3, r2, r1, r0)
+}
+
+// wide_mul_6: chain six u64 multiplications into a 384-bit result
+fn wide_mul_6(
+    a: u64, b: u64, c: u64, d: u64, e: u64, f: u64
+) -> (u64, u64, u64, u64, u64, u64) {
+    let ab: u128 = jet::multiply_64(a, b);
+    let (ab_hi, ab_lo): (u64, u64) = <u128>::into(ab);
+    let (abc_2, abc_1, abc_0): (u64, u64, u64) = mul_128x64(ab_hi, ab_lo, c);
+    let (abcd_3, abcd_2, abcd_1, abcd_0): (u64, u64, u64, u64) =
+        mul_192x64(abc_2, abc_1, abc_0, d);
+    let (abcde_4, abcde_3, abcde_2, abcde_1, abcde_0): (u64, u64, u64, u64, u64) =
+        mul_256x64(abcd_3, abcd_2, abcd_1, abcd_0, e);
+    mul_320x64(abcde_4, abcde_3, abcde_2, abcde_1, abcde_0, f)
+}
+
+// wide_le: 384-bit LHS <= 384-bit RHS (limb-by-limb comparison)
+fn wide384_le(
+    l5: u64, l4: u64, l3: u64, l2: u64, l1: u64, l0: u64,
+    r5: u64, r4: u64, r3: u64, r2: u64, r1: u64, r0: u64
+) -> bool {
+    // Compare from most significant limb to least.
+    // First unequal pair determines result. All equal → true.
+    let lt5: bool = lt_64(l5, r5);
+    let eq5: bool = jet::eq_64(l5, r5);
+    let lt4: bool = lt_64(l4, r4);
+    let eq4: bool = jet::eq_64(l4, r4);
+    let lt3: bool = lt_64(l3, r3);
+    let eq3: bool = jet::eq_64(l3, r3);
+    let lt2: bool = lt_64(l2, r2);
+    let eq2: bool = jet::eq_64(l2, r2);
+    let lt1: bool = lt_64(l1, r1);
+    let eq1: bool = jet::eq_64(l1, r1);
+    let le0: bool = not(gt_64(l0, r0));
+
+    // LHS <= RHS iff:
+    // lt5 || (eq5 && (lt4 || (eq4 && (lt3 || (eq3 && (lt2 || (eq2 && (lt1 || (eq1 && le0)))))))))
+    let r01: bool = <u1>::into(jet::or_1(<bool>::into(lt1), <bool>::into(<u1>::into(jet::and_1(<bool>::into(eq1), <bool>::into(le0))))));
+    let r012: bool = <u1>::into(jet::or_1(<bool>::into(lt2), <bool>::into(<u1>::into(jet::and_1(<bool>::into(eq2), <bool>::into(r01))))));
+    let r0123: bool = <u1>::into(jet::or_1(<bool>::into(lt3), <bool>::into(<u1>::into(jet::and_1(<bool>::into(eq3), <bool>::into(r012))))));
+    let r01234: bool = <u1>::into(jet::or_1(<bool>::into(lt4), <bool>::into(<u1>::into(jet::and_1(<bool>::into(eq4), <bool>::into(r0123))))));
+    <u1>::into(jet::or_1(<bool>::into(lt5), <bool>::into(<u1>::into(jet::and_1(<bool>::into(eq5), <bool>::into(r01234))))))
+}
+
+// ============================================================================
+// Main entry point
+// ============================================================================
+
+fn main() {
+    // ── Read all witnesses (SimplicityHL requirement) ───────────
+    let path: Either<SwapOrLp, ()> = witness::PATH;
+    let swap_pair: u8 = witness::SWAP_PAIR;
+    let issued_lp: u64 = witness::ISSUED_LP;
+    let input_abf: u256 = witness::INPUT_ABF;
+    let input_vbf: u256 = witness::INPUT_VBF;
+    let output_abf: u256 = witness::OUTPUT_ABF;
+    let output_vbf: u256 = witness::OUTPUT_VBF;
+
+    // ── Read current reserves from inputs ───────────────────────
+    let (_, old_r_yes): (u256, u64) = get_input_explicit_asset_amount(0);
+    let (_, old_r_no): (u256, u64) = get_input_explicit_asset_amount(1);
+    let (_, old_r_lbtc): (u256, u64) = get_input_explicit_asset_amount(2);
+
+    // ── Dispatch ────────────────────────────────────────────────
+    match path {
+        Left(swap_or_lp: SwapOrLp) => match swap_or_lp {
+            Left(u: ()) => {
+                // ============================================================
+                // Path 1: Swap (permissionless)
+                // ============================================================
+
+                // Precondition: primary input
+                let ci: u32 = jet::current_index();
+                assert!(jet::eq_32(ci, 0));
+
+                // State verification
+                let expected_spk_hash: u256 = script_hash_for_state(issued_lp);
+                let own_spk_hash: u256 = get_input_script_hash(0);
+                assert!(jet::eq_256(expected_spk_hash, own_spk_hash));
+
+                // Verify input assets and co-membership
+                assert!(jet::eq_256(input_asset(0), param::YES_ASSET_ID));
+                assert!(jet::eq_256(input_asset(1), param::NO_ASSET_ID));
+                assert!(jet::eq_256(get_input_script_hash(1), own_spk_hash));
+                assert!(jet::eq_256(input_asset(2), param::LBTC_ASSET_ID));
+                assert!(jet::eq_256(get_input_script_hash(2), own_spk_hash));
+                verify_input_reissuance_token(3, input_abf, input_vbf);
+                assert!(jet::eq_256(get_input_script_hash(3), own_spk_hash));
+
+                // Verify output layout (all four to same pool address)
+                assert!(jet::eq_256(output_asset(0), param::YES_ASSET_ID));
+                ensure_output_script_hash_eq(0, own_spk_hash);
+                assert!(jet::eq_256(output_asset(1), param::NO_ASSET_ID));
+                ensure_output_script_hash_eq(1, own_spk_hash);
+                assert!(jet::eq_256(output_asset(2), param::LBTC_ASSET_ID));
+                ensure_output_script_hash_eq(2, own_spk_hash);
+                verify_output_reissuance_token(3, output_abf, output_vbf);
+                ensure_output_script_hash_eq(3, own_spk_hash);
+
+                let (_, new_r_yes): (u256, u64) = get_output_explicit_asset_amount(0);
+                let (_, new_r_no): (u256, u64) = get_output_explicit_asset_amount(1);
+                let (_, new_r_lbtc): (u256, u64) = get_output_explicit_asset_amount(2);
+
+                // Minimum reserve check
+                assert!(gt_64(new_r_yes, 0));
+                assert!(gt_64(new_r_no, 0));
+                assert!(gt_64(new_r_lbtc, 0));
+
+                // Swap pair dispatch + unchanged reserve + fee invariant
+                match jet::eq_8(swap_pair, 0) {
+                    true => {
+                        // YES ↔ NO (L-BTC unchanged)
+                        assert!(jet::eq_64(new_r_lbtc, old_r_lbtc));
+                        match jet::le_64(new_r_yes, old_r_yes) {
+                            true => check_fee_invariant(old_r_yes, old_r_no, new_r_yes, new_r_no),
+                            false => check_fee_invariant(old_r_no, old_r_yes, new_r_no, new_r_yes),
+                        };
+                    },
+                    false => match jet::eq_8(swap_pair, 1) {
+                        true => {
+                            // YES ↔ L-BTC (NO unchanged)
+                            assert!(jet::eq_64(new_r_no, old_r_no));
+                            match jet::le_64(new_r_yes, old_r_yes) {
+                                true => check_fee_invariant(old_r_yes, old_r_lbtc, new_r_yes, new_r_lbtc),
+                                false => check_fee_invariant(old_r_lbtc, old_r_yes, new_r_lbtc, new_r_yes),
+                            };
+                        },
+                        false => {
+                            // NO ↔ L-BTC (YES unchanged) — swap_pair must be 2
+                            assert!(jet::eq_8(swap_pair, 2));
+                            assert!(jet::eq_64(new_r_yes, old_r_yes));
+                            match jet::le_64(new_r_no, old_r_no) {
+                                true => check_fee_invariant(old_r_no, old_r_lbtc, new_r_no, new_r_lbtc),
+                                false => check_fee_invariant(old_r_lbtc, old_r_no, new_r_lbtc, new_r_no),
+                            };
+                        },
+                    },
+                };
+            },
+            Right(u: ()) => {
+                // ============================================================
+                // Path 2: LP deposit / withdraw (cubic-checked)
+                // ============================================================
+
+                // Precondition: primary input
+                let ci: u32 = jet::current_index();
+                assert!(jet::eq_32(ci, 0));
+
+                // State verification
+                let expected_spk_hash: u256 = script_hash_for_state(issued_lp);
+                let own_spk_hash: u256 = get_input_script_hash(0);
+                assert!(jet::eq_256(expected_spk_hash, own_spk_hash));
+
+                // Verify input assets and co-membership
+                assert!(jet::eq_256(input_asset(0), param::YES_ASSET_ID));
+                assert!(jet::eq_256(input_asset(1), param::NO_ASSET_ID));
+                assert!(jet::eq_256(get_input_script_hash(1), own_spk_hash));
+                assert!(jet::eq_256(input_asset(2), param::LBTC_ASSET_ID));
+                assert!(jet::eq_256(get_input_script_hash(2), own_spk_hash));
+                verify_input_reissuance_token(3, input_abf, input_vbf);
+                assert!(jet::eq_256(get_input_script_hash(3), own_spk_hash));
+
+                // Determine new_issued_lp from transaction
+                let minted: u64 = get_issuance_amount_or_zero(3);
+                let burned: u64 = get_lp_burn_amount_or_zero(4);
+
+                // Exactly one of minted/burned must be nonzero
+                assert!(jet::eq_1(
+                    <bool>::into(jet::is_zero_64(minted)),
+                    jet::complement_1(<bool>::into(jet::is_zero_64(burned)))
+                ));
+
+                let new_issued_lp: u64 = safe_add(
+                    safe_subtract(issued_lp, burned),
+                    minted
+                );
+
+                // Verify output layout at NEW state address
+                let new_spk_hash: u256 = script_hash_for_state(new_issued_lp);
+
+                assert!(jet::eq_256(output_asset(0), param::YES_ASSET_ID));
+                ensure_output_script_hash_eq(0, new_spk_hash);
+                assert!(jet::eq_256(output_asset(1), param::NO_ASSET_ID));
+                ensure_output_script_hash_eq(1, new_spk_hash);
+                assert!(jet::eq_256(output_asset(2), param::LBTC_ASSET_ID));
+                ensure_output_script_hash_eq(2, new_spk_hash);
+                verify_output_reissuance_token(3, output_abf, output_vbf);
+                ensure_output_script_hash_eq(3, new_spk_hash);
+
+                let (_, new_r_yes): (u256, u64) = get_output_explicit_asset_amount(0);
+                let (_, new_r_no): (u256, u64) = get_output_explicit_asset_amount(1);
+                let (_, new_r_lbtc): (u256, u64) = get_output_explicit_asset_amount(2);
+
+                // Minimum reserves
+                assert!(gt_64(new_r_yes, 0));
+                assert!(gt_64(new_r_no, 0));
+                assert!(gt_64(new_r_lbtc, 0));
+
+                // Minimum issued LP
+                assert!(gt_64(new_issued_lp, 0));
+
+                // Cubic invariant check:
+                //   new_issued_LP^3 * old_product <= old_issued_LP^3 * new_product
+                let (l5, l4, l3, l2, l1, l0): (u64, u64, u64, u64, u64, u64) =
+                    wide_mul_6(new_issued_lp, new_issued_lp, new_issued_lp,
+                               old_r_yes, old_r_no, old_r_lbtc);
+                let (r5, r4, r3, r2, r1, r0): (u64, u64, u64, u64, u64, u64) =
+                    wide_mul_6(issued_lp, issued_lp, issued_lp,
+                               new_r_yes, new_r_no, new_r_lbtc);
+                assert!(wide384_le(l5, l4, l3, l2, l1, l0,
+                                   r5, r4, r3, r2, r1, r0));
+            },
+        },
+        Right(u: ()) => {
+            // ================================================================
+            // Path 3: Secondary covenant input
+            // ================================================================
+            let ci: u32 = jet::current_index();
+            ensure_zero_bit(jet::eq_32(ci, 0));
+
+            let own_spk_hash: u256 = get_input_script_hash(ci);
+            let primary_spk_hash: u256 = get_input_script_hash(0);
+            assert!(jet::eq_256(own_spk_hash, primary_spk_hash));
+        },
+    }
+}
