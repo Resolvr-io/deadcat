@@ -23,6 +23,8 @@
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             cargo
+            clippy
+            rustfmt
             git
             nodejs_20
             pnpm
