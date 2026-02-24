@@ -239,8 +239,12 @@ export const state: {
   createSettlementInput: defaultSettlementInput(),
   createSettlementPickerOpen: false,
   createSettlementPickerDropdown: "",
-  createSettlementViewYear: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).getFullYear(),
-  createSettlementViewMonth: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).getMonth(),
+  createSettlementViewYear: new Date(
+    Date.now() + 30 * 24 * 60 * 60 * 1000,
+  ).getFullYear(),
+  createSettlementViewMonth: new Date(
+    Date.now() + 30 * 24 * 60 * 60 * 1000,
+  ).getMonth(),
   createStartingYesSats: 50,
   walletStatus: "not_created",
   walletNetwork: "testnet",

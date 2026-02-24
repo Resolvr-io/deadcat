@@ -89,8 +89,7 @@ function renderCalendar(): string {
     if (isSelected) {
       cls += " bg-emerald-400 text-slate-950 font-semibold";
     } else if (isToday) {
-      cls +=
-        " ring-1 ring-emerald-400/40 text-slate-100 hover:bg-slate-700/60";
+      cls += " ring-1 ring-emerald-400/40 text-slate-100 hover:bg-slate-700/60";
     } else {
       cls += " text-slate-300 hover:bg-slate-700/60";
     }
@@ -232,9 +231,13 @@ export function renderCreateMarket(): string {
                     <span>${state.createCategory}</span>
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-slate-400 transition-transform ${state.createCategoryOpen ? "rotate-180" : ""}"><polyline points="6 9 12 15 18 9"/></svg>
                   </button>
-                  ${state.createCategoryOpen ? `<div class="dc-dropdown-menu right-0">
+                  ${
+                    state.createCategoryOpen
+                      ? `<div class="dc-dropdown-menu right-0">
                     ${filteredCategories.map((item) => `<button type="button" data-action="select-create-category" data-value="${item}" class="dc-dropdown-option ${state.createCategory === item ? "dc-dropdown-option-active" : ""}">${item}</button>`).join("")}
-                  </div>` : ""}
+                  </div>`
+                      : ""
+                  }
                 </div>
               </div>
 
