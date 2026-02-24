@@ -1,5 +1,5 @@
-use simplicityhl::elements::pset::PartiallySignedTransaction;
 use simplicityhl::elements::Script;
+use simplicityhl::elements::pset::PartiallySignedTransaction;
 
 use crate::error::{Error, Result};
 use crate::pset::UnblindedUtxo;
@@ -57,13 +57,17 @@ pub fn build_swap_pset(
     use crate::pset::{add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset};
 
     if params.trader_utxos.is_empty() {
-        return Err(Error::AmmPool("trader funding UTXOs must be non-empty".into()));
+        return Err(Error::AmmPool(
+            "trader funding UTXOs must be non-empty".into(),
+        ));
     }
     if params.new_r_yes == 0 || params.new_r_no == 0 || params.new_r_lbtc == 0 {
         return Err(Error::AmmPool("new reserves must be non-zero".into()));
     }
     if params.trader_receive_amount == 0 {
-        return Err(Error::AmmPool("trader receive amount must be non-zero".into()));
+        return Err(Error::AmmPool(
+            "trader receive amount must be non-zero".into(),
+        ));
     }
 
     // Swap path: state unchanged, same address
@@ -106,11 +110,7 @@ pub fn build_swap_pset(
     add_pset_output(&mut pset, lbtc_out);
 
     // RT passthrough (explicit, amount = 1)
-    let rt_out = explicit_txout(
-        &contract.params().lp_reissuance_token_id,
-        1,
-        &covenant_spk,
-    );
+    let rt_out = explicit_txout(&contract.params().lp_reissuance_token_id, 1, &covenant_spk);
     add_pset_output(&mut pset, rt_out);
 
     // Output 4: trader receive
@@ -127,23 +127,41 @@ pub fn build_swap_pset(
     let (trader_deposit_amount, trader_deposit_asset) = match params.swap_pair {
         SwapPair::YesNo => {
             if params.new_r_yes > params.pool_yes_utxo.value {
-                (params.new_r_yes - params.pool_yes_utxo.value, contract.params().yes_asset_id)
+                (
+                    params.new_r_yes - params.pool_yes_utxo.value,
+                    contract.params().yes_asset_id,
+                )
             } else {
-                (params.new_r_no - params.pool_no_utxo.value, contract.params().no_asset_id)
+                (
+                    params.new_r_no - params.pool_no_utxo.value,
+                    contract.params().no_asset_id,
+                )
             }
         }
         SwapPair::YesLbtc => {
             if params.new_r_yes > params.pool_yes_utxo.value {
-                (params.new_r_yes - params.pool_yes_utxo.value, contract.params().yes_asset_id)
+                (
+                    params.new_r_yes - params.pool_yes_utxo.value,
+                    contract.params().yes_asset_id,
+                )
             } else {
-                (params.new_r_lbtc - params.pool_lbtc_utxo.value, contract.params().lbtc_asset_id)
+                (
+                    params.new_r_lbtc - params.pool_lbtc_utxo.value,
+                    contract.params().lbtc_asset_id,
+                )
             }
         }
         SwapPair::NoLbtc => {
             if params.new_r_no > params.pool_no_utxo.value {
-                (params.new_r_no - params.pool_no_utxo.value, contract.params().no_asset_id)
+                (
+                    params.new_r_no - params.pool_no_utxo.value,
+                    contract.params().no_asset_id,
+                )
             } else {
-                (params.new_r_lbtc - params.pool_lbtc_utxo.value, contract.params().lbtc_asset_id)
+                (
+                    params.new_r_lbtc - params.pool_lbtc_utxo.value,
+                    contract.params().lbtc_asset_id,
+                )
             }
         }
     };
@@ -157,11 +175,7 @@ pub fn build_swap_pset(
     let change = trader_total - trader_deposit_amount;
     if change > 0 {
         if let Some(ref change_dest) = params.trader_change_destination {
-            let change_out = explicit_txout(
-                &trader_deposit_asset,
-                change,
-                change_dest,
-            );
+            let change_out = explicit_txout(&trader_deposit_asset, change, change_dest);
             add_pset_output(&mut pset, change_out);
         } else {
             return Err(Error::MissingChangeDestination);
@@ -195,8 +209,8 @@ mod tests {
     use super::*;
     use crate::amm_pool::params::AmmPoolParams;
     use crate::taproot::NUMS_KEY_BYTES;
-    use simplicityhl::elements::{OutPoint, Txid};
     use simplicityhl::elements::hashes::Hash;
+    use simplicityhl::elements::{OutPoint, Txid};
 
     fn test_params() -> AmmPoolParams {
         AmmPoolParams {

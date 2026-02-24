@@ -61,9 +61,7 @@ pub fn build_announcement_event(
 
 /// Build a Nostr filter for fetching contract announcements.
 pub fn build_contract_filter() -> Filter {
-    Filter::new()
-        .kind(APP_EVENT_KIND)
-        .hashtag(CONTRACT_TAG)
+    Filter::new().kind(APP_EVENT_KIND).hashtag(CONTRACT_TAG)
 }
 
 /// Parse a Nostr event into a DiscoveredMarket.
@@ -106,8 +104,8 @@ pub fn parse_announcement_event(event: &Event) -> Result<DiscoveredMarket, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::announcement::ContractMetadata;
     use crate::ContractParams;
+    use crate::announcement::ContractMetadata;
 
     fn test_metadata() -> ContractMetadata {
         ContractMetadata {

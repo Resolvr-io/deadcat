@@ -119,7 +119,10 @@ mod tests {
         let contract = CompiledAmmPool::new(test_params()).unwrap();
         let spk1 = contract.script_pubkey(1000);
         let spk2 = contract.script_pubkey(2000);
-        assert_ne!(spk1, spk2, "different issued_lp must produce different addresses");
+        assert_ne!(
+            spk1, spk2,
+            "different issued_lp must produce different addresses"
+        );
     }
 
     #[test]
