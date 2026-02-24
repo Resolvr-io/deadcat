@@ -106,6 +106,34 @@ pub struct CancelOrderResult {
     pub refunded_amount: u64,
 }
 
+/// Result of a successful AMM pool creation.
+#[derive(Debug, Clone)]
+pub struct PoolCreationResult {
+    pub txid: Txid,
+    pub pool_params: crate::amm_pool::params::AmmPoolParams,
+    pub issued_lp: u64,
+    pub covenant_address: String,
+}
+
+/// Result of a successful AMM pool swap.
+#[derive(Debug, Clone)]
+pub struct PoolSwapResult {
+    pub txid: Txid,
+    pub delta_in: u64,
+    pub delta_out: u64,
+    /// New reserves after the swap (as computed by the SDK from on-chain state).
+    pub new_reserves: crate::amm_pool::math::PoolReserves,
+}
+
+/// Result of a successful AMM pool LP deposit or withdraw.
+#[derive(Debug, Clone)]
+pub struct PoolLpResult {
+    pub txid: Txid,
+    pub new_issued_lp: u64,
+    /// New reserves after the LP operation (as computed by the SDK from on-chain state).
+    pub new_reserves: crate::amm_pool::math::PoolReserves,
+}
+
 pub struct DeadcatSdk {
     signer: SwSigner,
     wollet: Wollet,
@@ -1621,6 +1649,484 @@ impl DeadcatSdk {
             txid,
             lots_filled: lots_to_fill,
             is_partial,
+        })
+    }
+
+    // ── AMM pool methods ──────────────────────────────────────────────────
+
+    /// Scan the 4 pool UTXOs (YES, NO, LBTC, LP_RT) at a given covenant address.
+    fn scan_pool_utxos(
+        &self,
+        contract: &crate::amm_pool::contract::CompiledAmmPool,
+        issued_lp: u64,
+    ) -> Result<(UnblindedUtxo, UnblindedUtxo, UnblindedUtxo, UnblindedUtxo)> {
+        let covenant_spk = contract.script_pubkey(issued_lp);
+        let utxos = self.scan_covenant_utxos(&covenant_spk)?;
+
+        let params = contract.params();
+        let mut yes_utxo: Option<UnblindedUtxo> = None;
+        let mut no_utxo: Option<UnblindedUtxo> = None;
+        let mut lbtc_utxo: Option<UnblindedUtxo> = None;
+        let mut rt_utxo: Option<UnblindedUtxo> = None;
+
+        for (outpoint, txout) in &utxos {
+            if let Some(asset) = txout.asset.explicit() {
+                let asset_bytes: [u8; 32] = asset.into_inner().to_byte_array();
+                let value = txout.value.explicit().unwrap_or(0);
+                let u = UnblindedUtxo {
+                    outpoint: *outpoint,
+                    txout: txout.clone(),
+                    asset_id: asset_bytes,
+                    value,
+                    asset_blinding_factor: [0u8; 32],
+                    value_blinding_factor: [0u8; 32],
+                };
+                if asset_bytes == params.yes_asset_id && yes_utxo.is_none() {
+                    yes_utxo = Some(u);
+                } else if asset_bytes == params.no_asset_id && no_utxo.is_none() {
+                    no_utxo = Some(u);
+                } else if asset_bytes == params.lbtc_asset_id && lbtc_utxo.is_none() {
+                    lbtc_utxo = Some(u);
+                } else if asset_bytes == params.lp_reissuance_token_id && rt_utxo.is_none() {
+                    // RT may be confidential; try unblinding
+                    rt_utxo = Some(u);
+                }
+            } else {
+                // Confidential output — try to unblind (for RT)
+                if let Ok((asset, value, abf, vbf)) = self.unblind_covenant_utxo(txout) {
+                    let asset_bytes: [u8; 32] = asset.into_inner().to_byte_array();
+                    if asset_bytes == params.lp_reissuance_token_id && rt_utxo.is_none() {
+                        rt_utxo = Some(UnblindedUtxo {
+                            outpoint: *outpoint,
+                            txout: txout.clone(),
+                            asset_id: asset_bytes,
+                            value,
+                            asset_blinding_factor: abf,
+                            value_blinding_factor: vbf,
+                        });
+                    }
+                }
+            }
+        }
+
+        let yes = yes_utxo.ok_or_else(|| {
+            Error::CovenantScan("YES reserve UTXO not found at pool address".into())
+        })?;
+        let no = no_utxo.ok_or_else(|| {
+            Error::CovenantScan("NO reserve UTXO not found at pool address".into())
+        })?;
+        let lbtc = lbtc_utxo.ok_or_else(|| {
+            Error::CovenantScan("LBTC reserve UTXO not found at pool address".into())
+        })?;
+        let rt = rt_utxo.ok_or_else(|| {
+            Error::CovenantScan("LP reissuance token UTXO not found at pool address".into())
+        })?;
+
+        Ok((yes, no, lbtc, rt))
+    }
+
+    /// Create a new AMM pool on-chain.
+    pub fn create_amm_pool(
+        &mut self,
+        pool_params: &crate::amm_pool::params::AmmPoolParams,
+        initial_r_yes: u64,
+        initial_r_no: u64,
+        initial_r_lbtc: u64,
+        initial_issued_lp: u64,
+        fee_amount: u64,
+    ) -> Result<PoolCreationResult> {
+        self.sync()?;
+
+        let contract = crate::amm_pool::contract::CompiledAmmPool::new(pool_params.clone())?;
+
+        // Select funding UTXOs for each asset
+        let yes_funding =
+            self.select_funding_utxo(&pool_params.yes_asset_id, initial_r_yes, &[])?;
+        let no_funding = self.select_funding_utxo(
+            &pool_params.no_asset_id,
+            initial_r_no,
+            &[yes_funding.outpoint],
+        )?;
+        let lbtc_funding = self.select_funding_utxo(
+            &pool_params.lbtc_asset_id,
+            initial_r_lbtc,
+            &[yes_funding.outpoint, no_funding.outpoint],
+        )?;
+        let rt_funding = self.select_funding_utxo(
+            &pool_params.lp_reissuance_token_id,
+            1,
+            &[
+                yes_funding.outpoint,
+                no_funding.outpoint,
+                lbtc_funding.outpoint,
+            ],
+        )?;
+
+        let (fee_utxo, change_addr) = self.select_fee_utxo_excluding(
+            fee_amount,
+            &[
+                yes_funding.outpoint,
+                no_funding.outpoint,
+                lbtc_funding.outpoint,
+                rt_funding.outpoint,
+            ],
+        )?;
+        let change_spk = change_addr.script_pubkey();
+        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
+
+        let creation_params = crate::amm_pool::pset::creation::PoolCreationParams {
+            yes_utxos: vec![yes_funding],
+            no_utxos: vec![no_funding],
+            lbtc_utxos: vec![lbtc_funding],
+            lp_rt_utxo: rt_funding,
+            initial_r_yes,
+            initial_r_no,
+            initial_r_lbtc,
+            initial_issued_lp,
+            lp_token_destination: change_spk.clone(),
+            change_destination: Some(change_spk),
+            fee_utxo,
+            fee_amount,
+            fee_asset_id: policy_bytes,
+        };
+
+        let pset =
+            crate::amm_pool::pset::creation::build_pool_creation_pset(&contract, &creation_params)?;
+
+        let tx = self.sign_pset(pset)?;
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        let covenant_address = contract
+            .address(initial_issued_lp, self.network.address_params())
+            .to_string();
+
+        Ok(PoolCreationResult {
+            txid,
+            pool_params: pool_params.clone(),
+            issued_lp: initial_issued_lp,
+            covenant_address,
+        })
+    }
+
+    /// Execute a swap against an AMM pool.
+    ///
+    /// - `sell_a = false`: sell B (second-named in pair), receive A (first-named).
+    /// - `sell_a = true`: sell A (first-named in pair), receive B (second-named).
+    pub fn pool_swap(
+        &mut self,
+        pool_params: &crate::amm_pool::params::AmmPoolParams,
+        issued_lp: u64,
+        swap_pair: crate::amm_pool::math::SwapPair,
+        delta_in: u64,
+        sell_a: bool,
+        fee_amount: u64,
+    ) -> Result<PoolSwapResult> {
+        use crate::amm_pool::math::{PoolReserves, compute_swap_exact_input};
+
+        self.sync()?;
+        let contract = crate::amm_pool::contract::CompiledAmmPool::new(pool_params.clone())?;
+
+        let (pool_yes, pool_no, pool_lbtc, pool_rt) =
+            self.scan_pool_utxos(&contract, issued_lp)?;
+
+        let reserves = PoolReserves {
+            r_yes: pool_yes.value,
+            r_no: pool_no.value,
+            r_lbtc: pool_lbtc.value,
+        };
+
+        let swap_result =
+            compute_swap_exact_input(&reserves, swap_pair, delta_in, pool_params.fee_bps, sell_a)?;
+
+        // Determine which asset the trader sends in and receives out based on
+        // the pair and sell_a flag (no need to inspect reserve changes).
+        let (trader_send_asset, trader_receive_asset) = if sell_a {
+            // Sell A (first-named), receive B (second-named)
+            match swap_pair {
+                crate::amm_pool::math::SwapPair::YesNo => {
+                    (pool_params.yes_asset_id, pool_params.no_asset_id)
+                }
+                crate::amm_pool::math::SwapPair::YesLbtc => {
+                    (pool_params.yes_asset_id, pool_params.lbtc_asset_id)
+                }
+                crate::amm_pool::math::SwapPair::NoLbtc => {
+                    (pool_params.no_asset_id, pool_params.lbtc_asset_id)
+                }
+            }
+        } else {
+            // Sell B (second-named), receive A (first-named)
+            match swap_pair {
+                crate::amm_pool::math::SwapPair::YesNo => {
+                    (pool_params.no_asset_id, pool_params.yes_asset_id)
+                }
+                crate::amm_pool::math::SwapPair::YesLbtc => {
+                    (pool_params.lbtc_asset_id, pool_params.yes_asset_id)
+                }
+                crate::amm_pool::math::SwapPair::NoLbtc => {
+                    (pool_params.lbtc_asset_id, pool_params.no_asset_id)
+                }
+            }
+        };
+
+        let trader_funding = self.select_funding_utxo(&trader_send_asset, delta_in, &[])?;
+        let (fee_utxo, change_addr) =
+            self.select_fee_utxo_excluding(fee_amount, &[trader_funding.outpoint])?;
+        let change_spk = change_addr.script_pubkey();
+        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
+
+        let swap_params = crate::amm_pool::pset::swap::SwapParams {
+            pool_yes_utxo: pool_yes,
+            pool_no_utxo: pool_no,
+            pool_lbtc_utxo: pool_lbtc,
+            pool_lp_rt_utxo: pool_rt,
+            issued_lp,
+            trader_utxos: vec![trader_funding],
+            swap_pair,
+            new_r_yes: swap_result.new_reserves.r_yes,
+            new_r_no: swap_result.new_reserves.r_no,
+            new_r_lbtc: swap_result.new_reserves.r_lbtc,
+            trader_receive_asset,
+            trader_receive_amount: swap_result.delta_out,
+            trader_receive_destination: change_spk.clone(),
+            trader_change_destination: Some(change_spk),
+            fee_utxo,
+            fee_amount,
+            fee_asset_id: policy_bytes,
+        };
+
+        let mut pset = crate::amm_pool::pset::swap::build_swap_pset(&contract, &swap_params)?;
+
+        // Attach witnesses
+        let rt_bf = crate::amm_pool::witness::RtBlindingFactors {
+            input_abf: swap_params.pool_lp_rt_utxo.asset_blinding_factor,
+            input_vbf: swap_params.pool_lp_rt_utxo.value_blinding_factor,
+            output_abf: [0u8; 32],
+            output_vbf: [0u8; 32],
+        };
+        let spending_path = crate::amm_pool::witness::AmmPoolSpendingPath::Swap {
+            swap_pair,
+            issued_lp,
+            blinding: rt_bf,
+        };
+        crate::amm_pool::assembly::attach_amm_pool_witnesses(
+            &mut pset,
+            &contract,
+            issued_lp,
+            spending_path,
+        )?;
+
+        let tx = self.sign_pset(pset)?;
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        Ok(PoolSwapResult {
+            txid,
+            delta_in: swap_result.delta_in,
+            delta_out: swap_result.delta_out,
+            new_reserves: swap_result.new_reserves,
+        })
+    }
+
+    /// Deposit liquidity into an AMM pool (mint LP tokens).
+    ///
+    /// Selects separate funding UTXOs for each asset being deposited
+    /// (YES, NO, L-BTC) as required by the three-asset pool covenant.
+    pub fn pool_lp_deposit(
+        &mut self,
+        pool_params: &crate::amm_pool::params::AmmPoolParams,
+        issued_lp: u64,
+        new_r_yes: u64,
+        new_r_no: u64,
+        new_r_lbtc: u64,
+        lp_mint_amount: u64,
+        fee_amount: u64,
+    ) -> Result<PoolLpResult> {
+        use crate::amm_pool::math::PoolReserves;
+
+        self.sync()?;
+        let contract = crate::amm_pool::contract::CompiledAmmPool::new(pool_params.clone())?;
+
+        let (pool_yes, pool_no, pool_lbtc, pool_rt) =
+            self.scan_pool_utxos(&contract, issued_lp)?;
+
+        // Compute what the depositor needs to contribute for each asset
+        let deposit_yes = new_r_yes.saturating_sub(pool_yes.value);
+        let deposit_no = new_r_no.saturating_sub(pool_no.value);
+        let deposit_lbtc = new_r_lbtc.saturating_sub(pool_lbtc.value);
+
+        // Select separate funding UTXOs for each asset being deposited
+        let mut exclude = Vec::new();
+        let mut deposit_utxos = Vec::new();
+
+        if deposit_yes > 0 {
+            let utxo = self.select_funding_utxo(&pool_params.yes_asset_id, deposit_yes, &exclude)?;
+            exclude.push(utxo.outpoint);
+            deposit_utxos.push(utxo);
+        }
+        if deposit_no > 0 {
+            let utxo = self.select_funding_utxo(&pool_params.no_asset_id, deposit_no, &exclude)?;
+            exclude.push(utxo.outpoint);
+            deposit_utxos.push(utxo);
+        }
+        if deposit_lbtc > 0 {
+            let utxo = self.select_funding_utxo(&pool_params.lbtc_asset_id, deposit_lbtc, &exclude)?;
+            exclude.push(utxo.outpoint);
+            deposit_utxos.push(utxo);
+        }
+
+        let (fee_utxo, change_addr) = self.select_fee_utxo_excluding(fee_amount, &exclude)?;
+        let change_spk = change_addr.script_pubkey();
+        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
+
+        let deposit_params = crate::amm_pool::pset::lp_deposit::LpDepositParams {
+            pool_yes_utxo: pool_yes,
+            pool_no_utxo: pool_no,
+            pool_lbtc_utxo: pool_lbtc,
+            pool_lp_rt_utxo: pool_rt.clone(),
+            issued_lp,
+            deposit_utxos,
+            new_r_yes,
+            new_r_no,
+            new_r_lbtc,
+            lp_mint_amount,
+            lp_token_destination: change_spk.clone(),
+            change_destination: Some(change_spk),
+            fee_utxo,
+            fee_amount,
+            fee_asset_id: policy_bytes,
+        };
+
+        let new_issued_lp = issued_lp
+            .checked_add(lp_mint_amount)
+            .ok_or_else(|| Error::AmmPool("issued_lp overflow".into()))?;
+
+        let mut pset =
+            crate::amm_pool::pset::lp_deposit::build_lp_deposit_pset(&contract, &deposit_params)?;
+
+        let rt_bf = crate::amm_pool::witness::RtBlindingFactors {
+            input_abf: pool_rt.asset_blinding_factor,
+            input_vbf: pool_rt.value_blinding_factor,
+            output_abf: [0u8; 32],
+            output_vbf: [0u8; 32],
+        };
+        let spending_path = crate::amm_pool::witness::AmmPoolSpendingPath::LpDepositWithdraw {
+            issued_lp,
+            blinding: rt_bf,
+        };
+        crate::amm_pool::assembly::attach_amm_pool_witnesses(
+            &mut pset,
+            &contract,
+            issued_lp,
+            spending_path,
+        )?;
+
+        let tx = self.sign_pset(pset)?;
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        Ok(PoolLpResult {
+            txid,
+            new_issued_lp,
+            new_reserves: PoolReserves {
+                r_yes: new_r_yes,
+                r_no: new_r_no,
+                r_lbtc: new_r_lbtc,
+            },
+        })
+    }
+
+    /// Withdraw liquidity from an AMM pool (burn LP tokens).
+    pub fn pool_lp_withdraw(
+        &mut self,
+        pool_params: &crate::amm_pool::params::AmmPoolParams,
+        issued_lp: u64,
+        lp_burn_amount: u64,
+        fee_amount: u64,
+    ) -> Result<PoolLpResult> {
+        use crate::amm_pool::math::{PoolReserves, compute_lp_proportional_withdraw};
+
+        self.sync()?;
+        let contract = crate::amm_pool::contract::CompiledAmmPool::new(pool_params.clone())?;
+
+        let (pool_yes, pool_no, pool_lbtc, pool_rt) =
+            self.scan_pool_utxos(&contract, issued_lp)?;
+
+        let reserves = PoolReserves {
+            r_yes: pool_yes.value,
+            r_no: pool_no.value,
+            r_lbtc: pool_lbtc.value,
+        };
+
+        let withdrawn = compute_lp_proportional_withdraw(&reserves, issued_lp, lp_burn_amount)?;
+
+        let new_r_yes = reserves.r_yes.checked_sub(withdrawn.r_yes)
+            .ok_or_else(|| Error::AmmPool("reserve underflow (YES)".into()))?;
+        let new_r_no = reserves.r_no.checked_sub(withdrawn.r_no)
+            .ok_or_else(|| Error::AmmPool("reserve underflow (NO)".into()))?;
+        let new_r_lbtc = reserves.r_lbtc.checked_sub(withdrawn.r_lbtc)
+            .ok_or_else(|| Error::AmmPool("reserve underflow (LBTC)".into()))?;
+
+        // Find LP token UTXOs in wallet
+        let lp_token_utxos =
+            self.find_single_token_utxos(&pool_params.lp_asset_id, lp_burn_amount)?;
+
+        let exclude: Vec<OutPoint> = lp_token_utxos.iter().map(|u| u.outpoint).collect();
+        let (fee_utxo, change_addr) = self.select_fee_utxo_excluding(fee_amount, &exclude)?;
+        let change_spk = change_addr.script_pubkey();
+        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
+
+        let new_issued_lp = issued_lp
+            .checked_sub(lp_burn_amount)
+            .ok_or_else(|| Error::AmmPool("issued_lp underflow".into()))?;
+
+        let withdraw_params = crate::amm_pool::pset::lp_withdraw::LpWithdrawParams {
+            pool_yes_utxo: pool_yes,
+            pool_no_utxo: pool_no,
+            pool_lbtc_utxo: pool_lbtc,
+            pool_lp_rt_utxo: pool_rt.clone(),
+            issued_lp,
+            lp_token_utxos,
+            lp_burn_amount,
+            new_r_yes,
+            new_r_no,
+            new_r_lbtc,
+            withdraw_destination: change_spk,
+            fee_utxo,
+            fee_amount,
+            fee_asset_id: policy_bytes,
+        };
+
+        let mut pset = crate::amm_pool::pset::lp_withdraw::build_lp_withdraw_pset(
+            &contract,
+            &withdraw_params,
+        )?;
+
+        let rt_bf = crate::amm_pool::witness::RtBlindingFactors {
+            input_abf: pool_rt.asset_blinding_factor,
+            input_vbf: pool_rt.value_blinding_factor,
+            output_abf: [0u8; 32],
+            output_vbf: [0u8; 32],
+        };
+        let spending_path = crate::amm_pool::witness::AmmPoolSpendingPath::LpDepositWithdraw {
+            issued_lp,
+            blinding: rt_bf,
+        };
+        crate::amm_pool::assembly::attach_amm_pool_witnesses(
+            &mut pset,
+            &contract,
+            issued_lp,
+            spending_path,
+        )?;
+
+        let tx = self.sign_pset(pset)?;
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        Ok(PoolLpResult {
+            txid,
+            new_issued_lp,
+            new_reserves: PoolReserves {
+                r_yes: new_r_yes,
+                r_no: new_r_no,
+                r_lbtc: new_r_lbtc,
+            },
         })
     }
 

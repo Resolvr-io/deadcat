@@ -17,9 +17,12 @@ use super::market::{
     parse_announcement_event,
 };
 use super::store_trait::{ContractMetadataInput, DiscoveryStore};
+use super::pool::{
+    DiscoveredPool, PoolAnnouncement, build_pool_event, build_pool_filter, parse_pool_event,
+};
 use super::{
     DiscoveredOrder, OrderAnnouncement, build_order_event, build_order_filter, parse_order_event,
-    ATTESTATION_TAG, CONTRACT_TAG, ORDER_TAG,
+    ATTESTATION_TAG, CONTRACT_TAG, ORDER_TAG, POOL_TAG,
 };
 
 /// Unified Nostr discovery service for markets, orders, and attestations.
@@ -53,6 +56,29 @@ impl DiscoveryStore for NoopStore {
         _nonce: Option<&[u8; 32]>,
         _nostr_event_id: Option<&str>,
         _nostr_event_json: Option<&str>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn ingest_amm_pool(
+        &mut self,
+        _params: &crate::amm_pool::params::AmmPoolParams,
+        _issued_lp: u64,
+        _reserves: Option<&crate::amm_pool::math::PoolReserves>,
+        _nostr_event_id: Option<&str>,
+        _nostr_event_json: Option<&str>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn update_pool_state(
+        &mut self,
+        _pool_id: &crate::amm_pool::params::PoolId,
+        _params: &crate::amm_pool::params::AmmPoolParams,
+        _issued_lp: u64,
+        _r_yes: u64,
+        _r_no: u64,
+        _r_lbtc: u64,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -287,6 +313,53 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
         })
     }
 
+    /// Publish an AMM pool announcement to relays.
+    pub async fn announce_pool(
+        &self,
+        announcement: &PoolAnnouncement,
+    ) -> Result<EventId, String> {
+        self.ensure_connected().await?;
+
+        let event = build_pool_event(&self.keys, announcement)?;
+        let output = self
+            .client
+            .send_event(event)
+            .await
+            .map_err(|e| format!("failed to send pool event: {e}"))?;
+        Ok(*output.id())
+    }
+
+    /// One-shot: fetch AMM pools from relays, optionally for a specific market.
+    pub async fn fetch_pools(
+        &self,
+        market_id_hex: Option<&str>,
+    ) -> Result<Vec<DiscoveredPool>, String> {
+        self.ensure_connected().await?;
+
+        let filter = build_pool_filter(market_id_hex);
+        let events = self
+            .client
+            .fetch_events(vec![filter], self.config.fetch_timeout)
+            .await
+            .map_err(|e| format!("failed to fetch pool events: {e}"))?;
+
+        let mut pools = Vec::new();
+        for event in events.iter() {
+            match parse_pool_event(event) {
+                Ok(mut pool) => {
+                    pool.nostr_event_json = serde_json::to_string(event).ok();
+                    self.persist_pool(&pool);
+                    pools.push(pool);
+                }
+                Err(e) => {
+                    log::warn!("skipping unparseable pool event {}: {e}", event.id);
+                }
+            }
+        }
+
+        Ok(pools)
+    }
+
     /// Get a reference to the underlying Nostr client.
     pub fn client(&self) -> &Client {
         &self.client
@@ -318,6 +391,10 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
 
     fn persist_order(&self, order: &DiscoveredOrder) {
         persist_order_to_store(&self.store, order);
+    }
+
+    fn persist_pool(&self, pool: &DiscoveredPool) {
+        persist_pool_to_store(&self.store, pool);
     }
 }
 
@@ -376,6 +453,28 @@ fn discovered_order_to_maker_params(
     })
 }
 
+/// Convert a DiscoveredPool into AmmPoolParams for store ingestion.
+fn discovered_pool_to_amm_params(
+    p: &DiscoveredPool,
+) -> Result<crate::amm_pool::params::AmmPoolParams, String> {
+    let decode32 = |hex_str: &str, name: &str| -> Result<[u8; 32], String> {
+        let bytes = hex::decode(hex_str).map_err(|e| format!("{name}: hex decode: {e}"))?;
+        bytes
+            .try_into()
+            .map_err(|_| format!("{name}: expected 32 bytes"))
+    };
+
+    Ok(crate::amm_pool::params::AmmPoolParams {
+        yes_asset_id: decode32(&p.yes_asset_id, "yes_asset_id")?,
+        no_asset_id: decode32(&p.no_asset_id, "no_asset_id")?,
+        lbtc_asset_id: decode32(&p.lbtc_asset_id, "lbtc_asset_id")?,
+        lp_asset_id: decode32(&p.lp_asset_id, "lp_asset_id")?,
+        lp_reissuance_token_id: decode32(&p.lp_reissuance_token_id, "lp_reissuance_token_id")?,
+        fee_bps: p.fee_bps,
+        cosigner_pubkey: decode32(&p.cosigner_pubkey, "cosigner_pubkey")?,
+    })
+}
+
 /// Background subscription loop that listens for Nostr events and dispatches them.
 async fn run_subscription_loop<S: DiscoveryStore>(
     client: Client,
@@ -388,9 +487,10 @@ async fn run_subscription_loop<S: DiscoveryStore>(
     let market_filter = build_contract_filter();
     let order_filter = build_order_filter(None);
     let attestation_filter = build_attestation_subscription_filter();
+    let pool_filter = build_pool_filter(None);
 
     if let Err(e) = client
-        .subscribe(vec![market_filter, order_filter, attestation_filter], None)
+        .subscribe(vec![market_filter, order_filter, attestation_filter, pool_filter], None)
         .await
     {
         log::error!("failed to subscribe: {e}");
@@ -428,6 +528,12 @@ async fn run_subscription_loop<S: DiscoveryStore>(
                 if let Ok(attestation) = parse_attestation_event(&event) {
                     let _ = tx.send(DiscoveryEvent::AttestationDiscovered(attestation));
                 }
+            } else if hashtags.iter().any(|t| t == POOL_TAG) {
+                if let Ok(mut pool) = parse_pool_event(&event) {
+                    pool.nostr_event_json = serde_json::to_string(&*event).ok();
+                    persist_pool_to_store(&store, &pool);
+                    let _ = tx.send(DiscoveryEvent::PoolDiscovered(pool));
+                }
             }
         }
     }
@@ -455,6 +561,25 @@ pub(crate) fn persist_market_to_store<S: DiscoveryStore>(
     };
     if let Ok(mut s) = store.lock() {
         let _ = s.ingest_market(&params, Some(&meta));
+    }
+}
+
+pub(crate) fn persist_pool_to_store<S: DiscoveryStore>(
+    store: &Option<Arc<Mutex<S>>>,
+    pool: &DiscoveredPool,
+) {
+    let Some(store) = store else { return };
+    let Ok(params) = discovered_pool_to_amm_params(pool) else {
+        return;
+    };
+    if let Ok(mut s) = store.lock() {
+        let _ = s.ingest_amm_pool(
+            &params,
+            pool.issued_lp,
+            Some(&pool.reserves),
+            Some(&pool.id),
+            pool.nostr_event_json.as_deref(),
+        );
     }
 }
 

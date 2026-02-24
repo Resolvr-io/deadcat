@@ -1,6 +1,30 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
+    amm_pools (pool_id) {
+        pool_id -> Binary,
+        yes_asset_id -> Binary,
+        no_asset_id -> Binary,
+        lbtc_asset_id -> Binary,
+        lp_asset_id -> Binary,
+        lp_reissuance_token_id -> Binary,
+        fee_bps -> Integer,
+        cosigner_pubkey -> Binary,
+        cmr -> Binary,
+        issued_lp -> BigInt,
+        r_yes -> Nullable<BigInt>,
+        r_no -> Nullable<BigInt>,
+        r_lbtc -> Nullable<BigInt>,
+        covenant_spk -> Binary,
+        pool_status -> Integer,
+        created_at -> Text,
+        updated_at -> Text,
+        nostr_event_id -> Nullable<Text>,
+        nostr_event_json -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
     markets (market_id) {
         market_id -> Binary,
         oracle_public_key -> Binary,
@@ -77,6 +101,7 @@ diesel::table! {
         spending_txid -> Nullable<Binary>,
         block_height -> Nullable<Integer>,
         spent_block_height -> Nullable<Integer>,
+        amm_pool_id -> Nullable<Binary>,
     }
 }
 
@@ -89,7 +114,8 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(utxos -> amm_pools (amm_pool_id));
 diesel::joinable!(utxos -> markets (market_id));
 diesel::joinable!(utxos -> maker_orders (maker_order_id));
 
-diesel::allow_tables_to_appear_in_same_query!(markets, maker_orders, utxos, sync_state,);
+diesel::allow_tables_to_appear_in_same_query!(amm_pools, markets, maker_orders, utxos, sync_state,);

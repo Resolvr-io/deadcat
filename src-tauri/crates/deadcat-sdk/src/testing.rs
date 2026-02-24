@@ -307,4 +307,27 @@ impl DiscoveryStore for TestStore {
             .push((*params, nostr_event_id.map(|s| s.to_string())));
         Ok(())
     }
+
+    fn ingest_amm_pool(
+        &mut self,
+        _params: &crate::amm_pool::params::AmmPoolParams,
+        _issued_lp: u64,
+        _reserves: Option<&crate::amm_pool::math::PoolReserves>,
+        _nostr_event_id: Option<&str>,
+        _nostr_event_json: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
+    fn update_pool_state(
+        &mut self,
+        _pool_id: &crate::amm_pool::params::PoolId,
+        _params: &crate::amm_pool::params::AmmPoolParams,
+        _issued_lp: u64,
+        _r_yes: u64,
+        _r_no: u64,
+        _r_lbtc: u64,
+    ) -> std::result::Result<(), String> {
+        Ok(())
+    }
 }
