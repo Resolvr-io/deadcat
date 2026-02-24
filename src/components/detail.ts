@@ -559,7 +559,6 @@ export function renderActionTicket(market: Market): string {
   const positions = getPositionContracts(market);
   const selectedPositionContracts =
     state.selectedSide === "yes" ? positions.yes : positions.no;
-  const maxCloseContracts = Math.max(0.01, selectedPositionContracts);
   const ctaVerb = state.tradeIntent === "open" ? "Buy" : "Sell";
   const ctaTarget = state.selectedSide === "yes" ? "Yes" : "No";
   const ctaLabel = `${ctaVerb} ${ctaTarget}`;
