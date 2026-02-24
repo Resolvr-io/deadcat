@@ -16,6 +16,10 @@ export function handleFocusout(e: FocusEvent, render: () => void): void {
   }
 
   if (target.id === "trade-size-contracts") {
+    const nextFocus = e.relatedTarget as HTMLElement | null;
+    if (nextFocus?.closest("[data-action='step-trade-contracts']")) {
+      return;
+    }
     commitTradeContractsDraft(getSelectedMarket());
     render();
     return;

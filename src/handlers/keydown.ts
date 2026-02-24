@@ -36,6 +36,22 @@ export function handleKeydown(
     }
   }
 
+  if (target.id === "trade-size-contracts") {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      const market = getSelectedMarket();
+      const current = Number(state.tradeContractsDraft);
+      const baseValue = Number.isFinite(current)
+        ? current
+        : Math.max(0.01, state.tradeContracts);
+      const delta = e.key === "ArrowUp" ? 0.01 : -0.01;
+      state.tradeContractsDraft = Math.max(0.01, baseValue + delta).toFixed(2);
+      commitTradeContractsDraft(market);
+      render();
+      return;
+    }
+  }
+
   if (e.key !== "Enter") return;
 
   if (target.id === "onboarding-nostr-nsec") {
