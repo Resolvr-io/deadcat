@@ -425,7 +425,9 @@ fn test_maker_order_ingest_without_pubkey() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_maker_order_params();
 
-    let order_id = store.ingest_maker_order(&params, None, None, None, None).unwrap();
+    let order_id = store
+        .ingest_maker_order(&params, None, None, None, None)
+        .unwrap();
     let info = store.get_maker_order(order_id).unwrap().unwrap();
     assert!(info.maker_base_pubkey.is_none());
 }
@@ -440,10 +442,22 @@ fn test_get_nonexistent_order() {
 fn test_list_maker_orders_filters() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     store
-        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None, None, None)
+        .ingest_maker_order(
+            &test_maker_order_params(),
+            Some(&[0xaa; 32]),
+            None,
+            None,
+            None,
+        )
         .unwrap();
     store
-        .ingest_maker_order(&test_maker_order_params_2(), Some(&[0xaa; 32]), None, None, None)
+        .ingest_maker_order(
+            &test_maker_order_params_2(),
+            Some(&[0xaa; 32]),
+            None,
+            None,
+            None,
+        )
         .unwrap();
 
     // Filter by direction
@@ -480,7 +494,9 @@ fn test_filter_orders_by_maker_pubkey() {
     store
         .ingest_maker_order(&params, Some(&[0xaa; 32]), None, None, None)
         .unwrap();
-    store.ingest_maker_order(&params, None, None, None, None).unwrap();
+    store
+        .ingest_maker_order(&params, None, None, None, None)
+        .unwrap();
 
     let filter = OrderFilter {
         maker_base_pubkey: Some([0xaa; 32]),
@@ -495,10 +511,22 @@ fn test_filter_orders_by_maker_pubkey() {
 fn test_list_maker_orders_with_limit() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     store
-        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None, None, None)
+        .ingest_maker_order(
+            &test_maker_order_params(),
+            Some(&[0xaa; 32]),
+            None,
+            None,
+            None,
+        )
         .unwrap();
     store
-        .ingest_maker_order(&test_maker_order_params_2(), Some(&[0xaa; 32]), None, None, None)
+        .ingest_maker_order(
+            &test_maker_order_params_2(),
+            Some(&[0xaa; 32]),
+            None,
+            None,
+            None,
+        )
         .unwrap();
 
     let filter = OrderFilter {
@@ -512,7 +540,13 @@ fn test_list_maker_orders_with_limit() {
 fn test_update_order_status() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let id = store
-        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None, None, None)
+        .ingest_maker_order(
+            &test_maker_order_params(),
+            Some(&[0xaa; 32]),
+            None,
+            None,
+            None,
+        )
         .unwrap();
 
     assert_eq!(
@@ -592,7 +626,13 @@ fn test_utxo_add_idempotent() {
 fn test_order_utxo_lifecycle() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let order_id = store
-        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None, None, None)
+        .ingest_maker_order(
+            &test_maker_order_params(),
+            Some(&[0xaa; 32]),
+            None,
+            None,
+            None,
+        )
         .unwrap();
 
     let utxo = test_utxo_with_outpoint([0xBB; 32], 1, [0x01; 32], 50_000);
@@ -650,7 +690,13 @@ fn test_watched_script_pubkeys() {
     assert_eq!(store.watched_script_pubkeys().unwrap().len(), 4);
 
     store
-        .ingest_maker_order(&test_maker_order_params(), Some(&[0xaa; 32]), None, None, None)
+        .ingest_maker_order(
+            &test_maker_order_params(),
+            Some(&[0xaa; 32]),
+            None,
+            None,
+            None,
+        )
         .unwrap();
     assert_eq!(store.watched_script_pubkeys().unwrap().len(), 5);
 

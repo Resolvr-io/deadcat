@@ -1,6 +1,8 @@
-use nostr_sdk::{Client, Event, EventBuilder, Filter, Kind, Keys, PublicKey, SecretKey, Tag, TagKind};
-use std::time::Duration;
+use nostr_sdk::{
+    Client, Event, EventBuilder, Filter, Keys, Kind, PublicKey, SecretKey, Tag, TagKind,
+};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// d-tag for wallet mnemonic backup events (NIP-78).
 pub const WALLET_BACKUP_D_TAG: &str = "deadcat-wallet-backup";
@@ -8,18 +10,29 @@ pub const WALLET_BACKUP_D_TAG: &str = "deadcat-wallet-backup";
 // Re-export SDK-owned types and functions for use by the app layer.
 pub use deadcat_sdk::announcement::{ContractAnnouncement, ContractMetadata};
 pub use deadcat_sdk::discovery::{
-    // Types
-    AttestationContent, AttestationResult, DiscoveredMarket,
     // Builders
-    build_announcement_event, build_attestation_event, build_attestation_filter,
-    build_contract_filter, parse_announcement_event, sign_attestation,
+    build_announcement_event,
+    build_attestation_event,
+    build_attestation_filter,
+    build_contract_filter,
+    // Relay helpers
+    connect_client,
     // Conversions
     discovered_market_to_contract_params,
-    // Relay helpers
-    connect_client, publish_event, fetch_announcements,
+    fetch_announcements,
+    parse_announcement_event,
+    publish_event,
+    sign_attestation,
+    // Types
+    AttestationContent,
+    AttestationResult,
+    DiscoveredMarket,
     // Constants
-    APP_EVENT_KIND, CONTRACT_TAG, ATTESTATION_TAG,
-    NETWORK_TAG, DEFAULT_RELAYS,
+    APP_EVENT_KIND,
+    ATTESTATION_TAG,
+    CONTRACT_TAG,
+    DEFAULT_RELAYS,
+    NETWORK_TAG,
 };
 
 // ---------------------------------------------------------------------------
@@ -91,9 +104,7 @@ pub async fn connect_multi_relay_client(relays: &[String]) -> Result<Client, Str
             .await
             .map_err(|e| format!("failed to add relay {url}: {e}"))?;
     }
-    client
-        .connect_with_timeout(Duration::from_secs(5))
-        .await;
+    client.connect_with_timeout(Duration::from_secs(5)).await;
     Ok(client)
 }
 
@@ -150,10 +161,7 @@ pub fn build_backup_deletion_event(keys: &Keys) -> Result<Event, String> {
         keys.public_key(),
         WALLET_BACKUP_D_TAG,
     );
-    let tags = vec![Tag::custom(
-        TagKind::custom("a"),
-        vec![coordinate],
-    )];
+    let tags = vec![Tag::custom(TagKind::custom("a"), vec![coordinate])];
 
     EventBuilder::new(Kind::Custom(5), "delete wallet backup")
         .tags(tags)
@@ -314,7 +322,8 @@ pub fn generate_keys(app_data_dir: &std::path::Path) -> Result<Keys, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deadcat_sdk::ContractParams;
+    use deadcat_sdk::{ContractParams, MarketId};
+    use nostr_sdk::secp256k1;
 
     fn test_metadata() -> ContractMetadata {
         ContractMetadata {
@@ -369,14 +378,6 @@ mod tests {
         let market_id_hex = "abcd1234";
         let filter = build_attestation_filter(market_id_hex);
         assert!(format!("{filter:?}").contains("abcd1234:attestation"));
-    }
-
-    #[test]
-    fn bytes_to_hex_works() {
-        let bytes = [0xab; 32];
-        let hex_str = bytes_to_hex(&bytes);
-        assert_eq!(hex_str.len(), 64);
-        assert!(hex_str.starts_with("abab"));
     }
 
     #[test]

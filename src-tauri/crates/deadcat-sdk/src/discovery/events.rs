@@ -1,7 +1,7 @@
+use super::DiscoveredOrder;
 use super::attestation::AttestationContent;
 use super::market::DiscoveredMarket;
 use super::pool::DiscoveredPool;
-use super::DiscoveredOrder;
 
 /// Events emitted by the `DiscoveryService` subscription loop.
 #[derive(Debug, Clone)]

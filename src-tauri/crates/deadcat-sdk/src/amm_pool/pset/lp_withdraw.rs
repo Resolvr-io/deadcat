@@ -1,5 +1,5 @@
-use simplicityhl::elements::pset::PartiallySignedTransaction;
 use simplicityhl::elements::Script;
+use simplicityhl::elements::pset::PartiallySignedTransaction;
 
 use crate::error::{Error, Result};
 use crate::pset::UnblindedUtxo;
@@ -141,7 +141,10 @@ pub fn build_lp_withdraw_pset(
         add_pset_output(&mut pset, no_withdraw);
     }
 
-    let withdrawn_lbtc = params.pool_lbtc_utxo.value.saturating_sub(params.new_r_lbtc);
+    let withdrawn_lbtc = params
+        .pool_lbtc_utxo
+        .value
+        .saturating_sub(params.new_r_lbtc);
     if withdrawn_lbtc > 0 {
         let lbtc_withdraw = explicit_txout(
             &contract.params().lbtc_asset_id,
@@ -189,8 +192,8 @@ mod tests {
     use super::*;
     use crate::amm_pool::params::AmmPoolParams;
     use crate::taproot::NUMS_KEY_BYTES;
-    use simplicityhl::elements::{OutPoint, Txid};
     use simplicityhl::elements::hashes::Hash;
+    use simplicityhl::elements::{OutPoint, Txid};
 
     fn test_params() -> AmmPoolParams {
         AmmPoolParams {

@@ -32,13 +32,13 @@ pub use chain::{ChainBackend, ElectrumBackend};
 pub use contract::CompiledContract;
 pub use error::{Error, NodeError, Result};
 pub use network::Network;
+pub use node::DeadcatNode;
 pub use params::{ContractParams, IssuanceAssets, MarketId, compute_issuance_assets};
 pub use sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, DeadcatSdk, FillOrderResult,
     IssuanceResult, PoolCreationResult, PoolLpResult, PoolSwapResult, RedemptionResult,
     ResolutionResult,
 };
-pub use node::DeadcatNode;
 pub use state::MarketState;
 
 // Re-export LWK for app-layer use
@@ -90,10 +90,9 @@ pub use maker_order::witness::{
 pub use amm_pool::assembly::{AssembledPoolTransaction, attach_amm_pool_witnesses};
 pub use amm_pool::contract::CompiledAmmPool;
 pub use amm_pool::math::{
-    PoolReserves, SwapPair, SwapResult,
-    compute_swap_exact_input, compute_swap_exact_output,
-    compute_lp_deposit, compute_lp_proportional_withdraw,
-    spot_price_yes_lbtc, spot_price_no_lbtc, spot_price_yes_no,
+    PoolReserves, SwapPair, SwapResult, compute_lp_deposit, compute_lp_proportional_withdraw,
+    compute_swap_exact_input, compute_swap_exact_output, spot_price_no_lbtc, spot_price_yes_lbtc,
+    spot_price_yes_no,
 };
 pub use amm_pool::params::{AmmPoolParams, PoolId};
 pub use amm_pool::pset::creation::{PoolCreationParams, build_pool_creation_pset};
@@ -107,28 +106,49 @@ pub use amm_pool::witness::{
 
 // Discovery (replaces order_announcement + order_discovery)
 pub use discovery::{
-    // Types
-    DiscoveredMarket, DiscoveredOrder, OrderAnnouncement,
-    DiscoveredPool, PoolAnnouncement,
-    DiscoveryConfig, DiscoveryEvent, DiscoveryService,
-    AttestationContent, AttestationResult,
-    ContractMetadataInput, DiscoveryStore,
-    // Order builders
-    build_order_event, build_order_filter, parse_order_event,
-    fetch_orders,
-    // Market builders
-    build_announcement_event, build_contract_filter, parse_announcement_event,
-    fetch_announcements, discovered_market_to_contract_params,
-    // Pool builders
-    build_pool_event, build_pool_filter, parse_pool_event,
-    fetch_pools,
-    // Attestation builders
-    build_attestation_event, build_attestation_filter, parse_attestation_event,
-    sign_attestation,
-    // Relay helpers
-    connect_client, publish_event,
     // Constants
     APP_EVENT_KIND,
-    CONTRACT_TAG, ORDER_TAG, ATTESTATION_TAG, POOL_TAG,
-    NETWORK_TAG, DEFAULT_RELAYS,
+    ATTESTATION_TAG,
+    AttestationContent,
+    AttestationResult,
+    CONTRACT_TAG,
+    ContractMetadataInput,
+    DEFAULT_RELAYS,
+    // Types
+    DiscoveredMarket,
+    DiscoveredOrder,
+    DiscoveredPool,
+    DiscoveryConfig,
+    DiscoveryEvent,
+    DiscoveryService,
+    DiscoveryStore,
+    NETWORK_TAG,
+    ORDER_TAG,
+    OrderAnnouncement,
+    POOL_TAG,
+    PoolAnnouncement,
+    // Market builders
+    build_announcement_event,
+    // Attestation builders
+    build_attestation_event,
+    build_attestation_filter,
+    build_contract_filter,
+    // Order builders
+    build_order_event,
+    build_order_filter,
+    // Pool builders
+    build_pool_event,
+    build_pool_filter,
+    // Relay helpers
+    connect_client,
+    discovered_market_to_contract_params,
+    fetch_announcements,
+    fetch_orders,
+    fetch_pools,
+    parse_announcement_event,
+    parse_attestation_event,
+    parse_order_event,
+    parse_pool_event,
+    publish_event,
+    sign_attestation,
 };

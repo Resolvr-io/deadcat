@@ -49,7 +49,9 @@ pub const DEFAULT_RELAYS: &[&str] = &["wss://relay.damus.io", "wss://relay.prima
 // Re-exports: market
 // ---------------------------------------------------------------------------
 
-pub use market::{DiscoveredMarket, build_announcement_event, build_contract_filter, parse_announcement_event};
+pub use market::{
+    DiscoveredMarket, build_announcement_event, build_contract_filter, parse_announcement_event,
+};
 
 // ---------------------------------------------------------------------------
 // Re-exports: attestation
@@ -64,7 +66,10 @@ pub use attestation::{
 // Re-exports: pool
 // ---------------------------------------------------------------------------
 
-pub use pool::{DiscoveredPool, PoolAnnouncement, build_pool_event, build_pool_filter, parse_pool_event, fetch_pools};
+pub use pool::{
+    DiscoveredPool, PoolAnnouncement, build_pool_event, build_pool_filter, fetch_pools,
+    parse_pool_event,
+};
 
 // ---------------------------------------------------------------------------
 // Re-exports: config, events, service, store_trait

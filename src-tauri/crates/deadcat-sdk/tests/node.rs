@@ -138,7 +138,10 @@ async fn node_announce_and_fetch_market() {
 
     // Fetch back
     let markets = node.fetch_markets().await.unwrap();
-    assert!(!markets.is_empty(), "should have fetched at least one market");
+    assert!(
+        !markets.is_empty(),
+        "should have fetched at least one market"
+    );
 
     let market = &markets[0];
     assert_eq!(market.question, "Will BTC close above $120k by Dec 2026?");
@@ -244,8 +247,7 @@ async fn node_subscription_delivers_events() {
         creation_txid: None,
     };
 
-    let event =
-        deadcat_sdk::discovery::build_announcement_event(&keys, &announcement).unwrap();
+    let event = deadcat_sdk::discovery::build_announcement_event(&keys, &announcement).unwrap();
     publisher.send_event(event).await.unwrap();
 
     // Wait for broadcast event

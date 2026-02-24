@@ -9,9 +9,7 @@ use crate::assembly::pset_to_pruning_transaction;
 use crate::error::{Error, Result};
 
 use super::contract::CompiledAmmPool;
-use super::witness::{
-    AmmPoolSpendingPath, satisfy_amm_pool_with_env, serialize_satisfied,
-};
+use super::witness::{AmmPoolSpendingPath, satisfy_amm_pool_with_env, serialize_satisfied};
 
 /// Result of assembling an AMM pool transaction (before signing).
 pub struct AssembledPoolTransaction {
@@ -87,8 +85,7 @@ pub fn attach_amm_pool_witnesses(
         };
 
     // Primary covenant input (index 0)
-    pset.inputs_mut()[0].final_script_witness =
-        Some(build_witness_stack(&primary_path, 0)?);
+    pset.inputs_mut()[0].final_script_witness = Some(build_witness_stack(&primary_path, 0)?);
 
     // Secondary covenant inputs (indices 1-3)
     let secondary_path = AmmPoolSpendingPath::Secondary;
