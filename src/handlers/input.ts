@@ -149,7 +149,6 @@ export function handleInput(e: Event, render: () => void): void {
     return;
   }
 
-
   if (target.id === "create-question") {
     state.createQuestion = target.value;
     return;
