@@ -97,6 +97,11 @@ textarea {
     color: #cbd5e1;
     padding: 4px 0;
     border-bottom: 1px dashed rgba(148, 163, 184, 0.2);
+    min-width: 0;
+}
+
+.kv-row > * {
+    min-width: 0;
 }
 
 .kv-row:last-child {

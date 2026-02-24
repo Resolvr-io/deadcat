@@ -310,6 +310,43 @@ function hexToBytes(hex: string): number[] {
   return bytes;
 }
 
+// Minimal bech32 encoder for NIP-19 npub encoding
+const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+function bech32Polymod(values: number[]): number {
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const b = chk >> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) if ((b >> i) & 1) chk ^= GEN[i];
+  }
+  return chk;
+}
+function bech32Encode(hrp: string, data5bit: number[]): string {
+  const hrpExpand = [...hrp].map((c) => c.charCodeAt(0) >> 5)
+    .concat([0])
+    .concat([...hrp].map((c) => c.charCodeAt(0) & 31));
+  const values = hrpExpand.concat(data5bit);
+  const polymod = bech32Polymod(values.concat([0, 0, 0, 0, 0, 0])) ^ 1;
+  const checksum = Array.from({ length: 6 }, (_, i) => (polymod >> (5 * (5 - i))) & 31);
+  return hrp + "1" + data5bit.concat(checksum).map((d) => BECH32_CHARSET[d]).join("");
+}
+function convertBits(data: number[], fromBits: number, toBits: number, pad: boolean): number[] {
+  let acc = 0, bits = 0;
+  const ret: number[] = [];
+  const maxv = (1 << toBits) - 1;
+  for (const value of data) {
+    acc = (acc << fromBits) | value;
+    bits += fromBits;
+    while (bits >= toBits) { bits -= toBits; ret.push((acc >> bits) & maxv); }
+  }
+  if (pad && bits > 0) ret.push((acc << (toBits - bits)) & maxv);
+  return ret;
+}
+function hexToNpub(hex: string): string {
+  return bech32Encode("npub", convertBits(hexToBytes(hex), 8, 5, true));
+}
+
 /** Reverse byte-order of a hex string (internal ↔ display order for hash-based IDs). */
 function reverseHex(hex: string): string {
   return (hex.match(/.{2}/g) || []).reverse().join("");
@@ -2206,7 +2243,6 @@ function renderActionTicket(market: Market): string {
       `
           : ""
       }
-      <p class="mt-3 text-xs text-slate-500">${state.nostrPubkey ? `Nostr identity: ${state.nostrPubkey.slice(0, 12)}...` : "Nostr identity not initialized."}</p>
     </aside>
   `;
 }
@@ -2256,14 +2292,10 @@ function renderDetail(): string {
             ${chartSkeleton(market)}
           </div>
 
-          <section class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px]">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p class="panel-subtitle">Advanced</p>
-                <h3 class="panel-title text-lg">Protocol Details</h3>
-                <p class="text-sm text-slate-400">Oracle, covenant paths, and collateral mechanics. These do not change your basic yes/no order entry flow.</p>
-              </div>
-              <button data-action="toggle-advanced-details" class="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200">${state.showAdvancedDetails ? "Hide details" : "Show details"}</button>
+          <section class="rounded-[21px] border border-slate-800 bg-slate-950/55 px-[21px] py-3">
+            <div class="flex items-center justify-between gap-4">
+              <p class="text-sm text-slate-400"><span class="text-slate-200">Protocol Details</span> — oracle, covenant paths, and collateral mechanics</p>
+              <button data-action="toggle-advanced-details" class="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200">${state.showAdvancedDetails ? "Hide" : "Show"}</button>
             </div>
           </section>
 
@@ -2275,14 +2307,14 @@ function renderDetail(): string {
               <p class="panel-subtitle">Oracle</p>
               <h3 class="panel-title mb-2 text-lg">Oracle Attestation</h3>
               <div class="space-y-1 text-xs text-slate-300">
-                <div class="kv-row"><span>ORACLE_PUBLIC_KEY</span><span class="mono">${market.oraclePubkey}</span></div>
-                <div class="kv-row"><span>MARKET_ID</span><span class="mono">${market.marketId}</span></div>
-                <div class="kv-row"><span>Block target</span><span class="mono">${formatBlockHeight(market.expiryHeight)}</span></div>
-                <div class="kv-row"><span>Current height</span><span class="mono">${formatBlockHeight(market.currentHeight)}</span></div>
-                <div class="kv-row"><span>Message domain</span><span class="mono">SHA256(MARKET_ID || outcome_byte)</span></div>
-                <div class="kv-row"><span>Outcome bytes</span><span class="mono">YES=0x01, NO=0x00</span></div>
-                <div class="kv-row"><span>Resolve status</span><span class="${market.resolveTx?.sigVerified ? "text-emerald-300" : "text-slate-400"}">${market.resolveTx ? `Attested ${market.resolveTx.outcome.toUpperCase()} @ ${market.resolveTx.height}` : "Unresolved"}</span></div>
-                ${market.resolveTx ? `<div class="kv-row"><span>Signature hash</span><span class="mono">${market.resolveTx.signatureHash}</span></div><div class="kv-row"><span>Resolve tx</span><span class="mono">${market.resolveTx.txid}</span></div>` : ""}
+                <div class="kv-row"><span class="shrink-0">Oracle</span><button data-action="copy-to-clipboard" data-copy-value="${hexToNpub(market.oraclePubkey)}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${hexToNpub(market.oraclePubkey)}">${(() => { const n = hexToNpub(market.oraclePubkey); return n.slice(0, 10) + "..." + n.slice(-6); })()}</button></div>
+                <div class="kv-row"><span class="shrink-0">Market ID</span><button data-action="copy-to-clipboard" data-copy-value="${market.marketId}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.marketId}">${market.marketId.slice(0, 8)}...${market.marketId.slice(-8)}</button></div>
+                <div class="kv-row"><span class="shrink-0">Block target</span><span class="mono">${formatBlockHeight(market.expiryHeight)}</span></div>
+                <div class="kv-row"><span class="shrink-0">Current height</span><span class="mono">${formatBlockHeight(market.currentHeight)}</span></div>
+                <div class="kv-row"><span class="shrink-0">Message domain</span><span class="mono text-right">SHA256(ID || outcome)</span></div>
+                <div class="kv-row"><span class="shrink-0">Outcome bytes</span><span class="mono">YES=0x01, NO=0x00</span></div>
+                <div class="kv-row"><span class="shrink-0">Resolve status</span><span class="${market.resolveTx?.sigVerified ? "text-emerald-300" : "text-slate-400"}">${market.resolveTx ? `Attested ${market.resolveTx.outcome.toUpperCase()} @ ${market.resolveTx.height}` : "Unresolved"}</span></div>
+                ${market.resolveTx ? `<div class="kv-row"><span class="shrink-0">Sig hash</span><button data-action="copy-to-clipboard" data-copy-value="${market.resolveTx.signatureHash}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.resolveTx.signatureHash}">${market.resolveTx.signatureHash.slice(0, 8)}...${market.resolveTx.signatureHash.slice(-8)}</button></div><div class="kv-row"><span class="shrink-0">Resolve tx</span><button data-action="copy-to-clipboard" data-copy-value="${market.resolveTx.txid}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.resolveTx.txid}">${market.resolveTx.txid.slice(0, 8)}...${market.resolveTx.txid.slice(-8)}</button></div>` : ""}
               </div>
               ${
                 state.nostrPubkey &&
@@ -2317,11 +2349,11 @@ function renderDetail(): string {
               <p class="panel-subtitle">Integrity</p>
               <h3 class="panel-title mb-2 text-lg">Single-UTXO Integrity</h3>
               <p class="text-sm ${market.collateralUtxos.length === 1 ? "text-emerald-300" : "text-rose-300"}">${market.collateralUtxos.length === 1 ? "OK: exactly one collateral UTXO" : "ALERT: fragmented collateral UTXO set"}</p>
-              <div class="mt-2 space-y-2 text-xs text-slate-300">
+              <div class="mt-2 space-y-1 text-xs text-slate-300">
                 ${market.collateralUtxos
                   .map(
                     (utxo) =>
-                      `<p class="mono">${utxo.txid}:${utxo.vout} · ${formatSats(utxo.amountSats)}</p>`,
+                      `<div class="kv-row"><button data-action="copy-to-clipboard" data-copy-value="${utxo.txid}:${utxo.vout}" class="mono truncate hover:text-slate-100 transition cursor-pointer" title="${utxo.txid}:${utxo.vout}">${utxo.txid.slice(0, 8)}...${utxo.txid.slice(-8)}:${utxo.vout}</button><span class="mono shrink-0">${formatSats(utxo.amountSats)}</span></div>`,
                   )
                   .join("")}
               </div>
@@ -4344,6 +4376,15 @@ app.addEventListener("click", (event) => {
     if (state.nostrNpub) {
       void navigator.clipboard.writeText(state.nostrNpub);
       showToast("Copied npub to clipboard");
+    }
+    return;
+  }
+
+  if (action === "copy-to-clipboard") {
+    const value = actionEl?.getAttribute("data-copy-value");
+    if (value) {
+      void navigator.clipboard.writeText(value);
+      showToast("Copied to clipboard");
     }
     return;
   }
