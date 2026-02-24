@@ -14,6 +14,18 @@ import {
   stateLabel,
 } from "../utils/market.ts";
 
+const trendUp =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>';
+
+const trendDown =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>';
+
+function trendIndicator(change: number): string {
+  const color = change >= 0 ? "text-emerald-300" : "text-rose-300";
+  const arrow = change >= 0 ? trendUp : trendDown;
+  return `<span class="inline-flex items-center gap-1 ${color}">${arrow}${formatPercent(change)}</span>`;
+}
+
 export function renderHome(): string {
   if (
     state.activeCategory !== "Trending" &&
@@ -49,7 +61,7 @@ export function renderHome(): string {
         `
             : ""
         }
-        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950">Create New Market</button>
+        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950"><span class="mr-1">+</span> Create New Market</button>
         ${state.nostrPubkey ? `<p class="mt-4 text-xs text-slate-500">Identity: ${state.nostrPubkey.slice(0, 8)}...${state.nostrPubkey.slice(-8)}</p>` : ""}
       </div>
     `;
@@ -110,7 +122,7 @@ export function renderHome(): string {
                       <div class="flex items-center justify-between text-xs sm:text-sm">
                         <span class="text-emerald-300">Yes ${formatProbabilityWithPercent(market.yesPrice)}</span>
                         <span class="text-rose-300">No ${formatProbabilityWithPercent(no)}</span>
-                        <span class="${market.change24h >= 0 ? "text-emerald-300" : "text-rose-300"}">${formatPercent(market.change24h)}</span>
+                        ${trendIndicator(market.change24h)}
                       </div>
                     </button>
                   `;
@@ -133,7 +145,10 @@ export function renderHome(): string {
                         <p class="w-full text-sm font-normal text-slate-300">${idx + 1}. ${market.question}</p>
                         <p class="text-sm font-normal text-slate-100">${Math.round(market.yesPrice * 100)}%</p>
                       </div>
-                      <p class="mt-1 text-xs text-slate-500">${market.category}</p>
+                      <div class="mt-1 flex items-center justify-between">
+                        <p class="text-xs text-slate-500">${market.category}</p>
+                        <p class="text-xs">${trendIndicator(market.change24h)}</p>
+                      </div>
                     </button>
                   `;
                 })
@@ -150,7 +165,7 @@ export function renderHome(): string {
                     <button data-open-market="${market.id}" class="w-full text-left">
                       <div class="flex items-start justify-between gap-2">
                         <p class="w-full text-sm font-normal text-slate-300">${idx + 1}. ${market.question}</p>
-                        <p class="text-sm font-normal ${market.change24h >= 0 ? "text-emerald-300" : "text-rose-300"}">${formatPercent(market.change24h)}</p>
+                        <p class="text-sm font-normal">${trendIndicator(market.change24h)}</p>
                       </div>
                       <p class="mt-1 text-xs text-slate-500">${market.category}</p>
                     </button>
@@ -173,7 +188,7 @@ export function renderMyMarkets(): string {
       <div class="phi-container py-16 text-center">
         <h2 class="mb-3 text-2xl font-semibold text-slate-100">No markets created yet</h2>
         <p class="mb-6 text-base text-slate-400">Markets you create as oracle will appear here.</p>
-        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950">Create New Market</button>
+        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950"><span class="mr-1">+</span> Create New Market</button>
       </div>
     `;
   }
@@ -213,7 +228,7 @@ export function renderMyMarkets(): string {
     <div class="phi-container py-6 lg:py-8">
       <div class="mb-4 flex items-center justify-between">
         <h1 class="text-xl font-medium text-slate-100">My Markets</h1>
-        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-5 py-2 text-sm font-semibold text-slate-950">Create New Market</button>
+        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-5 py-2 text-sm font-semibold text-slate-950"><span class="mr-1">+</span> Create New Market</button>
       </div>
       <div class="mb-4 grid gap-2 sm:grid-cols-3">
         <div class="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
@@ -304,7 +319,7 @@ export function renderCategoryPage(): string {
                     <div class="flex items-center justify-between text-sm">
                       <span class="text-emerald-300">Yes ${formatProbabilityWithPercent(market.yesPrice)}</span>
                       <span class="text-rose-300">No ${formatProbabilityWithPercent(no)}</span>
-                      <span class="${market.change24h >= 0 ? "text-emerald-300" : "text-rose-300"}">${formatPercent(market.change24h)}</span>
+                      ${trendIndicator(market.change24h)}
                     </div>
                     <p class="mt-2 text-xs text-slate-500">Volume ${formatVolumeBtc(market.volumeBtc)} · ${market.description}</p>
                   </button>
