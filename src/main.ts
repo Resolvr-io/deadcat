@@ -46,13 +46,14 @@ function updateOverlayMessage(message: string): void {
 
 type NavCategory =
   | "Trending"
+  | "My Markets"
   | "Politics"
   | "Sports"
   | "Culture"
   | "Bitcoin"
   | "Weather"
   | "Macro";
-type MarketCategory = Exclude<NavCategory, "Trending">;
+type MarketCategory = Exclude<NavCategory, "Trending" | "My Markets">;
 type ViewMode = "home" | "detail" | "create" | "wallet";
 type Side = "yes" | "no";
 type OrderType = "market" | "limit";
@@ -242,6 +243,7 @@ const categories: NavCategory[] = [
   "Bitcoin",
   "Weather",
   "Macro",
+  "My Markets",
 ];
 
 let markets: Market[] = [];
@@ -1081,7 +1083,9 @@ function getFilteredMarkets(): Market[] {
     .filter((market) => {
       const categoryMatch =
         state.activeCategory === "Trending" ||
-        market.category === state.activeCategory;
+        (state.activeCategory === "My Markets"
+          ? state.nostrPubkey != null && market.oraclePubkey === state.nostrPubkey
+          : market.category === state.activeCategory);
       const searchMatch =
         lowered.length === 0 ||
         market.question.toLowerCase().includes(lowered) ||
@@ -1254,6 +1258,7 @@ function renderTopShell(): string {
         <div class="phi-container py-2">
           <div id="category-row" class="flex items-center gap-1 overflow-x-auto whitespace-nowrap">
             ${categories
+              .filter((category) => category !== "My Markets" || state.nostrPubkey)
               .map((category) => {
                 const active = state.activeCategory === category;
                 return `<button data-category="${category}" class="rounded-full px-3 py-1.5 text-sm font-normal transition ${
@@ -1601,8 +1606,12 @@ function renderTopShell(): string {
 }
 
 function renderHome(): string {
-  if (state.activeCategory !== "Trending") {
+  if (state.activeCategory !== "Trending" && state.activeCategory !== "My Markets") {
     return renderCategoryPage();
+  }
+
+  if (state.activeCategory === "My Markets") {
+    return renderMyMarkets();
   }
 
   if (state.marketsLoading) {
@@ -1740,6 +1749,77 @@ function renderHome(): string {
           </section>
         </aside>
       </div>
+    </div>
+  `;
+}
+
+function renderMyMarkets(): string {
+  const myMarkets = getFilteredMarkets();
+
+  if (myMarkets.length === 0) {
+    return `
+      <div class="phi-container py-16 text-center">
+        <h2 class="mb-3 text-2xl font-semibold text-slate-100">No markets created yet</h2>
+        <p class="mb-6 text-base text-slate-400">Markets you create as oracle will appear here.</p>
+        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950">Create New Market</button>
+      </div>
+    `;
+  }
+
+  const dormant = myMarkets.filter((m) => m.state === 0);
+  const active = myMarkets.filter((m) => m.state === 1);
+  const resolved = myMarkets.filter((m) => m.state === 2 || m.state === 3);
+
+  const renderMarketCard = (market: Market): string => {
+    const no = 1 - market.yesPrice;
+    return `
+      <button data-open-market="${market.id}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
+        <div class="mb-2 flex items-center justify-between text-sm">
+          <span class="text-xs text-slate-500">${market.category}</span>
+          <span>${stateBadge(market.state)}</span>
+        </div>
+        <p class="mb-3 text-base font-normal text-slate-200">${market.question}</p>
+        <div class="flex items-center justify-between text-sm">
+          <span class="text-emerald-300">Yes ${formatProbabilityWithPercent(market.yesPrice)}</span>
+          <span class="text-rose-300">No ${formatProbabilityWithPercent(no)}</span>
+        </div>
+      </button>
+    `;
+  };
+
+  const renderSection = (title: string, items: Market[]): string => {
+    if (items.length === 0) return "";
+    return `
+      <div class="mb-6">
+        <h3 class="mb-3 text-sm font-medium text-slate-400">${title} (${items.length})</h3>
+        <div class="grid gap-3 md:grid-cols-2">${items.map(renderMarketCard).join("")}</div>
+      </div>
+    `;
+  };
+
+  return `
+    <div class="phi-container py-6 lg:py-8">
+      <div class="mb-4 flex items-center justify-between">
+        <h1 class="text-xl font-medium text-slate-100">My Markets</h1>
+        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-5 py-2 text-sm font-semibold text-slate-950">Create New Market</button>
+      </div>
+      <div class="mb-4 grid gap-2 sm:grid-cols-3">
+        <div class="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+          <p class="text-xs text-slate-500">Total</p>
+          <p class="text-lg font-medium text-slate-100">${myMarkets.length}</p>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+          <p class="text-xs text-slate-500">Active</p>
+          <p class="text-lg font-medium text-emerald-300">${active.length}</p>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+          <p class="text-xs text-slate-500">Awaiting resolution</p>
+          <p class="text-lg font-medium text-amber-300">${active.filter((m) => isExpired(m)).length}</p>
+        </div>
+      </div>
+      ${renderSection("Dormant — needs initial issuance", dormant)}
+      ${renderSection("Active", active)}
+      ${renderSection("Resolved", resolved)}
     </div>
   `;
 }
