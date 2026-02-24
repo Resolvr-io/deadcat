@@ -31,5 +31,12 @@ screenshots: screenshots-install
 screenshots-update: screenshots-install
 	pnpm test:screenshots:update
 
-test-sdk:
-	cd src-tauri/crates/deadcat-sdk && ulimit -n 10240 && ELEMENTSD_EXEC=$PWD/tests/elementsd ELECTRS_LIQUID_EXEC=$PWD/tests/electrs cargo test --test sdk -- --test-threads=1
+cargo-fmt:
+	cd src-tauri && cargo fmt --all -- --check
+
+cargo-clippy:
+	cd src-tauri && cargo clippy --all-targets -- -D warnings
+
+cargo-test:
+	cd src-tauri && cargo test --workspace --exclude deadcat-sdk
+	cd src-tauri/crates/deadcat-sdk && ulimit -n 10240 && ELEMENTSD_EXEC=$PWD/tests/elementsd ELECTRS_LIQUID_EXEC=$PWD/tests/electrs cargo test
