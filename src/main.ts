@@ -4748,26 +4748,17 @@ app.addEventListener("click", (event) => {
     render();
     // If already unlocked with cached balance, just do a silent background sync
     if (state.walletStatus === "unlocked" && state.walletBalance) {
-      void invoke("sync_wallet")
-        .then(async () => {
-          const balance = await invoke<{ assets: Record<string, number> }>(
-            "get_wallet_balance",
-          );
-          state.walletBalance = balance.assets;
-          const txs = await invoke<
-            {
-              txid: string;
-              balanceChange: number;
-              fee: number;
-              height: number | null;
-              timestamp: number | null;
-              txType: string;
-            }[]
-          >("get_wallet_transactions");
-          state.walletTransactions = txs;
-          render();
-        })
-        .catch(() => {});
+      void invoke("sync_wallet").then(async () => {
+        const [balance, txs, swaps] = await Promise.all([
+          invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
+          invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions"),
+          invoke<PaymentSwap[]>("list_payment_swaps"),
+        ]);
+        state.walletBalance = balance.assets;
+        state.walletTransactions = txs;
+        state.walletSwaps = swaps;
+        render();
+      }).catch(() => {});
     } else {
       void fetchWalletStatus().then(() => {
         render();

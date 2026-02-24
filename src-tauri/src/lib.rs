@@ -9,7 +9,7 @@ mod wallet_store;
 use std::sync::{Mutex, RwLock};
 
 use serde::Deserialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager};
 
 use state::{AppState, AppStateManager, PaymentSwap};
 
@@ -83,21 +83,28 @@ impl std::str::FromStr for Network {
 // ============================================================================
 
 #[tauri::command]
-fn is_first_launch(manager: State<Mutex<AppStateManager>>) -> bool {
-    let manager = manager.lock().expect("state manager mutex");
-    manager.is_first_launch()
+async fn is_first_launch(app: AppHandle) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "state lock failed".to_string())?;
+        Ok(mgr.is_first_launch())
+    })
+    .await
+    .map_err(|e| format!("first_launch task failed: {e}"))?
 }
 
 #[tauri::command]
-fn set_network(
-    network: Network,
-    manager: State<Mutex<AppStateManager>>,
-    app: AppHandle,
-) -> Result<AppState, String> {
-    let mut manager = manager.lock().expect("state manager mutex");
-    let state = manager.set_network(network);
-    emit_state(&app, &state);
-    Ok(state)
+async fn set_network(network: Network, app: AppHandle) -> Result<AppState, String> {
+    let app_handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_handle.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "state lock failed".to_string())?;
+        let state = mgr.set_network(network);
+        emit_state(&app_handle, &state);
+        Ok(state)
+    })
+    .await
+    .map_err(|e| format!("set_network task failed: {e}"))?
 }
 
 // ============================================================================
@@ -105,12 +112,17 @@ fn set_network(
 // ============================================================================
 
 #[tauri::command]
-fn get_app_state(manager: State<Mutex<AppStateManager>>) -> Result<AppState, String> {
-    let manager = manager.lock().expect("state manager mutex");
-    if !manager.is_initialized() {
-        return Err("Not initialized - select a network first".to_string());
-    }
-    Ok(manager.snapshot())
+async fn get_app_state(app: AppHandle) -> Result<AppState, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "state lock failed".to_string())?;
+        if !mgr.is_initialized() {
+            return Err("Not initialized - select a network first".to_string());
+        }
+        Ok(mgr.snapshot())
+    })
+    .await
+    .map_err(|e| format!("state task failed: {e}"))?
 }
 
 // ============================================================================
@@ -118,47 +130,51 @@ fn get_app_state(manager: State<Mutex<AppStateManager>>) -> Result<AppState, Str
 // ============================================================================
 
 #[tauri::command]
-fn get_wallet_status(
-    manager: State<Mutex<AppStateManager>>,
-) -> Result<wallet::types::WalletStatus, String> {
-    let manager = manager.lock().expect("state manager mutex");
-    Ok(manager
-        .wallet()
-        .map(|w| w.status())
-        .unwrap_or(wallet::types::WalletStatus::NotCreated))
+async fn get_wallet_status(app: AppHandle) -> Result<wallet::types::WalletStatus, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        Ok(mgr
+            .wallet()
+            .map(|w| w.status())
+            .unwrap_or(wallet::types::WalletStatus::NotCreated))
+    })
+    .await
+    .map_err(|e| format!("wallet_status task failed: {e}"))?
 }
 
 #[tauri::command]
-fn create_wallet(
-    password: String,
-    manager: State<Mutex<AppStateManager>>,
-    app: AppHandle,
-) -> Result<String, String> {
-    let mut manager = manager.lock().expect("state manager mutex");
-    let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
-    let mnemonic = wallet.create_wallet(&password).map_err(|e| e.to_string())?;
-    manager.bump_revision();
-    let state = manager.snapshot();
-    emit_state(&app, &state);
-    Ok(mnemonic)
+async fn create_wallet(password: String, app: AppHandle) -> Result<String, String> {
+    let app_handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_handle.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr.wallet_mut().ok_or("Wallet not initialized")?;
+        let mnemonic = wallet.create_wallet(&password).map_err(|e| e.to_string())?;
+        mgr.bump_revision();
+        let state = mgr.snapshot();
+        emit_state(&app_handle, &state);
+        Ok(mnemonic)
+    })
+    .await
+    .map_err(|e| format!("create_wallet task failed: {e}"))?
 }
 
 #[tauri::command]
-fn restore_wallet(
-    mnemonic: String,
-    password: String,
-    manager: State<Mutex<AppStateManager>>,
-    app: AppHandle,
-) -> Result<AppState, String> {
-    let mut manager = manager.lock().expect("state manager mutex");
-    let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
-    wallet
-        .restore_wallet(&mnemonic, &password)
-        .map_err(|e| e.to_string())?;
-    manager.bump_revision();
-    let state = manager.snapshot();
-    emit_state(&app, &state);
-    Ok(state)
+async fn restore_wallet(mnemonic: String, password: String, app: AppHandle) -> Result<AppState, String> {
+    let app_handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_handle.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr.wallet_mut().ok_or("Wallet not initialized")?;
+        wallet.restore_wallet(&mnemonic, &password).map_err(|e| e.to_string())?;
+        mgr.bump_revision();
+        let state = mgr.snapshot();
+        emit_state(&app_handle, &state);
+        Ok(state)
+    })
+    .await
+    .map_err(|e| format!("restore_wallet task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -183,29 +199,38 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
 }
 
 #[tauri::command]
-fn lock_wallet(manager: State<Mutex<AppStateManager>>, app: AppHandle) -> Result<AppState, String> {
-    let mut manager = manager.lock().expect("state manager mutex");
-    if let Some(wallet) = manager.wallet_mut() {
-        wallet.lock();
-    }
-    manager.bump_revision();
-    let state = manager.snapshot();
-    emit_state(&app, &state);
-    Ok(state)
+async fn lock_wallet(app: AppHandle) -> Result<AppState, String> {
+    let app_handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_handle.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        if let Some(wallet) = mgr.wallet_mut() {
+            wallet.lock();
+        }
+        mgr.bump_revision();
+        let state = mgr.snapshot();
+        emit_state(&app_handle, &state);
+        Ok(state)
+    })
+    .await
+    .map_err(|e| format!("lock_wallet task failed: {e}"))?
 }
 
 #[tauri::command]
-fn delete_wallet(
-    manager: State<Mutex<AppStateManager>>,
-    app: AppHandle,
-) -> Result<AppState, String> {
-    let mut manager = manager.lock().expect("state manager mutex");
-    let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
-    wallet.delete_wallet().map_err(|e| e.to_string())?;
-    manager.bump_revision();
-    let state = manager.snapshot();
-    emit_state(&app, &state);
-    Ok(state)
+async fn delete_wallet(app: AppHandle) -> Result<AppState, String> {
+    let app_handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_handle.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr.wallet_mut().ok_or("Wallet not initialized")?;
+        wallet.delete_wallet().map_err(|e| e.to_string())?;
+        mgr.bump_revision();
+        let state = mgr.snapshot();
+        emit_state(&app_handle, &state);
+        Ok(state)
+    })
+    .await
+    .map_err(|e| format!("delete_wallet task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -230,64 +255,79 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
 }
 
 #[tauri::command]
-fn get_wallet_balance(
-    manager: State<Mutex<AppStateManager>>,
-) -> Result<wallet::types::WalletBalance, String> {
-    let manager = manager.lock().expect("state manager mutex");
-    let wallet = manager.wallet().ok_or("Wallet not initialized")?;
-    wallet.balance().map_err(|e| e.to_string())
+async fn get_wallet_balance(app: AppHandle) -> Result<wallet::types::WalletBalance, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
+        wallet.balance().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("balance task failed: {e}"))?
 }
 
 #[tauri::command]
-fn get_wallet_address(
-    index: Option<u32>,
-    manager: State<Mutex<AppStateManager>>,
-) -> Result<wallet::types::WalletAddress, String> {
-    let manager = manager.lock().expect("state manager mutex");
-    let wallet = manager.wallet().ok_or("Wallet not initialized")?;
-    wallet.address(index).map_err(|e| e.to_string())
+async fn get_wallet_address(index: Option<u32>, app: AppHandle) -> Result<wallet::types::WalletAddress, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
+        wallet.address(index).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("address task failed: {e}"))?
 }
 
 #[tauri::command]
-fn get_wallet_transactions(
-    manager: State<Mutex<AppStateManager>>,
-) -> Result<Vec<wallet::types::WalletTransaction>, String> {
-    let manager = manager.lock().expect("state manager mutex");
-    let wallet = manager.wallet().ok_or("Wallet not initialized")?;
-    wallet.transactions().map_err(|e| e.to_string())
+async fn get_wallet_transactions(app: AppHandle) -> Result<Vec<wallet::types::WalletTransaction>, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr.wallet().ok_or("Wallet not initialized")?;
+        wallet.transactions().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("transactions task failed: {e}"))?
 }
 
 #[tauri::command]
-fn send_lbtc(
+async fn send_lbtc(
     address: String,
     amount_sat: u64,
     fee_rate: Option<f32>,
-    manager: State<Mutex<AppStateManager>>,
     app: AppHandle,
 ) -> Result<wallet::types::LiquidSendResult, String> {
-    let mut manager = manager.lock().expect("state manager mutex");
-    let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
-    let result = wallet
-        .send_lbtc(&address, amount_sat, fee_rate)
-        .map_err(|e| e.to_string())?;
-    manager.bump_revision();
-    let state = manager.snapshot();
-    emit_state(&app, &state);
-    Ok(result)
+    let app_handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_handle.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr.wallet_mut().ok_or("Wallet not initialized")?;
+        let result = wallet
+            .send_lbtc(&address, amount_sat, fee_rate)
+            .map_err(|e| e.to_string())?;
+        mgr.bump_revision();
+        let state = mgr.snapshot();
+        emit_state(&app_handle, &state);
+        Ok(result)
+    })
+    .await
+    .map_err(|e| format!("send_lbtc task failed: {e}"))?
 }
 
 #[tauri::command]
-fn get_wallet_mnemonic(
-    password: String,
-    manager: State<Mutex<AppStateManager>>,
-) -> Result<String, String> {
-    let mut manager = manager.lock().expect("state manager mutex");
-    let wallet = manager.wallet_mut().ok_or("Wallet not initialized")?;
-    let mnemonic = wallet
-        .persister_mut()
-        .load(&password)
-        .map_err(|e| e.to_string())?;
-    Ok(mnemonic)
+async fn get_wallet_mnemonic(password: String, app: AppHandle) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr.wallet_mut().ok_or("Wallet not initialized")?;
+        let mnemonic = wallet
+            .persister_mut()
+            .load(&password)
+            .map_err(|e| e.to_string())?;
+        Ok(mnemonic)
+    })
+    .await
+    .map_err(|e| format!("mnemonic task failed: {e}"))?
 }
 
 // ============================================================================
@@ -297,11 +337,12 @@ fn get_wallet_mnemonic(
 #[tauri::command]
 async fn pay_lightning_invoice(
     invoice: String,
-    manager: State<'_, Mutex<AppStateManager>>,
     app: AppHandle,
 ) -> Result<payments::boltz::BoltzSubmarineSwapCreated, String> {
-    let (network, refund_pubkey_hex) = {
-        let mgr = manager.lock().expect("state manager mutex");
+    let app_ref = app.clone();
+    let (network, refund_pubkey_hex) = tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
         let network = mgr
             .network()
             .ok_or("Not initialized - select a network first")?;
@@ -309,8 +350,10 @@ async fn pay_lightning_invoice(
         let refund_pubkey_hex = wallet
             .boltz_submarine_refund_pubkey_hex()
             .map_err(|e| format!("Wallet must be unlocked to initiate swap: {}", e))?;
-        (network, refund_pubkey_hex)
-    };
+        Ok::<_, String>((network, refund_pubkey_hex))
+    })
+    .await
+    .map_err(|e| format!("pay_lightning task failed: {e}"))??;
 
     let boltz = payments::boltz::BoltzService::new(network, None);
     let created = boltz
@@ -337,12 +380,17 @@ async fn pay_lightning_invoice(
         updated_at: now,
     };
 
-    {
-        let mut mgr = manager.lock().expect("state manager mutex");
+    let app_ref = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
         mgr.upsert_payment_swap(saved_swap);
         let state = mgr.snapshot();
-        emit_state(&app, &state);
-    }
+        emit_state(&app_ref, &state);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| format!("pay_lightning save task failed: {e}"))??;
 
     Ok(created)
 }
@@ -350,11 +398,12 @@ async fn pay_lightning_invoice(
 #[tauri::command]
 async fn create_lightning_receive(
     amount_sat: u64,
-    manager: State<'_, Mutex<AppStateManager>>,
     app: AppHandle,
 ) -> Result<payments::boltz::BoltzLightningReceiveCreated, String> {
-    let (network, claim_pubkey_hex) = {
-        let mgr = manager.lock().expect("state manager mutex");
+    let app_ref = app.clone();
+    let (network, claim_pubkey_hex) = tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
         let network = mgr
             .network()
             .ok_or("Not initialized - select a network first")?;
@@ -362,8 +411,10 @@ async fn create_lightning_receive(
         let claim_pubkey_hex = wallet
             .boltz_reverse_claim_pubkey_hex()
             .map_err(|e| format!("Wallet must be unlocked to initiate swap: {}", e))?;
-        (network, claim_pubkey_hex)
-    };
+        Ok::<_, String>((network, claim_pubkey_hex))
+    })
+    .await
+    .map_err(|e| format!("lightning_receive task failed: {e}"))??;
 
     let boltz = payments::boltz::BoltzService::new(network, None);
     let created = boltz
@@ -390,12 +441,17 @@ async fn create_lightning_receive(
         updated_at: now,
     };
 
-    {
-        let mut mgr = manager.lock().expect("state manager mutex");
+    let app_ref = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
         mgr.upsert_payment_swap(saved_swap);
         let state = mgr.snapshot();
-        emit_state(&app, &state);
-    }
+        emit_state(&app_ref, &state);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| format!("lightning_receive save task failed: {e}"))??;
 
     Ok(created)
 }
@@ -403,11 +459,12 @@ async fn create_lightning_receive(
 #[tauri::command]
 async fn create_bitcoin_receive(
     amount_sat: u64,
-    manager: State<'_, Mutex<AppStateManager>>,
     app: AppHandle,
 ) -> Result<payments::boltz::BoltzChainSwapCreated, String> {
-    let (network, claim_pubkey_hex, refund_pubkey_hex) = {
-        let mgr = manager.lock().expect("state manager mutex");
+    let app_ref = app.clone();
+    let (network, claim_pubkey_hex, refund_pubkey_hex) = tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
         let network = mgr
             .network()
             .ok_or("Not initialized - select a network first")?;
@@ -418,8 +475,10 @@ async fn create_bitcoin_receive(
         let refund_pubkey_hex = wallet
             .boltz_submarine_refund_pubkey_hex()
             .map_err(|e| format!("Wallet must be unlocked to initiate swap: {}", e))?;
-        (network, claim_pubkey_hex, refund_pubkey_hex)
-    };
+        Ok::<_, String>((network, claim_pubkey_hex, refund_pubkey_hex))
+    })
+    .await
+    .map_err(|e| format!("bitcoin_receive task failed: {e}"))??;
 
     let boltz = payments::boltz::BoltzService::new(network, None);
     let created = boltz
@@ -446,12 +505,17 @@ async fn create_bitcoin_receive(
         updated_at: now,
     };
 
-    {
-        let mut mgr = manager.lock().expect("state manager mutex");
+    let app_ref = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
         mgr.upsert_payment_swap(saved_swap);
         let state = mgr.snapshot();
-        emit_state(&app, &state);
-    }
+        emit_state(&app_ref, &state);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| format!("bitcoin_receive save task failed: {e}"))??;
 
     Ok(created)
 }
@@ -459,11 +523,12 @@ async fn create_bitcoin_receive(
 #[tauri::command]
 async fn create_bitcoin_send(
     amount_sat: u64,
-    manager: State<'_, Mutex<AppStateManager>>,
     app: AppHandle,
 ) -> Result<payments::boltz::BoltzChainSwapCreated, String> {
-    let (network, claim_pubkey_hex, refund_pubkey_hex) = {
-        let mgr = manager.lock().expect("state manager mutex");
+    let app_ref = app.clone();
+    let (network, claim_pubkey_hex, refund_pubkey_hex) = tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
         let network = mgr
             .network()
             .ok_or("Not initialized - select a network first")?;
@@ -474,8 +539,10 @@ async fn create_bitcoin_send(
         let refund_pubkey_hex = wallet
             .boltz_submarine_refund_pubkey_hex()
             .map_err(|e| format!("Wallet must be unlocked to initiate swap: {}", e))?;
-        (network, claim_pubkey_hex, refund_pubkey_hex)
-    };
+        Ok::<_, String>((network, claim_pubkey_hex, refund_pubkey_hex))
+    })
+    .await
+    .map_err(|e| format!("bitcoin_send task failed: {e}"))??;
 
     let boltz = payments::boltz::BoltzService::new(network, None);
     let created = boltz
@@ -502,25 +569,32 @@ async fn create_bitcoin_send(
         updated_at: now,
     };
 
-    {
-        let mut mgr = manager.lock().expect("state manager mutex");
+    let app_ref = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
         mgr.upsert_payment_swap(saved_swap);
         let state = mgr.snapshot();
-        emit_state(&app, &state);
-    }
+        emit_state(&app_ref, &state);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| format!("bitcoin_send save task failed: {e}"))??;
 
     Ok(created)
 }
 
 #[tauri::command]
-async fn get_chain_swap_pairs(
-    manager: State<'_, Mutex<AppStateManager>>,
-) -> Result<payments::boltz::BoltzChainSwapPairsInfo, String> {
-    let network = {
-        let mgr = manager.lock().expect("state manager mutex");
+async fn get_chain_swap_pairs(app: AppHandle) -> Result<payments::boltz::BoltzChainSwapPairsInfo, String> {
+    let app_ref = app.clone();
+    let network = tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "state lock failed".to_string())?;
         mgr.network()
-            .ok_or("Not initialized - select a network first")?
-    };
+            .ok_or("Not initialized - select a network first".to_string())
+    })
+    .await
+    .map_err(|e| format!("chain_swap_pairs task failed: {e}"))??;
 
     let boltz = payments::boltz::BoltzService::new(network, None);
     boltz
@@ -530,39 +604,48 @@ async fn get_chain_swap_pairs(
 }
 
 #[tauri::command]
-fn list_payment_swaps(
-    manager: State<'_, Mutex<AppStateManager>>,
-) -> Result<Vec<PaymentSwap>, String> {
-    let mgr = manager.lock().expect("state manager mutex");
-    Ok(mgr.payment_swaps().to_vec())
+async fn list_payment_swaps(app: AppHandle) -> Result<Vec<PaymentSwap>, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "state lock failed".to_string())?;
+        Ok(mgr.payment_swaps().to_vec())
+    })
+    .await
+    .map_err(|e| format!("list_swaps task failed: {e}"))?
 }
 
 #[tauri::command]
 async fn refresh_payment_swap_status(
     swap_id: String,
-    manager: State<'_, Mutex<AppStateManager>>,
     app: AppHandle,
 ) -> Result<PaymentSwap, String> {
-    let network = {
-        let mgr = manager.lock().expect("state manager mutex");
+    let app_ref = app.clone();
+    let swap_id_clone = swap_id.clone();
+    let network = tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mgr = manager.lock().map_err(|_| "state lock failed".to_string())?;
         mgr.network()
-            .ok_or("Not initialized - select a network first")?
-    };
+            .ok_or("Not initialized - select a network first".to_string())
+    })
+    .await
+    .map_err(|e| format!("refresh_swap task failed: {e}"))??;
 
     let boltz = payments::boltz::BoltzService::new(network, None);
     let status = boltz
-        .get_swap_status(&swap_id)
+        .get_swap_status(&swap_id_clone)
         .await
         .map_err(|e| e.to_string())?;
 
-    let updated_swap = {
-        let mut mgr = manager.lock().expect("state manager mutex");
+    let app_ref = app.clone();
+    let updated_swap = tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager.lock().map_err(|_| "wallet lock failed".to_string())?;
         let existing = mgr
             .payment_swaps()
             .iter()
-            .find(|swap| swap.id == swap_id)
+            .find(|swap| swap.id == swap_id_clone)
             .cloned()
-            .ok_or_else(|| format!("Payment swap not found: {}", swap_id))?;
+            .ok_or_else(|| format!("Payment swap not found: {}", swap_id_clone))?;
 
         let mut updated = existing;
         updated.status = status.status;
@@ -571,9 +654,11 @@ async fn refresh_payment_swap_status(
 
         mgr.upsert_payment_swap(updated.clone());
         let state = mgr.snapshot();
-        emit_state(&app, &state);
-        updated
-    };
+        emit_state(&app_ref, &state);
+        Ok::<_, String>(updated)
+    })
+    .await
+    .map_err(|e| format!("refresh_swap save task failed: {e}"))??;
 
     Ok(updated_swap)
 }
