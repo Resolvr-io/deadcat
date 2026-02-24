@@ -2278,8 +2278,18 @@ function renderDetail(): string {
       <div class="grid gap-[21px] xl:grid-cols-[1.618fr_1fr]">
         <section class="space-y-[21px]">
           <div class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
-            <button data-action="go-home" class="mb-4 rounded-lg border border-slate-700 px-3 py-1 text-sm text-slate-300">Back to markets</button>
-            <p class="mb-1 text-sm text-slate-400">${market.category} · ${stateBadge(market.state)} ${market.creationTxid ? `<button data-action="refresh-market-state" class="text-slate-500 hover:text-slate-300 text-xs transition cursor-pointer">[refresh]</button>` : ""} · <button data-action="open-nostr-event" data-market-id="${market.id}" data-nevent="${market.nevent}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">View Nostr Event</button>${market.creationTxid ? ` · <button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-violet-400 hover:text-violet-300 transition cursor-pointer">Creation TX</button>` : ""}</p>
+            <button data-action="go-home" class="mb-3 flex items-center gap-1 text-sm text-slate-400 transition hover:text-slate-200">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+              Markets
+            </button>
+            <div class="mb-3 flex items-center gap-2">
+              <span class="rounded-full bg-slate-800 px-2.5 py-0.5 text-xs text-slate-300">${market.category}</span>
+              ${stateBadge(market.state)}
+              ${market.creationTxid ? `<button data-action="refresh-market-state" class="rounded p-0.5 text-slate-500 transition hover:text-slate-300" title="Refresh state"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>` : ""}
+              <span class="text-slate-700">|</span>
+              <button data-action="open-nostr-event" data-market-id="${market.id}" data-nevent="${market.nevent}" class="text-xs text-slate-400 transition hover:text-slate-200">Nostr Event</button>
+              ${market.creationTxid ? `<button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-xs text-slate-400 transition hover:text-slate-200">Creation TX</button>` : ""}
+            </div>
             <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${market.question}</h1>
             <p class="mb-3 text-base text-slate-400">${market.description}</p>
 
@@ -3097,14 +3107,17 @@ function renderNostrEventModal(): string {
   }
 
   const truncHex = (v: string) => v.length > 16 ? v.slice(0, 8) + "…" + v.slice(-8) : v;
+  const truncBech32 = (v: string) => v.length > 24 ? v.slice(0, 12) + "…" + v.slice(-8) : v;
 
-  const fieldHtml = (label: string, value: string | undefined, copyable = false) => {
+  const fieldHtml = (label: string, value: string | undefined, opts?: { copyable?: boolean; displayValue?: string }) => {
     if (!value) return "";
-    const display = copyable ? truncHex(value) : esc(value);
+    const copyable = opts?.copyable ?? false;
+    const display = opts?.displayValue ? truncBech32(opts.displayValue) : (copyable ? truncHex(value) : esc(value));
+    const copyVal = opts?.displayValue ?? value;
     return `<div class="min-w-0">
       <span class="mb-0.5 block text-xs text-slate-500">${label}</span>
       ${copyable
-        ? `<button data-action="copy-to-clipboard" data-copy-value="${esc(value)}" class="flex w-full min-w-0 items-center gap-1.5 overflow-hidden font-mono text-xs text-slate-200 transition-colors hover:text-white">
+        ? `<button data-action="copy-to-clipboard" data-copy-value="${esc(copyVal)}" class="flex w-full min-w-0 items-center gap-1.5 overflow-hidden font-mono text-xs text-slate-200 transition-colors hover:text-white">
             <span class="truncate">${display}</span>
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-slate-500"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
           </button>`
@@ -3114,12 +3127,24 @@ function renderNostrEventModal(): string {
 
   let fieldsHtml = "";
   if (parsed) {
-    fieldsHtml += fieldHtml("Event ID", parsed.id, true);
-    fieldsHtml += fieldHtml("Public Key", parsed.pubkey, true);
+    const neventDisplay = state.nostrEventNevent ?? parsed.id;
+    const npubDisplay = parsed.pubkey ? hexToNpub(parsed.pubkey) : undefined;
+    fieldsHtml += fieldHtml("Event ID", parsed.id, { copyable: true, displayValue: neventDisplay });
+    fieldsHtml += fieldHtml("Public Key", parsed.pubkey, { copyable: true, displayValue: npubDisplay });
+
     fieldsHtml += `<div class="grid grid-cols-2 gap-3">`;
     fieldsHtml += fieldHtml("Kind", parsed.kind?.toString());
     fieldsHtml += fieldHtml("Created", parsed.created_at ? new Date(parsed.created_at * 1000).toLocaleString() : undefined);
     fieldsHtml += `</div>`;
+
+    if (state.relays.length > 0) {
+      let relayPills = "";
+      for (const relay of state.relays) {
+        const display = relay.url.replace(/^wss?:\/\//, "");
+        relayPills += `<span class="inline-flex items-center gap-1 rounded bg-slate-800/80 px-1.5 py-0.5 text-[10px] text-slate-300"><span class="h-1 w-1 rounded-full bg-emerald-400"></span>${esc(display)}</span>`;
+      }
+      fieldsHtml += `<div><span class="mb-0.5 block text-xs text-slate-500">Relays</span><div class="flex flex-wrap gap-1">${relayPills}</div></div>`;
+    }
 
     if (parsed.tags && parsed.tags.length > 0) {
       fieldsHtml += `<div><span class="mb-1 block text-xs text-slate-500">Tags</span><div class="flex flex-wrap gap-1.5">`;
@@ -3133,11 +3158,11 @@ function renderNostrEventModal(): string {
       fieldsHtml += `</div></div>`;
     }
 
-    if (contentPretty) {
-      fieldsHtml += `<div><span class="mb-1 block text-xs text-slate-500">Content</span><pre class="max-h-64 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-[11px] text-slate-200 leading-relaxed">${esc(contentPretty)}</pre></div>`;
-    }
+    fieldsHtml += fieldHtml("Signature", parsed.sig, { copyable: true });
 
-    fieldsHtml += fieldHtml("Signature", parsed.sig, true);
+    if (contentPretty) {
+      fieldsHtml += `<details><summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-300">Content <span class="text-slate-600">— click to expand</span></summary><pre class="mt-1 max-h-48 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-[11px] text-slate-200 leading-relaxed">${esc(contentPretty)}</pre></details>`;
+    }
   } else {
     fieldsHtml = `<pre class="max-h-96 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-[11px] text-slate-200 leading-relaxed">${esc(state.nostrEventJson)}</pre>`;
   }
