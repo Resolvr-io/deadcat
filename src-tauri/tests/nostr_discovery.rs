@@ -1,11 +1,10 @@
 use std::time::Duration;
 
+use deadcat_sdk::announcement::{ContractAnnouncement, ContractMetadata};
 use deadcat_sdk::discovery::{
     build_announcement_event, build_attestation_event, build_attestation_filter,
-    build_contract_filter, parse_announcement_event, sign_attestation,
-    AttestationContent,
+    build_contract_filter, parse_announcement_event, sign_attestation, AttestationContent,
 };
-use deadcat_sdk::announcement::{ContractAnnouncement, ContractMetadata};
 use deadcat_sdk::params::{ContractParams, MarketId};
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;

@@ -13,7 +13,9 @@ use crate::models::{
     AmmPoolRow, MakerOrderRow, MarketRow, NewAmmPoolRow, NewMakerOrderRow, NewMarketRow,
     NewUtxoRow, UtxoRow,
 };
-use crate::store::{AmmPoolInfo, IssuanceData, MakerOrderInfo, MarketInfo, OrderStatus, PoolStatus};
+use crate::store::{
+    AmmPoolInfo, IssuanceData, MakerOrderInfo, MarketInfo, OrderStatus, PoolStatus,
+};
 use deadcat_sdk::discovery::ContractMetadataInput;
 
 pub fn vec_to_array32(v: &[u8], field: &str) -> std::result::Result<[u8; 32], StoreError> {

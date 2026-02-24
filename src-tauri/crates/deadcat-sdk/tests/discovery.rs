@@ -113,7 +113,10 @@ async fn market_announce_discover_roundtrip() {
 
     // Fetch
     let markets = service.fetch_markets().await.unwrap();
-    assert!(!markets.is_empty(), "should have fetched at least one market");
+    assert!(
+        !markets.is_empty(),
+        "should have fetched at least one market"
+    );
 
     let market = &markets[0];
     assert_eq!(market.question, "Will BTC close above $120k by Dec 2026?");
