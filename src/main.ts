@@ -2119,7 +2119,7 @@ function renderActionTicket(market: Market): string {
           ? `
       <label for="limit-price" class="mb-1 block text-xs text-slate-400">Limit price (sats)</label>
       <div class="mb-3 grid grid-cols-[42px_1fr_42px] gap-2">
-        <button data-action="step-limit-price" data-limit-price-delta="-1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Decrease limit price">-</button>
+        <button data-action="step-limit-price" data-limit-price-delta="-1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Decrease limit price">&minus;</button>
         <input id="limit-price" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="${state.limitPriceDraft}" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2" />
         <button data-action="step-limit-price" data-limit-price-delta="1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Increase limit price">+</button>
       </div>
