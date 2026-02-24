@@ -201,6 +201,11 @@ export const state: {
   nostrEventModal: boolean;
   nostrEventJson: string | null;
   nostrEventNevent: string | null;
+  chartHoverMarketId: string | null;
+  chartHoverX: number | null;
+  chartTimescale: "1H" | "3H" | "6H" | "12H" | "1D";
+  chartAspectHome: number;
+  chartAspectDetail: number;
 } = {
   view: "home",
   activeCategory: "Trending",
@@ -324,4 +329,9 @@ export const state: {
   nostrEventModal: false,
   nostrEventJson: null,
   nostrEventNevent: null,
+  chartHoverMarketId: null,
+  chartHoverX: null,
+  chartTimescale: "3H",
+  chartAspectHome: 2.8,
+  chartAspectDetail: 3.35,
 };

@@ -15,7 +15,10 @@ import {
 import { chartSkeleton } from "../components/detail.ts";
 
 export function renderHome(): string {
-  if (state.activeCategory !== "Trending" && state.activeCategory !== "My Markets") {
+  if (
+    state.activeCategory !== "Trending" &&
+    state.activeCategory !== "My Markets"
+  ) {
     return renderCategoryPage();
   }
 
@@ -87,7 +90,7 @@ export function renderHome(): string {
                 <p class="mt-3 text-[15px] text-slate-400">${featured.description}</p>
                 <button data-open-market="${featured.id}" class="mt-5 rounded-xl bg-emerald-300 px-5 py-2.5 text-base font-medium text-slate-950">Open contract</button>
               </div>
-              <div>${chartSkeleton(featured)}</div>
+              <div>${chartSkeleton(featured, "home")}</div>
             </div>
           </div>
 

@@ -45,9 +45,74 @@ import { handleFocusout } from "./handlers/focusout.ts";
 
 // ── Core render ──────────────────────────────────────────────────────
 
+let chartAspectSyncRaf: number | null = null;
+const CHART_ASPECT_MIN = 1.2;
+const CHART_ASPECT_MAX = 8;
+const CHART_ASPECT_EPSILON = 0.005;
+
+function syncChartAspectFromLayout(): void {
+  const probes = Array.from(
+    document.querySelectorAll<HTMLElement>("[data-chart-hover='1']"),
+  );
+  if (probes.length === 0) return;
+
+  const homeRatios: number[] = [];
+  const detailRatios: number[] = [];
+
+  probes.forEach((probe) => {
+    const rect = probe.getBoundingClientRect();
+    if (rect.width < 16 || rect.height < 16) return;
+    const ratio = rect.width / rect.height;
+    if (!Number.isFinite(ratio) || ratio <= 0) return;
+    if (probe.dataset.chartMode === "home") {
+      homeRatios.push(ratio);
+    } else {
+      detailRatios.push(ratio);
+    }
+  });
+
+  const average = (values: number[]): number =>
+    values.reduce((sum, value) => sum + value, 0) / values.length;
+
+  let changed = false;
+  if (homeRatios.length > 0) {
+    const next = Math.max(
+      CHART_ASPECT_MIN,
+      Math.min(CHART_ASPECT_MAX, average(homeRatios)),
+    );
+    if (Math.abs(next - state.chartAspectHome) > CHART_ASPECT_EPSILON) {
+      state.chartAspectHome = next;
+      changed = true;
+    }
+  }
+  if (detailRatios.length > 0) {
+    const next = Math.max(
+      CHART_ASPECT_MIN,
+      Math.min(CHART_ASPECT_MAX, average(detailRatios)),
+    );
+    if (Math.abs(next - state.chartAspectDetail) > CHART_ASPECT_EPSILON) {
+      state.chartAspectDetail = next;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    render();
+  }
+}
+
+function scheduleChartAspectSync(): void {
+  if (chartAspectSyncRaf !== null) return;
+  chartAspectSyncRaf = requestAnimationFrame(() => {
+    chartAspectSyncRaf = null;
+    syncChartAspectFromLayout();
+  });
+}
+
 function render(): void {
   if (state.onboardingStep !== null) {
     app.innerHTML = `<div class="min-h-screen text-slate-100 flex items-center justify-center">${renderOnboarding()}</div>`;
+    scheduleChartAspectSync();
     return;
   }
   const html = `
@@ -58,6 +123,7 @@ function render(): void {
     ${renderNostrEventModal()}
   `;
   app.innerHTML = html;
+  scheduleChartAspectSync();
 }
 
 function updateEstClockLabels(): void {
@@ -98,6 +164,8 @@ function openMarket(
       ? Math.max(0.01, Math.min(selectedPosition, selectedPosition / 2))
       : 10;
   state.tradeContractsDraft = state.tradeContracts.toFixed(2);
+  state.chartHoverMarketId = null;
+  state.chartHoverX = null;
   setLimitPriceSats(getBasePriceSats(market, nextSide));
   render();
 }
@@ -290,11 +358,83 @@ app.addEventListener("input", (e) => {
 });
 
 app.addEventListener("keydown", (e) => {
-  handleKeydown(e as KeyboardEvent, { render, openMarket: (id: string) => openMarket(id) });
+  handleKeydown(e as KeyboardEvent, {
+    render,
+    openMarket: (id: string) => openMarket(id),
+  });
 });
 
 app.addEventListener("focusout", (e) => {
   handleFocusout(e as FocusEvent, render);
+});
+
+app.addEventListener("mousemove", (event) => {
+  const target = event.target as HTMLElement;
+  const probe = target.closest("[data-chart-hover='1']") as HTMLElement | null;
+
+  if (!probe) {
+    if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
+      state.chartHoverMarketId = null;
+      state.chartHoverX = null;
+      render();
+    }
+    return;
+  }
+
+  const marketId = probe.dataset.marketId ?? null;
+  if (!marketId) return;
+  const plotWidth = Number.parseFloat(probe.dataset.plotWidth ?? "100");
+  const plotLeft = Number.parseFloat(probe.dataset.plotLeft ?? "0");
+  const plotRight = Number.parseFloat(probe.dataset.plotRight ?? "100");
+  const widthMax = Number.isFinite(plotWidth) ? plotWidth : 100;
+  const xMin = Number.isFinite(plotLeft) ? plotLeft : 0;
+  const xMax = Number.isFinite(plotRight) ? plotRight : widthMax;
+
+  const rect = probe.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const relativeX = Math.max(
+    0,
+    Math.min(widthMax, ((event.clientX - rect.left) / rect.width) * widthMax),
+  );
+  const hoverX = Math.max(xMin, Math.min(xMax, relativeX));
+
+  if (
+    state.chartHoverMarketId === marketId &&
+    state.chartHoverX !== null &&
+    Math.abs(state.chartHoverX - hoverX) < 0.06
+  ) {
+    return;
+  }
+
+  state.chartHoverMarketId = marketId;
+  state.chartHoverX = hoverX;
+  render();
+});
+
+app.addEventListener("mouseleave", () => {
+  if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
+    state.chartHoverMarketId = null;
+    state.chartHoverX = null;
+    render();
+  }
+});
+
+app.addEventListener("mouseout", (event) => {
+  const from = (event.target as HTMLElement).closest(
+    "[data-chart-hover='1']",
+  ) as HTMLElement | null;
+  if (!from) return;
+  const related = event.relatedTarget as HTMLElement | null;
+  if (related?.closest("[data-chart-hover='1']")) return;
+  if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
+    state.chartHoverMarketId = null;
+    state.chartHoverX = null;
+    render();
+  }
+});
+
+window.addEventListener("resize", () => {
+  scheduleChartAspectSync();
 });
 
 // ── Timers ───────────────────────────────────────────────────────────
@@ -303,7 +443,11 @@ initApp();
 setInterval(updateEstClockLabels, 1_000);
 setInterval(() => {
   if (state.onboardingStep === null) {
-    void syncCurrentHeightFromLwk("liquid-testnet", render, updateEstClockLabels);
+    void syncCurrentHeightFromLwk(
+      "liquid-testnet",
+      render,
+      updateEstClockLabels,
+    );
   }
 }, 60_000);
 

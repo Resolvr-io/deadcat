@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
-import { state, markets, SATS_PER_FULL_CONTRACT, defaultSettlementInput } from "../state.ts";
+import {
+  state,
+  markets,
+  SATS_PER_FULL_CONTRACT,
+  defaultSettlementInput,
+} from "../state.ts";
 import type {
   NavCategory,
   Side,
@@ -45,6 +50,7 @@ import {
   setLimitPriceSats,
   clampContractPriceSats,
   commitLimitPriceDraft,
+  commitTradeContractsDraft,
   stateLabel,
 } from "../utils/market.ts";
 import { formatSats, formatSatsInput } from "../utils/format.ts";
@@ -59,7 +65,10 @@ import {
 
 export type ClickDeps = {
   render: () => void;
-  openMarket: (id: string, options?: { side?: string; intent?: string }) => void;
+  openMarket: (
+    id: string,
+    options?: { side?: string; intent?: string },
+  ) => void;
   finishOnboarding: () => Promise<void>;
 };
 
@@ -71,7 +80,10 @@ function ticketActionAllowed(market: Market, tab: ActionTab): boolean {
   return paths.cancel;
 }
 
-export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void> {
+export async function handleClick(
+  e: MouseEvent,
+  deps: ClickDeps,
+): Promise<void> {
   const { render, openMarket, finishOnboarding } = deps;
 
   const target = e.target as HTMLElement;
@@ -122,6 +134,9 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
   const limitPriceDelta = Number(
     actionEl?.getAttribute("data-limit-price-delta") ?? "",
   );
+  const contractsStepDelta = Number(
+    actionEl?.getAttribute("data-contracts-step-delta") ?? "",
+  );
   const orderType = orderTypeEl?.getAttribute(
     "data-order-type",
   ) as OrderType | null;
@@ -149,6 +164,8 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
   if (category) {
     state.activeCategory = category;
     state.view = "home";
+    state.chartHoverMarketId = null;
+    state.chartHoverX = null;
     render();
     return;
   }
@@ -402,7 +419,26 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
 
   if (action === "go-home") {
     state.view = "home";
+    state.chartHoverMarketId = null;
+    state.chartHoverX = null;
     render();
+    return;
+  }
+
+  if (action === "set-chart-timescale") {
+    const scale = actionEl?.getAttribute("data-scale") as
+      | "1H"
+      | "3H"
+      | "6H"
+      | "12H"
+      | "1D"
+      | null;
+    if (scale) {
+      state.chartTimescale = scale;
+      state.chartHoverMarketId = null;
+      state.chartHoverX = null;
+      render();
+    }
     return;
   }
 
@@ -933,17 +969,28 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
     render();
     // If already unlocked with cached balance, just do a silent background sync
     if (state.walletStatus === "unlocked" && state.walletBalance) {
-      void invoke("sync_wallet").then(async () => {
-        const [balance, txs, swaps] = await Promise.all([
-          invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
-          invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions"),
-          invoke<PaymentSwap[]>("list_payment_swaps"),
-        ]);
-        state.walletBalance = balance.assets;
-        state.walletTransactions = txs;
-        state.walletSwaps = swaps;
-        render();
-      }).catch(() => {});
+      void invoke("sync_wallet")
+        .then(async () => {
+          const [balance, txs, swaps] = await Promise.all([
+            invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
+            invoke<
+              {
+                txid: string;
+                balanceChange: number;
+                fee: number;
+                height: number | null;
+                timestamp: number | null;
+                txType: string;
+              }[]
+            >("get_wallet_transactions"),
+            invoke<PaymentSwap[]>("list_payment_swaps"),
+          ]);
+          state.walletBalance = balance.assets;
+          state.walletTransactions = txs;
+          state.walletSwaps = swaps;
+          render();
+        })
+        .catch(() => {});
     } else {
       void fetchWalletStatus().then(() => {
         render();
@@ -1251,7 +1298,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
   if (action === "open-nostr-event") {
     const marketId = actionEl?.getAttribute("data-market-id");
     const nevent = actionEl?.getAttribute("data-nevent");
-    const market = marketId ? markets.find(m => m.id === marketId) : null;
+    const market = marketId ? markets.find((m) => m.id === marketId) : null;
     if (market?.nostrEventJson) {
       state.nostrEventModal = true;
       state.nostrEventJson = market.nostrEventJson;
@@ -1883,6 +1930,26 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         : state.limitPrice * SATS_PER_FULL_CONTRACT,
     );
     setLimitPriceSats(currentSats + Math.sign(limitPriceDelta));
+    render();
+    return;
+  }
+
+  if (
+    action === "step-trade-contracts" &&
+    Number.isFinite(contractsStepDelta) &&
+    contractsStepDelta !== 0
+  ) {
+    const market = getSelectedMarket();
+    const current = Number(state.tradeContractsDraft);
+    const baseValue = Number.isFinite(current)
+      ? current
+      : Math.max(0.01, state.tradeContracts);
+    const nextValue = Math.max(
+      0.01,
+      baseValue + Math.sign(contractsStepDelta) * 0.01,
+    );
+    state.tradeContractsDraft = nextValue.toFixed(2);
+    commitTradeContractsDraft(market);
     render();
     return;
   }

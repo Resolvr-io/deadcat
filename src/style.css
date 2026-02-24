@@ -131,12 +131,16 @@ textarea {
     background-size: 100% 25%;
 }
 
-.chartLivePulse {
+.chartLivePulseScale {
+    transform-origin: 0 0;
+    animation: chartLivePulseScale 1.45s ease-out infinite;
+}
+
+.chartLivePulsePath {
     fill: currentColor;
-    opacity: 0.6;
-    transform-box: fill-box;
-    transform-origin: center;
-    animation: chartLivePulse 1.6s ease-out infinite;
+    opacity: 0.84;
+    filter: drop-shadow(0 0 3px currentColor);
+    animation: chartLivePulseFade 1.45s ease-out infinite;
 }
 
 .chartLivePulseYes {
@@ -156,13 +160,20 @@ textarea {
     animation: liveIndicatorDot 1.2s ease-in-out infinite;
 }
 
-@keyframes chartLivePulse {
+@keyframes chartLivePulseScale {
     0% {
         transform: scale(1);
-        opacity: 0.6;
     }
     100% {
-        transform: scale(2.5);
+        transform: scale(3.4);
+    }
+}
+
+@keyframes chartLivePulseFade {
+    0% {
+        opacity: 0.84;
+    }
+    100% {
         opacity: 0;
     }
 }
@@ -227,7 +238,7 @@ textarea {
         60.779% 100%,
         58.122% 100%,
         49.986% 95%,
-        41.850% 100%,
+        41.85% 100%,
         39.193% 100%,
         31.057% 95%,
         22.921% 100%,
@@ -248,17 +259,38 @@ textarea {
 }
 
 @keyframes catPeek {
-    0%, 15%   { transform: translateX(-50%) translateY(100%); }
-    38%, 55%  { transform: translateX(-50%) translateY(15%); }
-    75%, 100% { transform: translateX(-50%) translateY(100%); }
+    0%,
+    15% {
+        transform: translateX(-50%) translateY(100%);
+    }
+    38%,
+    55% {
+        transform: translateX(-50%) translateY(15%);
+    }
+    75%,
+    100% {
+        transform: translateX(-50%) translateY(100%);
+    }
 }
 
 @keyframes bagWobble {
-    0%, 15%   { transform: translateX(-50%) rotate(0deg); }
-    28%       { transform: translateX(-50%) rotate(-2deg); }
-    38%       { transform: translateX(-50%) rotate(1.2deg); }
-    48%       { transform: translateX(-50%) rotate(-0.5deg); }
-    58%, 100% { transform: translateX(-50%) rotate(0deg); }
+    0%,
+    15% {
+        transform: translateX(-50%) rotate(0deg);
+    }
+    28% {
+        transform: translateX(-50%) rotate(-2deg);
+    }
+    38% {
+        transform: translateX(-50%) rotate(1.2deg);
+    }
+    48% {
+        transform: translateX(-50%) rotate(-0.5deg);
+    }
+    58%,
+    100% {
+        transform: translateX(-50%) rotate(0deg);
+    }
 }
 
 /* Splash screen (intro) */
@@ -271,7 +303,11 @@ textarea {
     align-items: center;
     justify-content: center;
     background:
-        radial-gradient(circle at 90% 120%, rgba(16, 185, 129, 0.08), transparent 40%),
+        radial-gradient(
+            circle at 90% 120%,
+            rgba(16, 185, 129, 0.08),
+            transparent 40%
+        ),
         linear-gradient(160deg, #020617 0%, #0b1222 45%, #0f172a 100%);
     transition: opacity 0.6s ease-out;
 }
@@ -283,8 +319,12 @@ textarea {
 }
 
 @keyframes splashContentFadeIn {
-    from { opacity: 0; }
-    to   { opacity: 1; }
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
 }
 
 #splash.fade-out {
@@ -311,14 +351,18 @@ textarea {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .chartLivePulse,
+    .chartLivePulseScale,
+    .chartLivePulsePath,
     .liveIndicatorDot {
         animation: none;
     }
 
-    .chartLivePulse {
+    .chartLivePulsePath {
         opacity: 0.3;
-        transform: none;
+    }
+
+    .chartLivePulseScale {
+        transform: scale(1);
     }
 
     .liveIndicatorDot {
