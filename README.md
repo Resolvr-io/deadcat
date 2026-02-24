@@ -26,8 +26,11 @@ The app will open a native desktop window with the frontend dev server on `http:
 
 - First-run onboarding wizard for Nostr identity and wallet setup
 - Browse and filter prediction markets by category (Bitcoin, Politics, Sports, Culture, Weather, Macro)
+- My Markets filter to quickly find markets you've created
 - Trade YES/NO outcome tokens with market or limit orders
 - Issue, redeem, and cancel market positions
+- In-app Nostr event viewer with parsed event fields, relay status, and copy-to-clipboard
+- Protocol details panel with truncated IDs, npub display, and click-to-copy
 - Integrated Liquid wallet with mnemonic encryption (create, import, or restore from Nostr backup)
 - Encrypted wallet backup to Nostr relays (NIP-44 self-encryption + NIP-78 addressable storage)
 - Wallet backup deletion via NIP-09 event deletion
@@ -35,13 +38,14 @@ The app will open a native desktop window with the frontend dev server on `http:
 - Nostr profile picture and display name from kind 0 metadata
 - Market discovery and settlement via Nostr
 - Lightning, Liquid, and Bitcoin payment flows via Boltz swaps
+- Async Tauri commands to prevent UI freezes during wallet sync
 
 ## Nostr Protocol Usage
 
 | NIP | Kind | Purpose |
 |-----|------|---------|
 | [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md) | — | Basic protocol: event signing, relay communication, subscriptions |
-| [NIP-19](https://github.com/nostr-protocol/nips/blob/master/19.md) | — | Bech32 encoding for keys and identifiers (`npub`, `nsec`) |
+| [NIP-19](https://github.com/nostr-protocol/nips/blob/master/19.md) | — | Bech32 encoding for keys and identifiers (`npub`, `nsec`, `nevent`) |
 | [NIP-09](https://github.com/nostr-protocol/nips/blob/master/09.md) | 5 | Event deletion — remove wallet backup from relays |
 | [NIP-44](https://github.com/nostr-protocol/nips/blob/master/44.md) | — | Versioned encryption (XChaCha20 + secp256k1 ECDH) for wallet backup |
 | [NIP-65](https://github.com/nostr-protocol/nips/blob/master/65.md) | 10002 | Relay list metadata — user-configurable relay preferences |
