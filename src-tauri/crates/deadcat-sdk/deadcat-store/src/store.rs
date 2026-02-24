@@ -10,11 +10,12 @@ use deadcat_sdk::{
 };
 
 use crate::conversions::{
-    direction_to_i32, new_maker_order_row, new_market_row, new_utxo_row, vec_to_array32,
+    direction_to_i32, new_amm_pool_row, new_maker_order_row, new_market_row, new_utxo_row,
+    vec_to_array32,
 };
 use crate::error::StoreError;
-use crate::models::{MakerOrderRow, MarketRow, NewUtxoRow, UtxoRow};
-use crate::schema::{maker_orders, markets, sync_state, utxos};
+use crate::models::{AmmPoolRow, MakerOrderRow, MarketRow, NewUtxoRow, UtxoRow};
+use crate::schema::{amm_pools, maker_orders, markets, sync_state, utxos};
 use crate::sync::{ChainSource, ChainUtxo, MarketStateChange, OrderStatusChange, SyncReport};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
@@ -91,6 +92,47 @@ pub struct MakerOrderInfo {
     pub cmr: [u8; 32],
     pub maker_base_pubkey: Option<[u8; 32]>,
     pub order_nonce: Option<[u8; 32]>,
+    pub nostr_event_id: Option<String>,
+    pub nostr_event_json: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolStatus {
+    Active = 0,
+    Inactive = 1,
+    Closed = 2,
+}
+
+impl PoolStatus {
+    pub fn from_i32(v: i32) -> std::result::Result<Self, StoreError> {
+        match v {
+            0 => Ok(PoolStatus::Active),
+            1 => Ok(PoolStatus::Inactive),
+            2 => Ok(PoolStatus::Closed),
+            other => Err(StoreError::InvalidData(format!(
+                "invalid pool status: {other}"
+            ))),
+        }
+    }
+
+    pub fn as_i32(self) -> i32 {
+        self as i32
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AmmPoolInfo {
+    pub pool_id: deadcat_sdk::amm_pool::params::PoolId,
+    pub params: deadcat_sdk::amm_pool::params::AmmPoolParams,
+    pub status: PoolStatus,
+    pub cmr: [u8; 32],
+    pub issued_lp: u64,
+    pub r_yes: Option<u64>,
+    pub r_no: Option<u64>,
+    pub r_lbtc: Option<u64>,
+    pub covenant_spk: Vec<u8>,
     pub nostr_event_id: Option<String>,
     pub nostr_event_json: Option<String>,
     pub created_at: String,
@@ -546,6 +588,141 @@ impl DeadcatStore {
             Ok(report)
         })
     }
+
+    // ==================== AMM Pool Ingest ====================
+
+    /// Ingest an AMM pool. Compiles the covenant to derive the CMR and covenant
+    /// scriptPubKey. Returns the PoolId. If the pool already exists, updates
+    /// the issued_lp and covenant_spk.
+    pub fn ingest_amm_pool(
+        &mut self,
+        params: &deadcat_sdk::amm_pool::params::AmmPoolParams,
+        issued_lp: u64,
+        reserves: Option<&deadcat_sdk::amm_pool::math::PoolReserves>,
+        nostr_event_id: Option<&str>,
+        nostr_event_json: Option<&str>,
+    ) -> crate::Result<deadcat_sdk::amm_pool::params::PoolId> {
+        let pool_id = deadcat_sdk::amm_pool::params::PoolId::from_params(params);
+        let pool_id_bytes = pool_id.0.to_vec();
+
+        let exists: bool = diesel::select(diesel::dsl::exists(
+            amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)),
+        ))
+        .get_result(&mut self.conn)?;
+
+        if exists {
+            // Update issued_lp, reserves, covenant_spk, and Nostr metadata for existing pool
+            let compiled = deadcat_sdk::amm_pool::contract::CompiledAmmPool::new(*params)?;
+            let update = diesel::update(
+                amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)),
+            );
+            // Always update issued_lp, covenant_spk, and timestamp
+            let base_set = (
+                amm_pools::issued_lp.eq(issued_lp as i64),
+                amm_pools::covenant_spk
+                    .eq(compiled.script_pubkey(issued_lp).as_bytes().to_vec()),
+                amm_pools::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+            );
+            update.set(base_set).execute(&mut self.conn)?;
+            // Update reserves if provided
+            if let Some(r) = reserves {
+                diesel::update(
+                    amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)),
+                )
+                .set((
+                    amm_pools::r_yes.eq(r.r_yes as i64),
+                    amm_pools::r_no.eq(r.r_no as i64),
+                    amm_pools::r_lbtc.eq(r.r_lbtc as i64),
+                ))
+                .execute(&mut self.conn)?;
+            }
+            // Update Nostr metadata if provided
+            if let Some(eid) = nostr_event_id {
+                diesel::update(
+                    amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)),
+                )
+                .set(amm_pools::nostr_event_id.eq(Some(eid.to_string())))
+                .execute(&mut self.conn)?;
+            }
+            if let Some(ejson) = nostr_event_json {
+                diesel::update(
+                    amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)),
+                )
+                .set(amm_pools::nostr_event_json.eq(Some(ejson.to_string())))
+                .execute(&mut self.conn)?;
+            }
+            return Ok(pool_id);
+        }
+
+        let compiled = deadcat_sdk::amm_pool::contract::CompiledAmmPool::new(*params)?;
+        let row = new_amm_pool_row(params, &compiled, issued_lp, reserves, nostr_event_id, nostr_event_json);
+
+        diesel::insert_into(amm_pools::table)
+            .values(&row)
+            .execute(&mut self.conn)?;
+
+        Ok(pool_id)
+    }
+
+    // ==================== AMM Pool Queries ====================
+
+    pub fn get_amm_pool(
+        &mut self,
+        pool_id: &deadcat_sdk::amm_pool::params::PoolId,
+    ) -> crate::Result<Option<AmmPoolInfo>> {
+        let row: Option<AmmPoolRow> = amm_pools::table
+            .filter(amm_pools::pool_id.eq(pool_id.0.to_vec()))
+            .first(&mut self.conn)
+            .optional()?;
+
+        row.as_ref().map(AmmPoolInfo::try_from).transpose()
+    }
+
+    pub fn list_amm_pools(&mut self) -> crate::Result<Vec<AmmPoolInfo>> {
+        let rows: Vec<AmmPoolRow> = amm_pools::table
+            .order(amm_pools::created_at.desc())
+            .load(&mut self.conn)?;
+
+        rows.iter().map(AmmPoolInfo::try_from).collect()
+    }
+
+    pub fn update_pool_state(
+        &mut self,
+        pool_id: &deadcat_sdk::amm_pool::params::PoolId,
+        params: &deadcat_sdk::amm_pool::params::AmmPoolParams,
+        issued_lp: u64,
+        r_yes: u64,
+        r_no: u64,
+        r_lbtc: u64,
+    ) -> crate::Result<()> {
+        // Recompile to derive the new covenant scriptPubKey for the updated issued_lp.
+        let compiled = deadcat_sdk::amm_pool::contract::CompiledAmmPool::new(*params)?;
+        diesel::update(amm_pools::table.filter(amm_pools::pool_id.eq(pool_id.0.to_vec())))
+            .set((
+                amm_pools::issued_lp.eq(issued_lp as i64),
+                amm_pools::r_yes.eq(r_yes as i64),
+                amm_pools::r_no.eq(r_no as i64),
+                amm_pools::r_lbtc.eq(r_lbtc as i64),
+                amm_pools::covenant_spk.eq(compiled.script_pubkey(issued_lp).as_bytes().to_vec()),
+                amm_pools::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+            ))
+            .execute(&mut self.conn)?;
+        Ok(())
+    }
+
+    pub fn update_pool_status(
+        &mut self,
+        pool_id: &deadcat_sdk::amm_pool::params::PoolId,
+        status: PoolStatus,
+    ) -> crate::Result<()> {
+        diesel::update(amm_pools::table.filter(amm_pools::pool_id.eq(pool_id.0.to_vec())))
+            .set((
+                amm_pools::pool_status.eq(status.as_i32()),
+                amm_pools::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+            ))
+            .execute(&mut self.conn)?;
+        Ok(())
+    }
 }
 
 // ==================== DiscoveryStore trait impl ====================
@@ -571,6 +748,32 @@ impl deadcat_sdk::discovery::DiscoveryStore for DeadcatStore {
     ) -> Result<(), String> {
         self.ingest_maker_order(params, maker_pubkey, nonce, nostr_event_id, nostr_event_json)
             .map(|_| ())
+            .map_err(|e| format!("{e}"))
+    }
+
+    fn ingest_amm_pool(
+        &mut self,
+        params: &deadcat_sdk::amm_pool::params::AmmPoolParams,
+        issued_lp: u64,
+        reserves: Option<&deadcat_sdk::amm_pool::math::PoolReserves>,
+        nostr_event_id: Option<&str>,
+        nostr_event_json: Option<&str>,
+    ) -> Result<(), String> {
+        self.ingest_amm_pool(params, issued_lp, reserves, nostr_event_id, nostr_event_json)
+            .map(|_| ())
+            .map_err(|e| format!("{e}"))
+    }
+
+    fn update_pool_state(
+        &mut self,
+        pool_id: &deadcat_sdk::amm_pool::params::PoolId,
+        params: &deadcat_sdk::amm_pool::params::AmmPoolParams,
+        issued_lp: u64,
+        r_yes: u64,
+        r_no: u64,
+        r_lbtc: u64,
+    ) -> Result<(), String> {
+        self.update_pool_state(pool_id, params, issued_lp, r_yes, r_no, r_lbtc)
             .map_err(|e| format!("{e}"))
     }
 }
@@ -988,6 +1191,7 @@ fn insert_chain_utxo(
         maker_order_id,
         market_state: market_state.map(|s| s.as_u64() as i32),
         block_height: cu.block_height.map(|h| h as i32),
+        amm_pool_id: None,
     };
 
     let count = diesel::insert_or_ignore_into(utxos::table)

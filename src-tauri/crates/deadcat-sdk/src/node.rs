@@ -20,6 +20,7 @@ use crate::discovery::events::DiscoveryEvent;
 use crate::discovery::market::DiscoveredMarket;
 use crate::discovery::service::{DiscoveryService, NoopStore, persist_market_to_store};
 use crate::discovery::store_trait::DiscoveryStore;
+use crate::discovery::pool::{DiscoveredPool, PoolAnnouncement};
 use crate::discovery::{
     AttestationContent, AttestationResult, DiscoveredOrder, OrderAnnouncement,
     DEFAULT_RELAYS, bytes_to_hex,
@@ -155,6 +156,66 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     fn persist_market(&self, market: &DiscoveredMarket) {
         persist_market_to_store(&self.store, market);
+    }
+
+    fn persist_pool(&self, pool: &DiscoveredPool) {
+        use crate::discovery::service::persist_pool_to_store;
+        persist_pool_to_store(&self.store, pool);
+    }
+
+    /// Persist updated pool state (issued_lp + reserves) to the store.
+    fn persist_pool_state(
+        &self,
+        params: &crate::amm_pool::params::AmmPoolParams,
+        issued_lp: u64,
+        r_yes: u64,
+        r_no: u64,
+        r_lbtc: u64,
+    ) {
+        if let Some(ref store) = self.store {
+            if let Ok(mut guard) = store.lock() {
+                let pool_id = crate::amm_pool::params::PoolId::from_params(params);
+                if let Err(e) = guard.update_pool_state(&pool_id, params, issued_lp, r_yes, r_no, r_lbtc) {
+                    log::warn!("failed to persist pool state: {e}");
+                }
+            }
+        }
+    }
+
+    /// Publish an updated NIP-33 replaceable pool announcement after LP state changes.
+    async fn update_pool_announcement(
+        &self,
+        pool_params: &crate::amm_pool::params::AmmPoolParams,
+        new_issued_lp: u64,
+        r_yes: u64,
+        r_no: u64,
+        r_lbtc: u64,
+        market_id: &str,
+    ) {
+        let cmr_hex = match crate::amm_pool::contract::CompiledAmmPool::new(*pool_params) {
+            Ok(c) => hex::encode(c.cmr().as_ref()),
+            Err(_) => return,
+        };
+
+        let announcement = PoolAnnouncement {
+            version: 1,
+            params: *pool_params,
+            market_id: market_id.to_string(),
+            issued_lp: new_issued_lp,
+            covenant_cmr: cmr_hex,
+            // Outpoints intentionally empty — see design doc §D5.
+            // Consumers must chain-scan the covenant address to find current UTXOs.
+            outpoints: Vec::new(),
+            reserves: crate::amm_pool::math::PoolReserves {
+                r_yes,
+                r_no,
+                r_lbtc,
+            },
+        };
+
+        if let Err(e) = self.discovery.announce_pool(&announcement).await {
+            log::warn!("failed to update pool Nostr announcement: {e}");
+        }
     }
 
     // ── Combined on-chain + Nostr operations ────────────────────────────
@@ -423,6 +484,200 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             .await
     }
 
+    // ── AMM Pool ──────────────────────────────────────────────────────
+
+    /// Create a new AMM pool: on-chain TX + Nostr announcement + store persistence.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_pool(
+        &self,
+        pool_params: crate::amm_pool::params::AmmPoolParams,
+        initial_r_yes: u64,
+        initial_r_no: u64,
+        initial_r_lbtc: u64,
+        initial_issued_lp: u64,
+        fee_amount: u64,
+        market_id: String,
+    ) -> Result<(DiscoveredPool, Txid), NodeError> {
+        // 1. On-chain
+        let result = self
+            .with_sdk(move |sdk| {
+                sdk.create_amm_pool(
+                    &pool_params,
+                    initial_r_yes,
+                    initial_r_no,
+                    initial_r_lbtc,
+                    initial_issued_lp,
+                    fee_amount,
+                )
+            })
+            .await?;
+
+        let txid = result.txid;
+
+        // 2. Build and publish Nostr announcement
+        let compiled = crate::amm_pool::contract::CompiledAmmPool::new(result.pool_params)
+            .map_err(|e| NodeError::Sdk(e))?;
+        let announcement = PoolAnnouncement {
+            version: 1,
+            params: result.pool_params,
+            market_id: market_id.clone(),
+            issued_lp: result.issued_lp,
+            covenant_cmr: hex::encode(compiled.cmr().as_ref()),
+            outpoints: Vec::new(), // Outpoints not yet confirmed
+            reserves: crate::amm_pool::math::PoolReserves {
+                r_yes: initial_r_yes,
+                r_no: initial_r_no,
+                r_lbtc: initial_r_lbtc,
+            },
+        };
+
+        let event_id = self
+            .discovery
+            .announce_pool(&announcement)
+            .await
+            .map_err(NodeError::Discovery)?;
+
+        // 3. Build DiscoveredPool for return + store persistence
+        let pool_id = crate::amm_pool::params::PoolId::from_params(&result.pool_params);
+        let pool = DiscoveredPool {
+            id: event_id.to_hex(),
+            market_id,
+            pool_id: pool_id.to_hex(),
+            yes_asset_id: bytes_to_hex(&result.pool_params.yes_asset_id),
+            no_asset_id: bytes_to_hex(&result.pool_params.no_asset_id),
+            lbtc_asset_id: bytes_to_hex(&result.pool_params.lbtc_asset_id),
+            lp_asset_id: bytes_to_hex(&result.pool_params.lp_asset_id),
+            lp_reissuance_token_id: bytes_to_hex(&result.pool_params.lp_reissuance_token_id),
+            fee_bps: result.pool_params.fee_bps,
+            cosigner_pubkey: bytes_to_hex(&result.pool_params.cosigner_pubkey),
+            issued_lp: result.issued_lp,
+            covenant_cmr: announcement.covenant_cmr,
+            outpoints: Vec::new(),
+            reserves: announcement.reserves,
+            creator_pubkey: self.keys.public_key().to_hex(),
+            created_at: nostr_sdk::Timestamp::now().as_u64(),
+            nostr_event_json: None,
+        };
+
+        // 4. Persist to store
+        self.persist_pool(&pool);
+
+        Ok((pool, txid))
+    }
+
+    /// Execute a swap against an AMM pool: on-chain TX + update Nostr + persist.
+    pub async fn pool_swap(
+        &self,
+        pool_params: crate::amm_pool::params::AmmPoolParams,
+        issued_lp: u64,
+        swap_pair: crate::amm_pool::math::SwapPair,
+        delta_in: u64,
+        sell_a: bool,
+        fee_amount: u64,
+        market_id: String,
+    ) -> Result<crate::sdk::PoolSwapResult, NodeError> {
+        let result = self
+            .with_sdk(move |sdk| {
+                sdk.pool_swap(&pool_params, issued_lp, swap_pair, delta_in, sell_a, fee_amount)
+            })
+            .await?;
+
+        // Use SDK-computed reserves (derived from on-chain state) for Nostr + store
+        let nr = &result.new_reserves;
+
+        // Swap doesn't change issued_lp, but reserves change — update Nostr
+        self.update_pool_announcement(
+            &pool_params,
+            issued_lp,
+            nr.r_yes,
+            nr.r_no,
+            nr.r_lbtc,
+            &market_id,
+        )
+        .await;
+
+        // Persist updated reserves to store
+        self.persist_pool_state(&pool_params, issued_lp, nr.r_yes, nr.r_no, nr.r_lbtc);
+
+        Ok(result)
+    }
+
+    /// Deposit liquidity into an AMM pool: on-chain TX + update Nostr + persist.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn pool_deposit(
+        &self,
+        pool_params: crate::amm_pool::params::AmmPoolParams,
+        issued_lp: u64,
+        new_r_yes: u64,
+        new_r_no: u64,
+        new_r_lbtc: u64,
+        lp_mint_amount: u64,
+        fee_amount: u64,
+        market_id: String,
+    ) -> Result<crate::sdk::PoolLpResult, NodeError> {
+        let result = self
+            .with_sdk(move |sdk| {
+                sdk.pool_lp_deposit(
+                    &pool_params,
+                    issued_lp,
+                    new_r_yes,
+                    new_r_no,
+                    new_r_lbtc,
+                    lp_mint_amount,
+                    fee_amount,
+                )
+            })
+            .await?;
+
+        // Use SDK-computed reserves for Nostr + store
+        let nr = &result.new_reserves;
+        self.update_pool_announcement(
+            &pool_params,
+            result.new_issued_lp,
+            nr.r_yes,
+            nr.r_no,
+            nr.r_lbtc,
+            &market_id,
+        )
+        .await;
+
+        self.persist_pool_state(&pool_params, result.new_issued_lp, nr.r_yes, nr.r_no, nr.r_lbtc);
+
+        Ok(result)
+    }
+
+    /// Withdraw liquidity from an AMM pool: on-chain TX + update Nostr + persist.
+    pub async fn pool_withdraw(
+        &self,
+        pool_params: crate::amm_pool::params::AmmPoolParams,
+        issued_lp: u64,
+        lp_burn: u64,
+        fee_amount: u64,
+        market_id: String,
+    ) -> Result<crate::sdk::PoolLpResult, NodeError> {
+        let result = self
+            .with_sdk(move |sdk| {
+                sdk.pool_lp_withdraw(&pool_params, issued_lp, lp_burn, fee_amount)
+            })
+            .await?;
+
+        // Use SDK-computed reserves (derived from on-chain state)
+        let nr = &result.new_reserves;
+        self.update_pool_announcement(
+            &pool_params,
+            result.new_issued_lp,
+            nr.r_yes,
+            nr.r_no,
+            nr.r_lbtc,
+            &market_id,
+        )
+        .await;
+
+        self.persist_pool_state(&pool_params, result.new_issued_lp, nr.r_yes, nr.r_no, nr.r_lbtc);
+
+        Ok(result)
+    }
+
     // ── Discovery (delegated to DiscoveryService) ───────────────────────
 
     /// Fetch all markets from Nostr relays.
@@ -440,6 +695,28 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     ) -> Result<Vec<DiscoveredOrder>, NodeError> {
         self.discovery
             .fetch_orders(market_id)
+            .await
+            .map_err(NodeError::Discovery)
+    }
+
+    /// Fetch AMM pools from Nostr relays, optionally for a specific market.
+    pub async fn fetch_pools(
+        &self,
+        market_id: Option<&str>,
+    ) -> Result<Vec<crate::discovery::pool::DiscoveredPool>, NodeError> {
+        self.discovery
+            .fetch_pools(market_id)
+            .await
+            .map_err(NodeError::Discovery)
+    }
+
+    /// Publish an AMM pool announcement to Nostr relays.
+    pub async fn announce_pool(
+        &self,
+        announcement: &crate::discovery::pool::PoolAnnouncement,
+    ) -> Result<EventId, NodeError> {
+        self.discovery
+            .announce_pool(announcement)
             .await
             .map_err(NodeError::Discovery)
     }

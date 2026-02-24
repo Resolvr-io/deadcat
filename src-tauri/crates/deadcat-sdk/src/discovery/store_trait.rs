@@ -1,3 +1,4 @@
+use crate::amm_pool::params::AmmPoolParams;
 use crate::maker_order::params::MakerOrderParams;
 use crate::params::ContractParams;
 
@@ -36,5 +37,26 @@ pub trait DiscoveryStore: Send + 'static {
         nonce: Option<&[u8; 32]>,
         nostr_event_id: Option<&str>,
         nostr_event_json: Option<&str>,
+    ) -> Result<(), String>;
+
+    /// Persist a discovered AMM pool. If it already exists, update state.
+    fn ingest_amm_pool(
+        &mut self,
+        params: &AmmPoolParams,
+        issued_lp: u64,
+        reserves: Option<&crate::amm_pool::math::PoolReserves>,
+        nostr_event_id: Option<&str>,
+        nostr_event_json: Option<&str>,
+    ) -> Result<(), String>;
+
+    /// Update pool state (issued_lp, reserves, covenant_spk).
+    fn update_pool_state(
+        &mut self,
+        pool_id: &crate::amm_pool::params::PoolId,
+        params: &AmmPoolParams,
+        issued_lp: u64,
+        r_yes: u64,
+        r_no: u64,
+        r_lbtc: u64,
     ) -> Result<(), String>;
 }

@@ -1,5 +1,6 @@
 use super::attestation::AttestationContent;
 use super::market::DiscoveredMarket;
+use super::pool::DiscoveredPool;
 use super::DiscoveredOrder;
 
 /// Events emitted by the `DiscoveryService` subscription loop.
@@ -11,4 +12,6 @@ pub enum DiscoveryEvent {
     OrderDiscovered(DiscoveredOrder),
     /// An oracle attestation was received.
     AttestationDiscovered(AttestationContent),
+    /// An AMM pool announcement was received.
+    PoolDiscovered(DiscoveredPool),
 }
