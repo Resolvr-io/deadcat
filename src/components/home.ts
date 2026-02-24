@@ -1,21 +1,24 @@
-import { state, markets } from "../state.ts";
-import { Market, MarketCategory, CovenantState } from "../types.ts";
+import { chartSkeleton } from "../components/detail.ts";
+import { markets, state } from "../state.ts";
+import type { CovenantState, Market, MarketCategory } from "../types.ts";
 import {
-  stateLabel,
-  stateBadge,
-  isExpired,
-  getTrendingMarkets,
-  getFilteredMarkets,
-} from "../utils/market.ts";
-import {
-  formatProbabilityWithPercent,
   formatPercent,
+  formatProbabilityWithPercent,
   formatVolumeBtc,
 } from "../utils/format.ts";
-import { chartSkeleton } from "../components/detail.ts";
+import {
+  getFilteredMarkets,
+  getTrendingMarkets,
+  isExpired,
+  stateBadge,
+  stateLabel,
+} from "../utils/market.ts";
 
 export function renderHome(): string {
-  if (state.activeCategory !== "Trending" && state.activeCategory !== "My Markets") {
+  if (
+    state.activeCategory !== "Trending" &&
+    state.activeCategory !== "My Markets"
+  ) {
     return renderCategoryPage();
   }
 

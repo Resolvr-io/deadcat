@@ -1,5 +1,21 @@
-import { state, markets, SATS_PER_FULL_CONTRACT, EXECUTION_FEE_RATE, WIN_FEE_RATE } from "../state.ts";
-import type { Market, CovenantState, PathAvailability, Side, TradeIntent, OrderType, OrderbookLevel, FillEstimate, TradePreview } from "../types.ts";
+import {
+  EXECUTION_FEE_RATE,
+  markets,
+  SATS_PER_FULL_CONTRACT,
+  state,
+  WIN_FEE_RATE,
+} from "../state.ts";
+import type {
+  CovenantState,
+  FillEstimate,
+  Market,
+  OrderbookLevel,
+  OrderType,
+  PathAvailability,
+  Side,
+  TradeIntent,
+  TradePreview,
+} from "../types.ts";
 import { reverseHex } from "./crypto.ts";
 import { formatSatsInput } from "./format.ts";
 
@@ -70,7 +86,10 @@ export function getMarketSeed(market: Market): number {
   return [...market.id].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
 }
 
-export function getPositionContracts(market: Market): { yes: number; no: number } {
+export function getPositionContracts(market: Market): {
+  yes: number;
+  no: number;
+} {
   if (!state.walletBalance) return { yes: 0, no: 0 };
   const yesKey = reverseHex(market.yesAssetId);
   const noKey = reverseHex(market.noAssetId);
@@ -114,7 +133,7 @@ export function estimateFill(
   let remaining = request;
   let totalSats = 0;
   let totalContracts = 0;
-  let bestPrice = executable[0]?.priceSats ?? limitPriceSats;
+  const bestPrice = executable[0]?.priceSats ?? limitPriceSats;
   let worstPrice = bestPrice;
 
   for (const level of executable) {
@@ -265,7 +284,8 @@ export function getFilteredMarkets(): Market[] {
       const categoryMatch =
         state.activeCategory === "Trending" ||
         (state.activeCategory === "My Markets"
-          ? state.nostrPubkey != null && market.oraclePubkey === state.nostrPubkey
+          ? state.nostrPubkey != null &&
+            market.oraclePubkey === state.nostrPubkey
           : market.category === state.activeCategory);
       const searchMatch =
         lowered.length === 0 ||

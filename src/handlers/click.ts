@@ -1,65 +1,72 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-
-import { state, markets, SATS_PER_FULL_CONTRACT, defaultSettlementInput } from "../state.ts";
-import type {
-  NavCategory,
-  Side,
-  TradeIntent,
-  SizeMode,
-  OrderType,
-  ActionTab,
-  BaseCurrency,
-  CovenantState,
-  Market,
-  IdentityResponse,
-  NostrBackupStatus,
-  RelayBackupResult,
-  PaymentSwap,
-  DiscoveredMarket,
-  AttestationResult,
-  BoltzChainSwapPairsInfo,
-  BoltzLightningReceiveCreated,
-  BoltzChainSwapCreated,
-  BoltzSubmarineSwapCreated,
-} from "../types.ts";
 import {
   discoveredToMarket,
-  marketToContractParamsJson,
   issueTokens,
+  marketToContractParamsJson,
 } from "../services/markets.ts";
 import {
   fetchWalletStatus,
-  refreshWallet,
   generateQr,
+  refreshWallet,
   resetReceiveState,
   resetSendState,
 } from "../services/wallet.ts";
 import {
-  getSelectedMarket,
-  getTrendingMarkets,
-  getPathAvailability,
-  getPositionContracts,
-  getBasePriceSats,
-  getTradePreview,
-  setLimitPriceSats,
-  clampContractPriceSats,
-  commitLimitPriceDraft,
-  stateLabel,
-} from "../utils/market.ts";
-import { formatSats, formatSatsInput } from "../utils/format.ts";
-import { reverseHex } from "../utils/crypto.ts";
-import { showToast } from "../ui/toast.ts";
+  defaultSettlementInput,
+  markets,
+  SATS_PER_FULL_CONTRACT,
+  state,
+} from "../state.ts";
+import type {
+  ActionTab,
+  AttestationResult,
+  BaseCurrency,
+  BoltzChainSwapCreated,
+  BoltzChainSwapPairsInfo,
+  BoltzLightningReceiveCreated,
+  BoltzSubmarineSwapCreated,
+  CovenantState,
+  DiscoveredMarket,
+  IdentityResponse,
+  Market,
+  NavCategory,
+  NostrBackupStatus,
+  OrderType,
+  PaymentSwap,
+  RelayBackupResult,
+  Side,
+  SizeMode,
+  TradeIntent,
+} from "../types.ts";
 import {
+  hideOverlayLoader,
   loaderHtml,
   showOverlayLoader,
-  hideOverlayLoader,
   updateOverlayMessage,
 } from "../ui/loader.ts";
+import { showToast } from "../ui/toast.ts";
+import { reverseHex } from "../utils/crypto.ts";
+import { formatSats, formatSatsInput } from "../utils/format.ts";
+import {
+  clampContractPriceSats,
+  commitLimitPriceDraft,
+  getBasePriceSats,
+  getPathAvailability,
+  getPositionContracts,
+  getSelectedMarket,
+  getTradePreview,
+  getTrendingMarkets,
+  setLimitPriceSats,
+  stateLabel,
+} from "../utils/market.ts";
 
 export type ClickDeps = {
   render: () => void;
-  openMarket: (id: string, options?: { side?: string; intent?: string }) => void;
+  openMarket: (
+    id: string,
+    options?: { side?: string; intent?: string },
+  ) => void;
   finishOnboarding: () => Promise<void>;
 };
 
@@ -71,7 +78,10 @@ function ticketActionAllowed(market: Market, tab: ActionTab): boolean {
   return paths.cancel;
 }
 
-export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void> {
+export async function handleClick(
+  e: MouseEvent,
+  deps: ClickDeps,
+): Promise<void> {
   const { render, openMarket, finishOnboarding } = deps;
 
   const target = e.target as HTMLElement;
@@ -502,7 +512,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         state.nostrNsecRevealed = nsec;
         render();
       } catch (e) {
-        showToast("Failed to export nsec: " + String(e), "error");
+        showToast(`Failed to export nsec: ${String(e)}`, "error");
       }
     })();
     return;
@@ -548,7 +558,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         state.nostrReplacePrompt = false;
         state.nostrReplaceConfirm = "";
       } catch (e) {
-        showToast("Failed to delete identity: " + String(e), "error");
+        showToast(`Failed to delete identity: ${String(e)}`, "error");
       }
       render();
     })();
@@ -584,7 +594,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         state.nostrReplaceConfirm = "";
         showToast("Nostr key imported successfully", "success");
       } catch (e) {
-        showToast("Import failed: " + String(e), "error");
+        showToast(`Import failed: ${String(e)}`, "error");
       }
       state.nostrImporting = false;
       render();
@@ -605,7 +615,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         state.nostrReplaceConfirm = "";
         showToast("New Nostr keypair generated", "success");
       } catch (e) {
-        showToast("Failed: " + String(e), "error");
+        showToast(`Failed: ${String(e)}`, "error");
       }
       render();
     })();
@@ -668,7 +678,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         render();
         showToast("App data erased", "success");
       } catch (e) {
-        showToast("Reset failed: " + String(e), "error");
+        showToast(`Reset failed: ${String(e)}`, "error");
       }
     })();
     return;
@@ -695,7 +705,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         state.relayInput = "";
         showToast("Relay added", "success");
       } catch (e) {
-        showToast("Failed to add relay: " + String(e), "error");
+        showToast(`Failed to add relay: ${String(e)}`, "error");
       } finally {
         state.relayLoading = false;
         render();
@@ -715,7 +725,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         state.relays = list.map((u) => ({ url: u, has_backup: false }));
         showToast("Relay removed", "success");
       } catch (e) {
-        showToast("Failed to remove relay: " + String(e), "error");
+        showToast(`Failed to remove relay: ${String(e)}`, "error");
       } finally {
         state.relayLoading = false;
         render();
@@ -738,7 +748,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         ];
         showToast("Relays reset to defaults", "success");
       } catch (e) {
-        showToast("Failed to reset relays: " + String(e), "error");
+        showToast(`Failed to reset relays: ${String(e)}`, "error");
       } finally {
         state.relayLoading = false;
         render();
@@ -770,7 +780,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         }
         showToast("Wallet backed up to Nostr relays", "success");
       } catch (e) {
-        showToast("Backup failed: " + String(e), "error");
+        showToast(`Backup failed: ${String(e)}`, "error");
       } finally {
         state.nostrBackupLoading = false;
         render();
@@ -819,7 +829,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         state.nostrBackupPrompt = false;
         showToast("Wallet backed up to Nostr relays", "success");
       } catch (e) {
-        showToast("Backup failed: " + String(e), "error");
+        showToast(`Backup failed: ${String(e)}`, "error");
       } finally {
         state.nostrBackupLoading = false;
         render();
@@ -853,7 +863,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         }
         showToast("Backup deletion request sent to relays", "success");
       } catch (e) {
-        showToast("Delete failed: " + String(e), "error");
+        showToast(`Delete failed: ${String(e)}`, "error");
       } finally {
         state.nostrBackupLoading = false;
         render();
@@ -875,7 +885,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         showToast("Recovery phrase retrieved from Nostr", "success");
       } catch (e) {
         hideOverlayLoader();
-        showToast("No backup found: " + String(e), "error");
+        showToast(`No backup found: ${String(e)}`, "error");
       }
     })();
     return;
@@ -933,17 +943,28 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
     render();
     // If already unlocked with cached balance, just do a silent background sync
     if (state.walletStatus === "unlocked" && state.walletBalance) {
-      void invoke("sync_wallet").then(async () => {
-        const [balance, txs, swaps] = await Promise.all([
-          invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
-          invoke<{ txid: string; balanceChange: number; fee: number; height: number | null; timestamp: number | null; txType: string }[]>("get_wallet_transactions"),
-          invoke<PaymentSwap[]>("list_payment_swaps"),
-        ]);
-        state.walletBalance = balance.assets;
-        state.walletTransactions = txs;
-        state.walletSwaps = swaps;
-        render();
-      }).catch(() => {});
+      void invoke("sync_wallet")
+        .then(async () => {
+          const [balance, txs, swaps] = await Promise.all([
+            invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
+            invoke<
+              {
+                txid: string;
+                balanceChange: number;
+                fee: number;
+                height: number | null;
+                timestamp: number | null;
+                txType: string;
+              }[]
+            >("get_wallet_transactions"),
+            invoke<PaymentSwap[]>("list_payment_swaps"),
+          ]);
+          state.walletBalance = balance.assets;
+          state.walletTransactions = txs;
+          state.walletSwaps = swaps;
+          render();
+        })
+        .catch(() => {});
     } else {
       void fetchWalletStatus().then(() => {
         render();
@@ -1181,7 +1202,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         state.settingsOpen = false;
         showToast("Wallet removed", "success");
       } catch (e) {
-        showToast("Failed to remove wallet: " + String(e), "error");
+        showToast(`Failed to remove wallet: ${String(e)}`, "error");
       }
       render();
     })();
@@ -1209,7 +1230,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
           "info",
         );
       } catch (e) {
-        showToast("Failed to remove wallet: " + String(e), "error");
+        showToast(`Failed to remove wallet: ${String(e)}`, "error");
       }
       render();
     })();
@@ -1243,7 +1264,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
         state.walletNetwork === "testnet"
           ? "https://blockstream.info/liquidtestnet"
           : "https://blockstream.info/liquid";
-      void openUrl(base + "/tx/" + txid);
+      void openUrl(`${base}/tx/${txid}`);
     }
     return;
   }
@@ -1251,7 +1272,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
   if (action === "open-nostr-event") {
     const marketId = actionEl?.getAttribute("data-market-id");
     const nevent = actionEl?.getAttribute("data-nevent");
-    const market = marketId ? markets.find(m => m.id === marketId) : null;
+    const market = marketId ? markets.find((m) => m.id === marketId) : null;
     if (market?.nostrEventJson) {
       state.nostrEventModal = true;
       state.nostrEventJson = market.nostrEventJson;
@@ -1628,7 +1649,7 @@ export async function handleClick(e: MouseEvent, deps: ClickDeps): Promise<void>
           outcome: outcomeYes ? "yes" : "no",
           sigVerified: true,
           height: market.currentHeight,
-          signatureHash: result.signature_hex.slice(0, 16) + "...",
+          signatureHash: `${result.signature_hex.slice(0, 16)}...`,
         };
         showToast(
           `Attestation published to Nostr! Now execute on-chain to finalize.`,
