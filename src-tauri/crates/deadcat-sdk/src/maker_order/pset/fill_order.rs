@@ -163,13 +163,13 @@ pub fn build_fill_order_pset(params: &FillOrderParams) -> Result<PartiallySigned
 
     // Taker change outputs (for overfunded taker UTXOs)
     for taker in &params.takers {
-        if taker.change_amount > 0 {
-            if let Some(ref change_spk) = taker.change_destination {
-                add_pset_output(
-                    &mut pset,
-                    explicit_txout(&taker.change_asset_id, taker.change_amount, change_spk),
-                );
-            }
+        if taker.change_amount > 0
+            && let Some(ref change_spk) = taker.change_destination
+        {
+            add_pset_output(
+                &mut pset,
+                explicit_txout(&taker.change_asset_id, taker.change_amount, change_spk),
+            );
         }
     }
 

@@ -208,8 +208,7 @@ pub fn compute_swap_exact_output(
         return Err(Error::ReserveDepleted);
     }
 
-    // Ceiling division
-    let delta_in = ((numerator + denominator - 1) / denominator) as u64;
+    let delta_in = numerator.div_ceil(denominator) as u64;
 
     let new_r_sell = r_sell + delta_in;
     let new_r_buy = r_buy - delta_out;
@@ -253,11 +252,9 @@ pub fn compute_lp_deposit(
         return Err(Error::ZeroIssuedLp);
     }
 
-    let old_product =
-        (reserves.r_yes as f64) * (reserves.r_no as f64) * (reserves.r_lbtc as f64);
-    let new_product = (new_reserves.r_yes as f64)
-        * (new_reserves.r_no as f64)
-        * (new_reserves.r_lbtc as f64);
+    let old_product = (reserves.r_yes as f64) * (reserves.r_no as f64) * (reserves.r_lbtc as f64);
+    let new_product =
+        (new_reserves.r_yes as f64) * (new_reserves.r_no as f64) * (new_reserves.r_lbtc as f64);
 
     if old_product == 0.0 {
         return Err(Error::ReserveDepleted);
@@ -272,12 +269,7 @@ pub fn compute_lp_deposit(
     // Integer verification: check that (issued_lp + candidate)^3 * old_product
     // <= issued_lp^3 * new_product using u128 arithmetic.
     // If the candidate is too large (f64 rounding up), decrement.
-    let lp_mint = verify_cubic_invariant(
-        issued_lp,
-        candidate,
-        reserves,
-        new_reserves,
-    );
+    let lp_mint = verify_cubic_invariant(issued_lp, candidate, reserves, new_reserves);
 
     Ok(lp_mint)
 }
@@ -326,7 +318,6 @@ impl U256 {
         let hi = lo_prod.hi.wrapping_add(hi_prod_lo);
         U256 { hi, lo: lo_prod.lo }
     }
-
 }
 
 /// Check the cubic invariant: `new_lp^3 * old_product <= old_lp^3 * new_product`
@@ -338,12 +329,7 @@ impl U256 {
 ///
 /// We actually need: `new_lp^3 * old_rA * old_rB * old_rC <= old_lp^3 * new_rA * new_rB * new_rC`
 /// Each side is at most 192 + 192 = 384 bits.
-fn cubic_invariant_holds(
-    old_lp: u64,
-    new_lp: u64,
-    old: &PoolReserves,
-    new: &PoolReserves,
-) -> bool {
+fn cubic_invariant_holds(old_lp: u64, new_lp: u64, old: &PoolReserves, new: &PoolReserves) -> bool {
     // Compute lp^3 as U256 (fits in 192 bits)
     let new_lp3 = cube_u64(new_lp);
     let old_lp3 = cube_u64(old_lp);
@@ -394,7 +380,13 @@ fn mul_u256_u128(a: U256, b: u128) -> (u128, U256) {
     let carry = if mid < lo_prod.hi { 1u128 } else { 0u128 };
     let top = hi_prod.hi.wrapping_add(carry);
 
-    (top, U256 { hi: mid, lo: lo_prod.lo })
+    (
+        top,
+        U256 {
+            hi: mid,
+            lo: lo_prod.lo,
+        },
+    )
 }
 
 /// Multiply a 384-bit value (u128, U256) by a u64, producing a 512-bit value
@@ -405,9 +397,9 @@ fn mul_384_u64(a: (u128, U256), b: u64) -> (U256, U256) {
 
     // a = (a_top, a_mid, a_lo) where a = (a.0, a.1.hi, a.1.lo)
     // Multiply each part by b and accumulate with carries.
-    let lo_prod = U256::widening_mul(a.1.lo, b128);      // 256 bits
-    let mid_prod = U256::widening_mul(a.1.hi, b128);      // 256 bits
-    let top_prod = U256::widening_mul(a.0, b128);          // 256 bits
+    let lo_prod = U256::widening_mul(a.1.lo, b128); // 256 bits
+    let mid_prod = U256::widening_mul(a.1.hi, b128); // 256 bits
+    let top_prod = U256::widening_mul(a.0, b128); // 256 bits
 
     // Accumulate: result_lo = lo_prod.lo
     // result_mid = lo_prod.hi + mid_prod.lo (with carry)
@@ -421,8 +413,14 @@ fn mul_384_u64(a: (u128, U256), b: u64) -> (U256, U256) {
     let result_hi_hi = top_prod.hi + carry2;
 
     (
-        U256 { hi: result_hi_hi, lo: result_hi_lo },
-        U256 { hi: result_lo_hi, lo: result_lo_lo },
+        U256 {
+            hi: result_hi_hi,
+            lo: result_hi_lo,
+        },
+        U256 {
+            hi: result_lo_hi,
+            lo: result_lo_lo,
+        },
     )
 }
 
@@ -435,9 +433,15 @@ fn carrying_add(a: u128, b: u128) -> (u128, u128) {
 
 /// Compare two 512-bit values stored as (U256_hi, U256_lo).
 fn le_512(a: (U256, U256), b: (U256, U256)) -> bool {
-    if a.0.hi != b.0.hi { return a.0.hi < b.0.hi; }
-    if a.0.lo != b.0.lo { return a.0.lo < b.0.lo; }
-    if a.1.hi != b.1.hi { return a.1.hi < b.1.hi; }
+    if a.0.hi != b.0.hi {
+        return a.0.hi < b.0.hi;
+    }
+    if a.0.lo != b.0.lo {
+        return a.0.lo < b.0.lo;
+    }
+    if a.1.hi != b.1.hi {
+        return a.1.hi < b.1.hi;
+    }
     a.1.lo <= b.1.lo
 }
 
@@ -507,10 +511,8 @@ pub fn compute_lp_proportional_withdraw(
     }
 
     // Proportional share: withdrawn_X = floor(r_X * lp_burn / issued_lp)
-    let withdraw_yes =
-        ((reserves.r_yes as u128) * (lp_burn as u128) / (issued_lp as u128)) as u64;
-    let withdraw_no =
-        ((reserves.r_no as u128) * (lp_burn as u128) / (issued_lp as u128)) as u64;
+    let withdraw_yes = ((reserves.r_yes as u128) * (lp_burn as u128) / (issued_lp as u128)) as u64;
+    let withdraw_no = ((reserves.r_no as u128) * (lp_burn as u128) / (issued_lp as u128)) as u64;
     let withdraw_lbtc =
         ((reserves.r_lbtc as u128) * (lp_burn as u128) / (issued_lp as u128)) as u64;
 
@@ -711,8 +713,16 @@ mod tests {
     #[test]
     fn cubic_invariant_holds_trivial() {
         // Proportional deposit: double all reserves, LP should double.
-        let old = PoolReserves { r_yes: 1000, r_no: 1000, r_lbtc: 1000 };
-        let new = PoolReserves { r_yes: 2000, r_no: 2000, r_lbtc: 2000 };
+        let old = PoolReserves {
+            r_yes: 1000,
+            r_no: 1000,
+            r_lbtc: 1000,
+        };
+        let new = PoolReserves {
+            r_yes: 2000,
+            r_no: 2000,
+            r_lbtc: 2000,
+        };
         let mint = compute_lp_deposit(&old, 100, &new).unwrap();
         // 100 * (8/1)^(1/3) = 100 * 2 = 200, so mint should be exactly 100
         assert_eq!(mint, 100);
@@ -749,8 +759,16 @@ mod tests {
     fn cubic_invariant_maximality() {
         // Verify that the returned mint is the maximum valid value:
         // the invariant holds for mint, but not for mint+1.
-        let old = PoolReserves { r_yes: 10_000, r_no: 10_000, r_lbtc: 10_000 };
-        let new = PoolReserves { r_yes: 11_000, r_no: 10_000, r_lbtc: 10_000 };
+        let old = PoolReserves {
+            r_yes: 10_000,
+            r_no: 10_000,
+            r_lbtc: 10_000,
+        };
+        let new = PoolReserves {
+            r_yes: 11_000,
+            r_no: 10_000,
+            r_lbtc: 10_000,
+        };
         let mint = compute_lp_deposit(&old, 1_000, &new).unwrap();
         assert!(mint > 0, "10% single-sided deposit should mint LP tokens");
         assert!(cubic_invariant_holds(1_000, 1_000 + mint, &old, &new));
@@ -760,8 +778,16 @@ mod tests {
     #[test]
     fn cubic_invariant_tiny_deposit_zero_mint() {
         // A deposit too small to justify minting 1 LP token should return 0.
-        let old = PoolReserves { r_yes: 10_000, r_no: 10_000, r_lbtc: 10_000 };
-        let new = PoolReserves { r_yes: 10_001, r_no: 10_000, r_lbtc: 10_000 };
+        let old = PoolReserves {
+            r_yes: 10_000,
+            r_no: 10_000,
+            r_lbtc: 10_000,
+        };
+        let new = PoolReserves {
+            r_yes: 10_001,
+            r_no: 10_000,
+            r_lbtc: 10_000,
+        };
         let mint = compute_lp_deposit(&old, 30_000, &new).unwrap();
         assert_eq!(mint, 0, "deposit too small to mint even 1 LP token");
     }
@@ -830,14 +856,8 @@ mod tests {
     fn sell_a_false_matches_original_behavior() {
         // Verify sell_a=false produces the same results as the old API
         let reserves = default_reserves();
-        let result = compute_swap_exact_input(
-            &reserves,
-            SwapPair::YesLbtc,
-            10_000,
-            30,
-            false,
-        )
-        .unwrap();
+        let result =
+            compute_swap_exact_input(&reserves, SwapPair::YesLbtc, 10_000, 30, false).unwrap();
 
         // Original convention: deposit B (LBTC), receive A (YES)
         assert_eq!(result.new_reserves.r_lbtc, 510_000);

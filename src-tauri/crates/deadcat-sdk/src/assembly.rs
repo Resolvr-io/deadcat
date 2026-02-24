@@ -35,6 +35,7 @@ pub struct IssuanceEntropy {
 }
 
 /// Where collateral comes from depends on the market state.
+#[allow(clippy::large_enum_variant)]
 pub enum CollateralSource {
     /// Dormant → Unresolved: collateral from wallet only.
     Initial { wallet_utxo: UnblindedUtxo },
@@ -200,9 +201,9 @@ pub fn blind_issuance_pset(
         outputs[idx].blinding_key = Some(pset_blinding_key);
         outputs[idx].blinder_index = Some(0);
     }
-    for idx in 6..outputs.len() {
-        outputs[idx].blinding_key = Some(pset_blinding_key);
-        outputs[idx].blinder_index = Some(0);
+    for output in &mut outputs[6..] {
+        output.blinding_key = Some(pset_blinding_key);
+        output.blinder_index = Some(0);
     }
 
     let pset_inputs = pset.inputs_mut();
@@ -306,10 +307,10 @@ pub fn recover_blinding_factors(
     let no_rt_txout = pset.outputs()[1].to_txout();
 
     let yes_secrets = yes_rt_txout
-        .unblind(&secp, blinding_sk.into())
+        .unblind(&secp, blinding_sk)
         .map_err(|e| Error::Blinding(format!("unblind YES RT output: {e}")))?;
     let no_secrets = no_rt_txout
-        .unblind(&secp, blinding_sk.into())
+        .unblind(&secp, blinding_sk)
         .map_err(|e| Error::Blinding(format!("unblind NO RT output: {e}")))?;
 
     let mut yes_output_abf = [0u8; 32];
@@ -341,7 +342,9 @@ pub fn recover_blinding_factors(
 ///
 /// The resulting transaction has the correct structure (inputs, outputs, locktime)
 /// matching what will be broadcast, but with empty witnesses.
-pub(crate) fn pset_to_pruning_transaction(pset: &PartiallySignedTransaction) -> Result<Transaction> {
+pub(crate) fn pset_to_pruning_transaction(
+    pset: &PartiallySignedTransaction,
+) -> Result<Transaction> {
     let outputs: Vec<_> = pset.outputs().iter().map(|o| o.to_txout()).collect();
 
     let mut inputs = Vec::new();
@@ -895,6 +898,7 @@ pub fn assemble_cancellation(
 }
 
 /// Assemble an oracle resolve transaction.
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_oracle_resolve(
     contract: &CompiledContract,
     params: &crate::pset::oracle_resolve::OracleResolveParams,

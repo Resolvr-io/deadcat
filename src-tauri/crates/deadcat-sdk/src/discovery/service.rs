@@ -13,16 +13,15 @@ use super::attestation::{
 use super::config::DiscoveryConfig;
 use super::events::DiscoveryEvent;
 use super::market::{
-    DiscoveredMarket, build_announcement_event, build_contract_filter,
-    parse_announcement_event,
+    DiscoveredMarket, build_announcement_event, build_contract_filter, parse_announcement_event,
 };
-use super::store_trait::{ContractMetadataInput, DiscoveryStore};
 use super::pool::{
     DiscoveredPool, PoolAnnouncement, build_pool_event, build_pool_filter, parse_pool_event,
 };
+use super::store_trait::{ContractMetadataInput, DiscoveryStore};
 use super::{
-    DiscoveredOrder, OrderAnnouncement, build_order_event, build_order_filter, parse_order_event,
-    ATTESTATION_TAG, CONTRACT_TAG, ORDER_TAG, POOL_TAG,
+    ATTESTATION_TAG, CONTRACT_TAG, DiscoveredOrder, ORDER_TAG, OrderAnnouncement, POOL_TAG,
+    build_order_event, build_order_filter, parse_order_event,
 };
 
 /// Unified Nostr discovery service for markets, orders, and attestations.
@@ -88,10 +87,7 @@ impl DiscoveryService<NoopStore> {
     /// Create a new `DiscoveryService` without store persistence.
     ///
     /// Returns the service and a broadcast receiver for discovery events.
-    pub fn new(
-        keys: Keys,
-        config: DiscoveryConfig,
-    ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
+    pub fn new(keys: Keys, config: DiscoveryConfig) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
         let (tx, rx) = broadcast::channel(256);
         let client = Client::new(keys.clone());
         (
@@ -314,10 +310,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
     }
 
     /// Publish an AMM pool announcement to relays.
-    pub async fn announce_pool(
-        &self,
-        announcement: &PoolAnnouncement,
-    ) -> Result<EventId, String> {
+    pub async fn announce_pool(&self, announcement: &PoolAnnouncement) -> Result<EventId, String> {
         self.ensure_connected().await?;
 
         let event = build_pool_event(&self.keys, announcement)?;
@@ -490,7 +483,10 @@ async fn run_subscription_loop<S: DiscoveryStore>(
     let pool_filter = build_pool_filter(None);
 
     if let Err(e) = client
-        .subscribe(vec![market_filter, order_filter, attestation_filter, pool_filter], None)
+        .subscribe(
+            vec![market_filter, order_filter, attestation_filter, pool_filter],
+            None,
+        )
         .await
     {
         log::error!("failed to subscribe: {e}");
@@ -528,12 +524,12 @@ async fn run_subscription_loop<S: DiscoveryStore>(
                 if let Ok(attestation) = parse_attestation_event(&event) {
                     let _ = tx.send(DiscoveryEvent::AttestationDiscovered(attestation));
                 }
-            } else if hashtags.iter().any(|t| t == POOL_TAG) {
-                if let Ok(mut pool) = parse_pool_event(&event) {
-                    pool.nostr_event_json = serde_json::to_string(&*event).ok();
-                    persist_pool_to_store(&store, &pool);
-                    let _ = tx.send(DiscoveryEvent::PoolDiscovered(pool));
-                }
+            } else if hashtags.iter().any(|t| t == POOL_TAG)
+                && let Ok(mut pool) = parse_pool_event(&event)
+            {
+                pool.nostr_event_json = serde_json::to_string(&*event).ok();
+                persist_pool_to_store(&store, &pool);
+                let _ = tx.send(DiscoveryEvent::PoolDiscovered(pool));
             }
         }
     }
