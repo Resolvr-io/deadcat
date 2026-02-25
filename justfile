@@ -39,4 +39,4 @@ cargo-clippy:
 
 cargo-test:
 	cd src-tauri && cargo test --workspace --exclude deadcat-sdk
-	cd src-tauri/crates/deadcat-sdk && ulimit -n 10240 && ELEMENTSD_EXEC=$PWD/tests/elementsd ELECTRS_LIQUID_EXEC=$PWD/tests/electrs cargo test
+	cd src-tauri/crates/deadcat-sdk && ulimit -n 10240 && ELEMENTSD_EXEC=$PWD/tests/elementsd-aarch64-apple-darwin ELECTRS_LIQUID_EXEC=$PWD/tests/electrs-aarch64-apple-darwin cargo test
