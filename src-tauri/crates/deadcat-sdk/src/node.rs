@@ -8,13 +8,14 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use lwk_wollet::elements::{AssetId, Txid};
-use lwk_wollet::{AddressResult, WalletTxOut};
+use lwk_wollet::elements::{AssetId, Transaction, Txid};
+use lwk_wollet::{AddressResult, WalletTx, WalletTxOut};
 use nostr_sdk::prelude::*;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::announcement::{ContractAnnouncement, ContractMetadata};
+use crate::contract::CompiledContract;
 use crate::discovery::config::DiscoveryConfig;
 use crate::discovery::events::DiscoveryEvent;
 use crate::discovery::market::DiscoveredMarket;
@@ -33,6 +34,8 @@ use crate::sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, DeadcatSdk, FillOrderResult,
     IssuanceResult, RedemptionResult, ResolutionResult,
 };
+use crate::state::MarketState;
+use crate::trade::types::{TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide};
 
 // ── Struct ──────────────────────────────────────────────────────────────────
 
@@ -491,6 +494,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         initial_issued_lp: u64,
         fee_amount: u64,
         market_id: String,
+        lp_creation_txid: Txid,
     ) -> Result<(DiscoveredPool, Txid), NodeError> {
         // 1. On-chain
         let result = self
@@ -502,6 +506,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                     initial_r_lbtc,
                     initial_issued_lp,
                     fee_amount,
+                    &lp_creation_txid,
                 )
             })
             .await?;
@@ -616,6 +621,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         lp_mint_amount: u64,
         fee_amount: u64,
         market_id: String,
+        lp_creation_txid: Txid,
     ) -> Result<crate::sdk::PoolLpResult, NodeError> {
         let result = self
             .with_sdk(move |sdk| {
@@ -627,6 +633,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                     new_r_lbtc,
                     lp_mint_amount,
                     fee_amount,
+                    &lp_creation_txid,
                 )
             })
             .await?;
@@ -686,6 +693,193 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             nr.r_no,
             nr.r_lbtc,
         );
+
+        Ok(result)
+    }
+
+    // ── Trade routing ────────────────────────────────────────────────────
+
+    /// Fetch liquidity from Nostr, scan the chain, and compute a trade quote.
+    ///
+    /// The returned [`TradeQuote`](crate::trade::types::TradeQuote) can be
+    /// inspected for display (price, legs, totals) and then passed to
+    /// [`execute_trade`](Self::execute_trade) to broadcast the transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn quote_trade(
+        &self,
+        contract_params: ContractParams,
+        market_id: &str,
+        side: TradeSide,
+        direction: TradeDirection,
+        amount: TradeAmount,
+    ) -> Result<TradeQuote, NodeError> {
+        use crate::amm_pool::math::PoolReserves;
+        use crate::maker_order::params::OrderDirection as OD;
+        use crate::pset::UnblindedUtxo;
+        use crate::trade::convert::{parse_discovered_order, parse_discovered_pool};
+        use crate::trade::router::{
+            ScannedOrder, ScannedPool, build_execution_plan, plan_to_route_legs,
+        };
+        use crate::trade::types::PoolUtxos;
+
+        // Only ExactInput supported for now
+        let total_input = match amount {
+            TradeAmount::ExactInput(v) => v,
+            TradeAmount::ExactOutput(_) => {
+                return Err(NodeError::Sdk(Error::ExactOutputUnsupported));
+            }
+        };
+
+        // 1. Fetch Nostr data
+        let pools = self.fetch_pools(Some(market_id)).await?;
+        let orders = self.fetch_orders(Some(market_id)).await?;
+
+        // 2. Parse discovered data
+        let parsed_pool = pools
+            .first()
+            .map(parse_discovered_pool)
+            .transpose()
+            .map_err(NodeError::Sdk)?;
+
+        let parsed_orders: Vec<_> = orders
+            .iter()
+            .filter_map(|o| parse_discovered_order(o).ok().map(|r| (r, o.clone())))
+            .collect();
+
+        // 3. Chain scan + route (on blocking thread via SDK)
+        self.with_sdk(move |sdk| {
+            // Scan pool UTXOs
+            let scanned_pool = if let Some((pool_params, issued_lp, pool_id)) = parsed_pool {
+                let contract = crate::amm_pool::contract::CompiledAmmPool::new(pool_params)?;
+                let (yes, no, lbtc, rt) = sdk.scan_pool_utxos(&contract, issued_lp)?;
+                let reserves = PoolReserves {
+                    r_yes: yes.value,
+                    r_no: no.value,
+                    r_lbtc: lbtc.value,
+                };
+                Some(ScannedPool {
+                    params: pool_params,
+                    issued_lp,
+                    reserves,
+                    utxos: PoolUtxos { yes, no, lbtc, rt },
+                    pool_id,
+                })
+            } else {
+                None
+            };
+
+            // Scan order UTXOs
+            let mut scanned_orders = Vec::new();
+            for ((params, maker_pubkey, nonce), discovered) in &parsed_orders {
+                let contract = crate::maker_order::contract::CompiledMakerOrder::new(*params)?;
+                let covenant_spk = contract.script_pubkey(maker_pubkey);
+                let utxos = sdk.scan_covenant_utxos(&covenant_spk)?;
+                if let Some((outpoint, txout)) = utxos.into_iter().next() {
+                    let asset = match params.direction {
+                        OD::SellBase => params.base_asset_id,
+                        OD::SellQuote => params.quote_asset_id,
+                    };
+                    let value = txout.value.explicit().unwrap_or(0);
+                    let utxo = UnblindedUtxo {
+                        outpoint,
+                        txout,
+                        asset_id: asset,
+                        value,
+                        asset_blinding_factor: [0u8; 32],
+                        value_blinding_factor: [0u8; 32],
+                    };
+                    scanned_orders.push(ScannedOrder {
+                        discovered: discovered.clone(),
+                        utxo,
+                        maker_base_pubkey: *maker_pubkey,
+                        order_nonce: *nonce,
+                        params: *params,
+                    });
+                } else {
+                    log::debug!(
+                        "skipping order {} — no live UTXO on chain (spent or not yet confirmed)",
+                        discovered.id,
+                    );
+                }
+            }
+
+            // Route
+            let plan = build_execution_plan(
+                scanned_pool.as_ref(),
+                &scanned_orders,
+                side,
+                direction,
+                total_input,
+                &contract_params.collateral_asset_id,
+                &contract_params.yes_token_asset,
+                &contract_params.no_token_asset,
+            )?;
+
+            let pool_id = scanned_pool.as_ref().map(|p| p.pool_id.as_str());
+            let legs = plan_to_route_legs(&plan, pool_id, &scanned_orders);
+
+            let effective_price = if plan.total_taker_output > 0 {
+                plan.total_taker_input as f64 / plan.total_taker_output as f64
+            } else {
+                f64::INFINITY
+            };
+
+            Ok(TradeQuote {
+                side,
+                direction,
+                amount,
+                total_input: plan.total_taker_input,
+                total_output: plan.total_taker_output,
+                effective_price,
+                legs,
+                plan,
+            })
+        })
+        .await
+    }
+
+    /// Execute a previously quoted trade.
+    ///
+    /// Broadcasts the transaction on-chain, then updates the Nostr pool
+    /// announcement and persists reserves if the trade used the AMM pool.
+    pub async fn execute_trade(
+        &self,
+        quote: TradeQuote,
+        fee_amount: u64,
+        market_id: &str,
+    ) -> Result<TradeResult, NodeError> {
+        // Extract pool info before moving the plan into the closure
+        let pool_leg_info = quote
+            .plan
+            .pool_leg
+            .as_ref()
+            .map(|leg| (leg.pool_params, leg.issued_lp, leg.new_reserves));
+
+        let plan = quote.plan;
+        let result = self
+            .with_sdk(move |sdk| sdk.execute_trade_plan(&plan, fee_amount))
+            .await?;
+
+        // Update Nostr + persist if pool was used
+        if let Some((pool_params, issued_lp, new_reserves)) = pool_leg_info {
+            self.update_pool_announcement(
+                &pool_params,
+                issued_lp,
+                new_reserves.r_yes,
+                new_reserves.r_no,
+                new_reserves.r_lbtc,
+                market_id,
+            )
+            .await;
+
+            self.persist_pool_state(
+                &pool_params,
+                issued_lp,
+                new_reserves.r_yes,
+                new_reserves.r_no,
+                new_reserves.r_lbtc,
+            );
+        }
 
         Ok(result)
     }
@@ -774,6 +968,31 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Get unspent wallet outputs.
     pub async fn utxos(&self) -> Result<Vec<WalletTxOut>, NodeError> {
         self.with_sdk(|sdk| sdk.utxos()).await
+    }
+
+    /// Get wallet transaction history.
+    pub async fn transactions(&self) -> Result<Vec<WalletTx>, NodeError> {
+        self.with_sdk(|sdk| sdk.transactions()).await
+    }
+
+    /// Fetch a raw transaction from the Electrum backend.
+    pub async fn fetch_transaction(&self, txid: Txid) -> Result<Transaction, NodeError> {
+        self.with_sdk(move |sdk| sdk.fetch_transaction(&txid)).await
+    }
+
+    /// Return the L-BTC policy asset ID for this network.
+    pub async fn policy_asset(&self) -> Result<AssetId, NodeError> {
+        self.with_sdk(|sdk| Ok(sdk.policy_asset())).await
+    }
+
+    /// Scan covenant addresses to determine the current on-chain state of a market.
+    pub async fn market_state(&self, params: ContractParams) -> Result<MarketState, NodeError> {
+        self.with_sdk(move |sdk| {
+            let contract = CompiledContract::new(params)?;
+            let (state, _utxos) = sdk.scan_market_state(&contract)?;
+            Ok(state)
+        })
+        .await
     }
 
     /// Send L-BTC to an address.
