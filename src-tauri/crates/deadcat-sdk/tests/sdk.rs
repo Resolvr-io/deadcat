@@ -55,7 +55,13 @@ impl TestFixture {
     /// Fund + sync in one call.
     fn fund_and_sync(&mut self, count: u32, sats_each: u64) {
         self.fund(count, sats_each);
-        std::thread::sleep(Duration::from_secs(1));
+        self.mine_and_sync(1);
+    }
+
+    /// Mine `n` blocks, wait for electrs to index, then sync the wallet.
+    fn mine_and_sync(&mut self, n: u32) {
+        self.env.elementsd_generate(n);
+        std::thread::sleep(Duration::from_millis(500));
         self.sdk.sync().unwrap();
     }
 }
@@ -202,9 +208,7 @@ fn test_send_lbtc() {
     assert!(fee > 0);
 
     // Confirm and check sender balance decreased.
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(1));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     let sender_balance = *fixture.sdk.balance().unwrap().get(&lbtc).unwrap();
     assert_eq!(sender_balance, 200_000 - 50_000 - fee);
@@ -312,9 +316,7 @@ fn test_create_contract_onchain() {
         )
         .unwrap();
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(1));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Verify the creation tx is in the wallet's history.
     let txs = fixture.sdk.transactions().unwrap();
@@ -368,9 +370,7 @@ fn test_initial_issuance_from_dormant() {
         )
         .unwrap();
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Issue 5 pairs (5 YES + 5 NO tokens).
     let issuance = fixture
@@ -382,9 +382,7 @@ fn test_initial_issuance_from_dormant() {
     assert_eq!(issuance.new_state, MarketState::Unresolved);
     assert_eq!(issuance.pairs_issued, 5);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // The wallet should now hold YES and NO tokens.
     let balance = fixture.sdk.balance().unwrap();
@@ -407,9 +405,7 @@ fn test_subsequent_issuance_from_unresolved() {
         .create_contract_onchain(test_oracle_pubkey(), 10_000, 500_000, 1_000, 500)
         .unwrap();
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // First issuance: Dormant → Unresolved.
     let issuance1 = fixture
@@ -419,9 +415,7 @@ fn test_subsequent_issuance_from_unresolved() {
     assert_eq!(issuance1.previous_state, MarketState::Dormant);
     assert_eq!(issuance1.new_state, MarketState::Unresolved);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Second issuance: Unresolved → Unresolved.
     let issuance2 = fixture
@@ -432,9 +426,7 @@ fn test_subsequent_issuance_from_unresolved() {
     assert_eq!(issuance2.new_state, MarketState::Unresolved);
     assert_eq!(issuance2.pairs_issued, 2);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Total tokens: 3 + 2 = 5 of each.
     let balance = fixture.sdk.balance().unwrap();
@@ -500,18 +492,14 @@ fn create_and_issue(
         .create_contract_onchain(oracle_pubkey, cpt, expiry_time, 1_000, 500)
         .unwrap();
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     let _issuance = fixture
         .sdk
         .issue_tokens(&params, &creation_txid, pairs, 500)
         .unwrap();
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     (creation_txid, params)
 }
@@ -542,9 +530,7 @@ fn test_full_cancellation_and_reissuance() {
     assert_eq!(cancel.pairs_burned, 5);
     assert!(cancel.is_full_cancellation);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Tokens should be gone
     let balance = fixture.sdk.balance().unwrap();
@@ -561,9 +547,7 @@ fn test_full_cancellation_and_reissuance() {
     assert_eq!(reissue.new_state, MarketState::Unresolved);
     assert_eq!(reissue.pairs_issued, 3);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     let balance = fixture.sdk.balance().unwrap();
     assert_eq!(*balance.get(&yes_asset).unwrap_or(&0), 3);
@@ -590,9 +574,7 @@ fn test_partial_cancellation() {
     assert_eq!(cancel.pairs_burned, 3);
     assert!(!cancel.is_full_cancellation);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // 10 - 3 = 7 of each remain
     let balance = fixture.sdk.balance().unwrap();
@@ -620,9 +602,7 @@ fn test_oracle_resolve_and_redeem_yes() {
     assert_eq!(resolve.new_state, MarketState::ResolvedYes);
     assert!(resolve.outcome_yes);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Redeem YES tokens
     let redeem = fixture.sdk.redeem_tokens(&params, 5, 500).unwrap();
@@ -632,9 +612,7 @@ fn test_oracle_resolve_and_redeem_yes() {
     // 5 tokens * 2 * 10_000 cpt = 100_000
     assert_eq!(redeem.payout_sats, 100_000);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // YES tokens should be burned
     let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
@@ -662,9 +640,7 @@ fn test_oracle_resolve_and_redeem_no() {
     assert_eq!(resolve.new_state, MarketState::ResolvedNo);
     assert!(!resolve.outcome_yes);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Redeem NO tokens
     let redeem = fixture.sdk.redeem_tokens(&params, 5, 500).unwrap();
@@ -673,9 +649,7 @@ fn test_oracle_resolve_and_redeem_no() {
     assert_eq!(redeem.tokens_redeemed, 5);
     assert_eq!(redeem.payout_sats, 100_000);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     let no_asset = lwk_wollet::elements::AssetId::from_slice(&params.no_token_asset).unwrap();
     let balance = fixture.sdk.balance().unwrap();
@@ -695,9 +669,7 @@ fn test_expiry_redemption() {
         create_and_issue(&mut fixture, oracle_pubkey, 10_000, expiry_height, 5);
 
     // Generate blocks past expiry
-    fixture.env.elementsd_generate(250);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(250);
 
     // Redeem YES tokens via expiry path
     let redeem = fixture
@@ -710,9 +682,7 @@ fn test_expiry_redemption() {
     // Expiry gives 1x payout: 5 * 10_000 = 50_000
     assert_eq!(redeem.payout_sats, 50_000);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
     let balance = fixture.sdk.balance().unwrap();
@@ -730,9 +700,7 @@ fn test_multiple_subsequent_issuances() {
         .create_contract_onchain(oracle_pubkey, 10_000, 500_000, 1_000, 500)
         .unwrap();
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Issue 3 pairs: Dormant → Unresolved
     let iss1 = fixture
@@ -742,9 +710,7 @@ fn test_multiple_subsequent_issuances() {
     assert_eq!(iss1.previous_state, MarketState::Dormant);
     assert_eq!(iss1.new_state, MarketState::Unresolved);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Issue 2 more: Unresolved → Unresolved
     let iss2 = fixture
@@ -753,9 +719,7 @@ fn test_multiple_subsequent_issuances() {
         .unwrap();
     assert_eq!(iss2.previous_state, MarketState::Unresolved);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Issue 5 more: Unresolved → Unresolved
     let iss3 = fixture
@@ -764,9 +728,7 @@ fn test_multiple_subsequent_issuances() {
         .unwrap();
     assert_eq!(iss3.previous_state, MarketState::Unresolved);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Total: 3 + 2 + 5 = 10 of each
     let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
@@ -792,9 +754,7 @@ fn test_partial_post_resolution_redemption() {
         .resolve_market(&params, true, signature, 500)
         .unwrap();
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Redeem only 3 of 5 YES tokens (partial redemption with token change)
     let redeem = fixture.sdk.redeem_tokens(&params, 3, 500).unwrap();
@@ -804,9 +764,7 @@ fn test_partial_post_resolution_redemption() {
     // 3 tokens * 2 * 10_000 cpt = 60_000
     assert_eq!(redeem.payout_sats, 60_000);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // 5 - 3 = 2 YES tokens should remain as change
     let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
@@ -825,9 +783,7 @@ fn test_cancel_wrong_state() {
         .create_contract_onchain(oracle_pubkey, 10_000, 500_000, 1_000, 500)
         .unwrap();
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Market is Dormant (no issuance) — cancellation should fail
     let result = fixture.sdk.cancel_tokens(&params, 1, 500);
@@ -891,9 +847,7 @@ fn test_create_and_cancel_limit_order() {
     assert_eq!(create_result.order_amount, 5);
     assert!(!create_result.covenant_address.is_empty());
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // 5 YES tokens should be locked in the covenant, 5 remain in wallet
     let balance_after_create = fixture.sdk.balance().unwrap();
@@ -912,9 +866,7 @@ fn test_create_and_cancel_limit_order() {
 
     assert_eq!(cancel_result.refunded_amount, 5);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // All 10 YES tokens should be back in the wallet
     let balance_after_cancel = fixture.sdk.balance().unwrap();
@@ -948,9 +900,7 @@ fn test_create_and_full_fill_limit_order() {
         )
         .unwrap();
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Fill the entire order (self-fill: same wallet pays L-BTC to get YES tokens back)
     let fill_result = fixture
@@ -967,9 +917,7 @@ fn test_create_and_full_fill_limit_order() {
     assert_eq!(fill_result.lots_filled, 5);
     assert!(!fill_result.is_partial);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // All 10 YES tokens should be back in the wallet (5 never left + 5 received from fill)
     let balance = fixture.sdk.balance().unwrap();
@@ -1007,9 +955,7 @@ fn test_partial_fill_limit_order() {
         )
         .unwrap();
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Partial fill: take only 3 of the 5 tokens
     let fill_result = fixture
@@ -1026,9 +972,7 @@ fn test_partial_fill_limit_order() {
     assert_eq!(fill_result.lots_filled, 3);
     assert!(fill_result.is_partial);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // Wallet should have: 5 (kept) + 3 (received from fill) = 8 YES tokens
     let balance = fixture.sdk.balance().unwrap();
@@ -1048,9 +992,7 @@ fn test_partial_fill_limit_order() {
 
     assert_eq!(cancel_result.refunded_amount, 2);
 
-    fixture.env.elementsd_generate(1);
-    std::thread::sleep(Duration::from_secs(2));
-    fixture.sdk.sync().unwrap();
+    fixture.mine_and_sync(1);
 
     // All 10 tokens back in wallet
     let balance = fixture.sdk.balance().unwrap();
