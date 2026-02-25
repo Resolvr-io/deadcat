@@ -269,9 +269,14 @@ pub fn assemble_issuance_for_env(
 // In-memory discovery store for tests
 // ---------------------------------------------------------------------------
 
+use nostr_sdk::Keys;
+
+use crate::announcement::ContractMetadata;
+use crate::discovery::OrderAnnouncement;
 use crate::discovery::store_trait::{ContractMetadataInput, DiscoveryStore};
-use crate::maker_order::params::MakerOrderParams;
+use crate::maker_order::params::{MakerOrderParams, OrderDirection};
 use crate::params::ContractParams;
+use crate::taproot::NUMS_KEY_BYTES;
 
 /// Minimal in-memory store implementing `DiscoveryStore` for integration tests.
 ///
@@ -329,5 +334,84 @@ impl DiscoveryStore for TestStore {
         _r_lbtc: u64,
     ) -> std::result::Result<(), String> {
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared contract / market / order helpers
+// ---------------------------------------------------------------------------
+
+/// Fixed contract params for compilation and ElementsEnv tests.
+///
+/// Oracle `[0xaa; 32]`, `collateral_per_token: 100_000`, `expiry_time: 1_000_000`.
+pub fn test_contract_params() -> ContractParams {
+    ContractParams {
+        oracle_public_key: [0xaa; 32],
+        collateral_asset_id: [0xbb; 32],
+        yes_token_asset: [0x01; 32],
+        no_token_asset: [0x02; 32],
+        yes_reissuance_token: [0x03; 32],
+        no_reissuance_token: [0x04; 32],
+        collateral_per_token: 100_000,
+        expiry_time: 1_000_000,
+    }
+}
+
+/// Parameterized contract params for discovery / node tests.
+///
+/// `collateral_per_token: 5000`, `expiry_time: 3_650_000`.
+pub fn test_market_params(oracle_pubkey: [u8; 32]) -> ContractParams {
+    ContractParams {
+        oracle_public_key: oracle_pubkey,
+        collateral_asset_id: [0xbb; 32],
+        yes_token_asset: [0x01; 32],
+        no_token_asset: [0x02; 32],
+        yes_reissuance_token: [0x03; 32],
+        no_reissuance_token: [0x04; 32],
+        collateral_per_token: 5000,
+        expiry_time: 3_650_000,
+    }
+}
+
+/// Standard test metadata for discovery / node tests.
+pub fn test_metadata() -> ContractMetadata {
+    ContractMetadata {
+        question: "Will BTC close above $120k by Dec 2026?".to_string(),
+        description: "Resolved using median close basket.".to_string(),
+        category: "Bitcoin".to_string(),
+        resolution_source: "Exchange close basket".to_string(),
+        starting_yes_price: 57,
+    }
+}
+
+/// Extract a 32-byte x-only public key from `nostr_sdk::Keys`.
+pub fn oracle_pubkey_from_keys(keys: &Keys) -> [u8; 32] {
+    let h = keys.public_key().to_hex();
+    let b = hex::decode(&h).unwrap();
+    <[u8; 32]>::try_from(b.as_slice()).unwrap()
+}
+
+/// Build a test order announcement for a given market ID.
+pub fn test_order_announcement(market_id: &str) -> OrderAnnouncement {
+    let (params, _) = MakerOrderParams::new(
+        [0x01; 32],
+        [0xbb; 32],
+        50_000,
+        1,
+        1,
+        OrderDirection::SellBase,
+        NUMS_KEY_BYTES,
+        &[0xaa; 32],
+        &[0x11; 32],
+    );
+    OrderAnnouncement {
+        version: 1,
+        params,
+        market_id: market_id.to_string(),
+        maker_base_pubkey: hex::encode([0xaa; 32]),
+        order_nonce: hex::encode([0x11; 32]),
+        covenant_address: "tex1qtest".to_string(),
+        offered_amount: 100,
+        direction_label: "sell-yes".to_string(),
     }
 }

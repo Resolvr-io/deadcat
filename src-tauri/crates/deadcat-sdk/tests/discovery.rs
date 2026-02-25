@@ -1,73 +1,13 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use deadcat_sdk::announcement::{ContractAnnouncement, ContractMetadata};
-use deadcat_sdk::discovery::{
-    DiscoveryConfig, DiscoveryEvent, DiscoveryService, OrderAnnouncement,
+use deadcat_sdk::announcement::ContractAnnouncement;
+use deadcat_sdk::discovery::{DiscoveryConfig, DiscoveryEvent, DiscoveryService};
+use deadcat_sdk::testing::{
+    TestStore, oracle_pubkey_from_keys, test_market_params, test_metadata, test_order_announcement,
 };
-use deadcat_sdk::maker_order::params::{MakerOrderParams, OrderDirection};
-use deadcat_sdk::params::ContractParams;
-use deadcat_sdk::taproot::NUMS_KEY_BYTES;
-use deadcat_sdk::testing::TestStore;
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
-
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
-fn test_metadata() -> ContractMetadata {
-    ContractMetadata {
-        question: "Will BTC close above $120k by Dec 2026?".to_string(),
-        description: "Resolved using median close basket.".to_string(),
-        category: "Bitcoin".to_string(),
-        resolution_source: "Exchange close basket".to_string(),
-        starting_yes_price: 57,
-    }
-}
-
-fn test_params(oracle_pubkey: [u8; 32]) -> ContractParams {
-    ContractParams {
-        oracle_public_key: oracle_pubkey,
-        collateral_asset_id: [0xbb; 32],
-        yes_token_asset: [0x01; 32],
-        no_token_asset: [0x02; 32],
-        yes_reissuance_token: [0x03; 32],
-        no_reissuance_token: [0x04; 32],
-        collateral_per_token: 5000,
-        expiry_time: 3_650_000,
-    }
-}
-
-fn oracle_pubkey_from_keys(keys: &Keys) -> [u8; 32] {
-    let h = keys.public_key().to_hex();
-    let b = hex::decode(&h).unwrap();
-    <[u8; 32]>::try_from(b.as_slice()).unwrap()
-}
-
-fn test_order_announcement(market_id: &str) -> OrderAnnouncement {
-    let (params, _) = MakerOrderParams::new(
-        [0x01; 32],
-        [0xbb; 32],
-        50_000,
-        1,
-        1,
-        OrderDirection::SellBase,
-        NUMS_KEY_BYTES,
-        &[0xaa; 32],
-        &[0x11; 32],
-    );
-    OrderAnnouncement {
-        version: 1,
-        params,
-        market_id: market_id.to_string(),
-        maker_base_pubkey: hex::encode([0xaa; 32]),
-        order_nonce: hex::encode([0x11; 32]),
-        covenant_address: "tex1qtest".to_string(),
-        offered_amount: 100,
-        direction_label: "sell-yes".to_string(),
-    }
-}
 
 async fn setup_service_with_store(
     mock_url: &str,
@@ -97,7 +37,7 @@ async fn market_announce_discover_roundtrip() {
     let (service, _rx, store, keys) = setup_service_with_store(&mock.url()).await;
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_params(oracle_pubkey);
+    let params = test_market_params(oracle_pubkey);
     let announcement = ContractAnnouncement {
         version: 1,
         contract_params: params,
@@ -184,7 +124,7 @@ async fn subscription_delivers_market_events() {
     publisher.connect().await;
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_params(oracle_pubkey);
+    let params = test_market_params(oracle_pubkey);
     let announcement = ContractAnnouncement {
         version: 1,
         contract_params: params,
@@ -257,7 +197,7 @@ async fn store_persistence_on_discovery() {
 
     // Publish a market
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_params(oracle_pubkey);
+    let params = test_market_params(oracle_pubkey);
     let announcement = ContractAnnouncement {
         version: 1,
         contract_params: params,
@@ -295,7 +235,7 @@ async fn attestation_roundtrip() {
     let (service, _rx, _store, keys) = setup_service_with_store(&mock.url()).await;
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_params(oracle_pubkey);
+    let params = test_market_params(oracle_pubkey);
     let market_id = params.market_id();
 
     // First publish the announcement
@@ -352,7 +292,7 @@ async fn duplicate_markets_are_idempotent() {
     let (service, _rx, store, keys) = setup_service_with_store(&mock.url()).await;
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_params(oracle_pubkey);
+    let params = test_market_params(oracle_pubkey);
     let announcement = ContractAnnouncement {
         version: 1,
         contract_params: params,
