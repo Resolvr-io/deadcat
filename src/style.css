@@ -160,12 +160,16 @@ select {
   background-size: 100% 25%;
 }
 
-.chartLivePulse {
+.chartLivePulseScale {
+  transform-origin: 0 0;
+  animation: chartLivePulseScale 1.45s ease-out infinite;
+}
+
+.chartLivePulsePath {
   fill: currentColor;
-  opacity: 0.6;
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: chartLivePulse 1.6s ease-out infinite;
+  opacity: 0.84;
+  filter: drop-shadow(0 0 3px currentColor);
+  animation: chartLivePulseFade 1.45s ease-out infinite;
 }
 
 .chartLivePulseYes {
@@ -185,13 +189,20 @@ select {
   animation: liveIndicatorDot 1.2s ease-in-out infinite;
 }
 
-@keyframes chartLivePulse {
+@keyframes chartLivePulseScale {
   0% {
     transform: scale(1);
-    opacity: 0.6;
   }
   100% {
-    transform: scale(2.5);
+    transform: scale(3.4);
+  }
+}
+
+@keyframes chartLivePulseFade {
+  0% {
+    opacity: 0.84;
+  }
+  100% {
     opacity: 0;
   }
 }
@@ -256,7 +267,7 @@ select {
     60.779% 100%,
     58.122% 100%,
     49.986% 95%,
-    41.850% 100%,
+    41.85% 100%,
     39.193% 100%,
     31.057% 95%,
     22.921% 100%,
@@ -369,14 +380,18 @@ select {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .chartLivePulse,
+  .chartLivePulseScale,
+  .chartLivePulsePath,
   .liveIndicatorDot {
     animation: none;
   }
 
-  .chartLivePulse {
+  .chartLivePulsePath {
     opacity: 0.3;
-    transform: none;
+  }
+
+  .chartLivePulseScale {
+    transform: scale(1);
   }
 
   .liveIndicatorDot {

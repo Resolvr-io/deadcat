@@ -32,7 +32,22 @@ export function handleInput(e: Event, render: () => void): void {
   }
 
   if (target.id === "trade-size-contracts") {
-    state.tradeContractsDraft = target.value;
+    const cleaned = target.value
+      .replace(/[^\d.]/g, "")
+      .replace(/(\..*)\./g, "$1");
+    const [wholeRaw, fractionRaw] = cleaned.split(".");
+    const whole = wholeRaw.slice(0, 6);
+    const fraction = fractionRaw?.slice(0, 2);
+    const normalized =
+      cleaned.length === 0
+        ? ""
+        : fractionRaw !== undefined
+          ? `${whole}.${fraction ?? ""}`
+          : whole;
+    state.tradeContractsDraft = normalized;
+    if (target.value !== normalized) {
+      target.value = normalized;
+    }
     return;
   }
 
