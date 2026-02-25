@@ -19,6 +19,7 @@ pub mod state;
 pub mod taproot;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+pub mod trade;
 pub mod witness;
 
 // Core types
@@ -102,6 +103,11 @@ pub use amm_pool::pset::swap::{SwapParams, build_swap_pset};
 pub use amm_pool::witness::{
     AmmPoolSpendingPath, RtBlindingFactors, build_amm_pool_witness, satisfy_amm_pool,
     satisfy_amm_pool_with_env, serialize_satisfied as serialize_amm_pool_satisfied,
+};
+
+// Trade routing
+pub use trade::types::{
+    LiquiditySource, RouteLeg, TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide,
 };
 
 // Discovery (replaces order_announcement + order_discovery)

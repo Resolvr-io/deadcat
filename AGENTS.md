@@ -1,18 +1,26 @@
 # Agents
 
 ## Build & Development Commands
-- Install dependencies: `just install` or `pnpm install`
-- Dev server: `just dev` or `cargo tauri dev`
+
+**All commands must be run through the Nix dev shell:**
+```
+nix develop --command just {command}
+```
+
+- Install dependencies: `nix develop --command just install`
+- Dev server: `nix develop --command just dev`
 - Frontend only: `pnpm dev` (runs on localhost:1420)
 - Build frontend: `pnpm run build`
 - Build native app: `cargo tauri build`
-- TypeScript check: `just tsc`
-- Lint: `just biome-lint`
-- Format: `just biome-format`
-- Auto-fix: `just biome-fix`
-- Screenshot tests: `just screenshots`
-- Update screenshots: `just screenshots-update`
-- Nix dev shell: `nix develop` (provides all dependencies)
+- TypeScript check: `nix develop --command just tsc`
+- Lint: `nix develop --command just biome-lint`
+- Format: `nix develop --command just biome-format`
+- Auto-fix: `nix develop --command just biome-fix`
+- Screenshot tests: `nix develop --command just screenshots`
+- Update screenshots: `nix develop --command just screenshots-update`
+- Rust format check: `nix develop --command just cargo-fmt`
+- Rust clippy: `nix develop --command just cargo-clippy`
+- Rust tests: `nix develop --command just cargo-test`
 
 ## Code Style & Conventions
 - **Language**: TypeScript (frontend), Rust (backend/Tauri)

@@ -279,9 +279,11 @@ async fn store_persistence_on_discovery() {
     let _ = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
 
     // Verify both are persisted
-    let s = store.lock().unwrap();
-    assert_eq!(s.markets.len(), 1, "market should be persisted");
-    assert_eq!(s.orders.len(), 1, "order should be persisted");
+    {
+        let s = store.lock().unwrap();
+        assert_eq!(s.markets.len(), 1, "market should be persisted");
+        assert_eq!(s.orders.len(), 1, "order should be persisted");
+    }
 
     handle.abort();
     let _ = publisher.disconnect().await;
@@ -366,7 +368,7 @@ async fn duplicate_markets_are_idempotent() {
 
     // Fetch — both events come back but store should deduplicate
     let markets = service.fetch_markets().await.unwrap();
-    assert!(markets.len() >= 1);
+    assert!(!markets.is_empty());
 
     let s = store.lock().unwrap();
     assert_eq!(s.markets.len(), 1, "store should deduplicate by market_id");

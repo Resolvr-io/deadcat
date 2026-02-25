@@ -1413,6 +1413,7 @@ dependencies = [
 name = "deadcat-sdk"
 version = "0.1.0"
 dependencies = [
+ "bitcoincore-rpc",
  "deadcat-sdk",
  "electrum-client",
  "hex",

@@ -49,6 +49,7 @@ pub fn build_lp_withdraw_pset(
 ) -> Result<PartiallySignedTransaction> {
     use crate::pset::{
         add_pset_input, add_pset_output, burn_txout, explicit_txout, fee_txout, new_pset,
+        reissuance_token_output,
     };
 
     if params.lp_token_utxos.is_empty() {
@@ -108,13 +109,8 @@ pub fn build_lp_withdraw_pset(
     );
     add_pset_output(&mut pset, lbtc_out);
 
-    // RT passthrough to new address
-    let rt_out = explicit_txout(
-        &contract.params().lp_reissuance_token_id,
-        1,
-        &new_covenant_spk,
-    );
-    add_pset_output(&mut pset, rt_out);
+    // RT passthrough to new address (Null placeholder, filled by blinder in sdk.rs).
+    add_pset_output(&mut pset, reissuance_token_output(&new_covenant_spk));
 
     // Output 4: LP tokens burned → OP_RETURN
     let burn_out = burn_txout(&contract.params().lp_asset_id, params.lp_burn_amount);

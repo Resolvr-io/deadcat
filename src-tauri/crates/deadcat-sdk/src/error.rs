@@ -119,6 +119,15 @@ pub enum Error {
 
     #[error("issued LP count is zero")]
     ZeroIssuedLp,
+
+    #[error("ExactOutput trade amount is not yet supported")]
+    ExactOutputUnsupported,
+
+    #[error("trade routing: {0}")]
+    TradeRouting(String),
+
+    #[error("no liquidity available for this trade")]
+    NoLiquidity,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
