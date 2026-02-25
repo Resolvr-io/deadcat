@@ -1,5 +1,6 @@
 use simplicityhl::elements::Script;
 use simplicityhl::elements::pset::PartiallySignedTransaction;
+use simplicityhl::elements::secp256k1_zkp::Tweak;
 
 use crate::error::{Error, Result};
 use crate::pset::UnblindedUtxo;
@@ -36,6 +37,10 @@ pub struct PoolCreationParams {
     pub fee_amount: u64,
     /// Fee asset ID.
     pub fee_asset_id: [u8; 32],
+    /// Asset blinding factor of the LP reissuance token UTXO being spent.
+    pub lp_issuance_blinding_nonce: [u8; 32],
+    /// Asset entropy for the LP token (from the original LP issuance transaction).
+    pub lp_issuance_asset_entropy: [u8; 32],
 }
 
 /// Build the pool creation PSET.
@@ -47,7 +52,10 @@ pub fn build_pool_creation_pset(
     contract: &CompiledAmmPool,
     params: &PoolCreationParams,
 ) -> Result<PartiallySignedTransaction> {
-    use crate::pset::{add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset};
+    use crate::pset::{
+        add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset,
+        reissuance_token_output,
+    };
 
     if params.yes_utxos.is_empty() || params.no_utxos.is_empty() || params.lbtc_utxos.is_empty() {
         return Err(Error::AmmPool(
@@ -75,6 +83,20 @@ pub fn build_pool_creation_pset(
         add_pset_input(&mut pset, utxo);
     }
     add_pset_input(&mut pset, &params.lp_rt_utxo);
+
+    // Mark the LP RT input for reissuance (mints LP tokens).
+    // Note: blinded_issuance is NOT set here — it must be set during the blinding
+    // step, immediately before blind_last(), matching the working issuance pattern.
+    let rt_input_index = params.yes_utxos.len() + params.no_utxos.len() + params.lbtc_utxos.len();
+    if let Some(input) = pset.inputs_mut().get_mut(rt_input_index) {
+        input.issuance_value_amount = Some(params.initial_issued_lp);
+        input.issuance_blinding_nonce = Some(
+            Tweak::from_slice(&params.lp_issuance_blinding_nonce)
+                .expect("valid LP issuance blinding nonce"),
+        );
+        input.issuance_asset_entropy = Some(params.lp_issuance_asset_entropy);
+    }
+
     add_pset_input(&mut pset, &params.fee_utxo);
 
     // Output 0: YES reserve → covenant
@@ -101,9 +123,10 @@ pub fn build_pool_creation_pset(
     );
     add_pset_output(&mut pset, lbtc_out);
 
-    // Output 3: LP reissuance token → covenant (explicit, amount = 1)
-    let rt_out = explicit_txout(&params.lp_rt_utxo.asset_id, 1, &covenant_spk);
-    add_pset_output(&mut pset, rt_out);
+    // Output 3: LP reissuance token → covenant (Null placeholder, filled by blinder).
+    // Matches the working issuance pattern: RT passthrough outputs are Null TxOut,
+    // with amount/asset set during the blinding step before blind_last().
+    add_pset_output(&mut pset, reissuance_token_output(&covenant_spk));
 
     // Output 4: LP tokens → creator
     let lp_out = explicit_txout(
@@ -112,6 +135,17 @@ pub fn build_pool_creation_pset(
         &params.lp_token_destination,
     );
     add_pset_output(&mut pset, lp_out);
+
+    // RT change: covenant needs exactly 1, return excess to change address
+    let rt_change = params.lp_rt_utxo.value.saturating_sub(1);
+    if rt_change > 0 {
+        if let Some(ref change_dest) = params.change_destination {
+            let rt_change_out = explicit_txout(&params.lp_rt_utxo.asset_id, rt_change, change_dest);
+            add_pset_output(&mut pset, rt_change_out);
+        } else {
+            return Err(Error::MissingChangeDestination);
+        }
+    }
 
     // Output 5+: change outputs
     // Compute excess for each asset type and add change if needed
@@ -239,12 +273,20 @@ mod tests {
             fee_utxo: test_utxo(params.lbtc_asset_id, 500, 4),
             fee_amount: 500,
             fee_asset_id: params.lbtc_asset_id,
+            lp_issuance_blinding_nonce: [0u8; 32],
+            lp_issuance_asset_entropy: [0xaa; 32],
         };
         let pset = build_pool_creation_pset(&contract, &creation).unwrap();
         // 5 inputs: YES, NO, LBTC, RT, fee
         assert_eq!(pset.n_inputs(), 5);
         // 6 outputs: YES reserve, NO reserve, LBTC reserve, RT, LP tokens, fee
         assert_eq!(pset.n_outputs(), 6);
+
+        // RT input (index 3) has reissuance fields set
+        let rt_input = &pset.inputs()[3];
+        assert_eq!(rt_input.issuance_value_amount, Some(100));
+        assert!(rt_input.issuance_blinding_nonce.is_some());
+        assert_eq!(rt_input.issuance_asset_entropy, Some([0xaa; 32]));
     }
 
     #[test]
@@ -265,6 +307,8 @@ mod tests {
             fee_utxo: test_utxo(params.lbtc_asset_id, 500, 4),
             fee_amount: 500,
             fee_asset_id: params.lbtc_asset_id,
+            lp_issuance_blinding_nonce: [0u8; 32],
+            lp_issuance_asset_entropy: [0xaa; 32],
         };
         assert!(build_pool_creation_pset(&contract, &creation).is_err());
     }
@@ -287,6 +331,8 @@ mod tests {
             fee_utxo: test_utxo(params.lbtc_asset_id, 500, 4),
             fee_amount: 500,
             fee_asset_id: params.lbtc_asset_id,
+            lp_issuance_blinding_nonce: [0u8; 32],
+            lp_issuance_asset_entropy: [0xaa; 32],
         };
         assert!(build_pool_creation_pset(&contract, &creation).is_err());
     }
@@ -309,6 +355,8 @@ mod tests {
             fee_utxo: test_utxo(params.lbtc_asset_id, 500, 4),
             fee_amount: 500,
             fee_asset_id: params.lbtc_asset_id,
+            lp_issuance_blinding_nonce: [0u8; 32],
+            lp_issuance_asset_entropy: [0xaa; 32],
         };
         assert!(build_pool_creation_pset(&contract, &creation).is_err());
     }
@@ -331,6 +379,8 @@ mod tests {
             fee_utxo: test_utxo(params.lbtc_asset_id, 500, 4),
             fee_amount: 500,
             fee_asset_id: params.lbtc_asset_id,
+            lp_issuance_blinding_nonce: [0u8; 32],
+            lp_issuance_asset_entropy: [0xaa; 32],
         };
         let pset = build_pool_creation_pset(&contract, &creation).unwrap();
         // 6 base outputs + 1 YES change = 7
@@ -355,6 +405,59 @@ mod tests {
             fee_utxo: test_utxo(params.lbtc_asset_id, 500, 4),
             fee_amount: 500,
             fee_asset_id: params.lbtc_asset_id,
+            lp_issuance_blinding_nonce: [0u8; 32],
+            lp_issuance_asset_entropy: [0xaa; 32],
+        };
+        assert!(build_pool_creation_pset(&contract, &creation).is_err());
+    }
+
+    #[test]
+    fn creation_with_rt_change() {
+        let params = test_params();
+        let contract = CompiledAmmPool::new(params).unwrap();
+        // RT input has value 1000, but only 1 goes to covenant — 999 must be change
+        let creation = PoolCreationParams {
+            yes_utxos: vec![test_utxo(params.yes_asset_id, 1000, 0)],
+            no_utxos: vec![test_utxo(params.no_asset_id, 1000, 1)],
+            lbtc_utxos: vec![test_utxo(params.lbtc_asset_id, 5000, 2)],
+            lp_rt_utxo: test_utxo(params.lp_reissuance_token_id, 1000, 3),
+            initial_r_yes: 1000,
+            initial_r_no: 1000,
+            initial_r_lbtc: 5000,
+            initial_issued_lp: 100,
+            lp_token_destination: Script::new(),
+            change_destination: Some(Script::new()),
+            fee_utxo: test_utxo(params.lbtc_asset_id, 500, 4),
+            fee_amount: 500,
+            fee_asset_id: params.lbtc_asset_id,
+            lp_issuance_blinding_nonce: [0u8; 32],
+            lp_issuance_asset_entropy: [0xaa; 32],
+        };
+        let pset = build_pool_creation_pset(&contract, &creation).unwrap();
+        // 6 base outputs + 1 RT change = 7
+        assert_eq!(pset.n_outputs(), 7);
+    }
+
+    #[test]
+    fn creation_rt_change_requires_change_destination() {
+        let params = test_params();
+        let contract = CompiledAmmPool::new(params).unwrap();
+        let creation = PoolCreationParams {
+            yes_utxos: vec![test_utxo(params.yes_asset_id, 1000, 0)],
+            no_utxos: vec![test_utxo(params.no_asset_id, 1000, 1)],
+            lbtc_utxos: vec![test_utxo(params.lbtc_asset_id, 5000, 2)],
+            lp_rt_utxo: test_utxo(params.lp_reissuance_token_id, 1000, 3),
+            initial_r_yes: 1000,
+            initial_r_no: 1000,
+            initial_r_lbtc: 5000,
+            initial_issued_lp: 100,
+            lp_token_destination: Script::new(),
+            change_destination: None, // no change dest — should error
+            fee_utxo: test_utxo(params.lbtc_asset_id, 500, 4),
+            fee_amount: 500,
+            fee_asset_id: params.lbtc_asset_id,
+            lp_issuance_blinding_nonce: [0u8; 32],
+            lp_issuance_asset_entropy: [0xaa; 32],
         };
         assert!(build_pool_creation_pset(&contract, &creation).is_err());
     }

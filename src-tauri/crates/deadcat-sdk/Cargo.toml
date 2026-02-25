@@ -24,6 +24,7 @@ testing = []
 
 [dev-dependencies]
 deadcat-sdk = { path = ".", features = ["testing"] }
+bitcoincore-rpc = "0.19"
 lwk_test_util = "0.14"
 nostr-relay-builder = "0.38"
 tempfile = "3.25.0"

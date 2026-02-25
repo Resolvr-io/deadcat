@@ -8,6 +8,7 @@ use deadcat_sdk::node::DeadcatNode;
 use deadcat_sdk::params::ContractParams;
 use deadcat_sdk::taproot::NUMS_KEY_BYTES;
 use deadcat_sdk::testing::TestStore;
+use deadcat_sdk::{NodeError, TradeAmount, TradeDirection, TradeSide};
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
 
@@ -287,4 +288,89 @@ async fn node_subscribe_returns_receiver() {
     // Get an additional receiver
     let _rx2 = node.subscribe();
     // No panic — receiver is valid
+}
+
+// ---------------------------------------------------------------------------
+// Trade routing: quote_trade
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn quote_trade_exact_output_unsupported() {
+    let mock = MockRelay::run().await.unwrap();
+    let (node, _rx, _store, keys) = setup_node_with_store(&mock.url()).await;
+
+    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
+    let params = test_params(oracle_pubkey);
+
+    let result = node
+        .quote_trade(
+            params,
+            "mkt1",
+            TradeSide::Yes,
+            TradeDirection::Buy,
+            TradeAmount::ExactOutput(1000),
+        )
+        .await;
+
+    match result {
+        Err(NodeError::Sdk(deadcat_sdk::Error::ExactOutputUnsupported)) => {}
+        other => panic!("expected ExactOutputUnsupported, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn quote_trade_no_liquidity() {
+    let mock = MockRelay::run().await.unwrap();
+    let (node, _rx, _store, keys) = setup_node_with_store(&mock.url()).await;
+
+    // Unlock wallet with a valid mnemonic so with_sdk doesn't return WalletLocked.
+    // The electrum URL won't be contacted — no pool/order UTXOs to scan.
+    let datadir = tempfile::tempdir().unwrap();
+    let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    node.unlock_wallet(mnemonic, "tcp://127.0.0.1:1", datadir.path())
+        .unwrap();
+
+    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
+    let params = test_params(oracle_pubkey);
+
+    // Mock relay has no pools or orders — should get NoLiquidity
+    let result = node
+        .quote_trade(
+            params,
+            "mkt1",
+            TradeSide::Yes,
+            TradeDirection::Buy,
+            TradeAmount::ExactInput(10_000),
+        )
+        .await;
+
+    match result {
+        Err(NodeError::Sdk(deadcat_sdk::Error::NoLiquidity)) => {}
+        other => panic!("expected NoLiquidity, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn quote_trade_requires_unlocked_wallet() {
+    let mock = MockRelay::run().await.unwrap();
+    let (node, _rx, _store, keys) = setup_node_with_store(&mock.url()).await;
+
+    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
+    let params = test_params(oracle_pubkey);
+
+    // Wallet is locked — should get WalletLocked
+    let result = node
+        .quote_trade(
+            params,
+            "mkt1",
+            TradeSide::Yes,
+            TradeDirection::Buy,
+            TradeAmount::ExactInput(10_000),
+        )
+        .await;
+
+    match result {
+        Err(NodeError::WalletLocked) => {}
+        other => panic!("expected WalletLocked, got {other:?}"),
+    }
 }
