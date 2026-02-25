@@ -1,5 +1,6 @@
 use simplicityhl::elements::Script;
 use simplicityhl::elements::pset::PartiallySignedTransaction;
+use simplicityhl::elements::secp256k1_zkp::Tweak;
 
 use crate::error::{Error, Result};
 use crate::pset::UnblindedUtxo;
@@ -38,6 +39,10 @@ pub struct LpDepositParams {
     pub fee_amount: u64,
     /// Fee asset ID.
     pub fee_asset_id: [u8; 32],
+    /// Asset blinding factor of the LP reissuance token UTXO being spent.
+    pub lp_issuance_blinding_nonce: [u8; 32],
+    /// Asset entropy for the LP token (from the original LP issuance transaction).
+    pub lp_issuance_asset_entropy: [u8; 32],
 }
 
 /// Build an LP deposit PSET.
@@ -49,7 +54,10 @@ pub fn build_lp_deposit_pset(
     contract: &CompiledAmmPool,
     params: &LpDepositParams,
 ) -> Result<PartiallySignedTransaction> {
-    use crate::pset::{add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset};
+    use crate::pset::{
+        add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset,
+        reissuance_token_output,
+    };
 
     if params.lp_mint_amount == 0 {
         return Err(Error::AmmPool("lp_mint_amount must be non-zero".into()));
@@ -72,9 +80,17 @@ pub fn build_lp_deposit_pset(
     add_pset_input(&mut pset, &params.pool_lbtc_utxo);
     add_pset_input(&mut pset, &params.pool_lp_rt_utxo);
 
-    // Mark input 3 for reissuance (LP token minting)
-    // The actual issuance fields are set during assembly/signing
-    // by the caller. Here we just build the PSET layout.
+    // Mark input 3 for reissuance (LP token minting).
+    // Note: blinded_issuance is set during the blinding step in sdk.rs,
+    // not here, matching the working issuance pattern.
+    if let Some(input) = pset.inputs_mut().get_mut(3) {
+        input.issuance_value_amount = Some(params.lp_mint_amount);
+        input.issuance_blinding_nonce = Some(
+            Tweak::from_slice(&params.lp_issuance_blinding_nonce)
+                .expect("valid LP issuance blinding nonce"),
+        );
+        input.issuance_asset_entropy = Some(params.lp_issuance_asset_entropy);
+    }
 
     // Inputs 4+: depositor funding UTXOs
     for utxo in &params.deposit_utxos {
@@ -104,13 +120,8 @@ pub fn build_lp_deposit_pset(
     );
     add_pset_output(&mut pset, lbtc_out);
 
-    // RT cycles back to pool at new address
-    let rt_out = explicit_txout(
-        &contract.params().lp_reissuance_token_id,
-        1,
-        &new_covenant_spk,
-    );
-    add_pset_output(&mut pset, rt_out);
+    // RT cycles back to pool at new address (Null placeholder, filled by blinder).
+    add_pset_output(&mut pset, reissuance_token_output(&new_covenant_spk));
 
     // Output 4: minted LP tokens → depositor
     let lp_out = explicit_txout(
@@ -239,12 +250,20 @@ mod tests {
             fee_utxo: test_utxo(params.lbtc_asset_id, 500, 7),
             fee_amount: 500,
             fee_asset_id: params.lbtc_asset_id,
+            lp_issuance_blinding_nonce: [0u8; 32],
+            lp_issuance_asset_entropy: [0xaa; 32],
         };
         let pset = build_lp_deposit_pset(&contract, &deposit).unwrap();
         // 8 inputs: 4 pool + 3 deposit + 1 fee
         assert_eq!(pset.n_inputs(), 8);
         // 6 outputs: 4 reserves + LP tokens + fee
         assert_eq!(pset.n_outputs(), 6);
+
+        // RT input (index 3) has reissuance fields set
+        let rt_input = &pset.inputs()[3];
+        assert_eq!(rt_input.issuance_value_amount, Some(10));
+        assert!(rt_input.issuance_blinding_nonce.is_some());
+        assert_eq!(rt_input.issuance_asset_entropy, Some([0xaa; 32]));
     }
 
     #[test]
@@ -267,6 +286,8 @@ mod tests {
             fee_utxo: test_utxo(params.lbtc_asset_id, 500, 4),
             fee_amount: 500,
             fee_asset_id: params.lbtc_asset_id,
+            lp_issuance_blinding_nonce: [0u8; 32],
+            lp_issuance_asset_entropy: [0xaa; 32],
         };
         assert!(build_lp_deposit_pset(&contract, &deposit).is_err());
     }
@@ -291,6 +312,8 @@ mod tests {
             fee_utxo: test_utxo(params.lbtc_asset_id, 500, 4),
             fee_amount: 500,
             fee_asset_id: params.lbtc_asset_id,
+            lp_issuance_blinding_nonce: [0u8; 32],
+            lp_issuance_asset_entropy: [0xaa; 32],
         };
         assert!(build_lp_deposit_pset(&contract, &deposit).is_err());
     }

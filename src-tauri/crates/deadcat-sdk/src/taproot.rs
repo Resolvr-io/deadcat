@@ -197,7 +197,7 @@ mod tests {
         let mut hasher = Sha256::new();
         hasher.update(tag_hash);
         hasher.update(tag_hash);
-        hasher.update(&state_be);
+        hasher.update(state_be);
         let expected: [u8; 32] = hasher.finalize().into();
 
         assert_eq!(tapdata_hash(1), expected);
@@ -214,7 +214,7 @@ mod tests {
         let mut hasher = Sha256::new();
         hasher.update(tag_hash);
         hasher.update(tag_hash);
-        hasher.update(&state_le);
+        hasher.update(state_le);
         let le_hash: [u8; 32] = hasher.finalize().into();
 
         assert_ne!(tapdata_hash(1), le_hash);

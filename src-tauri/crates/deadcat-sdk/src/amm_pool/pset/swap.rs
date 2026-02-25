@@ -54,7 +54,10 @@ pub fn build_swap_pset(
     contract: &CompiledAmmPool,
     params: &SwapParams,
 ) -> Result<PartiallySignedTransaction> {
-    use crate::pset::{add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset};
+    use crate::pset::{
+        add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset,
+        reissuance_token_output,
+    };
 
     if params.trader_utxos.is_empty() {
         return Err(Error::AmmPool(
@@ -109,9 +112,8 @@ pub fn build_swap_pset(
     );
     add_pset_output(&mut pset, lbtc_out);
 
-    // RT passthrough (explicit, amount = 1)
-    let rt_out = explicit_txout(&contract.params().lp_reissuance_token_id, 1, &covenant_spk);
-    add_pset_output(&mut pset, rt_out);
+    // RT passthrough (Null placeholder, filled by blinder in sdk.rs).
+    add_pset_output(&mut pset, reissuance_token_output(&covenant_spk));
 
     // Output 4: trader receive
     let trader_out = explicit_txout(

@@ -170,7 +170,7 @@ pub fn assemble_issuance_for_env(
     let mut pset = build_issuance_pset(&inputs)?;
 
     // 2. Attach witnesses with provided blinding factors (skips blind_last + SLIP77)
-    let spending_path = attach_witnesses(&mut pset, contract, state, blinding.clone())?;
+    let spending_path = attach_witnesses(&mut pset, contract, state, blinding)?;
 
     // 3. Convert PSET to Transaction by hand-constructing inputs/outputs
     //    that match what blind_last would have produced, using our test blinding factors.
