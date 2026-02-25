@@ -158,7 +158,7 @@ impl TradeTestFixture {
     /// Mine a block and sync the wallet.
     async fn mine_and_sync(&self) {
         self.env.elementsd_generate(1);
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
         self.node.sync_wallet().await.unwrap();
     }
 
@@ -204,7 +204,7 @@ impl TradeTestFixture {
 
         // Confirm the issuance so elementsd can spend the reissuance token
         self.env.elementsd_generate(1);
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Transfer the reissuance token to the SDK wallet
         let addr = self.node.address(None).await.unwrap();
@@ -247,7 +247,7 @@ impl TradeTestFixture {
                 .elementsd_sendtoaddress(addr.address(), sats_each, None);
         }
         self.env.elementsd_generate(1);
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
         node.sync_wallet().await.unwrap();
     }
 }
