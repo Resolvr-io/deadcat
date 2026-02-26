@@ -17,12 +17,14 @@ use simplicityhl::elements::{
 use simplicityhl::simplicity::bit_machine::BitMachine;
 use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 
-use crate::assembly::{IssuanceAssemblyInputs, attach_witnesses, build_issuance_pset};
-use crate::contract::CompiledContract;
 use crate::error::{Error, Result};
-use crate::state::MarketState;
-use crate::witness::{
-    AllBlindingFactors, ReissuanceBlindingFactors, SpendingPath, satisfy_contract,
+use crate::prediction_market::assembly::{
+    IssuanceAssemblyInputs, attach_witnesses, build_issuance_pset,
+};
+use crate::prediction_market::contract::CompiledPredictionMarket;
+use crate::prediction_market::state::MarketState;
+use crate::prediction_market::witness::{
+    AllBlindingFactors, PredictionMarketSpendingPath, ReissuanceBlindingFactors, satisfy_contract,
 };
 
 // ---------------------------------------------------------------------------
@@ -118,9 +120,9 @@ pub fn test_blinding() -> AllBlindingFactors {
 ///
 /// Returns Ok(()) on success, or an error description on failure.
 pub fn execute_against_env(
-    contract: &CompiledContract,
+    contract: &CompiledPredictionMarket,
     state: MarketState,
-    path: &SpendingPath,
+    path: &PredictionMarketSpendingPath,
     tx: Arc<Transaction>,
     utxos: Vec<ElementsUtxo>,
     input_index: u32,
@@ -161,7 +163,11 @@ pub fn execute_against_env(
 pub fn assemble_issuance_for_env(
     inputs: IssuanceAssemblyInputs,
     blinding: AllBlindingFactors,
-) -> Result<(Arc<Transaction>, Vec<ElementsUtxo>, SpendingPath)> {
+) -> Result<(
+    Arc<Transaction>,
+    Vec<ElementsUtxo>,
+    PredictionMarketSpendingPath,
+)> {
     let state = inputs.current_state;
     let contract = &inputs.contract;
     let params = contract.params();
@@ -275,7 +281,7 @@ use crate::announcement::ContractMetadata;
 use crate::discovery::OrderAnnouncement;
 use crate::discovery::store_trait::{ContractMetadataInput, DiscoveryStore};
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
-use crate::params::ContractParams;
+use crate::prediction_market::params::PredictionMarketParams;
 use crate::taproot::NUMS_KEY_BYTES;
 
 /// Minimal in-memory store implementing `DiscoveryStore` for integration tests.
@@ -283,14 +289,14 @@ use crate::taproot::NUMS_KEY_BYTES;
 /// Deduplicates markets by `market_id` and stores orders as-is.
 #[derive(Debug, Default)]
 pub struct TestStore {
-    pub markets: Vec<ContractParams>,
+    pub markets: Vec<PredictionMarketParams>,
     pub orders: Vec<(MakerOrderParams, Option<String>)>,
 }
 
 impl DiscoveryStore for TestStore {
     fn ingest_market(
         &mut self,
-        params: &ContractParams,
+        params: &PredictionMarketParams,
         _meta: Option<&ContractMetadataInput>,
     ) -> std::result::Result<(), String> {
         let mid = params.market_id();
@@ -344,8 +350,8 @@ impl DiscoveryStore for TestStore {
 /// Fixed contract params for compilation and ElementsEnv tests.
 ///
 /// Oracle `[0xaa; 32]`, `collateral_per_token: 100_000`, `expiry_time: 1_000_000`.
-pub fn test_contract_params() -> ContractParams {
-    ContractParams {
+pub fn test_contract_params() -> PredictionMarketParams {
+    PredictionMarketParams {
         oracle_public_key: [0xaa; 32],
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: [0x01; 32],
@@ -360,8 +366,8 @@ pub fn test_contract_params() -> ContractParams {
 /// Parameterized contract params for discovery / node tests.
 ///
 /// `collateral_per_token: 5000`, `expiry_time: 3_650_000`.
-pub fn test_market_params(oracle_pubkey: [u8; 32]) -> ContractParams {
-    ContractParams {
+pub fn test_market_params(oracle_pubkey: [u8; 32]) -> PredictionMarketParams {
+    PredictionMarketParams {
         oracle_public_key: oracle_pubkey,
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: [0x01; 32],

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::params::ContractParams;
+use crate::prediction_market::params::PredictionMarketParams;
 
 /// Four-state model for the binary prediction market covenant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -33,7 +33,7 @@ impl MarketState {
 
     /// Returns the winning token asset ID for a resolved state.
     /// YES asset if state == ResolvedYes, NO asset if state == ResolvedNo, None otherwise.
-    pub fn winning_token_asset(self, params: &ContractParams) -> Option<[u8; 32]> {
+    pub fn winning_token_asset(self, params: &PredictionMarketParams) -> Option<[u8; 32]> {
         match self {
             Self::ResolvedYes => Some(params.yes_token_asset),
             Self::ResolvedNo => Some(params.no_token_asset),
@@ -62,7 +62,7 @@ mod tests {
 
     #[test]
     fn winning_token() {
-        let params = ContractParams {
+        let params = PredictionMarketParams {
             oracle_public_key: [0; 32],
             collateral_asset_id: [0; 32],
             yes_token_asset: [0x01; 32],

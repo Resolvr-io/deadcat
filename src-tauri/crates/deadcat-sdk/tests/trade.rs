@@ -16,7 +16,7 @@ use deadcat_sdk::discovery::DiscoveryConfig;
 use deadcat_sdk::discovery::market::DiscoveredMarket;
 use deadcat_sdk::maker_order::params::OrderDirection;
 use deadcat_sdk::node::DeadcatNode;
-use deadcat_sdk::params::ContractParams;
+use deadcat_sdk::prediction_market::params::PredictionMarketParams;
 use deadcat_sdk::taproot::NUMS_KEY_BYTES;
 use deadcat_sdk::testing::TestStore;
 use deadcat_sdk::{LiquiditySource, TradeAmount, TradeDirection, TradeSide};
@@ -33,8 +33,8 @@ fn hex_to_32(hex: &str) -> [u8; 32] {
     <[u8; 32]>::try_from(bytes.as_slice()).unwrap()
 }
 
-fn market_to_params(market: &DiscoveredMarket) -> ContractParams {
-    ContractParams {
+fn market_to_params(market: &DiscoveredMarket) -> PredictionMarketParams {
+    PredictionMarketParams {
         oracle_public_key: hex_to_32(&market.oracle_pubkey),
         collateral_asset_id: hex_to_32(&market.collateral_asset_id),
         yes_token_asset: hex_to_32(&market.yes_asset_id),
@@ -166,7 +166,7 @@ impl TradeTestFixture {
     async fn create_market_and_issue(
         &self,
         pairs: u64,
-    ) -> (ContractParams, String, lwk_wollet::elements::Txid) {
+    ) -> (PredictionMarketParams, String, lwk_wollet::elements::Txid) {
         let (oracle_pubkey, _keypair) = generate_oracle_keypair();
 
         let (market, txid) = self
@@ -243,7 +243,7 @@ impl TradeTestFixture {
     /// pool on-chain, mine + sync.  Returns the `AmmPoolParams` for quoting.
     async fn setup_pool(
         &self,
-        params: &ContractParams,
+        params: &PredictionMarketParams,
         lbtc_bytes: [u8; 32],
         market_id: &str,
     ) -> AmmPoolParams {

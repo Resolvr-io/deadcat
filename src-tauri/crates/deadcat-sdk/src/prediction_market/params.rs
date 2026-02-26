@@ -76,7 +76,7 @@ pub(crate) fn compute_issuance_assets(
 
 /// Compile-time parameters for a binary prediction market contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContractParams {
+pub struct PredictionMarketParams {
     /// X-only Schnorr pubkey (FROST aggregate key).
     pub oracle_public_key: [u8; 32],
     /// Asset ID of the collateral (typically L-BTC).
@@ -95,7 +95,7 @@ pub struct ContractParams {
     pub expiry_time: u32,
 }
 
-impl ContractParams {
+impl PredictionMarketParams {
     /// Derive the market ID: SHA256(yes_token_asset || no_token_asset).
     pub fn market_id(&self) -> MarketId {
         let mut hasher = Sha256::new();
@@ -149,8 +149,8 @@ impl ContractParams {
 mod tests {
     use super::*;
 
-    fn test_params() -> ContractParams {
-        ContractParams {
+    fn test_params() -> PredictionMarketParams {
+        PredictionMarketParams {
             oracle_public_key: [0xaa; 32],
             collateral_asset_id: [0xbb; 32],
             yes_token_asset: [0x01; 32],

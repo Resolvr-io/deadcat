@@ -15,7 +15,6 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
 use crate::announcement::{ContractAnnouncement, ContractMetadata};
-use crate::contract::CompiledContract;
 use crate::discovery::config::DiscoveryConfig;
 use crate::discovery::events::DiscoveryEvent;
 use crate::discovery::market::DiscoveredMarket;
@@ -29,12 +28,13 @@ use crate::discovery::{
 use crate::error::{Error, NodeError};
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
 use crate::network::Network;
-use crate::params::{ContractParams, MarketId};
+use crate::prediction_market::contract::CompiledPredictionMarket;
+use crate::prediction_market::params::{MarketId, PredictionMarketParams};
+use crate::prediction_market::state::MarketState;
 use crate::sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, DeadcatSdk, FillOrderResult,
     IssuanceResult, RedemptionResult, ResolutionResult,
 };
-use crate::state::MarketState;
 use crate::trade::types::{TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide};
 
 // ── Wallet snapshot ────────────────────────────────────────────────────────
@@ -355,7 +355,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Issue token pairs for an existing market.
     pub async fn issue_tokens(
         &self,
-        params: ContractParams,
+        params: PredictionMarketParams,
         creation_txid: Txid,
         pairs: u64,
         fee_amount: u64,
@@ -475,7 +475,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Resolve a market on-chain with an oracle signature.
     pub async fn resolve_market(
         &self,
-        params: ContractParams,
+        params: PredictionMarketParams,
         outcome_yes: bool,
         oracle_sig: [u8; 64],
         fee_amount: u64,
@@ -489,7 +489,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Redeem winning tokens after oracle resolution.
     pub async fn redeem_tokens(
         &self,
-        params: ContractParams,
+        params: PredictionMarketParams,
         tokens: u64,
         fee_amount: u64,
     ) -> Result<RedemptionResult, NodeError> {
@@ -500,7 +500,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Redeem tokens after market expiry (no oracle resolution).
     pub async fn redeem_expired(
         &self,
-        params: ContractParams,
+        params: PredictionMarketParams,
         token_asset: [u8; 32],
         tokens: u64,
         fee_amount: u64,
@@ -512,7 +512,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Cancel token pairs by burning equal YES and NO tokens.
     pub async fn cancel_tokens(
         &self,
-        params: ContractParams,
+        params: PredictionMarketParams,
         pairs: u64,
         fee_amount: u64,
     ) -> Result<CancellationResult, NodeError> {
@@ -746,7 +746,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     #[allow(clippy::too_many_arguments)]
     pub async fn quote_trade(
         &self,
-        contract_params: ContractParams,
+        contract_params: PredictionMarketParams,
         market_id: &str,
         side: TradeSide,
         direction: TradeDirection,
@@ -1037,9 +1037,12 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     }
 
     /// Scan covenant addresses to determine the current on-chain state of a market.
-    pub async fn market_state(&self, params: ContractParams) -> Result<MarketState, NodeError> {
+    pub async fn market_state(
+        &self,
+        params: PredictionMarketParams,
+    ) -> Result<MarketState, NodeError> {
         self.with_sdk(move |sdk| {
-            let contract = CompiledContract::new(params)?;
+            let contract = CompiledPredictionMarket::new(params)?;
             let (state, _utxos) = sdk.scan_market_state(&contract)?;
             Ok(state)
         })

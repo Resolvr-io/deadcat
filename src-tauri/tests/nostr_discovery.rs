@@ -5,7 +5,7 @@ use deadcat_sdk::discovery::{
     build_announcement_event, build_attestation_event, build_attestation_filter,
     build_contract_filter, parse_announcement_event, sign_attestation, AttestationContent,
 };
-use deadcat_sdk::params::{ContractParams, MarketId};
+use deadcat_sdk::prediction_market::params::{MarketId, PredictionMarketParams};
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
 use nostr_sdk::secp256k1;
@@ -20,8 +20,8 @@ fn test_metadata() -> ContractMetadata {
     }
 }
 
-fn test_params(oracle_pubkey: [u8; 32]) -> ContractParams {
-    ContractParams {
+fn test_params(oracle_pubkey: [u8; 32]) -> PredictionMarketParams {
+    PredictionMarketParams {
         oracle_public_key: oracle_pubkey,
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: [0x01; 32],

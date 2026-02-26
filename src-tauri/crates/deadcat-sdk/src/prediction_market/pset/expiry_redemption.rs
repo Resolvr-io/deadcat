@@ -1,44 +1,40 @@
-use simplicityhl::elements::Script;
 use simplicityhl::elements::pset::PartiallySignedTransaction;
+use simplicityhl::elements::{LockTime, Script};
 
-use crate::contract::CompiledContract;
 use crate::error::{Error, Result};
-use crate::state::MarketState;
+use crate::prediction_market::contract::CompiledPredictionMarket;
+use crate::prediction_market::state::MarketState;
 
 use super::{
     UnblindedUtxo, add_pset_input, add_pset_output, burn_txout, covenant_spk, explicit_txout,
     fee_txout, new_pset,
 };
 
-/// Parameters for constructing a post-resolution redemption PSET.
-pub struct PostResolutionRedemptionParams {
+/// Parameters for constructing an expiry redemption PSET.
+pub struct ExpiryRedemptionParams {
     pub collateral_utxo: UnblindedUtxo,
     pub token_utxos: Vec<UnblindedUtxo>,
     pub fee_utxo: UnblindedUtxo,
     pub tokens_burned: u64,
-    pub resolved_state: MarketState,
+    pub burn_token_asset: [u8; 32],
     pub fee_amount: u64,
     pub payout_destination: Script,
     pub fee_change_destination: Option<Script>,
     /// Where to send excess tokens if token UTXOs hold more than `tokens_burned`.
     pub token_change_destination: Option<Script>,
+    pub lock_time: u32,
 }
 
-/// Build the post-resolution redemption PSET (state 2/3).
-/// Burns winning tokens from a ResolvedYes or ResolvedNo state.
-pub fn build_post_resolution_redemption_pset(
-    contract: &CompiledContract,
-    params: &PostResolutionRedemptionParams,
+/// Build the expiry redemption PSET (state 1, post-expiry).
+/// Burns tokens from the Unresolved state after expiry block height.
+pub fn build_expiry_redemption_pset(
+    contract: &CompiledPredictionMarket,
+    params: &ExpiryRedemptionParams,
 ) -> Result<PartiallySignedTransaction> {
-    if !params.resolved_state.is_resolved() {
-        return Err(Error::InvalidState);
-    }
-
     let cpt = contract.params().collateral_per_token;
     let payout = params
         .tokens_burned
-        .checked_mul(2)
-        .and_then(|v| v.checked_mul(cpt))
+        .checked_mul(cpt)
         .ok_or(Error::CollateralOverflow)?;
 
     if params.collateral_utxo.value < payout {
@@ -46,12 +42,7 @@ pub fn build_post_resolution_redemption_pset(
     }
 
     let remaining = params.collateral_utxo.value - payout;
-    let winning_asset = params
-        .resolved_state
-        .winning_token_asset(contract.params())
-        .ok_or(Error::InvalidState)?;
-
-    let state_spk = covenant_spk(contract, params.resolved_state);
+    let state1_spk = covenant_spk(contract, MarketState::Unresolved);
 
     let mut pset = new_pset();
 
@@ -67,11 +58,14 @@ pub fn build_post_resolution_redemption_pset(
             explicit_txout(
                 &contract.params().collateral_asset_id,
                 remaining,
-                &state_spk,
+                &state1_spk,
             ),
         );
     }
-    add_pset_output(&mut pset, burn_txout(&winning_asset, params.tokens_burned));
+    add_pset_output(
+        &mut pset,
+        burn_txout(&params.burn_token_asset, params.tokens_burned),
+    );
     add_pset_output(
         &mut pset,
         explicit_txout(
@@ -87,7 +81,7 @@ pub fn build_post_resolution_redemption_pset(
         if change > 0 {
             add_pset_output(
                 &mut pset,
-                explicit_txout(&winning_asset, change, change_spk),
+                explicit_txout(&params.burn_token_asset, change, change_spk),
             );
         }
     }
@@ -109,6 +103,8 @@ pub fn build_post_resolution_redemption_pset(
             ),
         );
     }
+
+    pset.global.tx_data.fallback_locktime = Some(LockTime::from_consensus(params.lock_time));
 
     Ok(pset)
 }

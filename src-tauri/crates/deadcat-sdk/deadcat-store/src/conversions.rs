@@ -4,8 +4,9 @@ use deadcat_sdk::elements::encode::{deserialize as elements_deserialize, seriali
 use deadcat_sdk::elements::hashes::Hash;
 use deadcat_sdk::elements::{OutPoint, TxOut, Txid};
 use deadcat_sdk::{
-    CompiledContract, CompiledMakerOrder, ContractParams, MakerOrderParams, MarketId, MarketState,
-    OrderDirection, UnblindedUtxo, derive_maker_receive, maker_receive_script_pubkey,
+    CompiledMakerOrder, CompiledPredictionMarket, MakerOrderParams, MarketId, MarketState,
+    OrderDirection, PredictionMarketParams, UnblindedUtxo, derive_maker_receive,
+    maker_receive_script_pubkey,
 };
 
 use crate::error::StoreError;
@@ -43,11 +44,11 @@ pub fn direction_from_i32(v: i32) -> std::result::Result<OrderDirection, StoreEr
 
 // --- MarketRow -> SDK types ---
 
-impl TryFrom<&MarketRow> for ContractParams {
+impl TryFrom<&MarketRow> for PredictionMarketParams {
     type Error = StoreError;
 
     fn try_from(row: &MarketRow) -> std::result::Result<Self, Self::Error> {
-        Ok(ContractParams {
+        Ok(PredictionMarketParams {
             oracle_public_key: vec_to_array32(&row.oracle_public_key, "oracle_public_key")?,
             collateral_asset_id: vec_to_array32(&row.collateral_asset_id, "collateral_asset_id")?,
             yes_token_asset: vec_to_array32(&row.yes_token_asset, "yes_token_asset")?,
@@ -104,7 +105,7 @@ impl TryFrom<&MarketRow> for MarketInfo {
 
         Ok(MarketInfo {
             market_id: MarketId::try_from(row)?,
-            params: ContractParams::try_from(row)?,
+            params: PredictionMarketParams::try_from(row)?,
             state: MarketState::try_from(row)?,
             cmr: vec_to_array32(&row.cmr, "cmr")?,
             issuance,
@@ -124,11 +125,11 @@ impl TryFrom<&MarketRow> for MarketInfo {
     }
 }
 
-// --- ContractParams + CompiledContract -> NewMarketRow ---
+// --- PredictionMarketParams + CompiledPredictionMarket -> NewMarketRow ---
 
 pub fn new_market_row(
-    params: &ContractParams,
-    compiled: &CompiledContract,
+    params: &PredictionMarketParams,
+    compiled: &CompiledPredictionMarket,
     metadata: Option<&ContractMetadataInput>,
 ) -> NewMarketRow {
     let market_id = params.market_id();

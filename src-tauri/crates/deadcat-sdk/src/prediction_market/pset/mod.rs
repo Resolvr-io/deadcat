@@ -6,113 +6,29 @@ pub mod issuance;
 pub mod oracle_resolve;
 pub mod post_resolution_redemption;
 
-use simplicityhl::elements::confidential::{Asset, Nonce, Value as ConfValue};
-use simplicityhl::elements::pset::PartiallySignedTransaction;
-use simplicityhl::elements::{AssetId, OutPoint, Script, Sequence, TxOut, TxOutWitness};
+use simplicityhl::elements::Script;
 
-use crate::contract::CompiledContract;
-use crate::state::MarketState;
+use crate::prediction_market::contract::CompiledPredictionMarket;
+use crate::prediction_market::state::MarketState;
 
-/// An unblinded UTXO with its secrets revealed — needed for PSET construction.
-#[derive(Debug, Clone)]
-pub struct UnblindedUtxo {
-    pub outpoint: OutPoint,
-    pub txout: TxOut,
-    pub asset_id: [u8; 32],
-    pub value: u64,
-    pub asset_blinding_factor: [u8; 32],
-    pub value_blinding_factor: [u8; 32],
-}
-
-/// Create a new empty PSET v2.
-pub(crate) fn new_pset() -> PartiallySignedTransaction {
-    PartiallySignedTransaction::new_v2()
-}
-
-/// Build an explicit (non-confidential) TxOut.
-pub(crate) fn explicit_txout(asset_id: &[u8; 32], amount: u64, script_pubkey: &Script) -> TxOut {
-    TxOut {
-        asset: Asset::Explicit(AssetId::from_slice(asset_id).expect("valid asset id")),
-        value: ConfValue::Explicit(amount),
-        nonce: Nonce::Null,
-        script_pubkey: script_pubkey.clone(),
-        witness: TxOutWitness::default(),
-    }
-}
-
-/// Build a fee TxOut.
-pub(crate) fn fee_txout(asset_id: &[u8; 32], amount: u64) -> TxOut {
-    TxOut {
-        asset: Asset::Explicit(AssetId::from_slice(asset_id).expect("valid asset id")),
-        value: ConfValue::Explicit(amount),
-        nonce: Nonce::Null,
-        script_pubkey: Script::new(),
-        witness: TxOutWitness::default(),
-    }
-}
+// Re-export shared PSET helpers so submodules can continue using `super::`.
+pub(crate) use crate::pset::{
+    UnblindedUtxo, add_pset_input, add_pset_output, burn_txout, explicit_txout, fee_txout,
+    new_pset, reissuance_token_output,
+};
 
 /// Get the covenant script pubkey for a given state.
-pub(crate) fn covenant_spk(contract: &CompiledContract, state: MarketState) -> Script {
+pub(crate) fn covenant_spk(contract: &CompiledPredictionMarket, state: MarketState) -> Script {
     contract.script_pubkey(state)
-}
-
-/// Add a standard input to a PSET.
-pub(crate) fn add_pset_input(pset: &mut PartiallySignedTransaction, utxo: &UnblindedUtxo) {
-    let input = simplicityhl::elements::pset::Input {
-        previous_txid: utxo.outpoint.txid,
-        previous_output_index: utxo.outpoint.vout,
-        witness_utxo: Some(utxo.txout.clone()),
-        sequence: Some(Sequence::ENABLE_LOCKTIME_NO_RBF),
-        ..Default::default()
-    };
-    pset.add_input(input);
-}
-
-/// Add an output to a PSET.
-pub(crate) fn add_pset_output(pset: &mut PartiallySignedTransaction, txout: TxOut) {
-    let output = simplicityhl::elements::pset::Output {
-        amount: match txout.value {
-            ConfValue::Explicit(v) => Some(v),
-            _ => None,
-        },
-        asset: match txout.asset {
-            Asset::Explicit(id) => Some(id),
-            _ => None,
-        },
-        script_pubkey: txout.script_pubkey,
-        ..Default::default()
-    };
-    pset.add_output(output);
-}
-
-/// Build a burn TxOut (empty script) for token burning.
-pub(crate) fn burn_txout(asset_id: &[u8; 32], amount: u64) -> TxOut {
-    TxOut {
-        asset: Asset::Explicit(AssetId::from_slice(asset_id).expect("valid asset id")),
-        value: ConfValue::Explicit(amount),
-        nonce: Nonce::Null,
-        script_pubkey: Script::new(),
-        witness: TxOutWitness::default(),
-    }
-}
-
-/// Placeholder for reissuance token output (confidential, set by blinder).
-pub(crate) fn reissuance_token_output(script_pubkey: &Script) -> TxOut {
-    TxOut {
-        asset: Asset::Null,
-        value: ConfValue::Null,
-        nonce: Nonce::Null,
-        script_pubkey: script_pubkey.clone(),
-        witness: TxOutWitness::default(),
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::Error;
-    use crate::params::ContractParams;
+    use crate::prediction_market::params::PredictionMarketParams;
     use simplicityhl::elements::LockTime;
+    use simplicityhl::elements::{AssetId, OutPoint};
 
     const TEST_ASSET: [u8; 32] = [0xaa; 32];
 
@@ -167,8 +83,8 @@ mod tests {
         }
     }
 
-    fn test_contract() -> CompiledContract {
-        let params = ContractParams {
+    fn test_contract() -> CompiledPredictionMarket {
+        let params = PredictionMarketParams {
             oracle_public_key: [0xaa; 32],
             collateral_asset_id: [0xbb; 32],
             yes_token_asset: [0x01; 32],
@@ -178,7 +94,7 @@ mod tests {
             collateral_per_token: 100_000,
             expiry_time: 1_000_000,
         };
-        CompiledContract::new(params).expect("test contract should compile")
+        CompiledPredictionMarket::new(params).expect("test contract should compile")
     }
 
     // ===== build_creation_pset =====

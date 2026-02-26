@@ -4,7 +4,7 @@ use nostr_sdk::prelude::*;
 use tokio::sync::broadcast;
 
 use crate::announcement::ContractAnnouncement;
-use crate::params::MarketId;
+use crate::prediction_market::params::MarketId;
 
 use super::attestation::{
     AttestationContent, AttestationResult, build_attestation_event, build_attestation_filter,
@@ -42,7 +42,7 @@ pub struct NoopStore;
 impl DiscoveryStore for NoopStore {
     fn ingest_market(
         &mut self,
-        _params: &crate::params::ContractParams,
+        _params: &crate::prediction_market::params::PredictionMarketParams,
         _meta: Option<&ContractMetadataInput>,
     ) -> Result<(), String> {
         Ok(())
@@ -394,7 +394,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
 /// Convert a DiscoveredMarket into ContractParams for store ingestion.
 pub fn discovered_market_to_contract_params(
     m: &DiscoveredMarket,
-) -> Result<crate::params::ContractParams, String> {
+) -> Result<crate::prediction_market::params::PredictionMarketParams, String> {
     let decode32 = |hex_str: &str, name: &str| -> Result<[u8; 32], String> {
         let bytes = hex::decode(hex_str).map_err(|e| format!("{name}: hex decode: {e}"))?;
         bytes
@@ -402,7 +402,7 @@ pub fn discovered_market_to_contract_params(
             .map_err(|_| format!("{name}: expected 32 bytes"))
     };
 
-    Ok(crate::params::ContractParams {
+    Ok(crate::prediction_market::params::PredictionMarketParams {
         oracle_public_key: decode32(&m.oracle_pubkey, "oracle_pubkey")?,
         collateral_asset_id: decode32(&m.collateral_asset_id, "collateral_asset_id")?,
         yes_token_asset: decode32(&m.yes_asset_id, "yes_asset_id")?,

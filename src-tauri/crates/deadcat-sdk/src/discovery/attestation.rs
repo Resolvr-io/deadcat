@@ -2,8 +2,8 @@ use nostr_sdk::prelude::*;
 use nostr_sdk::secp256k1;
 use serde::{Deserialize, Serialize};
 
-use crate::oracle::oracle_message;
-use crate::params::MarketId;
+use crate::prediction_market::oracle::oracle_message;
+use crate::prediction_market::params::MarketId;
 
 use super::{APP_EVENT_KIND, ATTESTATION_TAG, NETWORK_TAG};
 

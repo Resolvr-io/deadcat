@@ -1,9 +1,9 @@
 use simplicityhl::elements::pset::PartiallySignedTransaction;
 use simplicityhl::elements::{LockTime, Script};
 
-use crate::contract::CompiledContract;
 use crate::error::{Error, Result};
-use crate::state::MarketState;
+use crate::prediction_market::contract::CompiledPredictionMarket;
+use crate::prediction_market::state::MarketState;
 
 use super::{
     UnblindedUtxo, add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset,
@@ -37,7 +37,7 @@ pub struct CreationParams {
 ///
 /// Outputs: reissuance tokens → Dormant covenant + fee + optional change
 pub fn build_creation_pset(
-    contract: &CompiledContract,
+    contract: &CompiledPredictionMarket,
     params: &CreationParams,
 ) -> Result<PartiallySignedTransaction> {
     let combined_value = params

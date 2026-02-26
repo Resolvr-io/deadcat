@@ -104,7 +104,7 @@ pub fn parse_announcement_event(event: &Event) -> Result<DiscoveredMarket, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ContractParams;
+    use crate::PredictionMarketParams;
     use crate::announcement::ContractMetadata;
 
     fn test_metadata() -> ContractMetadata {
@@ -117,8 +117,8 @@ mod tests {
         }
     }
 
-    fn test_params() -> ContractParams {
-        ContractParams {
+    fn test_params() -> PredictionMarketParams {
+        PredictionMarketParams {
             oracle_public_key: [0xaa; 32],
             collateral_asset_id: [0xbb; 32],
             yes_token_asset: [0x01; 32],

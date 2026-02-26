@@ -5,8 +5,8 @@ use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 use deadcat_sdk::discovery::ContractMetadataInput;
 use deadcat_sdk::{
-    CompiledContract, CompiledMakerOrder, ContractParams, MakerOrderParams, MarketId, MarketState,
-    OrderDirection, UnblindedUtxo,
+    CompiledMakerOrder, CompiledPredictionMarket, MakerOrderParams, MarketId, MarketState,
+    OrderDirection, PredictionMarketParams, UnblindedUtxo,
 };
 
 use crate::conversions::{
@@ -66,7 +66,7 @@ pub struct IssuanceData {
 #[derive(Debug, Clone)]
 pub struct MarketInfo {
     pub market_id: MarketId,
-    pub params: ContractParams,
+    pub params: PredictionMarketParams,
     pub state: MarketState,
     pub cmr: [u8; 32],
     pub issuance: Option<IssuanceData>,
@@ -197,7 +197,7 @@ impl DeadcatStore {
     /// If the market already exists, this is a no-op returning the existing ID.
     pub fn ingest_market(
         &mut self,
-        params: &ContractParams,
+        params: &PredictionMarketParams,
         metadata: Option<&ContractMetadataInput>,
     ) -> crate::Result<MarketId> {
         let mid = params.market_id();
@@ -220,7 +220,7 @@ impl DeadcatStore {
             return Ok(mid);
         }
 
-        let compiled = CompiledContract::new(*params)?;
+        let compiled = CompiledPredictionMarket::new(*params)?;
         let row = new_market_row(params, &compiled, metadata);
 
         diesel::insert_into(markets::table)
@@ -737,7 +737,7 @@ impl DeadcatStore {
 impl deadcat_sdk::discovery::DiscoveryStore for DeadcatStore {
     fn ingest_market(
         &mut self,
-        params: &ContractParams,
+        params: &PredictionMarketParams,
         meta: Option<&ContractMetadataInput>,
     ) -> Result<(), String> {
         self.ingest_market(params, meta)

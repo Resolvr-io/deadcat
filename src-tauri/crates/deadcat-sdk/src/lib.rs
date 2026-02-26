@@ -5,17 +5,14 @@ pub mod amm_pool;
 pub mod announcement;
 pub(crate) mod assembly;
 pub(crate) mod chain;
-pub(crate) mod contract;
 pub mod discovery;
 pub(crate) mod error;
 pub mod maker_order;
 pub(crate) mod network;
 pub mod node;
-pub(crate) mod oracle;
-pub mod params;
+pub mod prediction_market;
 pub(crate) mod pset;
 pub(crate) mod sdk;
-pub(crate) mod state;
 #[cfg(any(test, feature = "testing"))]
 pub mod taproot;
 #[cfg(not(any(test, feature = "testing")))]
@@ -23,20 +20,19 @@ pub(crate) mod taproot;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub(crate) mod trade;
-pub(crate) mod witness;
 
 // ── Core types ─────────────────────────────────────────────────────
-pub use contract::CompiledContract;
 pub use error::{Error, NodeError, Result};
 pub use network::Network;
 pub use node::DeadcatNode;
-pub use params::{ContractParams, MarketId};
+pub use prediction_market::contract::CompiledPredictionMarket;
+pub use prediction_market::params::{MarketId, PredictionMarketParams};
+pub use prediction_market::state::MarketState;
 pub use pset::UnblindedUtxo;
 pub use sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, FillOrderResult, IssuanceResult,
     PoolCreationResult, PoolLpResult, PoolSwapResult, RedemptionResult, ResolutionResult,
 };
-pub use state::MarketState;
 
 // Re-export LWK for app-layer use
 pub use lwk_wollet;
@@ -61,15 +57,15 @@ pub use trade::types::{
 // Access via `pub mod` paths (taproot, maker_order, discovery, etc.)
 // for anything not listed here.
 #[cfg(feature = "testing")]
-pub use assembly::{
+pub use prediction_market::assembly::{
     CollateralSource, IssuanceAssemblyInputs, IssuanceEntropy, compute_issuance_entropy,
 };
 #[cfg(feature = "testing")]
-pub use oracle::oracle_message;
+pub use prediction_market::oracle::oracle_message;
 #[cfg(feature = "testing")]
-pub use sdk::DeadcatSdk;
-#[cfg(feature = "testing")]
-pub use witness::{
-    AllBlindingFactors, ReissuanceBlindingFactors, SpendingPath, satisfy_contract,
+pub use prediction_market::witness::{
+    AllBlindingFactors, PredictionMarketSpendingPath, ReissuanceBlindingFactors, satisfy_contract,
     satisfy_contract_with_env, serialize_satisfied,
 };
+#[cfg(feature = "testing")]
+pub use sdk::DeadcatSdk;

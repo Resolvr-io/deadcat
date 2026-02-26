@@ -1,6 +1,6 @@
 use crate::amm_pool::params::AmmPoolParams;
 use crate::maker_order::params::MakerOrderParams;
-use crate::params::ContractParams;
+use crate::prediction_market::params::PredictionMarketParams;
 
 /// Metadata passed alongside a market when persisting to the store.
 #[derive(Debug, Clone, Default)]
@@ -25,7 +25,7 @@ pub trait DiscoveryStore: Send + 'static {
     /// Persist a discovered market. If it already exists, this should be a no-op.
     fn ingest_market(
         &mut self,
-        params: &ContractParams,
+        params: &PredictionMarketParams,
         meta: Option<&ContractMetadataInput>,
     ) -> Result<(), String>;
 

@@ -322,7 +322,7 @@ pub fn generate_keys(app_data_dir: &std::path::Path) -> Result<Keys, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deadcat_sdk::{ContractParams, MarketId};
+    use deadcat_sdk::{MarketId, PredictionMarketParams};
     use nostr_sdk::secp256k1;
 
     fn test_metadata() -> ContractMetadata {
@@ -335,8 +335,8 @@ mod tests {
         }
     }
 
-    fn test_params() -> ContractParams {
-        ContractParams {
+    fn test_params() -> PredictionMarketParams {
+        PredictionMarketParams {
             oracle_public_key: [0xaa; 32],
             collateral_asset_id: [0xbb; 32],
             yes_token_asset: [0x01; 32],

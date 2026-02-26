@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 
-use crate::params::MarketId;
+use crate::prediction_market::params::MarketId;
 
 /// Construct the oracle message: SHA256(market_id || outcome_byte).
 /// outcome_byte is 0x01 for YES, 0x00 for NO.

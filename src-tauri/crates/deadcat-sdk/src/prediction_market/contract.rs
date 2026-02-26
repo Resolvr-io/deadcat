@@ -4,29 +4,38 @@ use simplicityhl::simplicity::Cmr;
 use simplicityhl::{CompiledProgram, TemplateProgram};
 
 use crate::error::{Error, Result};
-use crate::params::{ContractParams, compute_issuance_assets};
-use crate::state::MarketState;
-use crate::taproot::{self, MarketAddresses};
+use crate::prediction_market::params::{PredictionMarketParams, compute_issuance_assets};
+use crate::prediction_market::state::MarketState;
+use crate::taproot;
 
-const CONTRACT_SOURCE: &str = include_str!("../contract/prediction_market.simf");
+const CONTRACT_SOURCE: &str = include_str!("../../contract/prediction_market.simf");
 
-/// A compiled prediction market contract, ready for address derivation and spending.
-pub struct CompiledContract {
-    program: CompiledProgram,
-    cmr: Cmr,
-    params: ContractParams,
+/// All four covenant addresses for a market.
+#[derive(Debug, Clone)]
+pub struct MarketAddresses {
+    pub dormant: Address,
+    pub unresolved: Address,
+    pub resolved_yes: Address,
+    pub resolved_no: Address,
 }
 
-impl CompiledContract {
+/// A compiled prediction market contract, ready for address derivation and spending.
+pub struct CompiledPredictionMarket {
+    program: CompiledProgram,
+    cmr: Cmr,
+    params: PredictionMarketParams,
+}
+
+impl CompiledPredictionMarket {
     /// Create a new prediction market from the non-derivable parameters and the
     /// two outpoints that will define the YES and NO asset IDs.
     ///
     /// This is the primary entry point for market creation. It computes the
-    /// deterministic asset IDs, builds the full [`ContractParams`], and compiles
+    /// deterministic asset IDs, builds the full [`PredictionMarketParams`], and compiles
     /// the contract in one step.
     ///
-    /// Use [`CompiledContract::new`] instead when reconstructing from a persisted
-    /// [`ContractParams`].
+    /// Use [`CompiledPredictionMarket::new`] instead when reconstructing from a persisted
+    /// [`PredictionMarketParams`].
     pub fn create(
         oracle_public_key: [u8; 32],
         collateral_asset_id: [u8; 32],
@@ -42,7 +51,7 @@ impl CompiledContract {
             false,
         );
 
-        let params = ContractParams {
+        let params = PredictionMarketParams {
             oracle_public_key,
             collateral_asset_id,
             yes_token_asset: assets.yes_token_asset,
@@ -57,7 +66,7 @@ impl CompiledContract {
     }
 
     /// Compile the prediction market contract with the given parameters.
-    pub fn new(params: ContractParams) -> Result<Self> {
+    pub fn new(params: PredictionMarketParams) -> Result<Self> {
         let template = TemplateProgram::new(CONTRACT_SOURCE)
             .map_err(|e| Error::Compilation(format!("template parse error: {e}")))?;
 
@@ -85,7 +94,7 @@ impl CompiledContract {
     }
 
     /// The contract parameters.
-    pub fn params(&self) -> &ContractParams {
+    pub fn params(&self) -> &PredictionMarketParams {
         &self.params
     }
 

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::params::ContractParams;
+use crate::prediction_market::params::PredictionMarketParams;
 
 /// Off-chain, human-readable fields from the UI create form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,7 +16,7 @@ pub struct ContractMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContractAnnouncement {
     pub version: u8,
-    pub contract_params: ContractParams,
+    pub contract_params: PredictionMarketParams,
     pub metadata: ContractMetadata,
     pub creation_txid: Option<String>,
 }

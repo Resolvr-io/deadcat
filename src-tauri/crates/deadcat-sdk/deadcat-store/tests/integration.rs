@@ -9,7 +9,7 @@ use deadcat_sdk::elements::{
     TxInWitness, TxOut, TxOutWitness, Txid,
 };
 use deadcat_sdk::{
-    ContractParams, MakerOrderParams, MarketId, MarketState, OrderDirection, UnblindedUtxo,
+    MakerOrderParams, MarketId, MarketState, OrderDirection, PredictionMarketParams, UnblindedUtxo,
     derive_maker_receive, maker_receive_script_pubkey,
 };
 
@@ -20,8 +20,8 @@ use deadcat_store::{
 
 // ==================== Test Helpers ====================
 
-fn test_params() -> ContractParams {
-    ContractParams {
+fn test_params() -> PredictionMarketParams {
+    PredictionMarketParams {
         oracle_public_key: [0xaa; 32],
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: [0x01; 32],
@@ -33,8 +33,8 @@ fn test_params() -> ContractParams {
     }
 }
 
-fn test_params_2() -> ContractParams {
-    ContractParams {
+fn test_params_2() -> PredictionMarketParams {
+    PredictionMarketParams {
         oracle_public_key: [0xcc; 32],
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: [0x11; 32],
@@ -124,11 +124,11 @@ fn make_chain_utxo(txid: [u8; 32], vout: u32, asset_id: [u8; 32], value: u64) ->
 /// This avoids fragile index-based assumptions about SPK ordering.
 fn get_market_spk(
     _store: &mut DeadcatStore,
-    params: &ContractParams,
+    params: &PredictionMarketParams,
     state: MarketState,
 ) -> Vec<u8> {
-    use deadcat_sdk::CompiledContract;
-    let compiled = CompiledContract::new(*params).unwrap();
+    use deadcat_sdk::CompiledPredictionMarket;
+    let compiled = CompiledPredictionMarket::new(*params).unwrap();
     compiled.script_pubkey(state).as_bytes().to_vec()
 }
 
@@ -1278,7 +1278,7 @@ fn build_mock_issuance_tx(issuances: &[([u8; 32], u32, [u8; 32], u64, u64, Tweak
 fn test_sync_extracts_issuance_entropy() {
     // Build a market with known issuance entropies, then verify sync extracts them.
     // We compute token IDs from known outpoints + contract hashes, then build
-    // ContractParams using those IDs.
+    // PredictionMarketParams using those IDs.
     let yes_prevout_txid = [0xA1; 32];
     let yes_prevout_vout = 0u32;
     let yes_contract_hash = [0xC1; 32];
@@ -1302,7 +1302,7 @@ fn test_sync_extracts_issuance_entropy() {
     let no_token = AssetId::reissuance_token_from_entropy(no_entropy, false);
 
     // Create a market with these computed asset/token IDs
-    let custom_params = ContractParams {
+    let custom_params = PredictionMarketParams {
         oracle_public_key: [0xaa; 32],
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: yes_asset.into_inner().to_byte_array(),
@@ -1388,7 +1388,7 @@ fn test_sync_extracts_entropy_from_creation_tx() {
     let no_asset = AssetId::from_entropy(no_entropy);
     let no_token = AssetId::reissuance_token_from_entropy(no_entropy, false);
 
-    let custom_params = ContractParams {
+    let custom_params = PredictionMarketParams {
         oracle_public_key: [0xcc; 32],
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: yes_asset.into_inner().to_byte_array(),
@@ -1461,7 +1461,7 @@ fn test_sync_skips_entropy_when_tx_unavailable() {
     let no_asset = AssetId::from_entropy(no_entropy);
     let no_token = AssetId::reissuance_token_from_entropy(no_entropy, false);
 
-    let custom_params = ContractParams {
+    let custom_params = PredictionMarketParams {
         oracle_public_key: [0xdd; 32],
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: yes_asset.into_inner().to_byte_array(),

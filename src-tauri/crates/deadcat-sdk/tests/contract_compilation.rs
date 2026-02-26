@@ -4,13 +4,14 @@ use deadcat_sdk::taproot::{
 };
 use deadcat_sdk::testing::test_contract_params;
 use deadcat_sdk::{
-    CompiledContract, MarketState, SpendingPath, satisfy_contract, serialize_satisfied,
+    CompiledPredictionMarket, MarketState, PredictionMarketSpendingPath, satisfy_contract,
+    serialize_satisfied,
 };
 
 #[test]
 fn contract_compiles_successfully() {
     let params = test_contract_params();
-    let contract = CompiledContract::new(params).expect("contract should compile");
+    let contract = CompiledPredictionMarket::new(params).expect("contract should compile");
     // CMR should be non-zero
     let cmr_bytes: &[u8] = contract.cmr().as_ref();
     assert!(cmr_bytes.iter().any(|&b| b != 0), "CMR should be non-zero");
@@ -19,7 +20,7 @@ fn contract_compiles_successfully() {
 #[test]
 fn four_distinct_addresses() {
     let params = test_contract_params();
-    let contract = CompiledContract::new(params).expect("contract should compile");
+    let contract = CompiledPredictionMarket::new(params).expect("contract should compile");
     let addrs = contract.addresses(&AddressParams::LIQUID);
 
     let addr_strings: Vec<String> = vec![
@@ -45,8 +46,8 @@ fn four_distinct_addresses() {
 fn addresses_are_deterministic() {
     let params1 = test_contract_params();
     let params2 = test_contract_params();
-    let c1 = CompiledContract::new(params1).expect("contract should compile");
-    let c2 = CompiledContract::new(params2).expect("contract should compile");
+    let c1 = CompiledPredictionMarket::new(params1).expect("contract should compile");
+    let c2 = CompiledPredictionMarket::new(params2).expect("contract should compile");
 
     for state in [
         MarketState::Dormant,
@@ -69,8 +70,8 @@ fn different_params_different_cmr() {
     let mut params2 = test_contract_params();
     params2.expiry_time = 2_000_000;
 
-    let c1 = CompiledContract::new(params1).expect("contract should compile");
-    let c2 = CompiledContract::new(params2).expect("contract should compile");
+    let c1 = CompiledPredictionMarket::new(params1).expect("contract should compile");
+    let c2 = CompiledPredictionMarket::new(params2).expect("contract should compile");
 
     assert_ne!(
         c1.cmr().as_ref() as &[u8],
@@ -82,7 +83,7 @@ fn different_params_different_cmr() {
 #[test]
 fn script_pubkey_starts_with_p2tr_prefix() {
     let params = test_contract_params();
-    let contract = CompiledContract::new(params).expect("contract should compile");
+    let contract = CompiledPredictionMarket::new(params).expect("contract should compile");
 
     for state in [
         MarketState::Dormant,
@@ -111,8 +112,8 @@ fn script_pubkey_starts_with_p2tr_prefix() {
 #[test]
 fn witness_satisfy_secondary_covenant_input() {
     let params = test_contract_params();
-    let contract = CompiledContract::new(params).expect("contract should compile");
-    let path = SpendingPath::SecondaryCovenantInput;
+    let contract = CompiledPredictionMarket::new(params).expect("contract should compile");
+    let path = PredictionMarketSpendingPath::SecondaryCovenantInput;
     let satisfied = satisfy_contract(&contract, &path, MarketState::Unresolved)
         .expect("should satisfy SecondaryCovenantInput path");
     let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
@@ -129,8 +130,8 @@ fn witness_satisfy_secondary_covenant_input() {
 #[test]
 fn witness_satisfy_initial_issuance() {
     let params = test_contract_params();
-    let contract = CompiledContract::new(params).expect("contract should compile");
-    let path = SpendingPath::InitialIssuance {
+    let contract = CompiledPredictionMarket::new(params).expect("contract should compile");
+    let path = PredictionMarketSpendingPath::InitialIssuance {
         blinding: deadcat_sdk::AllBlindingFactors::default(),
     };
     let satisfied = satisfy_contract(&contract, &path, MarketState::Dormant)
@@ -149,7 +150,7 @@ fn witness_satisfy_initial_issuance() {
 #[test]
 fn control_block_structure() {
     let params = test_contract_params();
-    let contract = CompiledContract::new(params).expect("contract should compile");
+    let contract = CompiledPredictionMarket::new(params).expect("contract should compile");
     let cb = simplicity_control_block(contract.cmr(), 1);
     assert_eq!(cb.len(), 65, "control block should be 65 bytes");
     assert_eq!(
@@ -187,7 +188,7 @@ fn simplicity_leaf_matches_taprootbuilder() {
     use deadcat_sdk::elements::taproot::{LeafVersion, TaprootBuilder};
 
     let params = test_contract_params();
-    let contract = CompiledContract::new(params).expect("contract should compile");
+    let contract = CompiledPredictionMarket::new(params).expect("contract should compile");
     let cmr = contract.cmr();
 
     let secp = Secp256k1::new();
@@ -242,7 +243,7 @@ fn taproot_output_key_consistency() {
     use deadcat_sdk::elements::secp256k1_zkp::{Scalar, Secp256k1, XOnlyPublicKey};
 
     let params = test_contract_params();
-    let contract = CompiledContract::new(params).expect("contract should compile");
+    let contract = CompiledPredictionMarket::new(params).expect("contract should compile");
     let cmr = contract.cmr();
     let secp = Secp256k1::new();
     let nums_key = XOnlyPublicKey::from_slice(&NUMS_KEY_BYTES).expect("valid NUMS key");

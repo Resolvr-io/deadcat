@@ -108,15 +108,6 @@ pub fn covenant_address(cmr: &Cmr, state: u64, params: &'static AddressParams) -
     Address::from_script(&spk, None, params).expect("valid P2TR script should produce an address")
 }
 
-/// All four covenant addresses for a market.
-#[derive(Debug, Clone)]
-pub struct MarketAddresses {
-    pub dormant: Address,
-    pub unresolved: Address,
-    pub resolved_yes: Address,
-    pub resolved_no: Address,
-}
-
 /// Build the Simplicity control block for a given CMR and state.
 ///
 /// Returns 65 bytes: `[(leaf_version | parity) | NUMS_KEY | tapdata_hash(state)]`

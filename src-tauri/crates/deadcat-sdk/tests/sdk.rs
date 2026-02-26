@@ -1,4 +1,4 @@
-use deadcat_sdk::ContractParams;
+use deadcat_sdk::PredictionMarketParams;
 use deadcat_sdk::{DeadcatSdk, MarketState, OrderDirection};
 use lwk_signer::SwSigner;
 use lwk_test_util::{
@@ -469,7 +469,7 @@ fn generate_oracle_keypair() -> ([u8; 32], Keypair) {
 }
 
 /// Sign the oracle message for a market resolution.
-fn oracle_sign(params: &ContractParams, outcome_yes: bool, keypair: &Keypair) -> [u8; 64] {
+fn oracle_sign(params: &PredictionMarketParams, outcome_yes: bool, keypair: &Keypair) -> [u8; 64] {
     let market_id = params.market_id();
     let msg_hash = deadcat_sdk::oracle_message(&market_id, outcome_yes);
     let secp = Secp256k1::new();
@@ -486,7 +486,7 @@ fn create_and_issue(
     cpt: u64,
     expiry_time: u32,
     pairs: u64,
-) -> (Txid, ContractParams) {
+) -> (Txid, PredictionMarketParams) {
     let (creation_txid, params) = fixture
         .sdk
         .create_contract_onchain(oracle_pubkey, cpt, expiry_time, 1_000, 500)
@@ -807,7 +807,7 @@ fn test_redeem_wrong_state() {
 // ── Limit order integration tests ───────────────────────────────────────
 
 /// Helper: create a market, issue tokens, and return the params + asset IDs.
-fn issue_market_tokens(fixture: &mut TestFixture, pairs: u64) -> (Txid, ContractParams) {
+fn issue_market_tokens(fixture: &mut TestFixture, pairs: u64) -> (Txid, PredictionMarketParams) {
     let (oracle_pubkey, _keypair) = generate_oracle_keypair();
     create_and_issue(fixture, oracle_pubkey, 10_000, 500_000, pairs)
 }

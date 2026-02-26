@@ -694,7 +694,7 @@ pub async fn publish_contract(
 
     // Asset IDs are zero — no on-chain issuance has occurred yet.
     // They get populated when the market is created on-chain via create_contract_onchain.
-    let contract_params = deadcat_sdk::params::ContractParams {
+    let contract_params = deadcat_sdk::PredictionMarketParams {
         oracle_public_key: oracle_pubkey_bytes,
         collateral_asset_id: [0u8; 32],
         yes_token_asset: [0u8; 32],
@@ -770,7 +770,7 @@ pub async fn oracle_attest(
         .map_err(|e| format!("invalid market_id hex: {e}"))?
         .try_into()
         .map_err(|_| "market_id must be exactly 32 bytes".to_string())?;
-    let market_id = deadcat_sdk::params::MarketId(market_id_bytes);
+    let market_id = deadcat_sdk::MarketId(market_id_bytes);
 
     // Get a connected client (handles relay connection)
     let (_keys, client) = get_keys_and_client(&app).await?;
@@ -894,7 +894,7 @@ pub async fn issue_tokens(
     pairs: u64,
     app: tauri::AppHandle,
 ) -> Result<IssuanceResultResponse, String> {
-    let params: deadcat_sdk::params::ContractParams =
+    let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
@@ -941,7 +941,7 @@ pub async fn cancel_tokens(
     pairs: u64,
     app: tauri::AppHandle,
 ) -> Result<CancellationResultResponse, String> {
-    let params: deadcat_sdk::params::ContractParams =
+    let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
@@ -985,7 +985,7 @@ pub async fn resolve_market(
     oracle_signature_hex: String,
     app: tauri::AppHandle,
 ) -> Result<ResolutionResultResponse, String> {
-    let params: deadcat_sdk::params::ContractParams =
+    let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
@@ -1032,7 +1032,7 @@ pub async fn redeem_tokens(
     tokens: u64,
     app: tauri::AppHandle,
 ) -> Result<RedemptionResultResponse, String> {
-    let params: deadcat_sdk::params::ContractParams =
+    let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
@@ -1067,7 +1067,7 @@ pub async fn redeem_expired(
     tokens: u64,
     app: tauri::AppHandle,
 ) -> Result<RedemptionResultResponse, String> {
-    let params: deadcat_sdk::params::ContractParams =
+    let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
@@ -1109,7 +1109,7 @@ pub async fn get_market_state(
     contract_params_json: String,
     app: tauri::AppHandle,
 ) -> Result<MarketStateResponse, String> {
-    let params: deadcat_sdk::params::ContractParams =
+    let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
