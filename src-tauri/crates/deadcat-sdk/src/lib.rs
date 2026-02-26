@@ -16,7 +16,10 @@ pub mod params;
 pub(crate) mod pset;
 pub(crate) mod sdk;
 pub(crate) mod state;
+#[cfg(any(test, feature = "testing"))]
 pub mod taproot;
+#[cfg(not(any(test, feature = "testing")))]
+pub(crate) mod taproot;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub(crate) mod trade;
@@ -31,9 +34,8 @@ pub use node::DeadcatNode;
 pub use params::{ContractParams, MarketId};
 pub use pset::UnblindedUtxo;
 pub use sdk::{
-    CancelOrderResult, CancellationResult, CreateOrderResult, DeadcatSdk, FillOrderResult,
-    IssuanceResult, PoolCreationResult, PoolLpResult, PoolSwapResult, RedemptionResult,
-    ResolutionResult,
+    CancelOrderResult, CancellationResult, CreateOrderResult, FillOrderResult, IssuanceResult,
+    PoolCreationResult, PoolLpResult, PoolSwapResult, RedemptionResult, ResolutionResult,
 };
 pub use state::MarketState;
 
@@ -65,6 +67,8 @@ pub use assembly::{
 };
 #[cfg(feature = "testing")]
 pub use oracle::oracle_message;
+#[cfg(feature = "testing")]
+pub use sdk::DeadcatSdk;
 #[cfg(feature = "testing")]
 pub use witness::{
     AllBlindingFactors, ReissuanceBlindingFactors, SpendingPath, satisfy_contract,

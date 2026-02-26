@@ -38,11 +38,11 @@ impl AsRef<[u8]> for MarketId {
 /// Use [`compute_issuance_assets`] to compute these from the outpoints that will
 /// be spent in the initial issuance transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IssuanceAssets {
-    pub yes_token_asset: [u8; 32],
-    pub no_token_asset: [u8; 32],
-    pub yes_reissuance_token: [u8; 32],
-    pub no_reissuance_token: [u8; 32],
+pub(crate) struct IssuanceAssets {
+    pub(crate) yes_token_asset: [u8; 32],
+    pub(crate) no_token_asset: [u8; 32],
+    pub(crate) yes_reissuance_token: [u8; 32],
+    pub(crate) no_reissuance_token: [u8; 32],
 }
 
 /// Compute the deterministic asset IDs for a binary prediction market from the
@@ -53,7 +53,7 @@ pub struct IssuanceAssets {
 /// The `contract_hash` is typically `ContractHash::from_byte_array([0u8; 32])` when
 /// no asset contract metadata is used. Set `confidential` to `true` if the issuance
 /// amounts will be blinded.
-pub fn compute_issuance_assets(
+pub(crate) fn compute_issuance_assets(
     yes_defining_outpoint: OutPoint,
     no_defining_outpoint: OutPoint,
     contract_hash: ContractHash,

@@ -117,11 +117,6 @@ pub struct MarketAddresses {
     pub resolved_no: Address,
 }
 
-/// Return the NUMS (Nothing Up My Sleeve) internal key bytes.
-pub fn nums_internal_key() -> [u8; 32] {
-    NUMS_KEY_BYTES
-}
-
 /// Build the Simplicity control block for a given CMR and state.
 ///
 /// Returns 65 bytes: `[(leaf_version | parity) | NUMS_KEY | tapdata_hash(state)]`

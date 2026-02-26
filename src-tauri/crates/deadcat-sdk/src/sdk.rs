@@ -278,16 +278,13 @@ impl DeadcatSdk {
         self.chain.fetch_transaction(txid)
     }
 
+    #[cfg_attr(not(any(test, feature = "testing")), allow(dead_code))]
     pub fn network(&self) -> Network {
         self.network
     }
 
     pub fn electrum_url(&self) -> &str {
         self.chain.electrum_url()
-    }
-
-    pub fn chain(&self) -> &ElectrumBackend {
-        &self.chain
     }
 
     pub fn policy_asset(&self) -> AssetId {

@@ -1,6 +1,6 @@
-pub mod assembly;
+pub(crate) mod assembly;
 pub mod contract;
 pub mod math;
 pub mod params;
-pub mod pset;
-pub mod witness;
+pub(crate) mod pset;
+pub(crate) mod witness;
