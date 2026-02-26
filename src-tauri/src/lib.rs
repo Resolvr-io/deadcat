@@ -37,16 +37,9 @@ impl Default for NodeState {
 }
 
 /// Minimal state for the legacy wallet_store commands.
+#[derive(Default)]
 pub struct WalletStoreState {
     pub wallet_store: wallet_store::WalletStore,
-}
-
-impl Default for WalletStoreState {
-    fn default() -> Self {
-        Self {
-            wallet_store: wallet_store::WalletStore::default(),
-        }
-    }
 }
 
 /// App-layer Nostr state: relay list (keys come from the node).
