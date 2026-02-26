@@ -133,6 +133,14 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         }
         let sdk = DeadcatSdk::new(mnemonic, self.network, electrum_url, datadir)
             .map_err(NodeError::Sdk)?;
+        // Seed the snapshot so balance/utxos/transactions are available
+        // immediately, without waiting for the first with_sdk call.
+        let snapshot = WalletSnapshot {
+            balance: sdk.balance().unwrap_or_default(),
+            utxos: sdk.utxos().unwrap_or_default(),
+            transactions: sdk.transactions().unwrap_or_default(),
+        };
+        let _ = self.snapshot_tx.send(Some(snapshot));
         *guard = Some(sdk);
         Ok(())
     }
