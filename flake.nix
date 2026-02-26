@@ -37,7 +37,18 @@
             biome
           ]
           ++ lib.optional (tauriCli != null) tauriCli
-          ++ lib.optional (chromium != null) chromium;
+          ++ lib.optional (chromium != null) chromium
+          ++ lib.optionals pkgs.stdenv.isLinux (with pkgs; [
+            glib
+            gtk3
+            webkitgtk_4_1
+            libsoup_3
+            pango
+            cairo
+            gdk-pixbuf
+            atk
+            harfbuzz
+          ]);
           shellHook = lib.optionalString (chromium != null) ''
             export PUPPETEER_EXECUTABLE_PATH="${chromium}/bin/chromium"
           '';
