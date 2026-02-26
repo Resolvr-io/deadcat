@@ -7,6 +7,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 const WALLET_FILE: &str = "wallet_encrypted.json";
 
@@ -35,7 +36,8 @@ struct EncryptedWalletFile {
 pub struct MnemonicPersister {
     file_path: PathBuf,
     /// Cached mnemonic from a previous successful unlock (cleared on lock).
-    cached_mnemonic: Option<String>,
+    /// Wrapped in `Zeroizing` so the backing memory is zeroed on drop/clear.
+    cached_mnemonic: Option<Zeroizing<String>>,
 }
 
 impl MnemonicPersister {
@@ -52,7 +54,7 @@ impl MnemonicPersister {
 
     /// Return the cached mnemonic if available (skips Argon2 on repeat unlock).
     pub fn cached(&self) -> Option<&str> {
-        self.cached_mnemonic.as_deref()
+        self.cached_mnemonic.as_ref().map(|z| z.as_str())
     }
 
     /// Clear the cached mnemonic (call on lock).
@@ -126,9 +128,10 @@ impl MnemonicPersister {
             .decrypt(nonce, ciphertext.as_ref())
             .map_err(|_| WalletPersistError::WrongPassword)?;
 
-        let mnemonic =
+        let mnemonic_str =
             String::from_utf8(plaintext).map_err(|e| WalletPersistError::Crypto(e.to_string()))?;
-        self.cached_mnemonic = Some(mnemonic.clone());
-        Ok(mnemonic)
+        let ret = mnemonic_str.clone();
+        self.cached_mnemonic = Some(Zeroizing::new(mnemonic_str));
+        Ok(ret)
     }
 }

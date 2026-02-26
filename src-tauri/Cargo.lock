@@ -1407,6 +1407,7 @@ dependencies = [
  "tauri-plugin-opener",
  "thiserror 2.0.18",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
