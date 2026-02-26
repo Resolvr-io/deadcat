@@ -130,7 +130,9 @@ export function handleInput(e: Event, render: () => void): void {
   }
 
   if (target.id === "receive-amount") {
-    state.receiveAmount = target.value;
+    const v = target.value.replace(/^-/, "");
+    state.receiveAmount = v;
+    if (target.value !== v) target.value = v;
     return;
   }
 
@@ -145,12 +147,16 @@ export function handleInput(e: Event, render: () => void): void {
   }
 
   if (target.id === "send-liquid-amount") {
-    state.sendLiquidAmount = target.value;
+    const v = target.value.replace(/^-/, "");
+    state.sendLiquidAmount = v;
+    if (target.value !== v) target.value = v;
     return;
   }
 
   if (target.id === "send-btc-amount") {
-    state.sendBtcAmount = target.value;
+    const v = target.value.replace(/^-/, "");
+    state.sendBtcAmount = v;
+    if (target.value !== v) target.value = v;
     return;
   }
 
