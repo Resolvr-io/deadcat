@@ -158,7 +158,7 @@ impl TradeTestFixture {
     /// Mine a block and sync the wallet.
     async fn mine_and_sync(&self) {
         self.env.elementsd_generate(1);
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
         self.node.sync_wallet().await.unwrap();
     }
 
@@ -204,7 +204,7 @@ impl TradeTestFixture {
 
         // Confirm the issuance so elementsd can spend the reissuance token
         self.env.elementsd_generate(1);
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Transfer the reissuance token to the SDK wallet
         let addr = self.node.address(None).await.unwrap();
@@ -239,6 +239,47 @@ impl TradeTestFixture {
         (node, temp_dir)
     }
 
+    /// Set up an AMM pool: issue LP tokens, construct pool params, create the
+    /// pool on-chain, mine + sync.  Returns the `AmmPoolParams` for quoting.
+    async fn setup_pool(
+        &self,
+        params: &ContractParams,
+        lbtc_bytes: [u8; 32],
+        market_id: &str,
+    ) -> AmmPoolParams {
+        let (lp_bytes, rt_bytes, lp_creation_txid) = self.setup_lp_token().await;
+
+        let pool_params = AmmPoolParams {
+            yes_asset_id: params.yes_token_asset,
+            no_asset_id: params.no_token_asset,
+            lbtc_asset_id: lbtc_bytes,
+            lp_asset_id: lp_bytes,
+            lp_reissuance_token_id: rt_bytes,
+            fee_bps: 30,
+            cosigner_pubkey: NUMS_KEY_BYTES,
+        };
+
+        let (_pool, _pool_txid) = self
+            .node
+            .create_pool(
+                pool_params,
+                50,      // initial_r_yes
+                50,      // initial_r_no
+                500_000, // initial_r_lbtc
+                1_000,   // initial_issued_lp
+                500,     // fee_amount
+                market_id.to_string(),
+                lp_creation_txid,
+            )
+            .await
+            .unwrap();
+
+        self.mine_and_sync().await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        pool_params
+    }
+
     /// Fund a second node's wallet with L-BTC.
     async fn fund_second_node(&self, node: &DeadcatNode<TestStore>, count: u32, sats_each: u64) {
         for _ in 0..count {
@@ -247,7 +288,7 @@ impl TradeTestFixture {
                 .elementsd_sendtoaddress(addr.address(), sats_each, None);
         }
         self.env.elementsd_generate(1);
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
         node.sync_wallet().await.unwrap();
     }
 }
@@ -419,35 +460,7 @@ async fn trade_buy_yes_via_amm_pool() {
     let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
     let yes_asset = AssetId::from_slice(&params.yes_token_asset).unwrap();
 
-    let (lp_bytes, rt_bytes, lp_creation_txid) = f.setup_lp_token().await;
-
-    let pool_params = AmmPoolParams {
-        yes_asset_id: params.yes_token_asset,
-        no_asset_id: params.no_token_asset,
-        lbtc_asset_id: lbtc_bytes,
-        lp_asset_id: lp_bytes,
-        lp_reissuance_token_id: rt_bytes,
-        fee_bps: 30,
-        cosigner_pubkey: NUMS_KEY_BYTES,
-    };
-
-    let (_pool, _pool_txid) = f
-        .node
-        .create_pool(
-            pool_params,
-            50,      // initial_r_yes
-            50,      // initial_r_no
-            500_000, // initial_r_lbtc
-            1_000,   // initial_issued_lp
-            500,     // fee_amount
-            market_id.clone(),
-            lp_creation_txid,
-        )
-        .await
-        .unwrap();
-
-    f.mine_and_sync().await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    f.setup_pool(&params, lbtc_bytes, &market_id).await;
 
     let balance_pre_trade = f.node.balance().await.unwrap();
     let yes_pre = *balance_pre_trade.get(&yes_asset).unwrap_or(&0);
@@ -499,33 +512,7 @@ async fn trade_buy_yes_combined_pool_and_order() {
     let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
     let yes_asset = AssetId::from_slice(&params.yes_token_asset).unwrap();
 
-    let (lp_bytes, rt_bytes, lp_creation_txid) = f.setup_lp_token().await;
-    let pool_params = AmmPoolParams {
-        yes_asset_id: params.yes_token_asset,
-        no_asset_id: params.no_token_asset,
-        lbtc_asset_id: lbtc_bytes,
-        lp_asset_id: lp_bytes,
-        lp_reissuance_token_id: rt_bytes,
-        fee_bps: 30,
-        cosigner_pubkey: NUMS_KEY_BYTES,
-    };
-
-    let (_pool, _pool_txid) = f
-        .node
-        .create_pool(
-            pool_params,
-            50,      // initial_r_yes
-            50,      // initial_r_no
-            500_000, // initial_r_lbtc
-            1_000,   // initial_issued_lp
-            500,     // fee_amount
-            market_id.clone(),
-            lp_creation_txid,
-        )
-        .await
-        .unwrap();
-
-    f.mine_and_sync().await;
+    f.setup_pool(&params, lbtc_bytes, &market_id).await;
 
     let (_create_result, _event_id) = f
         .node
@@ -694,35 +681,7 @@ async fn trade_sell_yes_via_amm_pool() {
     let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
     let yes_asset = AssetId::from_slice(&params.yes_token_asset).unwrap();
 
-    let (lp_bytes, rt_bytes, lp_creation_txid) = f.setup_lp_token().await;
-
-    let pool_params = AmmPoolParams {
-        yes_asset_id: params.yes_token_asset,
-        no_asset_id: params.no_token_asset,
-        lbtc_asset_id: lbtc_bytes,
-        lp_asset_id: lp_bytes,
-        lp_reissuance_token_id: rt_bytes,
-        fee_bps: 30,
-        cosigner_pubkey: NUMS_KEY_BYTES,
-    };
-
-    let (_pool, _pool_txid) = f
-        .node
-        .create_pool(
-            pool_params,
-            50,      // initial_r_yes
-            50,      // initial_r_no
-            500_000, // initial_r_lbtc
-            1_000,   // initial_issued_lp
-            500,     // fee_amount
-            market_id.clone(),
-            lp_creation_txid,
-        )
-        .await
-        .unwrap();
-
-    f.mine_and_sync().await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    f.setup_pool(&params, lbtc_bytes, &market_id).await;
 
     let balance_pre = f.node.balance().await.unwrap();
     let yes_pre = *balance_pre.get(&yes_asset).unwrap_or(&0);
@@ -783,35 +742,7 @@ async fn trade_buy_no_via_amm_pool() {
     let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
     let no_asset = AssetId::from_slice(&params.no_token_asset).unwrap();
 
-    let (lp_bytes, rt_bytes, lp_creation_txid) = f.setup_lp_token().await;
-
-    let pool_params = AmmPoolParams {
-        yes_asset_id: params.yes_token_asset,
-        no_asset_id: params.no_token_asset,
-        lbtc_asset_id: lbtc_bytes,
-        lp_asset_id: lp_bytes,
-        lp_reissuance_token_id: rt_bytes,
-        fee_bps: 30,
-        cosigner_pubkey: NUMS_KEY_BYTES,
-    };
-
-    let (_pool, _pool_txid) = f
-        .node
-        .create_pool(
-            pool_params,
-            50,      // initial_r_yes
-            50,      // initial_r_no
-            500_000, // initial_r_lbtc
-            1_000,   // initial_issued_lp
-            500,     // fee_amount
-            market_id.clone(),
-            lp_creation_txid,
-        )
-        .await
-        .unwrap();
-
-    f.mine_and_sync().await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    f.setup_pool(&params, lbtc_bytes, &market_id).await;
 
     let balance_pre = f.node.balance().await.unwrap();
     let no_pre = *balance_pre.get(&no_asset).unwrap_or(&0);

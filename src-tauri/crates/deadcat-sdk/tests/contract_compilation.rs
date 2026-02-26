@@ -2,25 +2,14 @@ use deadcat_sdk::elements::AddressParams;
 use deadcat_sdk::taproot::{
     NUMS_KEY_BYTES, SIMPLICITY_LEAF_VERSION, covenant_script_pubkey, simplicity_control_block,
 };
-use deadcat_sdk::witness::{SpendingPath, satisfy_contract, serialize_satisfied};
-use deadcat_sdk::{CompiledContract, ContractParams, MarketState};
-
-fn test_params() -> ContractParams {
-    ContractParams {
-        oracle_public_key: [0xaa; 32],
-        collateral_asset_id: [0xbb; 32],
-        yes_token_asset: [0x01; 32],
-        no_token_asset: [0x02; 32],
-        yes_reissuance_token: [0x03; 32],
-        no_reissuance_token: [0x04; 32],
-        collateral_per_token: 100_000,
-        expiry_time: 1_000_000,
-    }
-}
+use deadcat_sdk::testing::test_contract_params;
+use deadcat_sdk::{
+    CompiledContract, MarketState, SpendingPath, satisfy_contract, serialize_satisfied,
+};
 
 #[test]
 fn contract_compiles_successfully() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("contract should compile");
     // CMR should be non-zero
     let cmr_bytes: &[u8] = contract.cmr().as_ref();
@@ -29,7 +18,7 @@ fn contract_compiles_successfully() {
 
 #[test]
 fn four_distinct_addresses() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("contract should compile");
     let addrs = contract.addresses(&AddressParams::LIQUID);
 
@@ -54,8 +43,8 @@ fn four_distinct_addresses() {
 
 #[test]
 fn addresses_are_deterministic() {
-    let params1 = test_params();
-    let params2 = test_params();
+    let params1 = test_contract_params();
+    let params2 = test_contract_params();
     let c1 = CompiledContract::new(params1).expect("contract should compile");
     let c2 = CompiledContract::new(params2).expect("contract should compile");
 
@@ -76,8 +65,8 @@ fn addresses_are_deterministic() {
 
 #[test]
 fn different_params_different_cmr() {
-    let params1 = test_params();
-    let mut params2 = test_params();
+    let params1 = test_contract_params();
+    let mut params2 = test_contract_params();
     params2.expiry_time = 2_000_000;
 
     let c1 = CompiledContract::new(params1).expect("contract should compile");
@@ -92,7 +81,7 @@ fn different_params_different_cmr() {
 
 #[test]
 fn script_pubkey_starts_with_p2tr_prefix() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("contract should compile");
 
     for state in [
@@ -121,7 +110,7 @@ fn script_pubkey_starts_with_p2tr_prefix() {
 
 #[test]
 fn witness_satisfy_secondary_covenant_input() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("contract should compile");
     let path = SpendingPath::SecondaryCovenantInput;
     let satisfied = satisfy_contract(&contract, &path, MarketState::Unresolved)
@@ -139,7 +128,7 @@ fn witness_satisfy_secondary_covenant_input() {
 
 #[test]
 fn witness_satisfy_initial_issuance() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("contract should compile");
     let path = SpendingPath::InitialIssuance {
         blinding: deadcat_sdk::AllBlindingFactors::default(),
@@ -159,7 +148,7 @@ fn witness_satisfy_initial_issuance() {
 
 #[test]
 fn control_block_structure() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("contract should compile");
     let cb = simplicity_control_block(contract.cmr(), 1);
     assert_eq!(cb.len(), 65, "control block should be 65 bytes");
@@ -197,7 +186,7 @@ fn simplicity_leaf_matches_taprootbuilder() {
     use deadcat_sdk::elements::secp256k1_zkp::{Secp256k1, XOnlyPublicKey};
     use deadcat_sdk::elements::taproot::{LeafVersion, TaprootBuilder};
 
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("contract should compile");
     let cmr = contract.cmr();
 
@@ -252,7 +241,7 @@ fn simplicity_leaf_matches_taprootbuilder() {
 fn taproot_output_key_consistency() {
     use deadcat_sdk::elements::secp256k1_zkp::{Scalar, Secp256k1, XOnlyPublicKey};
 
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("contract should compile");
     let cmr = contract.cmr();
     let secp = Secp256k1::new();

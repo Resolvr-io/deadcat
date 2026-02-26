@@ -39,4 +39,13 @@ cargo-clippy:
 
 cargo-test:
 	cd src-tauri && cargo test --workspace --exclude deadcat-sdk
-	cd src-tauri/crates/deadcat-sdk && ulimit -n 10240 && ELEMENTSD_EXEC=$PWD/tests/elementsd ELECTRS_LIQUID_EXEC=$PWD/tests/electrs cargo test
+	cd src-tauri/crates/deadcat-sdk && ulimit -n 10240 && \
+		ARCH="$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]')"; \
+		case "$ARCH" in \
+			arm64-darwin)  TRIPLE="aarch64-apple-darwin" ;; \
+			x86_64-linux)  TRIPLE="x86_64-unknown-linux-gnu" ;; \
+			*) echo "Unsupported platform: $ARCH" >&2; exit 1 ;; \
+		esac; \
+		ELEMENTSD_EXEC=$PWD/tests/elementsd-$TRIPLE \
+		ELECTRS_LIQUID_EXEC=$PWD/tests/electrs-$TRIPLE \
+		cargo test

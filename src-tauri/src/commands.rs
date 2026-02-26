@@ -1278,15 +1278,15 @@ pub async fn get_market_state(
         let sdk = wallet.sdk_mut().map_err(|e| format!("{e}"))?;
         sdk.sync().map_err(|e| format!("sync failed: {e}"))?;
 
-        let contract = deadcat_sdk::contract::CompiledContract::new(params)
+        let contract = deadcat_sdk::CompiledContract::new(params)
             .map_err(|e| format!("contract compilation failed: {e}"))?;
 
         // Use the chain backend to scan covenant addresses
         let chain = sdk.chain();
-        let dormant_spk = contract.script_pubkey(deadcat_sdk::state::MarketState::Dormant);
-        let unresolved_spk = contract.script_pubkey(deadcat_sdk::state::MarketState::Unresolved);
-        let resolved_yes_spk = contract.script_pubkey(deadcat_sdk::state::MarketState::ResolvedYes);
-        let resolved_no_spk = contract.script_pubkey(deadcat_sdk::state::MarketState::ResolvedNo);
+        let dormant_spk = contract.script_pubkey(deadcat_sdk::MarketState::Dormant);
+        let unresolved_spk = contract.script_pubkey(deadcat_sdk::MarketState::Unresolved);
+        let resolved_yes_spk = contract.script_pubkey(deadcat_sdk::MarketState::ResolvedYes);
+        let resolved_no_spk = contract.script_pubkey(deadcat_sdk::MarketState::ResolvedNo);
 
         let dormant = chain
             .scan_script_utxos(&dormant_spk)

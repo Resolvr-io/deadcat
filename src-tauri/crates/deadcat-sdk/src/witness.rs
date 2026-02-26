@@ -137,7 +137,7 @@ fn u256_val(bytes: &[u8; 32]) -> Value {
 }
 
 /// Build the complete witness values for a spending path.
-pub fn build_witness_values(path: &SpendingPath, state: MarketState) -> WitnessValues {
+fn build_witness_values(path: &SpendingPath, state: MarketState) -> WitnessValues {
     let mut map = HashMap::new();
 
     // STATE witness
@@ -338,6 +338,7 @@ fn set_zero_redemption_map(map: &mut HashMap<WitnessName, Value>) {
 /// Builds witness values from the path and state, then calls `program.satisfy()`.
 /// Note: this does NOT prune the program. Use `satisfy_contract_with_env` for
 /// on-chain transactions that require pruning.
+#[cfg(any(test, feature = "testing"))]
 pub fn satisfy_contract(
     contract: &CompiledContract,
     path: &SpendingPath,
