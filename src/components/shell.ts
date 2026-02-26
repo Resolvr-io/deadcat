@@ -34,9 +34,9 @@ export function renderTopShell(): string {
             <button data-action="open-search" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 lg:hidden">
               <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </button>
-            <button data-action="open-wallet" class="flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${state.walletStatus === "unlocked" && state.walletBalance && !state.walletBalanceHidden ? "gap-1.5 px-3" : "w-9"}">
+            <button data-action="open-wallet" class="flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${state.showMiniWallet && state.walletStatus === "unlocked" && state.walletBalance && !state.walletBalanceHidden ? "gap-1.5 px-3" : "w-9"}">
               <svg class="h-[18px] w-[18px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
-              ${state.walletStatus === "unlocked" && state.walletBalance && !state.walletBalanceHidden ? `<span class="text-xs font-medium text-slate-300">${formatCompactSats(state.walletBalance[state.walletPolicyAssetId] ?? 0)}</span>` : ""}
+              ${state.showMiniWallet && state.walletStatus === "unlocked" && state.walletBalance && !state.walletBalanceHidden ? `<span class="text-xs font-medium text-slate-300">${formatCompactSats(state.walletBalance[state.walletPolicyAssetId] ?? 0)}</span>` : ""}
             </button>
             <div class="relative shrink-0">
               <button data-action="toggle-user-menu" class="flex h-9 w-9 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 overflow-hidden">
@@ -255,7 +255,23 @@ export function renderTopShell(): string {
                 state.walletStatus === "not_created"
                   ? `<p class="text-xs text-slate-500">No wallet configured on this device.</p>
                    <button data-action="open-wallet" class="w-full rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 transition">Set Up Wallet</button>`
-                  : `${
+                  : `<div class="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2.5">
+                  <div>
+                    <p class="text-xs text-slate-300">Show balance in nav bar</p>
+                    <p class="text-[10px] text-slate-500">Display mini wallet balance next to the wallet icon</p>
+                  </div>
+                  <button data-action="toggle-mini-wallet" class="relative h-5 w-9 rounded-full transition ${state.showMiniWallet ? "bg-emerald-400" : "bg-slate-700"}">
+                    <span class="absolute top-0.5 ${state.showMiniWallet ? "left-[18px]" : "left-0.5"} h-4 w-4 rounded-full bg-white shadow transition-all"></span>
+                  </button>
+                </div>
+                <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">
+                  <p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Display Currency</p>
+                  <p class="text-[10px] text-slate-500">Show fiat equivalents for BTC amounts</p>
+                  <div class="grid grid-cols-3 gap-1">
+                    ${baseCurrencyOptions.map((c) => `<button data-action="set-currency" data-currency="${c}" class="rounded-md px-2 py-1 text-xs transition ${c === state.baseCurrency ? "bg-emerald-400/15 border border-emerald-400/40 text-emerald-300" : "border border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-200"}">${c}</button>`).join("")}
+                  </div>
+                </div>
+                ${
                       state.nostrNpub
                         ? `<div class="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">
                   <p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Nostr Relay Backup</p>

@@ -1275,6 +1275,12 @@ export async function handleClick(
     return;
   }
 
+  if (action === "toggle-mini-wallet") {
+    state.showMiniWallet = !state.showMiniWallet;
+    render();
+    return;
+  }
+
   if (action === "set-wallet-unit") {
     const unit = actionEl?.getAttribute("data-unit") as "sats" | "btc" | null;
     if (unit) {
