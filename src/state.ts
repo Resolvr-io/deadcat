@@ -132,7 +132,7 @@ export const state: {
   walletShowRestore: boolean;
   walletShowBackup: boolean;
   walletBackedUp: boolean;
-  walletBackupMnemonic: string;
+  walletBackupWords: string[];
   walletBackupPassword: string;
   walletSwaps: PaymentSwap[];
   walletModal: "none" | "receive" | "send";
@@ -264,7 +264,7 @@ export const state: {
   walletShowRestore: false,
   walletShowBackup: false,
   walletBackedUp: false,
-  walletBackupMnemonic: "",
+  walletBackupWords: [],
   walletBackupPassword: "",
   walletSwaps: [],
   walletModal: "none",
