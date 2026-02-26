@@ -701,7 +701,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     /// Fetch liquidity from Nostr, scan the chain, and compute a trade quote.
     ///
-    /// The returned [`TradeQuote`](crate::trade::types::TradeQuote) can be
+    /// The returned [`TradeQuote`] can be
     /// inspected for display (price, legs, totals) and then passed to
     /// [`execute_trade`](Self::execute_trade) to broadcast the transaction.
     #[allow(clippy::too_many_arguments)]

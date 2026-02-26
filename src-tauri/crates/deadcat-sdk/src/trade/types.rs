@@ -42,8 +42,8 @@ pub enum TradeAmount {
 ///
 /// All display fields are `pub` for inspection. The execution plan is
 /// `pub(crate)` — callers cannot construct a `TradeQuote` directly;
-/// it can only be obtained from [`DeadcatNode::quote_trade`] and consumed
-/// by [`DeadcatNode::execute_trade`].
+/// it can only be obtained from [`crate::node::DeadcatNode::quote_trade`] and consumed
+/// by [`crate::node::DeadcatNode::execute_trade`].
 #[derive(Debug, Clone)]
 pub struct TradeQuote {
     pub side: TradeSide,
