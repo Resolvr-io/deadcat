@@ -367,6 +367,46 @@ async fn get_wallet_mnemonic(password: String, app: AppHandle) -> Result<String,
     .map_err(|e| format!("mnemonic task failed: {e}"))?
 }
 
+/// Return the word count of the mnemonic (12 or 24) after verifying password.
+#[tauri::command]
+async fn get_mnemonic_word_count(password: String, app: AppHandle) -> Result<usize, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr.wallet_mut().ok_or("Wallet not initialized")?;
+        wallet
+            .persister_mut()
+            .load_word_count(&password)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("mnemonic_word_count task failed: {e}"))?
+}
+
+/// Return a single mnemonic word by zero-based index after verifying password.
+#[tauri::command]
+async fn get_mnemonic_word(
+    password: String,
+    index: usize,
+    app: AppHandle,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr.wallet_mut().ok_or("Wallet not initialized")?;
+        wallet
+            .persister_mut()
+            .load_word(&password, index)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("mnemonic_word task failed: {e}"))?
+}
+
 // ============================================================================
 // Payment Commands (Boltz)
 // ============================================================================
@@ -863,6 +903,8 @@ pub fn run() {
             get_wallet_address,
             get_wallet_transactions,
             get_wallet_mnemonic,
+            get_mnemonic_word_count,
+            get_mnemonic_word,
             send_lbtc,
             // Payments (Boltz)
             pay_lightning_invoice,
