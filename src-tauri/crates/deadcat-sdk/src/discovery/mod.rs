@@ -4,13 +4,13 @@
 //! `order_announcement`, `order_discovery`, and the app-layer `discovery.rs`)
 //! into a single SDK-owned module.
 
-pub mod attestation;
-pub mod config;
-pub mod events;
-pub mod market;
-pub mod pool;
-pub mod service;
-pub mod store_trait;
+pub(crate) mod attestation;
+pub(crate) mod config;
+pub(crate) mod events;
+pub(crate) mod market;
+pub(crate) mod pool;
+pub(crate) mod service;
+pub(crate) mod store_trait;
 
 use std::time::Duration;
 
@@ -77,7 +77,7 @@ pub use pool::{
 
 pub use config::DiscoveryConfig;
 pub use events::DiscoveryEvent;
-pub use service::{DiscoveryService, discovered_market_to_contract_params};
+pub use service::{DiscoveryService, NoopStore, discovered_market_to_contract_params};
 pub use store_trait::{ContractMetadataInput, DiscoveryStore};
 
 // ---------------------------------------------------------------------------

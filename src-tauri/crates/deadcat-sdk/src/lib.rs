@@ -2,7 +2,7 @@ pub use simplicityhl::elements;
 pub use simplicityhl::simplicity;
 
 pub mod amm_pool;
-pub mod announcement;
+pub(crate) mod announcement;
 pub(crate) mod assembly;
 pub(crate) mod chain;
 pub mod discovery;
@@ -22,6 +22,7 @@ pub mod testing;
 pub(crate) mod trade;
 
 // ── Core types ─────────────────────────────────────────────────────
+pub use announcement::{ContractAnnouncement, ContractMetadata};
 pub use error::{Error, NodeError, Result};
 pub use network::Network;
 pub use node::DeadcatNode;
@@ -45,6 +46,7 @@ pub use maker_order::params::{
 
 // ── AMM pools ──────────────────────────────────────────────────────
 pub use amm_pool::contract::CompiledAmmPool;
+pub use amm_pool::math::{PoolReserves, SwapPair};
 pub use amm_pool::params::{AmmPoolParams, PoolId};
 
 // ── Trade routing ──────────────────────────────────────────────────

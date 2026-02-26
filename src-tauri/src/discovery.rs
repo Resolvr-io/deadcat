@@ -8,7 +8,6 @@ use std::time::Duration;
 pub const WALLET_BACKUP_D_TAG: &str = "deadcat-wallet-backup";
 
 // Re-export SDK-owned types and functions for use by the app layer.
-pub use deadcat_sdk::announcement::{ContractAnnouncement, ContractMetadata};
 pub use deadcat_sdk::discovery::{
     // Builders
     build_announcement_event,
@@ -34,6 +33,7 @@ pub use deadcat_sdk::discovery::{
     DEFAULT_RELAYS,
     NETWORK_TAG,
 };
+pub use deadcat_sdk::{ContractAnnouncement, ContractMetadata};
 
 // ---------------------------------------------------------------------------
 // App-layer-only types (Tauri command request/response types)

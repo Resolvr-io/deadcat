@@ -188,11 +188,16 @@ async fn create_wallet(password: String, app: AppHandle) -> Result<String, Strin
         let network = mgr.network().ok_or("Network not initialized")?;
         let sdk_network = state::to_sdk_network(network);
 
-        let mnemonic = deadcat_sdk::node::DeadcatNode::<deadcat_sdk::discovery::service::NoopStore>::generate_mnemonic(sdk_network)
+        let mnemonic =
+            deadcat_sdk::node::DeadcatNode::<deadcat_sdk::discovery::NoopStore>::generate_mnemonic(
+                sdk_network,
+            )
             .map_err(|e| format!("{e}"))?;
 
         let persister = mgr.persister_mut().ok_or("Persister not initialized")?;
-        persister.save(&mnemonic, &password).map_err(|e| e.to_string())?;
+        persister
+            .save(&mnemonic, &password)
+            .map_err(|e| e.to_string())?;
 
         mgr.bump_revision();
         let state = mgr.snapshot();

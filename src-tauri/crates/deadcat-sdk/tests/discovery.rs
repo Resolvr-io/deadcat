@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use deadcat_sdk::announcement::ContractAnnouncement;
+use deadcat_sdk::ContractAnnouncement;
 use deadcat_sdk::discovery::{DiscoveryConfig, DiscoveryEvent, DiscoveryService};
 use deadcat_sdk::testing::{
     TestStore, oracle_pubkey_from_keys, test_market_params, test_metadata, test_order_announcement,

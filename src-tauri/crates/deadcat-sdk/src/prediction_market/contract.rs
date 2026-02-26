@@ -36,7 +36,7 @@ impl CompiledPredictionMarket {
     ///
     /// Use [`CompiledPredictionMarket::new`] instead when reconstructing from a persisted
     /// [`PredictionMarketParams`].
-    pub fn create(
+    pub(crate) fn create(
         oracle_public_key: [u8; 32],
         collateral_asset_id: [u8; 32],
         collateral_per_token: u64,
@@ -89,7 +89,14 @@ impl CompiledPredictionMarket {
     }
 
     /// The compiled program (for witness satisfaction).
+    #[cfg(any(test, feature = "testing"))]
     pub fn program(&self) -> &CompiledProgram {
+        &self.program
+    }
+
+    /// The compiled program (for witness satisfaction).
+    #[cfg(not(any(test, feature = "testing")))]
+    pub(crate) fn program(&self) -> &CompiledProgram {
         &self.program
     }
 

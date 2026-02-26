@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use deadcat_sdk::announcement::ContractAnnouncement;
+use deadcat_sdk::ContractAnnouncement;
 use deadcat_sdk::discovery::{DiscoveryConfig, DiscoveryEvent};
 use deadcat_sdk::node::DeadcatNode;
 use deadcat_sdk::testing::{

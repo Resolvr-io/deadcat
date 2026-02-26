@@ -121,7 +121,7 @@ async fn construct_and_store_node(
         guard.clone()
     };
 
-    let config = deadcat_sdk::discovery::config::DiscoveryConfig {
+    let config = deadcat_sdk::discovery::DiscoveryConfig {
         relays,
         ..Default::default()
     };
@@ -713,7 +713,7 @@ pub async fn publish_contract(
         starting_yes_price: request.starting_yes_price,
     };
 
-    let announcement = deadcat_sdk::announcement::ContractAnnouncement {
+    let announcement = deadcat_sdk::ContractAnnouncement {
         version: 1,
         contract_params,
         metadata: metadata.clone(),
