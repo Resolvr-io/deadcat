@@ -11,13 +11,26 @@ import type {
   NostrBackupStatus,
   NostrProfile,
   OrderType,
-  PaymentSwap,
   RelayEntry,
   Side,
   SizeMode,
   TradeIntent,
   ViewMode,
+  WalletData,
 } from "./types.ts";
+
+export function createWalletData(): WalletData {
+  return {
+    balance: {},
+    transactions: [],
+    utxos: [],
+    swaps: [],
+    backupWords: [],
+    backedUp: false,
+    showBackup: false,
+    backupPassword: "",
+  };
+}
 
 export const app = document.querySelector<HTMLDivElement>(
   "#app",
@@ -114,27 +127,15 @@ export const state: {
   createStartingYesSats: number;
   walletStatus: "not_created" | "locked" | "unlocked";
   walletNetwork: "mainnet" | "testnet" | "regtest";
-  walletBalance: Record<string, number> | null;
+  walletData: WalletData | null;
   walletPolicyAssetId: string;
   walletMnemonic: string;
-  walletTransactions: {
-    txid: string;
-    balanceChange: number;
-    fee: number;
-    height: number | null;
-    timestamp: number | null;
-    txType: string;
-  }[];
+  walletUtxosExpanded: boolean;
   walletError: string;
   walletLoading: boolean;
   walletPassword: string;
   walletRestoreMnemonic: string;
   walletShowRestore: boolean;
-  walletShowBackup: boolean;
-  walletBackedUp: boolean;
-  walletBackupWords: string[];
-  walletBackupPassword: string;
-  walletSwaps: PaymentSwap[];
   walletModal: "none" | "receive" | "send";
   walletModalTab: "lightning" | "liquid" | "bitcoin";
   modalQr: string;
@@ -253,20 +254,15 @@ export const state: {
   createStartingYesSats: 50,
   walletStatus: "not_created",
   walletNetwork: "testnet",
-  walletBalance: null,
+  walletData: null,
   walletPolicyAssetId: "",
   walletMnemonic: "",
-  walletTransactions: [],
+  walletUtxosExpanded: false,
   walletError: "",
   walletLoading: false,
   walletPassword: "",
   walletRestoreMnemonic: "",
   walletShowRestore: false,
-  walletShowBackup: false,
-  walletBackedUp: false,
-  walletBackupWords: [],
-  walletBackupPassword: "",
-  walletSwaps: [],
   walletModal: "none",
   walletModalTab: "lightning",
   modalQr: "",

@@ -155,7 +155,7 @@ export function handleInput(e: Event, render: () => void): void {
   }
 
   if (target.id === "wallet-backup-password") {
-    state.walletBackupPassword = target.value;
+    if (state.walletData) state.walletData.backupPassword = target.value;
     return;
   }
 

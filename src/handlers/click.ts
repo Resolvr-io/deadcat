@@ -13,6 +13,7 @@ import {
   resetSendState,
 } from "../services/wallet.ts";
 import {
+  createWalletData,
   defaultSettlementInput,
   markets,
   SATS_PER_FULL_CONTRACT,
@@ -39,6 +40,7 @@ import type {
   Side,
   SizeMode,
   TradeIntent,
+  WalletTransaction,
 } from "../types.ts";
 import {
   hideOverlayLoader,
@@ -721,9 +723,7 @@ export async function handleClick(
         state.nostrPubkey = null;
         state.nostrNpub = null;
         state.nostrNsecRevealed = null;
-        state.walletBalance = null;
-        state.walletTransactions = [];
-        state.walletSwaps = [];
+        state.walletData = null;
         state.walletPassword = "";
         state.walletMnemonic = "";
         state.settingsOpen = false;
@@ -966,14 +966,9 @@ export async function handleClick(
       try {
         await invoke("lock_wallet");
         await fetchWalletStatus();
-        state.walletBalance = null;
-        state.walletTransactions = [];
-        state.walletSwaps = [];
+        state.walletData = null;
         state.walletPassword = "";
         state.walletModal = "none";
-        state.walletShowBackup = false;
-        state.walletBackupWords = [];
-        state.walletBackupPassword = "";
         resetReceiveState();
         resetSendState();
         state.view = "home";
@@ -998,26 +993,19 @@ export async function handleClick(
     state.view = "wallet";
     render();
     // If already unlocked with cached balance, just do a silent background sync
-    if (state.walletStatus === "unlocked" && state.walletBalance) {
+    if (state.walletStatus === "unlocked" && state.walletData) {
       void invoke("sync_wallet")
         .then(async () => {
           const [balance, txs, swaps] = await Promise.all([
             invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
-            invoke<
-              {
-                txid: string;
-                balanceChange: number;
-                fee: number;
-                height: number | null;
-                timestamp: number | null;
-                txType: string;
-              }[]
-            >("get_wallet_transactions"),
+            invoke<WalletTransaction[]>("get_wallet_transactions"),
             invoke<PaymentSwap[]>("list_payment_swaps"),
           ]);
-          state.walletBalance = balance.assets;
-          state.walletTransactions = txs;
-          state.walletSwaps = swaps;
+          if (state.walletData) {
+            state.walletData.balance = balance.assets;
+            state.walletData.transactions = txs;
+            state.walletData.swaps = swaps;
+          }
           render();
         })
         .catch(() => {});
@@ -1102,18 +1090,14 @@ export async function handleClick(
           const balance = await invoke<{ assets: Record<string, number> }>(
             "get_wallet_balance",
           );
-          state.walletBalance = balance.assets;
-          const txs = await invoke<
-            {
-              txid: string;
-              balanceChange: number;
-              fee: number;
-              height: number | null;
-              timestamp: number | null;
-              txType: string;
-            }[]
-          >("get_wallet_transactions");
-          state.walletTransactions = txs;
+          const txs = await invoke<WalletTransaction[]>(
+            "get_wallet_transactions",
+          );
+          state.walletData = {
+            ...createWalletData(),
+            balance: balance.assets,
+            transactions: txs,
+          };
         }
         state.walletLoading = false;
         hideOverlayLoader();
@@ -1147,21 +1131,15 @@ export async function handleClick(
         // Load cached wallet data instantly (no Electrum sync)
         const [balance, txs, swaps] = await Promise.all([
           invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
-          invoke<
-            {
-              txid: string;
-              balanceChange: number;
-              fee: number;
-              height: number | null;
-              timestamp: number | null;
-              txType: string;
-            }[]
-          >("get_wallet_transactions"),
+          invoke<WalletTransaction[]>("get_wallet_transactions"),
           invoke<PaymentSwap[]>("list_payment_swaps"),
         ]);
-        state.walletBalance = balance.assets;
-        state.walletTransactions = txs;
-        state.walletSwaps = swaps;
+        state.walletData = {
+          ...createWalletData(),
+          balance: balance.assets,
+          transactions: txs,
+          swaps,
+        };
         state.walletLoading = false;
         hideOverlayLoader();
         render();
@@ -1170,19 +1148,12 @@ export async function handleClick(
           .then(async () => {
             const [freshBalance, freshTxs] = await Promise.all([
               invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
-              invoke<
-                {
-                  txid: string;
-                  balanceChange: number;
-                  fee: number;
-                  height: number | null;
-                  timestamp: number | null;
-                  txType: string;
-                }[]
-              >("get_wallet_transactions"),
+              invoke<WalletTransaction[]>("get_wallet_transactions"),
             ]);
-            state.walletBalance = freshBalance.assets;
-            state.walletTransactions = freshTxs;
+            if (state.walletData) {
+              state.walletData.balance = freshBalance.assets;
+              state.walletData.transactions = freshTxs;
+            }
             render();
           })
           .catch(() => {
@@ -1203,13 +1174,8 @@ export async function handleClick(
       try {
         await invoke("lock_wallet");
         await fetchWalletStatus();
-        state.walletBalance = null;
-        state.walletTransactions = [];
-        state.walletSwaps = [];
+        state.walletData = null;
         state.walletPassword = "";
-        state.walletShowBackup = false;
-        state.walletBackupWords = [];
-        state.walletBackupPassword = "";
         state.walletModal = "none";
         resetReceiveState();
         resetSendState();
@@ -1242,15 +1208,10 @@ export async function handleClick(
       try {
         await invoke("delete_wallet");
         await fetchWalletStatus();
-        state.walletBalance = null;
-        state.walletTransactions = [];
-        state.walletSwaps = [];
+        state.walletData = null;
         state.walletPassword = "";
         state.walletMnemonic = "";
         state.walletModal = "none";
-        state.walletShowBackup = false;
-        state.walletBackupWords = [];
-        state.walletBackupPassword = "";
         resetReceiveState();
         resetSendState();
         state.walletDeletePrompt = false;
@@ -1270,15 +1231,10 @@ export async function handleClick(
       try {
         await invoke("delete_wallet");
         await fetchWalletStatus();
-        state.walletBalance = null;
-        state.walletTransactions = [];
-        state.walletSwaps = [];
+        state.walletData = null;
         state.walletPassword = "";
         state.walletMnemonic = "";
         state.walletModal = "none";
-        state.walletShowBackup = false;
-        state.walletBackupWords = [];
-        state.walletBackupPassword = "";
         resetReceiveState();
         resetSendState();
         showToast(
@@ -1295,6 +1251,12 @@ export async function handleClick(
 
   if (action === "toggle-balance-hidden") {
     state.walletBalanceHidden = !state.walletBalanceHidden;
+    render();
+    return;
+  }
+
+  if (action === "toggle-utxos-expanded") {
+    state.walletUtxosExpanded = !state.walletUtxosExpanded;
     render();
     return;
   }
@@ -1611,7 +1573,7 @@ export async function handleClick(
       try {
         await invoke("refresh_payment_swap_status", { swapId });
         const swaps = await invoke<PaymentSwap[]>("list_payment_swaps");
-        state.walletSwaps = swaps;
+        if (state.walletData) state.walletData.swaps = swaps;
       } catch (e) {
         state.walletError = String(e);
       }
@@ -1626,24 +1588,28 @@ export async function handleClick(
   }
 
   if (action === "show-backup") {
-    state.walletShowBackup = true;
-    state.walletBackupWords = [];
-    state.walletBackupPassword = "";
+    if (state.walletData) {
+      state.walletData.showBackup = true;
+      state.walletData.backupWords = [];
+      state.walletData.backupPassword = "";
+    }
     state.walletError = "";
     render();
     return;
   }
 
   if (action === "hide-backup") {
-    state.walletShowBackup = false;
-    state.walletBackupWords = [];
-    state.walletBackupPassword = "";
+    if (state.walletData) {
+      state.walletData.showBackup = false;
+      state.walletData.backupWords = [];
+      state.walletData.backupPassword = "";
+    }
     render();
     return;
   }
 
   if (action === "export-backup") {
-    if (!state.walletBackupPassword) {
+    if (!state.walletData?.backupPassword) {
       state.walletError = "Password is required to export recovery phrase.";
       render();
       return;
@@ -1654,7 +1620,7 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        const password = state.walletBackupPassword;
+        const password = state.walletData?.backupPassword ?? "";
         const count = await invoke<number>("get_mnemonic_word_count", {
           password,
         });
@@ -1664,9 +1630,11 @@ export async function handleClick(
             await invoke<string>("get_mnemonic_word", { password, index: i }),
           );
         }
-        state.walletBackupWords = words;
-        state.walletBackupPassword = "";
-        state.walletBackedUp = true;
+        if (state.walletData) {
+          state.walletData.backupWords = words;
+          state.walletData.backedUp = true;
+          state.walletData.backupPassword = "";
+        }
       } catch (e) {
         state.walletError = String(e);
       }
@@ -1678,7 +1646,9 @@ export async function handleClick(
   }
 
   if (action === "copy-backup-mnemonic") {
-    void navigator.clipboard.writeText(state.walletBackupWords.join(" "));
+    void navigator.clipboard.writeText(
+      (state.walletData?.backupWords ?? []).join(" "),
+    );
     return;
   }
 
@@ -2361,7 +2331,7 @@ export async function handleClick(
       } else if (paths.expiryRedeem) {
         // For expiry redemption, determine which token side the user holds
         const yesBalance =
-          state.walletBalance?.[reverseHex(market.yesAssetId)] ?? 0;
+          state.walletData?.balance?.[reverseHex(market.yesAssetId)] ?? 0;
         // Use whichever side the user holds (prefer YES if both)
         const tokenAssetHex =
           yesBalance > 0 ? market.yesAssetId : market.noAssetId;

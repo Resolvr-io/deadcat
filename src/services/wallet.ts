@@ -38,7 +38,7 @@ export async function refreshWallet(render: () => void): Promise<void> {
     await invoke("sync_wallet");
     // balance + transactions arrive via "wallet_snapshot" event listener
     const swaps = await invoke<PaymentSwap[]>("list_payment_swaps");
-    state.walletSwaps = swaps;
+    if (state.walletData) state.walletData.swaps = swaps;
   } catch (e) {
     state.walletError = String(e);
   }
