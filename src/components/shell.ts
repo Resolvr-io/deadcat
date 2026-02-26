@@ -34,9 +34,9 @@ export function renderTopShell(): string {
             <button data-action="open-search" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 lg:hidden">
               <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </button>
-            <button data-action="open-wallet" class="flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${state.showMiniWallet && state.walletStatus === "unlocked" && state.walletBalance && !state.walletBalanceHidden ? "gap-1.5 px-3" : "w-9"}">
+            <button data-action="open-wallet" class="flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${state.showMiniWallet && state.walletStatus === "unlocked" && state.walletData?.balance && !state.walletBalanceHidden ? "gap-1.5 px-3" : "w-9"}">
               <svg class="h-[18px] w-[18px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
-              ${state.showMiniWallet && state.walletStatus === "unlocked" && state.walletBalance && !state.walletBalanceHidden ? `<span class="text-xs font-medium text-slate-300">${formatCompactSats(state.walletBalance[state.walletPolicyAssetId] ?? 0)}</span>` : ""}
+              ${state.showMiniWallet && state.walletStatus === "unlocked" && state.walletData?.balance && !state.walletBalanceHidden ? `<span class="text-xs font-medium text-slate-300">${formatCompactSats(state.walletData?.balance[state.walletPolicyAssetId] ?? 0)}</span>` : ""}
             </button>
             <div class="relative shrink-0">
               <button data-action="toggle-user-menu" class="flex h-9 w-9 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 overflow-hidden">
@@ -272,8 +272,8 @@ export function renderTopShell(): string {
                   </div>
                 </div>
                 ${
-                      state.nostrNpub
-                        ? `<div class="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">
+                  state.nostrNpub
+                    ? `<div class="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">
                   <p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Nostr Relay Backup</p>
                   ${
                     state.nostrBackupStatus?.has_backup
@@ -332,8 +332,8 @@ export function renderTopShell(): string {
                     </div>
                   </details>
                 </div>`
-                        : ""
-                    }
+                    : ""
+                }
                   <p class="text-xs text-slate-500">Remove the current wallet from this device. You can restore from a recovery phrase${state.nostrNpub ? " or Nostr backup" : ""}.</p>
                   ${
                     state.walletDeletePrompt

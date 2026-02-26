@@ -5,6 +5,7 @@ import { reverseHex } from "../utils/crypto.ts";
 import { satsToFiatStr } from "../utils/format.ts";
 
 const PAW_ICON = `<svg class="inline-block h-[1em] w-[1em] align-text-bottom" viewBox="0 0 90 79" fill="currentColor"><path d="M26.62,28.27c4.09,2.84,9.4,2.58,12.27-.69,2.3-2.63,3.06-5.82,3.08-10-.35-5.03-1.89-10.34-6.28-14.44C29.51-2.63,21.1-.1,19.06,8.08c-1.74,6.91,1.71,16.11,7.56,20.18Z"/><path d="M22.98,41.99c.21-1.73.04-3.62-.43-5.3-1.46-5.21-4-9.77-9.08-12.33C7.34,21.27-.31,24.39,0,32.36c-.03,7.11,5.17,14.41,11.8,16.58,5.57,1.82,10.49-1.16,11.17-6.95Z"/><path d="M63.4,28.27c5.85-4.06,9.3-13.26,7.57-20.19C68.92-.12,60.51-2.64,54.33,3.13c-4.4,4.1-5.93,9.41-6.28,14.44.02,4.18.78,7.37,3.08,10,2.87,3.28,8.17,3.54,12.27.7Z"/><path d="M76.54,24.36c-5.08,2.56-7.62,7.12-9.08,12.33-.47,1.68-.63,3.57-.43,5.3.69,5.79,5.61,8.77,11.16,6.96,6.63-2.17,11.83-9.47,11.8-16.58.32-7.99-7.32-11.1-13.45-8.01Z"/><path d="M65.95,49.84c-2.36-2.86-4.3-6.01-6.45-9.02-.89-1.24-1.8-2.47-2.78-3.65-2.76-3.35-7.24-5.02-11.72-5.02s-8.96,1.68-11.72,5.02c-.98,1.19-1.89,2.41-2.78,3.65-2.15,3.01-4.08,6.15-6.45,9.02-1.77,2.15-4.25,3.82-6.11,5.92-4.14,4.69-4.72,9.96-1.94,15.3,2.79,5.37,8.01,7.6,14.41,7.9,4.82.23,9.23-1.95,13.98-2.16.22-.01.42-.01.62-.01s.4,0,.61.01c4.75.21,9.16,2.38,13.98,2.16,6.39-.3,11.62-2.53,14.41-7.9,2.77-5.34,2.2-10.61-1.94-15.3-1.87-2.1-4.35-3.77-6.12-5.92Z"/></svg>`;
+
 import {
   renderMnemonicGrid,
   renderModalTabs,
@@ -280,7 +281,10 @@ export function renderWallet(): string {
         "</div>" +
         '<div class="text-right">' +
         (state.walletBalanceHidden
-          ? '<span class="inline-flex gap-0.5 text-slate-500">' + PAW_ICON + PAW_ICON + "</span>"
+          ? '<span class="inline-flex gap-0.5 text-slate-500">' +
+            PAW_ICON +
+            PAW_ICON +
+            "</span>"
           : '<span class="' +
             color +
             '">' +
@@ -307,7 +311,10 @@ export function renderWallet(): string {
         flowLabel(sw.flow) +
         "</span>" +
         (state.walletBalanceHidden
-          ? '<span class="ml-2 inline-flex gap-0.5 text-slate-500">' + PAW_ICON + PAW_ICON + "</span>"
+          ? '<span class="ml-2 inline-flex gap-0.5 text-slate-500">' +
+            PAW_ICON +
+            PAW_ICON +
+            "</span>"
           : '<span class="ml-2 text-slate-500">' +
             sw.invoiceAmountSat.toLocaleString() +
             " sats</span>") +
@@ -541,7 +548,10 @@ export function renderWallet(): string {
                   "</button>" +
                   "</div>" +
                   (state.walletBalanceHidden
-                    ? '<span class="inline-flex gap-0.5 text-slate-500">' + PAW_ICON + PAW_ICON + "</span>"
+                    ? '<span class="inline-flex gap-0.5 text-slate-500">' +
+                      PAW_ICON +
+                      PAW_ICON +
+                      "</span>"
                     : '<span class="mono text-slate-100">' +
                       tp.amount.toLocaleString() +
                       "</span>") +
@@ -554,7 +564,10 @@ export function renderWallet(): string {
                 shortAsset +
                 "</span>" +
                 (state.walletBalanceHidden
-                  ? '<span class="inline-flex gap-0.5 text-slate-500">' + PAW_ICON + PAW_ICON + "</span>"
+                  ? '<span class="inline-flex gap-0.5 text-slate-500">' +
+                    PAW_ICON +
+                    PAW_ICON +
+                    "</span>"
                   : '<span class="mono text-slate-100">' +
                     tp.amount.toLocaleString() +
                     "</span>") +
