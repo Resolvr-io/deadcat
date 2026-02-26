@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use crate::wallet::persister::MnemonicPersister;
 use crate::wallet::types::WalletStatus;
-use crate::wallet::WalletManager;
 use crate::Network;
 
 /// Duration of inactivity (in seconds) before the wallet auto-locks.
@@ -78,13 +79,29 @@ pub struct AppState {
 }
 
 // ============================================================================
+// SDK network conversion
+// ============================================================================
+
+pub fn to_sdk_network(network: Network) -> deadcat_sdk::Network {
+    match network {
+        Network::Mainnet => deadcat_sdk::Network::Liquid,
+        Network::Testnet => deadcat_sdk::Network::LiquidTestnet,
+        Network::Regtest => deadcat_sdk::Network::LiquidRegtest,
+    }
+}
+
+// ============================================================================
 // App state manager
 // ============================================================================
 
 pub struct AppStateManager {
-    app_data_dir: PathBuf,
+    pub app_data_dir: PathBuf,
     network: Option<Network>,
-    wallet: Option<WalletManager>,
+    persister: Option<MnemonicPersister>,
+    store: Option<Arc<std::sync::Mutex<deadcat_store::DeadcatStore>>>,
+    /// Whether the node's wallet is currently unlocked.
+    /// Updated by the caller after node operations.
+    wallet_unlocked: bool,
     local_state: LocalState,
     revision: u64,
     /// Timestamp of last user activity (for auto-lock).
@@ -97,14 +114,16 @@ impl AppStateManager {
         Self {
             app_data_dir,
             network: None,
-            wallet: None,
+            persister: None,
+            store: None,
+            wallet_unlocked: false,
             local_state,
             revision: 0,
             last_activity: Instant::now(),
         }
     }
 
-    /// Load saved network config and initialize wallet manager if configured.
+    /// Load saved network config and initialize persister if configured.
     pub fn initialize(&mut self) {
         if let Some(network) = self.load_network_config() {
             self.init_with_network(network);
@@ -132,59 +151,80 @@ impl AppStateManager {
 
     fn init_with_network(&mut self, network: Network) {
         self.network = Some(network);
-        self.wallet = Some(WalletManager::new(&self.app_data_dir, network));
+        self.persister = Some(MnemonicPersister::new(&self.app_data_dir, network.as_str()));
+
+        // Open the store at <app_data_dir>/<network>/deadcat.db
+        let store_dir = self.app_data_dir.join(network.as_str());
+        std::fs::create_dir_all(&store_dir).ok();
+        let db_path = store_dir.join("deadcat.db");
+        let store = deadcat_store::DeadcatStore::open(db_path.to_str().unwrap_or(":memory:"))
+            .expect("failed to open deadcat store");
+        self.store = Some(Arc::new(std::sync::Mutex::new(store)));
     }
 
-    pub fn wallet(&self) -> Option<&WalletManager> {
-        self.wallet.as_ref()
+    pub fn persister(&self) -> Option<&MnemonicPersister> {
+        self.persister.as_ref()
     }
 
-    pub fn wallet_mut(&mut self) -> Option<&mut WalletManager> {
-        self.wallet.as_mut()
+    pub fn persister_mut(&mut self) -> Option<&mut MnemonicPersister> {
+        self.persister.as_mut()
+    }
+
+    pub fn store(&self) -> Option<&Arc<std::sync::Mutex<deadcat_store::DeadcatStore>>> {
+        self.store.as_ref()
+    }
+
+    /// Mark the wallet as unlocked/locked (synced from the NodeState).
+    pub fn set_wallet_unlocked(&mut self, unlocked: bool) {
+        self.wallet_unlocked = unlocked;
     }
 
     pub fn network_status(&self) -> NetworkStatus {
         let network = self.network;
+        let sdk_network = network.map(to_sdk_network);
         NetworkStatus {
             network: network
                 .map(|n| n.as_str().to_string())
                 .unwrap_or_else(|| "unknown".into()),
             is_mainnet: network.map(|n| n.is_mainnet()).unwrap_or(false),
-            electrum_url: self
-                .wallet
-                .as_ref()
-                .map(|w| w.electrum_url().to_string())
+            electrum_url: sdk_network
+                .map(|n| n.default_electrum_url().to_string())
                 .unwrap_or_default(),
-            policy_asset_id: self
-                .wallet
-                .as_ref()
-                .map(|w| w.policy_asset_id())
+            policy_asset_id: sdk_network
+                .map(|n| n.into_lwk().policy_asset().to_string())
                 .unwrap_or_default(),
         }
     }
 
+    pub fn wallet_status(&self) -> WalletStatus {
+        self.wallet_status_for(self.wallet_unlocked)
+    }
+
+    /// Same as `wallet_status` but accepts an override for the unlock flag.
+    /// Used when the caller knows the node's current unlock state.
+    pub fn wallet_status_with_unlock(&self, is_unlocked: bool) -> WalletStatus {
+        self.wallet_status_for(is_unlocked)
+    }
+
+    fn wallet_status_for(&self, is_unlocked: bool) -> WalletStatus {
+        match &self.persister {
+            Some(p) if !p.exists() => WalletStatus::NotCreated,
+            Some(_) if is_unlocked => WalletStatus::Unlocked,
+            Some(_) => WalletStatus::Locked,
+            None => WalletStatus::NotCreated,
+        }
+    }
+
     pub fn snapshot(&self) -> AppState {
-        let network_status = self.network_status();
+        self.snapshot_with_balance(None)
+    }
 
-        let wallet_status = self
-            .wallet
-            .as_ref()
-            .map(|w| w.status())
-            .unwrap_or(WalletStatus::NotCreated);
-
-        let wallet_balance = if wallet_status == WalletStatus::Unlocked {
-            self.wallet
-                .as_ref()
-                .and_then(|w| w.balance().ok())
-                .map(|b| b.assets)
-        } else {
-            None
-        };
-
+    /// Build an `AppState` snapshot, optionally including wallet balance.
+    pub fn snapshot_with_balance(&self, wallet_balance: Option<HashMap<String, u64>>) -> AppState {
         AppState {
             revision: self.revision,
-            network_status,
-            wallet_status,
+            network_status: self.network_status(),
+            wallet_status: self.wallet_status(),
             wallet_balance,
             payment_swaps: self.local_state.payment_swaps.clone(),
         }
@@ -199,17 +239,17 @@ impl AppStateManager {
         self.last_activity = Instant::now();
     }
 
-    /// Check if the auto-lock timeout has elapsed. If so, lock the wallet
-    /// and return `true` so the caller can emit the updated state.
+    /// Check if the auto-lock timeout has elapsed. If so, mark wallet locked
+    /// and return `true` so the caller can lock the node and emit state.
     pub fn check_auto_lock(&mut self) -> bool {
-        if self.last_activity.elapsed().as_secs() >= AUTO_LOCK_TIMEOUT_SECS {
-            if let Some(wallet) = self.wallet.as_mut() {
-                if wallet.status() == WalletStatus::Unlocked {
-                    wallet.lock();
-                    self.bump_revision();
-                    return true;
-                }
+        if self.last_activity.elapsed().as_secs() >= AUTO_LOCK_TIMEOUT_SECS && self.wallet_unlocked
+        {
+            self.wallet_unlocked = false;
+            if let Some(persister) = self.persister.as_mut() {
+                persister.clear_cache();
             }
+            self.bump_revision();
+            return true;
         }
         false
     }

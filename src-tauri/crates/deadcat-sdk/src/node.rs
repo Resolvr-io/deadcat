@@ -1022,4 +1022,45 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     pub fn discovery(&self) -> &DiscoveryService<S> {
         &self.discovery
     }
+
+    // ── Static helpers ──────────────────────────────────────────────────
+
+    /// Generate a new BIP-39 mnemonic suitable for wallet creation.
+    ///
+    /// This is a static method — the returned mnemonic can be persisted and
+    /// later passed to [`unlock_wallet`](Self::unlock_wallet).
+    pub fn generate_mnemonic(network: Network) -> Result<String, NodeError> {
+        let (mnemonic_str, _signer) =
+            DeadcatSdk::generate_mnemonic(network.is_mainnet()).map_err(NodeError::Sdk)?;
+        Ok(mnemonic_str)
+    }
+
+    // ── Boltz key derivation ────────────────────────────────────────────
+
+    /// Derive the Boltz submarine swap refund public key (hex-encoded).
+    pub async fn boltz_submarine_refund_pubkey_hex(&self) -> Result<String, NodeError> {
+        self.with_sdk(|sdk| sdk.boltz_submarine_refund_pubkey_hex())
+            .await
+    }
+
+    /// Derive the Boltz reverse swap claim public key (hex-encoded).
+    pub async fn boltz_reverse_claim_pubkey_hex(&self) -> Result<String, NodeError> {
+        self.with_sdk(|sdk| sdk.boltz_reverse_claim_pubkey_hex())
+            .await
+    }
+
+    // ── Electrum URL accessors ──────────────────────────────────────────
+
+    /// Return the Electrum URL from the active SDK, or `None` if the wallet is locked.
+    pub fn electrum_url(&self) -> Option<String> {
+        self.sdk
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|sdk| sdk.electrum_url().to_string()))
+    }
+
+    /// Return the default Electrum URL for this node's network.
+    pub fn default_electrum_url(&self) -> &str {
+        self.network.default_electrum_url()
+    }
 }
