@@ -1,4 +1,5 @@
 import { renderBackupModal } from "../components/wallet-modals.ts";
+import { formatCompactSats } from "../services/wallet.ts";
 import { baseCurrencyOptions, categories, DEV_MODE, state } from "../state.ts";
 import type { RelayBackupResult, RelayEntry } from "../types.ts";
 
@@ -33,8 +34,9 @@ export function renderTopShell(): string {
             <button data-action="open-search" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 lg:hidden">
               <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </button>
-            <button data-action="open-wallet" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200">
-              <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+            <button data-action="open-wallet" class="flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${state.walletStatus === "unlocked" && state.walletBalance && !state.walletBalanceHidden ? "gap-1.5 px-3" : "w-9"}">
+              <svg class="h-[18px] w-[18px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+              ${state.walletStatus === "unlocked" && state.walletBalance && !state.walletBalanceHidden ? `<span class="text-xs font-medium text-slate-300">${formatCompactSats(state.walletBalance[state.walletPolicyAssetId] ?? 0)}</span>` : ""}
             </button>
             <div class="relative shrink-0">
               <button data-action="toggle-user-menu" class="flex h-9 w-9 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 overflow-hidden">
