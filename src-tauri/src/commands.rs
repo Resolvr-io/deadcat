@@ -3,18 +3,17 @@ use std::time::Duration;
 
 use deadcat_store::{ContractMetadataInput, MarketFilter};
 use nostr_sdk::prelude::*;
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
 use crate::discovery::{
-    self, discovered_market_to_contract_params, AttestationResult, ContractMetadata,
-    CreateContractRequest, DiscoveredMarket, IdentityResponse,
+    self, discovered_market_to_contract_params, ContractMetadata, CreateContractRequest,
+    DiscoveredMarket, IdentityResponse,
 };
-use serde::{Deserialize, Serialize};
-
-use deadcat_sdk::ChainBackend;
-
 use crate::state::AppStateManager;
-use crate::SdkState;
+use crate::{NodeState, NostrAppState};
+
+// ── Helpers ──────────────────────────────────────────────────────────────
 
 fn validate_request(request: &CreateContractRequest) -> Result<(), String> {
     if request.question.trim().is_empty() || request.question.len() > 140 {
@@ -46,26 +45,147 @@ async fn compute_tip_and_now(
     Ok((tip, now_unix))
 }
 
-async fn get_or_connect_nostr_client(sdk_state: &SdkState) -> Result<nostr_sdk::Client, String> {
-    let mut nostr_client = sdk_state.nostr_client.lock().await;
-    if nostr_client.is_none() {
-        let relays = sdk_state
+/// Bump state revision and emit to frontend.
+async fn bump_revision_and_emit(app: &tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_handle.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.bump_revision();
+        let state = mgr.snapshot();
+        let _ = app_handle.emit(crate::APP_STATE_UPDATED_EVENT, &state);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| format!("task join: {e}"))??;
+    Ok(())
+}
+
+/// Get Nostr keys and a connected client from the node.
+async fn get_keys_and_client(app: &tauri::AppHandle) -> Result<(Keys, nostr_sdk::Client), String> {
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard
+        .as_ref()
+        .ok_or("Node not initialized — call init_nostr_identity first")?;
+    let keys = node.keys().clone();
+    let client = node.discovery().client().clone();
+    drop(guard);
+
+    // Ensure client has relays connected
+    if client.relays().await.is_empty() {
+        let nostr_state = app.state::<NostrAppState>();
+        let relays = nostr_state
             .relay_list
             .read()
             .map_err(|_| "failed to read relay_list".to_string())?
             .clone();
-        let c = discovery::connect_multi_relay_client(&relays).await?;
-        *nostr_client = Some(c);
+        for url in &relays {
+            let _ = client.add_relay(url.as_str()).await;
+        }
+        client.connect_with_timeout(Duration::from_secs(5)).await;
     }
-    Ok(nostr_client.as_ref().unwrap().clone())
+
+    Ok((keys, client))
 }
+
+/// Construct a DeadcatNode from loaded keys and store it in NodeState.
+/// Called whenever Nostr identity is loaded/generated/imported.
+async fn construct_and_store_node(
+    app: &tauri::AppHandle,
+    keys: nostr_sdk::Keys,
+) -> Result<(), String> {
+    let (sdk_network, store_arc) = {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        let network = mgr.network().ok_or("Network not initialized")?;
+        let store = mgr.store().cloned().ok_or("Store not initialized")?;
+        // Reset wallet state since we're constructing a new node
+        mgr.set_wallet_unlocked(false);
+        if let Some(persister) = mgr.persister_mut() {
+            persister.clear_cache();
+        }
+        (crate::state::to_sdk_network(network), store)
+    };
+
+    let relays = {
+        let nostr_state = app.state::<NostrAppState>();
+        let guard = nostr_state
+            .relay_list
+            .read()
+            .map_err(|_| "failed to read relay_list".to_string())?;
+        guard.clone()
+    };
+
+    let config = deadcat_sdk::discovery::config::DiscoveryConfig {
+        relays,
+        ..Default::default()
+    };
+
+    let (node, mut rx) =
+        deadcat_sdk::node::DeadcatNode::with_store(keys, sdk_network, store_arc, config);
+
+    // Replace any existing node (drops old node if any)
+    let node_state = app.state::<NodeState>();
+    let mut guard = node_state.node.lock().await;
+    *guard = Some(node);
+
+    // Start the background Nostr subscription loop
+    if let Some(node) = guard.as_ref() {
+        if let Err(e) = node.start_subscription().await {
+            log::warn!("failed to start discovery subscription: {e}");
+        }
+    }
+    drop(guard);
+
+    // Forward discovery events to the frontend
+    let app_handle = app.clone();
+    tokio::spawn(async move {
+        use deadcat_sdk::discovery::DiscoveryEvent;
+        while let Ok(event) = rx.recv().await {
+            match event {
+                DiscoveryEvent::MarketDiscovered(m) => {
+                    let _ = app_handle.emit("discovery:market", &m);
+                }
+                DiscoveryEvent::OrderDiscovered(o) => {
+                    let _ = app_handle.emit("discovery:order", &o);
+                }
+                DiscoveryEvent::AttestationDiscovered(a) => {
+                    let _ = app_handle.emit("discovery:attestation", &a);
+                }
+                DiscoveryEvent::PoolDiscovered(p) => {
+                    let _ = app_handle.emit("discovery:pool", &p);
+                }
+            }
+        }
+        log::info!("discovery event forwarding loop ended");
+    });
+
+    Ok(())
+}
+
+fn market_state_to_u8(state: deadcat_sdk::MarketState) -> u8 {
+    match state {
+        deadcat_sdk::MarketState::Dormant => 0,
+        deadcat_sdk::MarketState::Unresolved => 1,
+        deadcat_sdk::MarketState::ResolvedYes => 2,
+        deadcat_sdk::MarketState::ResolvedNo => 3,
+    }
+}
+
+// =========================================================================
+// Nostr identity commands
+// =========================================================================
 
 #[tauri::command]
 pub async fn init_nostr_identity(
-    state: tauri::State<'_, SdkState>,
-    app_handle: tauri::AppHandle,
+    app: tauri::AppHandle,
 ) -> Result<Option<IdentityResponse>, String> {
-    let app_data_dir = app_handle
+    let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to get app data dir: {e}"))?;
@@ -79,15 +199,7 @@ pub async fn init_nostr_identity(
                     .to_bech32()
                     .map_err(|e| format!("bech32 error: {e}"))?,
             };
-
-            {
-                let mut nostr_keys = state
-                    .nostr_keys
-                    .lock()
-                    .map_err(|_| "failed to lock nostr_keys".to_string())?;
-                *nostr_keys = Some(keys);
-            }
-
+            construct_and_store_node(&app, keys).await?;
             Ok(Some(response))
         }
         None => Ok(None),
@@ -95,11 +207,8 @@ pub async fn init_nostr_identity(
 }
 
 #[tauri::command]
-pub async fn generate_nostr_identity(
-    state: tauri::State<'_, SdkState>,
-    app_handle: tauri::AppHandle,
-) -> Result<IdentityResponse, String> {
-    let app_data_dir = app_handle
+pub async fn generate_nostr_identity(app: tauri::AppHandle) -> Result<IdentityResponse, String> {
+    let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to get app data dir: {e}"))?;
@@ -114,40 +223,25 @@ pub async fn generate_nostr_identity(
             .map_err(|e| format!("bech32 error: {e}"))?,
     };
 
-    {
-        let mut nostr_keys = state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        *nostr_keys = Some(keys);
-    }
-
-    // Reset Nostr client so it reconnects with new identity
-    {
-        let mut nostr_client = state.nostr_client.lock().await;
-        *nostr_client = None;
-    }
-
+    construct_and_store_node(&app, keys).await?;
     Ok(response)
 }
 
 #[tauri::command]
-pub fn get_nostr_identity(
-    state: tauri::State<'_, SdkState>,
-) -> Result<Option<IdentityResponse>, String> {
-    let nostr_keys = state
-        .nostr_keys
-        .lock()
-        .map_err(|_| "failed to lock nostr_keys".to_string())?;
-
-    match nostr_keys.as_ref() {
-        Some(keys) => Ok(Some(IdentityResponse {
-            pubkey_hex: keys.public_key().to_hex(),
-            npub: keys
-                .public_key()
-                .to_bech32()
-                .map_err(|e| format!("bech32 error: {e}"))?,
-        })),
+pub async fn get_nostr_identity(app: tauri::AppHandle) -> Result<Option<IdentityResponse>, String> {
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    match guard.as_ref() {
+        Some(node) => {
+            let keys = node.keys();
+            Ok(Some(IdentityResponse {
+                pubkey_hex: keys.public_key().to_hex(),
+                npub: keys
+                    .public_key()
+                    .to_bech32()
+                    .map_err(|e| format!("bech32 error: {e}"))?,
+            }))
+        }
         None => Ok(None),
     }
 }
@@ -155,15 +249,14 @@ pub fn get_nostr_identity(
 #[tauri::command]
 pub async fn import_nostr_nsec(
     nsec: String,
-    state: tauri::State<'_, SdkState>,
-    app_handle: tauri::AppHandle,
+    app: tauri::AppHandle,
 ) -> Result<IdentityResponse, String> {
     let secret_key =
         SecretKey::from_bech32(nsec.trim()).map_err(|e| format!("invalid nsec: {e}"))?;
     let keys = Keys::new(secret_key);
 
     // Persist to disk
-    let app_data_dir = app_handle
+    let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to get app data dir: {e}"))?;
@@ -179,46 +272,50 @@ pub async fn import_nostr_nsec(
             .map_err(|e| format!("bech32 error: {e}"))?,
     };
 
-    // Update in-memory keys
-    {
-        let mut nostr_keys = state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        *nostr_keys = Some(keys);
-    }
-
-    // Reset Nostr client so it reconnects with new identity
-    {
-        let mut nostr_client = state.nostr_client.lock().await;
-        *nostr_client = None;
-    }
-
+    construct_and_store_node(&app, keys).await?;
     Ok(response)
 }
 
 #[tauri::command]
-pub fn export_nostr_nsec(state: tauri::State<'_, SdkState>) -> Result<String, String> {
-    let nostr_keys = state
-        .nostr_keys
-        .lock()
-        .map_err(|_| "failed to lock nostr_keys".to_string())?;
-
-    let keys = nostr_keys
+pub async fn export_nostr_nsec(app: tauri::AppHandle) -> Result<String, String> {
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard
         .as_ref()
         .ok_or_else(|| "Nostr identity not initialized".to_string())?;
 
-    keys.secret_key()
+    node.keys()
+        .secret_key()
         .to_bech32()
         .map_err(|e| format!("bech32 error: {e}"))
 }
 
 #[tauri::command]
-pub async fn delete_nostr_identity(
-    state: tauri::State<'_, SdkState>,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    let app_data_dir = app_handle
+pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> {
+    // Lock wallet and drop node
+    {
+        let node_state = app.state::<NodeState>();
+        let mut guard = node_state.node.lock().await;
+        if let Some(node) = guard.as_ref() {
+            node.lock_wallet();
+        }
+        *guard = None;
+    }
+
+    // Clear wallet state
+    {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.set_wallet_unlocked(false);
+        if let Some(persister) = mgr.persister_mut() {
+            persister.clear_cache();
+        }
+    }
+
+    // Delete key file
+    let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to get app data dir: {e}"))?;
@@ -227,91 +324,51 @@ pub async fn delete_nostr_identity(
         std::fs::remove_file(&key_path).map_err(|e| format!("failed to delete key file: {e}"))?;
     }
 
-    // Clear in-memory keys
-    {
-        let mut nostr_keys = state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        *nostr_keys = None;
-    }
-
-    // Reset Nostr client
-    {
-        let mut nostr_client = state.nostr_client.lock().await;
-        *nostr_client = None;
-    }
-
+    bump_revision_and_emit(&app).await?;
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // NIP-44 wallet backup commands
-// ---------------------------------------------------------------------------
+// =========================================================================
 
-/// Encrypt the wallet mnemonic with NIP-44 and publish to relays as kind 30078.
+/// Encrypt the wallet mnemonic with NIP-44 and publish to relays.
 #[tauri::command]
 pub async fn backup_mnemonic_to_nostr(
-    state: tauri::State<'_, SdkState>,
-    app: tauri::AppHandle,
     password: String,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let keys = {
-        let nostr_keys = state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        nostr_keys
-            .clone()
-            .ok_or_else(|| "Nostr identity not initialized".to_string())?
-    };
+    let (keys, client) = get_keys_and_client(&app).await?;
 
-    // Get the mnemonic: use cached version if wallet is unlocked, otherwise decrypt with password
+    // Get mnemonic from persister
     let mnemonic = {
         let manager = app.state::<Mutex<AppStateManager>>();
         let mut mgr = manager
             .lock()
-            .map_err(|_| "wallet lock failed".to_string())?;
-        let wallet = mgr
-            .wallet_mut()
-            .ok_or_else(|| "Wallet not initialized".to_string())?;
-        if let Some(cached) = wallet.persister_mut().cached() {
+            .map_err(|_| "state lock failed".to_string())?;
+        let persister = mgr
+            .persister_mut()
+            .ok_or_else(|| "Persister not initialized".to_string())?;
+        if let Some(cached) = persister.cached() {
             cached.to_string()
         } else {
-            wallet
-                .persister_mut()
-                .load(&password)
-                .map_err(|e| e.to_string())?
+            persister.load(&password).map_err(|e| e.to_string())?
         }
     };
 
     let encrypted = discovery::nip44_encrypt_to_self(&keys, &mnemonic)?;
     let event = discovery::build_wallet_backup_event(&keys, &encrypted)?;
-
-    let client = get_or_connect_nostr_client(&state).await?;
     let event_id = discovery::publish_event(&client, event).await?;
 
     Ok(event_id.to_hex())
 }
 
-/// Fetch and decrypt the wallet mnemonic backup from relays.
+/// Fetch and decrypt wallet mnemonic backup from relays.
 #[tauri::command]
-pub async fn restore_mnemonic_from_nostr(
-    state: tauri::State<'_, SdkState>,
-) -> Result<String, String> {
-    let keys = {
-        let nostr_keys = state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        nostr_keys
-            .clone()
-            .ok_or_else(|| "Nostr identity not initialized".to_string())?
-    };
+pub async fn restore_mnemonic_from_nostr(app: tauri::AppHandle) -> Result<String, String> {
+    let (keys, client) = get_keys_and_client(&app).await?;
 
-    let client = get_or_connect_nostr_client(&state).await?;
     let filter = discovery::build_backup_query_filter(&keys.public_key());
-
     let events = client
         .fetch_events(vec![filter], Duration::from_secs(8))
         .await
@@ -328,30 +385,27 @@ pub async fn restore_mnemonic_from_nostr(
     discovery::nip44_decrypt_from_self(&keys, &encrypted_content)
 }
 
-/// Check whether a wallet backup exists on each relay.
 #[tauri::command]
 pub async fn check_nostr_backup(
-    state: tauri::State<'_, SdkState>,
+    app: tauri::AppHandle,
 ) -> Result<discovery::NostrBackupStatus, String> {
-    let keys = {
-        let nostr_keys = state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        nostr_keys
-            .clone()
-            .ok_or_else(|| "Nostr identity not initialized".to_string())?
-    };
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let keys = node.keys().clone();
+    drop(guard);
 
-    let relays = state
-        .relay_list
-        .read()
-        .map_err(|_| "failed to read relay_list".to_string())?
-        .clone();
+    let relays = {
+        let nostr_state = app.state::<NostrAppState>();
+        let guard = nostr_state
+            .relay_list
+            .read()
+            .map_err(|_| "failed to read relay_list".to_string())?;
+        guard.clone()
+    };
 
     let filter = discovery::build_backup_query_filter(&keys.public_key());
 
-    // Check all relays in parallel instead of serially
     let mut tasks = tokio::task::JoinSet::new();
     for url in relays {
         let f = filter.clone();
@@ -393,36 +447,24 @@ pub async fn check_nostr_backup(
     })
 }
 
-/// Delete the wallet backup from all relays (NIP-09 deletion event).
 #[tauri::command]
-pub async fn delete_nostr_backup(state: tauri::State<'_, SdkState>) -> Result<String, String> {
-    let keys = {
-        let nostr_keys = state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        nostr_keys
-            .clone()
-            .ok_or_else(|| "Nostr identity not initialized".to_string())?
-    };
+pub async fn delete_nostr_backup(app: tauri::AppHandle) -> Result<String, String> {
+    let (keys, client) = get_keys_and_client(&app).await?;
 
     let event = discovery::build_backup_deletion_event(&keys)?;
-    let client = get_or_connect_nostr_client(&state).await?;
     let event_id = discovery::publish_event(&client, event).await?;
 
     Ok(event_id.to_hex())
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // NIP-65 relay management commands
-// ---------------------------------------------------------------------------
+// =========================================================================
 
-/// Get the current in-memory relay list.
 #[tauri::command]
-pub fn get_relay_list(
-    state: tauri::State<'_, SdkState>,
-) -> Result<Vec<discovery::RelayEntry>, String> {
-    let relays = state
+pub fn get_relay_list(app: tauri::AppHandle) -> Result<Vec<discovery::RelayEntry>, String> {
+    let nostr_state = app.state::<NostrAppState>();
+    let relays = nostr_state
         .relay_list
         .read()
         .map_err(|_| "failed to read relay_list".to_string())?
@@ -437,41 +479,37 @@ pub fn get_relay_list(
         .collect())
 }
 
-/// Overwrite the relay list, reset the client, and publish kind 10002.
 #[tauri::command]
-pub async fn set_relay_list(
-    state: tauri::State<'_, SdkState>,
-    relays: Vec<String>,
-) -> Result<(), String> {
+pub async fn set_relay_list(relays: Vec<String>, app: tauri::AppHandle) -> Result<(), String> {
     let normalized: Vec<String> = relays
         .iter()
         .map(|u| discovery::normalize_relay_url(u))
         .collect();
 
+    // Update relay list
     {
-        let mut list = state
+        let nostr_state = app.state::<NostrAppState>();
+        let mut list = nostr_state
             .relay_list
             .write()
             .map_err(|_| "failed to write relay_list".to_string())?;
         *list = normalized.clone();
     }
 
-    // Force client reconnect with new relays
-    {
-        let mut nostr_client = state.nostr_client.lock().await;
-        *nostr_client = None;
-    }
+    // Publish kind 10002 if node is available
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    if let Some(node) = guard.as_ref() {
+        let keys = node.keys().clone();
+        let client = node.discovery().client().clone();
+        drop(guard);
 
-    // Publish kind 10002 if we have keys
-    let keys = {
-        state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?
-            .clone()
-    };
-    if let Some(keys) = keys {
-        let client = get_or_connect_nostr_client(&state).await?;
+        // Add new relays to the client
+        for url in &normalized {
+            let _ = client.add_relay(url.as_str()).await;
+        }
+        client.connect_with_timeout(Duration::from_secs(5)).await;
+
         let event = discovery::build_relay_list_event(&keys, &normalized)?;
         discovery::publish_event(&client, event).await?;
     }
@@ -479,42 +517,23 @@ pub async fn set_relay_list(
     Ok(())
 }
 
-/// Fetch the user's NIP-65 relay list from connected relays and update state.
 #[tauri::command]
-pub async fn fetch_nip65_relay_list(
-    state: tauri::State<'_, SdkState>,
-) -> Result<Vec<String>, String> {
-    let keys = {
-        let nostr_keys = state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        nostr_keys
-            .clone()
-            .ok_or_else(|| "Nostr identity not initialized".to_string())?
-    };
-
-    let client = get_or_connect_nostr_client(&state).await?;
+pub async fn fetch_nip65_relay_list(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let (keys, client) = get_keys_and_client(&app).await?;
 
     match discovery::fetch_relay_list(&client, &keys.public_key()).await? {
         Some(relays) => {
-            {
-                let mut list = state
-                    .relay_list
-                    .write()
-                    .map_err(|_| "failed to write relay_list".to_string())?;
-                *list = relays.clone();
-            }
-            // Reset client so next call uses the new relay list
-            {
-                let mut nostr_client = state.nostr_client.lock().await;
-                *nostr_client = None;
-            }
+            let nostr_state = app.state::<NostrAppState>();
+            let mut list = nostr_state
+                .relay_list
+                .write()
+                .map_err(|_| "failed to write relay_list".to_string())?;
+            *list = relays.clone();
             Ok(relays)
         }
         None => {
-            // No NIP-65 event found, return current defaults
-            let relays = state
+            let nostr_state = app.state::<NostrAppState>();
+            let relays = nostr_state
                 .relay_list
                 .read()
                 .map_err(|_| "failed to read relay_list".to_string())?
@@ -524,40 +543,32 @@ pub async fn fetch_nip65_relay_list(
     }
 }
 
-/// Add a single relay, reset client, and publish updated kind 10002.
 #[tauri::command]
-pub async fn add_relay(
-    state: tauri::State<'_, SdkState>,
-    url: String,
-) -> Result<Vec<String>, String> {
+pub async fn add_relay(url: String, app: tauri::AppHandle) -> Result<Vec<String>, String> {
     let normalized = discovery::normalize_relay_url(&url);
     let new_list = {
-        let mut list = state
+        let nostr_state = app.state::<NostrAppState>();
+        let mut list = nostr_state
             .relay_list
             .write()
             .map_err(|_| "failed to write relay_list".to_string())?;
         if !list.contains(&normalized) {
-            list.push(normalized);
+            list.push(normalized.clone());
         }
         list.clone()
     };
 
-    // Force reconnect
-    {
-        let mut nostr_client = state.nostr_client.lock().await;
-        *nostr_client = None;
-    }
+    // Add to client and publish if node is available
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    if let Some(node) = guard.as_ref() {
+        let keys = node.keys().clone();
+        let client = node.discovery().client().clone();
+        drop(guard);
 
-    // Publish updated relay list if we have keys
-    let keys = {
-        state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?
-            .clone()
-    };
-    if let Some(keys) = keys {
-        let client = get_or_connect_nostr_client(&state).await?;
+        let _ = client.add_relay(normalized.as_str()).await;
+        client.connect_with_timeout(Duration::from_secs(5)).await;
+
         let event = discovery::build_relay_list_event(&keys, &new_list)?;
         discovery::publish_event(&client, event).await?;
     }
@@ -565,15 +576,12 @@ pub async fn add_relay(
     Ok(new_list)
 }
 
-/// Remove a relay, reset client, and publish updated kind 10002.
 #[tauri::command]
-pub async fn remove_relay(
-    state: tauri::State<'_, SdkState>,
-    url: String,
-) -> Result<Vec<String>, String> {
+pub async fn remove_relay(url: String, app: tauri::AppHandle) -> Result<Vec<String>, String> {
     let normalized = discovery::normalize_relay_url(&url);
     let new_list = {
-        let mut list = state
+        let nostr_state = app.state::<NostrAppState>();
+        let mut list = nostr_state
             .relay_list
             .write()
             .map_err(|_| "failed to write relay_list".to_string())?;
@@ -587,22 +595,14 @@ pub async fn remove_relay(
         list.clone()
     };
 
-    // Force reconnect
-    {
-        let mut nostr_client = state.nostr_client.lock().await;
-        *nostr_client = None;
-    }
+    // Publish if node is available
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    if let Some(node) = guard.as_ref() {
+        let keys = node.keys().clone();
+        let client = node.discovery().client().clone();
+        drop(guard);
 
-    // Publish updated relay list if we have keys
-    let keys = {
-        state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?
-            .clone()
-    };
-    if let Some(keys) = keys {
-        let client = get_or_connect_nostr_client(&state).await?;
         let event = discovery::build_relay_list_event(&keys, &new_list)?;
         discovery::publish_event(&client, event).await?;
     }
@@ -610,62 +610,46 @@ pub async fn remove_relay(
     Ok(new_list)
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Kind 0 profile command
-// ---------------------------------------------------------------------------
+// =========================================================================
 
-/// Fetch the user's kind 0 Nostr profile metadata.
 #[tauri::command]
 pub async fn fetch_nostr_profile(
-    state: tauri::State<'_, SdkState>,
+    app: tauri::AppHandle,
 ) -> Result<Option<discovery::NostrProfile>, String> {
-    let keys = {
-        let nostr_keys = state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        nostr_keys
-            .clone()
-            .ok_or_else(|| "Nostr identity not initialized".to_string())?
-    };
-
-    let client = get_or_connect_nostr_client(&state).await?;
+    let (keys, client) = get_keys_and_client(&app).await?;
     discovery::fetch_profile(&client, &keys.public_key()).await
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Contract discovery commands
-// ---------------------------------------------------------------------------
+// =========================================================================
 
 #[tauri::command]
-pub async fn discover_contracts(
-    state: tauri::State<'_, SdkState>,
-) -> Result<Vec<DiscoveredMarket>, String> {
-    let client = get_or_connect_nostr_client(&state).await?;
-    discovery::fetch_announcements(&client).await
+pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    node.fetch_markets().await.map_err(|e| format!("{e}"))
 }
 
 /// Publish a contract to Nostr (Nostr-only mode — no on-chain tx).
 #[tauri::command]
 pub async fn publish_contract(
-    state: tauri::State<'_, SdkState>,
     request: CreateContractRequest,
     app: tauri::AppHandle,
 ) -> Result<DiscoveredMarket, String> {
     validate_request(&request)?;
 
-    let keys = {
-        let nostr_keys = state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        nostr_keys.clone().ok_or_else(|| {
-            "nostr identity not initialized — call init_nostr_identity first".to_string()
-        })?
-    };
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard
+        .as_ref()
+        .ok_or("Node not initialized — call init_nostr_identity first")?;
 
     let oracle_pubkey_bytes: [u8; 32] = {
-        let hex_str = keys.public_key().to_hex();
+        let hex_str = node.keys().public_key().to_hex();
         let bytes = hex::decode(&hex_str).map_err(|e| format!("hex decode error: {e}"))?;
         bytes
             .try_into()
@@ -676,7 +660,7 @@ pub async fn publish_contract(
         let state_handle = app.state::<Mutex<AppStateManager>>();
         let mgr = state_handle
             .lock()
-            .map_err(|_| "wallet lock failed".to_string())?;
+            .map_err(|_| "state lock failed".to_string())?;
         mgr.network()
             .ok_or_else(|| "network not configured".to_string())?
             .into()
@@ -691,6 +675,8 @@ pub async fn publish_contract(
         return Err("settlement deadline must be in the future".to_string());
     };
 
+    // Asset IDs are zero — no on-chain issuance has occurred yet.
+    // They get populated when the market is created on-chain via create_contract_onchain.
     let contract_params = deadcat_sdk::params::ContractParams {
         oracle_public_key: oracle_pubkey_bytes,
         collateral_asset_id: [0u8; 32],
@@ -703,27 +689,26 @@ pub async fn publish_contract(
     };
 
     let metadata = ContractMetadata {
-        question: request.question,
-        description: request.description,
-        category: request.category,
-        resolution_source: request.resolution_source,
+        question: request.question.clone(),
+        description: request.description.clone(),
+        category: request.category.clone(),
+        resolution_source: request.resolution_source.clone(),
         starting_yes_price: request.starting_yes_price,
     };
 
     let announcement = deadcat_sdk::announcement::ContractAnnouncement {
         version: 1,
         contract_params,
-        metadata,
+        metadata: metadata.clone(),
         creation_txid: None,
     };
 
-    let event = discovery::build_announcement_event(&keys, &announcement)?;
+    let event_id = node
+        .announce_market(&announcement)
+        .await
+        .map_err(|e| format!("{e}"))?;
 
-    let client = get_or_connect_nostr_client(&state).await?;
-    let event_id = discovery::publish_event(&client, event.clone()).await?;
-
-    let market = discovery::parse_announcement_event(&event)?;
-
+    let market_id = contract_params.market_id();
     let nevent = nostr_sdk::nips::nip19::Nip19Event::new(
         event_id,
         discovery::DEFAULT_RELAYS.iter().map(|r| r.to_string()),
@@ -731,40 +716,49 @@ pub async fn publish_contract(
     .to_bech32()
     .unwrap_or_default();
 
+    let creator_pubkey = node.keys().public_key().to_hex();
+
     Ok(DiscoveredMarket {
         id: event_id.to_hex(),
         nevent,
-        ..market
+        market_id: hex::encode(market_id.as_bytes()),
+        question: metadata.question,
+        category: metadata.category,
+        description: metadata.description,
+        resolution_source: metadata.resolution_source,
+        oracle_pubkey: hex::encode(oracle_pubkey_bytes),
+        expiry_height: expiry_time,
+        cpt_sats: request.collateral_per_token,
+        collateral_asset_id: hex::encode([0u8; 32]),
+        yes_asset_id: hex::encode([0u8; 32]),
+        no_asset_id: hex::encode([0u8; 32]),
+        yes_reissuance_token: hex::encode([0u8; 32]),
+        no_reissuance_token: hex::encode([0u8; 32]),
+        starting_yes_price: request.starting_yes_price,
+        creator_pubkey,
+        created_at: nostr_sdk::Timestamp::now().as_u64(),
+        creation_txid: None,
+        state: 0,
+        nostr_event_json: None,
     })
 }
 
 #[tauri::command]
 pub async fn oracle_attest(
-    state: tauri::State<'_, SdkState>,
     market_id_hex: String,
     outcome_yes: bool,
-) -> Result<AttestationResult, String> {
-    let keys = {
-        let nostr_keys = state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        nostr_keys
-            .clone()
-            .ok_or_else(|| "nostr identity not initialized".to_string())?
-    };
-
+    app: tauri::AppHandle,
+) -> Result<discovery::AttestationResult, String> {
     let market_id_bytes: [u8; 32] = hex::decode(&market_id_hex)
         .map_err(|e| format!("invalid market_id hex: {e}"))?
         .try_into()
         .map_err(|_| "market_id must be exactly 32 bytes".to_string())?;
-
     let market_id = deadcat_sdk::params::MarketId(market_id_bytes);
 
-    let (sig_bytes, msg_bytes) = discovery::sign_attestation(&keys, &market_id, outcome_yes)?;
+    // Get a connected client (handles relay connection)
+    let (_keys, client) = get_keys_and_client(&app).await?;
 
-    let client = get_or_connect_nostr_client(&state).await?;
-
+    // Fetch the announcement to get its event ID
     let filter = nostr_sdk::Filter::new()
         .kind(discovery::APP_EVENT_KIND)
         .identifier(&market_id_hex)
@@ -781,53 +775,37 @@ pub async fn oracle_attest(
         .map(|e| e.id.to_hex())
         .unwrap_or_default();
 
-    let sig_hex = hex::encode(sig_bytes);
-    let msg_hex = hex::encode(msg_bytes);
+    // Lock node only for the attestation call
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let result = node
+        .attest_market(&market_id, &announcement_event_id, outcome_yes)
+        .await
+        .map_err(|e| format!("{e}"))?;
 
-    let event = discovery::build_attestation_event(
-        &keys,
-        &market_id_hex,
-        &announcement_event_id,
-        outcome_yes,
-        &sig_hex,
-        &msg_hex,
-    )?;
-
-    let event_id = discovery::publish_event(&client, event).await?;
-
-    Ok(AttestationResult {
-        market_id: market_id_hex,
-        outcome_yes,
-        signature_hex: sig_hex,
-        nostr_event_id: event_id.to_hex(),
-    })
+    Ok(result)
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // On-chain contract creation command
-// ---------------------------------------------------------------------------
+// =========================================================================
 
-/// Create a prediction market contract on-chain (Liquid creation tx + Nostr announcement).
 #[tauri::command]
 pub async fn create_contract_onchain(
-    sdk_state: tauri::State<'_, SdkState>,
     request: CreateContractRequest,
     app: tauri::AppHandle,
 ) -> Result<DiscoveredMarket, String> {
     validate_request(&request)?;
 
-    let keys = {
-        let nostr_keys = sdk_state
-            .nostr_keys
-            .lock()
-            .map_err(|_| "failed to lock nostr_keys".to_string())?;
-        nostr_keys.clone().ok_or_else(|| {
-            "nostr identity not initialized — call init_nostr_identity first".to_string()
-        })?
-    };
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard
+        .as_ref()
+        .ok_or("Node not initialized — call init_nostr_identity first")?;
 
     let oracle_pubkey_bytes: [u8; 32] = {
-        let hex_str = keys.public_key().to_hex();
+        let hex_str = node.keys().public_key().to_hex();
         let bytes = hex::decode(&hex_str).map_err(|e| format!("hex decode: {e}"))?;
         bytes
             .try_into()
@@ -838,7 +816,7 @@ pub async fn create_contract_onchain(
         let state_handle = app.state::<Mutex<AppStateManager>>();
         let mgr = state_handle
             .lock()
-            .map_err(|_| "wallet lock failed".to_string())?;
+            .map_err(|_| "state lock failed".to_string())?;
         mgr.network()
             .ok_or_else(|| "network not configured".to_string())?
             .into()
@@ -853,42 +831,6 @@ pub async fn create_contract_onchain(
         return Err("settlement deadline must be in the future".into());
     };
 
-    let app_handle = app.clone();
-    let collateral_per_token = request.collateral_per_token;
-
-    let (creation_txid, contract_params) = tokio::task::spawn_blocking(move || {
-        let manager = app_handle.state::<Mutex<AppStateManager>>();
-        let mut mgr = manager
-            .lock()
-            .map_err(|_| "wallet lock failed".to_string())?;
-        let wallet = mgr
-            .wallet_mut()
-            .ok_or_else(|| "wallet not initialized".to_string())?;
-
-        if wallet.status() != crate::wallet::types::WalletStatus::Unlocked {
-            return Err("wallet must be unlocked to create a contract".to_string());
-        }
-
-        let sdk = wallet.sdk_mut().map_err(|e| format!("{e}"))?;
-        let (txid, params) = sdk
-            .create_contract_onchain(
-                oracle_pubkey_bytes,
-                collateral_per_token,
-                expiry_time,
-                300,
-                300,
-            )
-            .map_err(|e| format!("contract creation: {e}"))?;
-
-        mgr.bump_revision();
-        let state = mgr.snapshot();
-        let _ = app_handle.emit(crate::APP_STATE_UPDATED_EVENT, &state);
-
-        Ok((txid.to_string(), params))
-    })
-    .await
-    .map_err(|e| format!("task join: {e}"))??;
-
     let metadata = ContractMetadata {
         question: request.question,
         description: request.description,
@@ -897,36 +839,27 @@ pub async fn create_contract_onchain(
         starting_yes_price: request.starting_yes_price,
     };
 
-    let announcement = deadcat_sdk::announcement::ContractAnnouncement {
-        version: 1,
-        contract_params,
-        metadata,
-        creation_txid: Some(creation_txid),
-    };
+    let (market, _txid) = node
+        .create_market(
+            oracle_pubkey_bytes,
+            request.collateral_per_token,
+            expiry_time,
+            300,
+            300,
+            metadata,
+        )
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
 
-    let event = discovery::build_announcement_event(&keys, &announcement)?;
+    bump_revision_and_emit(&app).await?;
 
-    let client = get_or_connect_nostr_client(&sdk_state).await?;
-    let event_id = discovery::publish_event(&client, event.clone()).await?;
-    let market = discovery::parse_announcement_event(&event)?;
-
-    let nevent = nostr_sdk::nips::nip19::Nip19Event::new(
-        event_id,
-        discovery::DEFAULT_RELAYS.iter().map(|r| r.to_string()),
-    )
-    .to_bech32()
-    .unwrap_or_default();
-
-    Ok(DiscoveredMarket {
-        id: event_id.to_hex(),
-        nevent,
-        ..market
-    })
+    Ok(market)
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Token issuance command
-// ---------------------------------------------------------------------------
+// =========================================================================
 
 #[derive(Serialize, Deserialize)]
 pub struct IssuanceResultResponse {
@@ -936,10 +869,7 @@ pub struct IssuanceResultResponse {
     pub pairs_issued: u64,
 }
 
-/// Issue prediction market token pairs for an existing on-chain contract.
-///
-/// Detects whether the market is in Dormant (initial issuance) or Unresolved
-/// (subsequent issuance) state and builds the appropriate transaction.
+/// Issue new YES+NO token pairs by locking collateral.
 #[tauri::command]
 pub async fn issue_tokens(
     contract_params_json: String,
@@ -951,50 +881,32 @@ pub async fn issue_tokens(
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
-    let app_handle = app.clone();
+    let txid: lwk_wollet::elements::Txid = creation_txid
+        .parse()
+        .map_err(|e| format!("invalid txid: {e}"))?;
 
-    let result = tokio::task::spawn_blocking(move || {
-        let txid: lwk_wollet::elements::Txid = creation_txid
-            .parse()
-            .map_err(|e| format!("invalid txid: {e}"))?;
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let result = node
+        .issue_tokens(params, txid, pairs, 500)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
 
-        let manager = app_handle.state::<Mutex<AppStateManager>>();
-        let mut mgr = manager
-            .lock()
-            .map_err(|_| "wallet lock failed".to_string())?;
-        let wallet = mgr
-            .wallet_mut()
-            .ok_or_else(|| "wallet not initialized".to_string())?;
+    bump_revision_and_emit(&app).await?;
 
-        if wallet.status() != crate::wallet::types::WalletStatus::Unlocked {
-            return Err("wallet must be unlocked to issue tokens".to_string());
-        }
-
-        let sdk = wallet.sdk_mut().map_err(|e| format!("{e}"))?;
-        let result = sdk
-            .issue_tokens(&params, &txid, pairs, 500)
-            .map_err(|e| format!("issuance failed: {e}"))?;
-
-        mgr.bump_revision();
-        let state = mgr.snapshot();
-        let _ = app_handle.emit(crate::APP_STATE_UPDATED_EVENT, &state);
-
-        Ok(IssuanceResultResponse {
-            txid: result.txid.to_string(),
-            previous_state: result.previous_state as u8,
-            new_state: result.new_state as u8,
-            pairs_issued: result.pairs_issued,
-        })
+    Ok(IssuanceResultResponse {
+        txid: result.txid.to_string(),
+        previous_state: result.previous_state as u8,
+        new_state: result.new_state as u8,
+        pairs_issued: result.pairs_issued,
     })
-    .await
-    .map_err(|e| format!("task join: {e}"))??;
-
-    Ok(result)
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Token cancellation command
-// ---------------------------------------------------------------------------
+// =========================================================================
 
 #[derive(Serialize, Deserialize)]
 pub struct CancellationResultResponse {
@@ -1005,10 +917,7 @@ pub struct CancellationResultResponse {
     pub is_full_cancellation: bool,
 }
 
-/// Cancel paired YES+NO tokens to reclaim collateral.
-///
-/// Partial cancellation keeps the market Unresolved; full cancellation
-/// transitions back to Dormant.
+/// Cancel paired YES+NO tokens back into collateral.
 #[tauri::command]
 pub async fn cancel_tokens(
     contract_params_json: String,
@@ -1019,47 +928,29 @@ pub async fn cancel_tokens(
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
-    let app_handle = app.clone();
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let result = node
+        .cancel_tokens(params, pairs, 500)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
 
-    let result = tokio::task::spawn_blocking(move || {
-        let manager = app_handle.state::<Mutex<AppStateManager>>();
-        let mut mgr = manager
-            .lock()
-            .map_err(|_| "wallet lock failed".to_string())?;
-        let wallet = mgr
-            .wallet_mut()
-            .ok_or_else(|| "wallet not initialized".to_string())?;
+    bump_revision_and_emit(&app).await?;
 
-        if wallet.status() != crate::wallet::types::WalletStatus::Unlocked {
-            return Err("wallet must be unlocked to cancel tokens".to_string());
-        }
-
-        let sdk = wallet.sdk_mut().map_err(|e| format!("{e}"))?;
-        let result = sdk
-            .cancel_tokens(&params, pairs, 500)
-            .map_err(|e| format!("cancellation failed: {e}"))?;
-
-        mgr.bump_revision();
-        let state = mgr.snapshot();
-        let _ = app_handle.emit(crate::APP_STATE_UPDATED_EVENT, &state);
-
-        Ok(CancellationResultResponse {
-            txid: result.txid.to_string(),
-            previous_state: result.previous_state as u8,
-            new_state: result.new_state as u8,
-            pairs_burned: result.pairs_burned,
-            is_full_cancellation: result.is_full_cancellation,
-        })
+    Ok(CancellationResultResponse {
+        txid: result.txid.to_string(),
+        previous_state: result.previous_state as u8,
+        new_state: result.new_state as u8,
+        pairs_burned: result.pairs_burned,
+        is_full_cancellation: result.is_full_cancellation,
     })
-    .await
-    .map_err(|e| format!("task join: {e}"))??;
-
-    Ok(result)
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Oracle resolution command
-// ---------------------------------------------------------------------------
+// =========================================================================
 
 #[derive(Serialize, Deserialize)]
 pub struct ResolutionResultResponse {
@@ -1069,7 +960,7 @@ pub struct ResolutionResultResponse {
     pub outcome_yes: bool,
 }
 
-/// Execute on-chain oracle resolution (covenant state Unresolved → ResolvedYes/ResolvedNo).
+/// Resolve a market with an oracle signature.
 #[tauri::command]
 pub async fn resolve_market(
     contract_params_json: String,
@@ -1086,46 +977,28 @@ pub async fn resolve_market(
         .try_into()
         .map_err(|_| "oracle signature must be exactly 64 bytes".to_string())?;
 
-    let app_handle = app.clone();
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let result = node
+        .resolve_market(params, outcome_yes, sig_bytes, 500)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
 
-    let result = tokio::task::spawn_blocking(move || {
-        let manager = app_handle.state::<Mutex<AppStateManager>>();
-        let mut mgr = manager
-            .lock()
-            .map_err(|_| "wallet lock failed".to_string())?;
-        let wallet = mgr
-            .wallet_mut()
-            .ok_or_else(|| "wallet not initialized".to_string())?;
+    bump_revision_and_emit(&app).await?;
 
-        if wallet.status() != crate::wallet::types::WalletStatus::Unlocked {
-            return Err("wallet must be unlocked to resolve a market".to_string());
-        }
-
-        let sdk = wallet.sdk_mut().map_err(|e| format!("{e}"))?;
-        let result = sdk
-            .resolve_market(&params, outcome_yes, sig_bytes, 500)
-            .map_err(|e| format!("resolution failed: {e}"))?;
-
-        mgr.bump_revision();
-        let state = mgr.snapshot();
-        let _ = app_handle.emit(crate::APP_STATE_UPDATED_EVENT, &state);
-
-        Ok(ResolutionResultResponse {
-            txid: result.txid.to_string(),
-            previous_state: result.previous_state as u8,
-            new_state: result.new_state as u8,
-            outcome_yes: result.outcome_yes,
-        })
+    Ok(ResolutionResultResponse {
+        txid: result.txid.to_string(),
+        previous_state: result.previous_state as u8,
+        new_state: result.new_state as u8,
+        outcome_yes: result.outcome_yes,
     })
-    .await
-    .map_err(|e| format!("task join: {e}"))??;
-
-    Ok(result)
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Post-resolution redemption command
-// ---------------------------------------------------------------------------
+// =========================================================================
 
 #[derive(Serialize, Deserialize)]
 pub struct RedemptionResultResponse {
@@ -1135,7 +1008,7 @@ pub struct RedemptionResultResponse {
     pub payout_sats: u64,
 }
 
-/// Redeem winning tokens after oracle resolution (burn tokens → L-BTC payout).
+/// Redeem winning tokens after market resolution.
 #[tauri::command]
 pub async fn redeem_tokens(
     contract_params_json: String,
@@ -1146,48 +1019,30 @@ pub async fn redeem_tokens(
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
-    let app_handle = app.clone();
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let result = node
+        .redeem_tokens(params, tokens, 500)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
 
-    let result = tokio::task::spawn_blocking(move || {
-        let manager = app_handle.state::<Mutex<AppStateManager>>();
-        let mut mgr = manager
-            .lock()
-            .map_err(|_| "wallet lock failed".to_string())?;
-        let wallet = mgr
-            .wallet_mut()
-            .ok_or_else(|| "wallet not initialized".to_string())?;
+    bump_revision_and_emit(&app).await?;
 
-        if wallet.status() != crate::wallet::types::WalletStatus::Unlocked {
-            return Err("wallet must be unlocked to redeem tokens".to_string());
-        }
-
-        let sdk = wallet.sdk_mut().map_err(|e| format!("{e}"))?;
-        let result = sdk
-            .redeem_tokens(&params, tokens, 500)
-            .map_err(|e| format!("redemption failed: {e}"))?;
-
-        mgr.bump_revision();
-        let state = mgr.snapshot();
-        let _ = app_handle.emit(crate::APP_STATE_UPDATED_EVENT, &state);
-
-        Ok(RedemptionResultResponse {
-            txid: result.txid.to_string(),
-            previous_state: result.previous_state as u8,
-            tokens_redeemed: result.tokens_redeemed,
-            payout_sats: result.payout_sats,
-        })
+    Ok(RedemptionResultResponse {
+        txid: result.txid.to_string(),
+        previous_state: result.previous_state as u8,
+        tokens_redeemed: result.tokens_redeemed,
+        payout_sats: result.payout_sats,
     })
-    .await
-    .map_err(|e| format!("task join: {e}"))??;
-
-    Ok(result)
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Expiry redemption command
-// ---------------------------------------------------------------------------
+// =========================================================================
 
-/// Redeem tokens after market expiry (no oracle resolution, 1x CPT payout).
+/// Redeem tokens via the expiry path after the locktime has passed.
 #[tauri::command]
 pub async fn redeem_expired(
     contract_params_json: String,
@@ -1204,53 +1059,34 @@ pub async fn redeem_expired(
         .try_into()
         .map_err(|_| "token asset must be exactly 32 bytes".to_string())?;
 
-    let app_handle = app.clone();
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let result = node
+        .redeem_expired(params, token_asset, tokens, 500)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
 
-    let result = tokio::task::spawn_blocking(move || {
-        let manager = app_handle.state::<Mutex<AppStateManager>>();
-        let mut mgr = manager
-            .lock()
-            .map_err(|_| "wallet lock failed".to_string())?;
-        let wallet = mgr
-            .wallet_mut()
-            .ok_or_else(|| "wallet not initialized".to_string())?;
+    bump_revision_and_emit(&app).await?;
 
-        if wallet.status() != crate::wallet::types::WalletStatus::Unlocked {
-            return Err("wallet must be unlocked to redeem expired tokens".to_string());
-        }
-
-        let sdk = wallet.sdk_mut().map_err(|e| format!("{e}"))?;
-        let result = sdk
-            .redeem_expired(&params, token_asset, tokens, 500)
-            .map_err(|e| format!("expiry redemption failed: {e}"))?;
-
-        mgr.bump_revision();
-        let state = mgr.snapshot();
-        let _ = app_handle.emit(crate::APP_STATE_UPDATED_EVENT, &state);
-
-        Ok(RedemptionResultResponse {
-            txid: result.txid.to_string(),
-            previous_state: result.previous_state as u8,
-            tokens_redeemed: result.tokens_redeemed,
-            payout_sats: result.payout_sats,
-        })
+    Ok(RedemptionResultResponse {
+        txid: result.txid.to_string(),
+        previous_state: result.previous_state as u8,
+        tokens_redeemed: result.tokens_redeemed,
+        payout_sats: result.payout_sats,
     })
-    .await
-    .map_err(|e| format!("task join: {e}"))??;
-
-    Ok(result)
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Market state query command
-// ---------------------------------------------------------------------------
+// =========================================================================
 
 #[derive(Serialize, Deserialize)]
 pub struct MarketStateResponse {
     pub state: u8,
 }
 
-/// Query the live on-chain covenant state for a market.
 #[tauri::command]
 pub async fn get_market_state(
     contract_params_json: String,
@@ -1260,106 +1096,65 @@ pub async fn get_market_state(
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
-    let app_handle = app.clone();
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let state = node
+        .market_state(params)
+        .await
+        .map_err(|e| format!("{e}"))?;
 
-    let result = tokio::task::spawn_blocking(move || {
-        let manager = app_handle.state::<Mutex<AppStateManager>>();
-        let mut mgr = manager
-            .lock()
-            .map_err(|_| "wallet lock failed".to_string())?;
-        let wallet = mgr
-            .wallet_mut()
-            .ok_or_else(|| "wallet not initialized".to_string())?;
-
-        if wallet.status() != crate::wallet::types::WalletStatus::Unlocked {
-            return Err("wallet must be unlocked to query market state".to_string());
-        }
-
-        let sdk = wallet.sdk_mut().map_err(|e| format!("{e}"))?;
-        sdk.sync().map_err(|e| format!("sync failed: {e}"))?;
-
-        let contract = deadcat_sdk::CompiledContract::new(params)
-            .map_err(|e| format!("contract compilation failed: {e}"))?;
-
-        // Use the chain backend to scan covenant addresses
-        let chain = sdk.chain();
-        let dormant_spk = contract.script_pubkey(deadcat_sdk::MarketState::Dormant);
-        let unresolved_spk = contract.script_pubkey(deadcat_sdk::MarketState::Unresolved);
-        let resolved_yes_spk = contract.script_pubkey(deadcat_sdk::MarketState::ResolvedYes);
-        let resolved_no_spk = contract.script_pubkey(deadcat_sdk::MarketState::ResolvedNo);
-
-        let dormant = chain
-            .scan_script_utxos(&dormant_spk)
-            .map_err(|e| format!("{e}"))?;
-        let unresolved = chain
-            .scan_script_utxos(&unresolved_spk)
-            .map_err(|e| format!("{e}"))?;
-        let resolved_yes = chain
-            .scan_script_utxos(&resolved_yes_spk)
-            .map_err(|e| format!("{e}"))?;
-        let resolved_no = chain
-            .scan_script_utxos(&resolved_no_spk)
-            .map_err(|e| format!("{e}"))?;
-
-        let state = if !dormant.is_empty() {
-            0u8
-        } else if !unresolved.is_empty() {
-            1
-        } else if !resolved_yes.is_empty() {
-            2
-        } else if !resolved_no.is_empty() {
-            3
-        } else {
-            return Err("no UTXOs found at any covenant address".to_string());
-        };
-
-        Ok(MarketStateResponse { state })
+    Ok(MarketStateResponse {
+        state: market_state_to_u8(state),
     })
-    .await
-    .map_err(|e| format!("task join: {e}"))??;
-
-    Ok(result)
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Wallet UTXO query command
-// ---------------------------------------------------------------------------
+// =========================================================================
 
-/// Expose the wallet's raw UTXO list (needed for position tracking of YES/NO tokens).
 #[tauri::command]
-pub fn get_wallet_utxos(
+pub async fn get_wallet_utxos(
     app: tauri::AppHandle,
 ) -> Result<Vec<crate::wallet::types::WalletUtxo>, String> {
-    let state_handle = app.state::<Mutex<AppStateManager>>();
-    let mgr = state_handle
-        .lock()
-        .map_err(|_| "state lock failed".to_string())?;
-    let wallet = mgr
-        .wallet()
-        .ok_or_else(|| "wallet not initialized".to_string())?;
-    wallet.utxos().map_err(|e| format!("{e}"))
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let utxos = node.utxos().await.map_err(|e| format!("{e}"))?;
+    Ok(utxos
+        .iter()
+        .map(|u| crate::wallet::types::WalletUtxo {
+            txid: u.outpoint.txid.to_string(),
+            vout: u.outpoint.vout,
+            asset_id: u.unblinded.asset.to_string(),
+            value: u.unblinded.value,
+            height: u.height,
+        })
+        .collect())
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
 // Market store commands
-// ---------------------------------------------------------------------------
+// =========================================================================
 
-/// Ingest discovered markets into the persistent store.
-///
-/// For each market, compiles the contract — markets that fail compilation are
-/// silently dropped. Returns the number of markets successfully ingested.
 #[tauri::command]
 pub fn ingest_discovered_markets(
     markets: Vec<DiscoveredMarket>,
     app: tauri::AppHandle,
 ) -> Result<u32, String> {
-    let state_handle = app.state::<Mutex<AppStateManager>>();
-    let mut mgr = state_handle
+    let store_arc = {
+        let state_handle = app.state::<Mutex<AppStateManager>>();
+        let mgr = state_handle
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.store()
+            .cloned()
+            .ok_or_else(|| "Store not initialized".to_string())?
+    };
+
+    let mut store = store_arc
         .lock()
-        .map_err(|_| "state lock failed".to_string())?;
-    let wallet = mgr
-        .wallet_mut()
-        .ok_or_else(|| "wallet not initialized".to_string())?;
+        .map_err(|_| "store lock failed".to_string())?;
 
     let mut count = 0u32;
     for market in &markets {
@@ -1384,7 +1179,7 @@ pub fn ingest_discovered_markets(
             nostr_event_json: market.nostr_event_json.clone(),
         };
 
-        match wallet.ingest_market(&params, Some(&metadata)) {
+        match store.ingest_market(&params, Some(&metadata)) {
             Ok(_) => count += 1,
             Err(e) => {
                 log::warn!("failed to ingest market {}: {e}", market.market_id);
@@ -1395,21 +1190,23 @@ pub fn ingest_discovered_markets(
     Ok(count)
 }
 
-/// List all markets from the persistent store.
-///
-/// Returns markets as `DiscoveredMarket` (the frontend type), with `state`
-/// reflecting real on-chain state from the store's sync.
 #[tauri::command]
 pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
-    let state_handle = app.state::<Mutex<AppStateManager>>();
-    let mut mgr = state_handle
-        .lock()
-        .map_err(|_| "state lock failed".to_string())?;
-    let wallet = mgr
-        .wallet_mut()
-        .ok_or_else(|| "wallet not initialized".to_string())?;
+    let store_arc = {
+        let state_handle = app.state::<Mutex<AppStateManager>>();
+        let mgr = state_handle
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.store()
+            .cloned()
+            .ok_or_else(|| "Store not initialized".to_string())?
+    };
 
-    let infos = wallet
+    let mut store = store_arc
+        .lock()
+        .map_err(|_| "store lock failed".to_string())?;
+
+    let infos = store
         .list_markets(&MarketFilter::default())
         .map_err(|e| format!("list markets: {e}"))?;
 
@@ -1425,7 +1222,6 @@ fn market_info_to_discovered(info: &deadcat_store::MarketInfo) -> DiscoveredMark
     let p = &info.params;
     let market_id_hex = hex::encode(info.market_id.as_bytes());
     DiscoveredMarket {
-        // Use market_id as stable unique identifier (the store doesn't persist Nostr event IDs)
         id: market_id_hex.clone(),
         nevent: info.nevent.clone().unwrap_or_default(),
         market_id: market_id_hex,
@@ -1454,7 +1250,6 @@ fn market_info_to_discovered(info: &deadcat_store::MarketInfo) -> DiscoveredMark
     }
 }
 
-/// Parse an ISO datetime string (e.g. "2026-02-21 12:34:56") into a unix timestamp.
 fn parse_iso_datetime_to_unix(s: &str) -> u64 {
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .map(|dt| dt.and_utc().timestamp() as u64)
