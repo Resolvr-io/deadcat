@@ -32,6 +32,7 @@
             rustc
             typescript
             sqlite
+            openssl
             pkg-config
             biome
           ]
