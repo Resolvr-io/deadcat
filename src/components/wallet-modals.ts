@@ -193,14 +193,14 @@ export function renderReceiveModal(): string {
     } else {
       content =
         '<div class="space-y-3">' +
-        '<p class="text-sm text-slate-400">Create a Lightning invoice via Boltz swap. Funds settle as L-BTC.</p>' +
+        '<p class="text-sm text-slate-400">Create a Lightning invoice via Boltz. Funds settle as L-BTC.</p>' +
         '<div class="flex gap-2">' +
         '<button data-action="receive-preset" data-preset="1000" class="flex-1 rounded-lg border border-slate-700 py-2 text-sm text-slate-300 hover:bg-slate-800">1k</button>' +
         '<button data-action="receive-preset" data-preset="10000" class="flex-1 rounded-lg border border-slate-700 py-2 text-sm text-slate-300 hover:bg-slate-800">10k</button>' +
         '<button data-action="receive-preset" data-preset="100000" class="flex-1 rounded-lg border border-slate-700 py-2 text-sm text-slate-300 hover:bg-slate-800">100k</button>' +
         "</div>" +
         '<div class="flex gap-2">' +
-        '<input id="receive-amount" type="number" value="' +
+        '<input id="receive-amount" type="number" min="1" value="' +
         state.receiveAmount +
         '" placeholder="Amount (sats)" class="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
         '<button data-action="create-lightning-receive" class="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-300"' +
@@ -285,10 +285,10 @@ export function renderReceiveModal(): string {
         : "";
       content =
         '<div class="space-y-3">' +
-        '<p class="text-sm text-slate-400">Create a Boltz chain swap. Send BTC on-chain to receive L-BTC.</p>' +
+        '<p class="text-sm text-slate-400">Send BTC on-chain to receive L-BTC via Boltz.</p>' +
         pairInfo +
         '<div class="flex gap-2">' +
-        '<input id="receive-amount" type="number" value="' +
+        '<input id="receive-amount" type="number" min="1" value="' +
         state.receiveAmount +
         '" placeholder="Amount (sats)" class="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
         '<button data-action="create-bitcoin-receive" class="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-300"' +
@@ -366,7 +366,7 @@ export function renderSendModal(): string {
         '<input id="send-liquid-address" value="' +
         state.sendLiquidAddress +
         '" placeholder="Liquid address" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
-        '<input id="send-liquid-amount" type="number" value="' +
+        '<input id="send-liquid-amount" type="number" min="1" value="' +
         state.sendLiquidAmount +
         '" placeholder="Amount (sats)" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
         '<button data-action="send-liquid" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300"' +
@@ -427,7 +427,7 @@ export function renderSendModal(): string {
         '<p class="text-sm text-slate-400">Create an L-BTC to BTC chain swap via Boltz.</p>' +
         pairInfo +
         '<div class="flex gap-2">' +
-        '<input id="send-btc-amount" type="number" value="' +
+        '<input id="send-btc-amount" type="number" min="1" value="' +
         state.sendBtcAmount +
         '" placeholder="Amount (sats)" class="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
         '<button data-action="create-bitcoin-send" class="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-300"' +

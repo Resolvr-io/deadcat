@@ -132,7 +132,7 @@ export function renderHome(): string {
           </section>
         </section>
 
-        <aside class="space-y-[13px]">
+        <aside class="grid gap-[13px] sm:grid-cols-2 xl:grid-cols-1">
           <section class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px]">
             <h3 class="mb-3 text-base font-medium text-slate-400">Trending</h3>
             <div class="space-y-4">
