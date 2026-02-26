@@ -3,6 +3,8 @@ import { markets, state } from "../state.ts";
 import type { WalletUtxo } from "../types.ts";
 import { reverseHex } from "../utils/crypto.ts";
 import { satsToFiatStr } from "../utils/format.ts";
+
+const PAW_ICON = `<svg class="inline-block h-[1em] w-[1em] align-text-bottom" viewBox="0 0 90 79" fill="currentColor"><path d="M26.62,28.27c4.09,2.84,9.4,2.58,12.27-.69,2.3-2.63,3.06-5.82,3.08-10-.35-5.03-1.89-10.34-6.28-14.44C29.51-2.63,21.1-.1,19.06,8.08c-1.74,6.91,1.71,16.11,7.56,20.18Z"/><path d="M22.98,41.99c.21-1.73.04-3.62-.43-5.3-1.46-5.21-4-9.77-9.08-12.33C7.34,21.27-.31,24.39,0,32.36c-.03,7.11,5.17,14.41,11.8,16.58,5.57,1.82,10.49-1.16,11.17-6.95Z"/><path d="M63.4,28.27c5.85-4.06,9.3-13.26,7.57-20.19C68.92-.12,60.51-2.64,54.33,3.13c-4.4,4.1-5.93,9.41-6.28,14.44.02,4.18.78,7.37,3.08,10,2.87,3.28,8.17,3.54,12.27.7Z"/><path d="M76.54,24.36c-5.08,2.56-7.62,7.12-9.08,12.33-.47,1.68-.63,3.57-.43,5.3.69,5.79,5.61,8.77,11.16,6.96,6.63-2.17,11.83-9.47,11.8-16.58.32-7.99-7.32-11.1-13.45-8.01Z"/><path d="M65.95,49.84c-2.36-2.86-4.3-6.01-6.45-9.02-.89-1.24-1.8-2.47-2.78-3.65-2.76-3.35-7.24-5.02-11.72-5.02s-8.96,1.68-11.72,5.02c-.98,1.19-1.89,2.41-2.78,3.65-2.15,3.01-4.08,6.15-6.45,9.02-1.77,2.15-4.25,3.82-6.11,5.92-4.14,4.69-4.72,9.96-1.94,15.3,2.79,5.37,8.01,7.6,14.41,7.9,4.82.23,9.23-1.95,13.98-2.16.22-.01.42-.01.62-.01s.4,0,.61.01c4.75.21,9.16,2.38,13.98,2.16,6.39-.3,11.62-2.53,14.41-7.9,2.77-5.34,2.2-10.61-1.94-15.3-1.87-2.1-4.35-3.77-6.12-5.92Z"/></svg>`;
 import {
   renderMnemonicGrid,
   renderModalTabs,
@@ -277,17 +279,19 @@ export function renderWallet(): string {
         "</span>" +
         "</div>" +
         '<div class="text-right">' +
-        '<span class="' +
-        color +
-        '">' +
-        sign +
-        formatLbtc(tx.balanceChange) +
-        "</span>" +
-        (state.baseCurrency !== "BTC"
-          ? '<div class="text-xs text-slate-500">' +
-            satsToFiatStr(Math.abs(tx.balanceChange)) +
-            "</div>"
-          : "") +
+        (state.walletBalanceHidden
+          ? '<span class="inline-flex gap-0.5 text-slate-500">' + PAW_ICON + PAW_ICON + "</span>"
+          : '<span class="' +
+            color +
+            '">' +
+            sign +
+            formatLbtc(tx.balanceChange) +
+            "</span>" +
+            (state.baseCurrency !== "BTC"
+              ? '<div class="text-xs text-slate-500">' +
+                satsToFiatStr(Math.abs(tx.balanceChange)) +
+                "</div>"
+              : "")) +
         "</div>" +
         "</div>"
       );
@@ -302,9 +306,11 @@ export function renderWallet(): string {
         '<span class="text-slate-300">' +
         flowLabel(sw.flow) +
         "</span>" +
-        '<span class="ml-2 text-slate-500">' +
-        sw.invoiceAmountSat.toLocaleString() +
-        " sats</span>" +
+        (state.walletBalanceHidden
+          ? '<span class="ml-2 inline-flex gap-0.5 text-slate-500">' + PAW_ICON + PAW_ICON + "</span>"
+          : '<span class="ml-2 text-slate-500">' +
+            sw.invoiceAmountSat.toLocaleString() +
+            " sats</span>") +
         "</div>" +
         '<div class="flex items-center gap-2">' +
         '<span class="text-xs text-slate-500">' +
@@ -461,12 +467,12 @@ export function renderWallet(): string {
             <button data-action="toggle-balance-hidden" class="text-slate-500 hover:text-slate-300" title="${state.walletBalanceHidden ? "Show balance" : "Hide balance"}">
               ${
                 state.walletBalanceHidden
-                  ? `<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
-                  : `<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
+                  ? `<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12C5 7 8.5 5 12 5s7 2 10 7c-3 5-6.5 7-10 7S5 17 2 12z"/><ellipse cx="12" cy="12" rx="2" ry="3.5"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`
+                  : `<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12C5 7 8.5 5 12 5s7 2 10 7c-3 5-6.5 7-10 7S5 17 2 12z"/><ellipse cx="12" cy="12" rx="2" ry="3.5"/></svg>`
               }
             </button>
           </div>
-          <div class="mt-1 text-3xl font-medium tracking-tight text-slate-100">${state.walletBalanceHidden ? "********" : formatLbtc(policyBalance)}</div>
+          <div class="mt-1 text-3xl font-medium tracking-tight text-slate-100">${state.walletBalanceHidden ? `<span class="inline-flex gap-1 text-slate-500">${PAW_ICON}${PAW_ICON}${PAW_ICON}${PAW_ICON}</span>` : formatLbtc(policyBalance)}</div>
           ${!state.walletBalanceHidden && state.baseCurrency !== "BTC" ? `<div class="mt-1 text-sm text-slate-400">${satsToFiatStr(policyBalance)}</div>` : ""}
           <div class="mt-3 flex items-center justify-center gap-1 rounded-full border border-slate-700 mx-auto w-fit text-xs">
             <button data-action="set-wallet-unit" data-unit="sats" class="rounded-full px-3 py-1 transition ${state.walletUnit === "sats" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}">L-sats</button>
@@ -487,7 +493,7 @@ export function renderWallet(): string {
         </div>
 
         ${
-          tokenPositions.length === 0 && !state.walletBalanceHidden
+          tokenPositions.length === 0
             ? `
         <!-- No Positions -->
         <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6 text-center">
@@ -499,7 +505,7 @@ export function renderWallet(): string {
         }
 
         ${
-          tokenPositions.length > 0 && !state.walletBalanceHidden
+          tokenPositions.length > 0
             ? `
         <!-- Token Positions -->
         <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
@@ -534,9 +540,11 @@ export function renderWallet(): string {
                   truncQ +
                   "</button>" +
                   "</div>" +
-                  '<span class="mono text-slate-100">' +
-                  tp.amount.toLocaleString() +
-                  "</span>" +
+                  (state.walletBalanceHidden
+                    ? '<span class="inline-flex gap-0.5 text-slate-500">' + PAW_ICON + PAW_ICON + "</span>"
+                    : '<span class="mono text-slate-100">' +
+                      tp.amount.toLocaleString() +
+                      "</span>") +
                   "</div>"
                 );
               }
@@ -545,9 +553,11 @@ export function renderWallet(): string {
                 '<span class="mono text-slate-400">' +
                 shortAsset +
                 "</span>" +
-                '<span class="mono text-slate-100">' +
-                tp.amount.toLocaleString() +
-                "</span>" +
+                (state.walletBalanceHidden
+                  ? '<span class="inline-flex gap-0.5 text-slate-500">' + PAW_ICON + PAW_ICON + "</span>"
+                  : '<span class="mono text-slate-100">' +
+                    tp.amount.toLocaleString() +
+                    "</span>") +
                 "</div>"
               );
             })
