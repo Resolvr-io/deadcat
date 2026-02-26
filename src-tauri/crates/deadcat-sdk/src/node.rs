@@ -39,7 +39,7 @@ use crate::trade::types::{TradeAmount, TradeDirection, TradeQuote, TradeResult, 
 
 // ── Wallet snapshot ────────────────────────────────────────────────────────
 
-/// Cached wallet state captured at the end of every [`DeadcatNode::with_sdk`]
+/// Cached wallet state captured at the end of every SDK
 /// call. Read queries (`balance`, `utxos`, `transactions`) are served directly
 /// from this snapshot via a `tokio::sync::watch` channel — no mutex, no
 /// `spawn_blocking`.

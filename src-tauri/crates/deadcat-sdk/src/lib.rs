@@ -26,7 +26,6 @@ pub(crate) mod trade;
 pub(crate) mod witness;
 
 // ── Core types ─────────────────────────────────────────────────────
-pub use chain::{ChainBackend, ElectrumBackend};
 pub use contract::CompiledContract;
 pub use error::{Error, NodeError, Result};
 pub use network::Network;

@@ -106,7 +106,7 @@ impl ContractParams {
     }
 
     /// Build SimplicityHL `Arguments` for contract compilation.
-    pub fn build_arguments(&self) -> Arguments {
+    pub(crate) fn build_arguments(&self) -> Arguments {
         let map = HashMap::from([
             (
                 WitnessName::from_str_unchecked("ORACLE_PUBLIC_KEY"),
