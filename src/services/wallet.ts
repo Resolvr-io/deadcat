@@ -12,6 +12,18 @@ export function formatLbtc(sats: number): string {
   return `${btc.toFixed(8)} L-BTC`;
 }
 
+export function formatCompactSats(sats: number): string {
+  if (sats >= 1_000_000_000)
+    return `${(sats / 1_000_000_000).toFixed(1).replace(/\.0$/, "")} B`;
+  if (sats >= 1_000_000)
+    return `${(sats / 1_000_000).toFixed(1).replace(/\.0$/, "")} M`;
+  if (sats >= 100_000)
+    return `${(sats / 1_000).toFixed(1).replace(/\.0$/, "")} K`;
+  if (sats >= 1_000)
+    return `${(sats / 1_000).toFixed(1).replace(/\.0$/, "")} K`;
+  return sats.toLocaleString();
+}
+
 export async function fetchWalletStatus(): Promise<void> {
   try {
     const appState = await invoke<{
