@@ -15,27 +15,15 @@ use deadcat_sdk::elements::{
 };
 use deadcat_sdk::simplicity::bit_machine::BitMachine;
 use deadcat_sdk::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
-use deadcat_sdk::witness::{
-    AllBlindingFactors, ReissuanceBlindingFactors, SpendingPath, satisfy_contract,
+use deadcat_sdk::testing::test_contract_params;
+use deadcat_sdk::{
+    AllBlindingFactors, CompiledContract, MarketState, ReissuanceBlindingFactors, SpendingPath,
+    satisfy_contract,
 };
-use deadcat_sdk::{CompiledContract, ContractParams, MarketState};
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
-
-fn test_params() -> ContractParams {
-    ContractParams {
-        oracle_public_key: [0xaa; 32],
-        collateral_asset_id: [0xbb; 32],
-        yes_token_asset: [0x01; 32],
-        no_token_asset: [0x02; 32],
-        yes_reissuance_token: [0x03; 32],
-        no_reissuance_token: [0x04; 32],
-        collateral_per_token: 100_000,
-        expiry_time: 1_000_000,
-    }
-}
 
 fn explicit_txout(asset_bytes: &[u8; 32], amount: u64, spk: &Script) -> TxOut {
     TxOut {
@@ -159,7 +147,7 @@ fn execute_contract(
 
 #[test]
 fn secondary_covenant_input_dormant() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("compile");
     let state = MarketState::Dormant;
     let covenant_spk = contract.script_pubkey(state);
@@ -202,7 +190,7 @@ fn secondary_covenant_input_dormant() {
 
 #[test]
 fn secondary_covenant_input_unresolved() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("compile");
     let state = MarketState::Unresolved;
     let covenant_spk = contract.script_pubkey(state);
@@ -246,7 +234,7 @@ fn secondary_covenant_input_unresolved() {
 /// SecondaryCovenantInput must fail at input index 0 (contract requires index != 0).
 #[test]
 fn secondary_covenant_input_fails_at_index_zero() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("compile");
     let state = MarketState::Dormant;
     let covenant_spk = contract.script_pubkey(state);
@@ -289,7 +277,7 @@ fn secondary_covenant_input_fails_at_index_zero() {
 /// SecondaryCovenantInput must fail when the script hashes don't match.
 #[test]
 fn secondary_covenant_input_fails_with_mismatched_scripts() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("compile");
     let state = MarketState::Dormant;
     let covenant_spk = contract.script_pubkey(state);
@@ -340,7 +328,7 @@ fn secondary_covenant_input_fails_with_mismatched_scripts() {
 
 #[test]
 fn initial_issuance_execution() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("compile");
     let dormant_spk = contract.script_pubkey(MarketState::Dormant);
     let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
@@ -437,7 +425,7 @@ fn initial_issuance_execution() {
 /// InitialIssuance must fail when the collateral output amount is wrong.
 #[test]
 fn initial_issuance_fails_with_wrong_collateral() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("compile");
     let dormant_spk = contract.script_pubkey(MarketState::Dormant);
     let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
@@ -524,7 +512,7 @@ fn initial_issuance_fails_with_wrong_collateral() {
 /// InitialIssuance must fail when executed at input index != 0.
 #[test]
 fn initial_issuance_fails_at_wrong_index() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("compile");
     let dormant_spk = contract.script_pubkey(MarketState::Dormant);
     let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
@@ -611,7 +599,7 @@ fn initial_issuance_fails_at_wrong_index() {
 
 #[test]
 fn subsequent_issuance_execution() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("compile");
     let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
     let blinding = test_blinding();
@@ -721,11 +709,10 @@ fn subsequent_issuance_execution() {
 // construction and contract execution.
 // ---------------------------------------------------------------------------
 
-use deadcat_sdk::assembly::{CollateralSource, IssuanceAssemblyInputs, IssuanceEntropy};
-use deadcat_sdk::pset::UnblindedUtxo;
 use deadcat_sdk::testing::{
     assemble_issuance_for_env, execute_against_env, test_blinding as shared_test_blinding,
 };
+use deadcat_sdk::{CollateralSource, IssuanceAssemblyInputs, IssuanceEntropy, UnblindedUtxo};
 
 fn test_unblinded_utxo(asset_id: [u8; 32], value: u64, spk: &Script) -> UnblindedUtxo {
     UnblindedUtxo {
@@ -753,7 +740,7 @@ fn test_rt_utxo(asset_id: [u8; 32], abf: [u8; 32], vbf: [u8; 32], spk: &Script) 
 #[test]
 #[ignore = "pruned-branch failure under investigation"]
 fn initial_issuance_assembly_to_env() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("compile");
     let blinding = shared_test_blinding();
     let dormant_spk = contract.script_pubkey(MarketState::Dormant);
@@ -824,7 +811,7 @@ fn initial_issuance_assembly_to_env() {
 #[test]
 #[ignore = "pruned-branch failure under investigation"]
 fn subsequent_issuance_assembly_to_env() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("compile");
     let blinding = shared_test_blinding();
     let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
@@ -899,7 +886,7 @@ fn subsequent_issuance_assembly_to_env() {
 /// Negative test: initial issuance with wrong collateral amount should fail.
 #[test]
 fn initial_issuance_assembly_wrong_collateral_fails() {
-    let params = test_params();
+    let params = test_contract_params();
     let contract = CompiledContract::new(params).expect("compile");
     let blinding = shared_test_blinding();
     let dormant_spk = contract.script_pubkey(MarketState::Dormant);
