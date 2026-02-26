@@ -397,6 +397,10 @@ export async function handleClick(
           mnemonic: state.onboardingWalletMnemonic.trim(),
           password: state.onboardingWalletPassword,
         });
+        updateOverlayMessage("Unlocking wallet...");
+        await invoke("unlock_wallet", {
+          password: state.onboardingWalletPassword,
+        });
         updateOverlayMessage("Scanning blockchain...");
         await invoke("sync_wallet");
         updateOverlayMessage("Loading markets...");
@@ -429,6 +433,10 @@ export async function handleClick(
         updateOverlayMessage("Restoring wallet...");
         await invoke("restore_wallet", {
           mnemonic: mnemonic.trim(),
+          password: state.onboardingWalletPassword,
+        });
+        updateOverlayMessage("Unlocking wallet...");
+        await invoke("unlock_wallet", {
           password: state.onboardingWalletPassword,
         });
         updateOverlayMessage("Scanning blockchain...");
