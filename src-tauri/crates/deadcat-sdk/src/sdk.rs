@@ -518,7 +518,7 @@ impl DeadcatSdk {
         )?;
 
         // I. Sign and finalize
-        let tx = self.sign_pset(assembled.pset)?;
+        let tx = self.sign_pset(assembled)?;
 
         // J. Broadcast
         let txid = self.broadcast_and_sync(&tx)?;
@@ -776,7 +776,7 @@ impl DeadcatSdk {
             &change_spk,
         )?;
 
-        let tx = self.sign_pset(assembled.pset)?;
+        let tx = self.sign_pset(assembled)?;
         let txid = self.broadcast_and_sync(&tx)?;
 
         let new_state = if is_full {
@@ -855,7 +855,7 @@ impl DeadcatSdk {
             &no_rt,
         )?;
 
-        let tx = self.sign_pset(assembled.pset)?;
+        let tx = self.sign_pset(assembled)?;
         let txid = self.broadcast_and_sync(&tx)?;
 
         let new_state = if outcome_yes {
@@ -928,7 +928,7 @@ impl DeadcatSdk {
         let assembled =
             assemble_post_resolution_redemption(&contract, &redemption_params, blinding_pk)?;
 
-        let tx = self.sign_pset(assembled.pset)?;
+        let tx = self.sign_pset(assembled)?;
         let txid = self.broadcast_and_sync(&tx)?;
 
         Ok(RedemptionResult {
@@ -991,7 +991,7 @@ impl DeadcatSdk {
 
         let assembled = assemble_expiry_redemption(&contract, &expiry_params, blinding_pk)?;
 
-        let tx = self.sign_pset(assembled.pset)?;
+        let tx = self.sign_pset(assembled)?;
         let txid = self.broadcast_and_sync(&tx)?;
 
         Ok(RedemptionResult {

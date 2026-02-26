@@ -3,8 +3,9 @@ use deadcat_sdk::taproot::{
     NUMS_KEY_BYTES, SIMPLICITY_LEAF_VERSION, covenant_script_pubkey, simplicity_control_block,
 };
 use deadcat_sdk::testing::test_contract_params;
-use deadcat_sdk::witness::{SpendingPath, satisfy_contract, serialize_satisfied};
-use deadcat_sdk::{CompiledContract, MarketState};
+use deadcat_sdk::{
+    CompiledContract, MarketState, SpendingPath, satisfy_contract, serialize_satisfied,
+};
 
 #[test]
 fn contract_compiles_successfully() {

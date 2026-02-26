@@ -1,4 +1,4 @@
-use deadcat_sdk::params::ContractParams;
+use deadcat_sdk::ContractParams;
 use deadcat_sdk::{DeadcatSdk, MarketState, OrderDirection};
 use lwk_signer::SwSigner;
 use lwk_test_util::{
@@ -471,7 +471,7 @@ fn generate_oracle_keypair() -> ([u8; 32], Keypair) {
 /// Sign the oracle message for a market resolution.
 fn oracle_sign(params: &ContractParams, outcome_yes: bool, keypair: &Keypair) -> [u8; 64] {
     let market_id = params.market_id();
-    let msg_hash = deadcat_sdk::oracle::oracle_message(&market_id, outcome_yes);
+    let msg_hash = deadcat_sdk::oracle_message(&market_id, outcome_yes);
     let secp = Secp256k1::new();
     let msg = Message::from_digest(msg_hash);
     let sig = secp.sign_schnorr(&msg, keypair);

@@ -16,10 +16,10 @@ use deadcat_sdk::elements::{
 use deadcat_sdk::simplicity::bit_machine::BitMachine;
 use deadcat_sdk::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 use deadcat_sdk::testing::test_contract_params;
-use deadcat_sdk::witness::{
-    AllBlindingFactors, ReissuanceBlindingFactors, SpendingPath, satisfy_contract,
+use deadcat_sdk::{
+    AllBlindingFactors, CompiledContract, MarketState, ReissuanceBlindingFactors, SpendingPath,
+    satisfy_contract,
 };
-use deadcat_sdk::{CompiledContract, MarketState};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -709,11 +709,10 @@ fn subsequent_issuance_execution() {
 // construction and contract execution.
 // ---------------------------------------------------------------------------
 
-use deadcat_sdk::assembly::{CollateralSource, IssuanceAssemblyInputs, IssuanceEntropy};
-use deadcat_sdk::pset::UnblindedUtxo;
 use deadcat_sdk::testing::{
     assemble_issuance_for_env, execute_against_env, test_blinding as shared_test_blinding,
 };
+use deadcat_sdk::{CollateralSource, IssuanceAssemblyInputs, IssuanceEntropy, UnblindedUtxo};
 
 fn test_unblinded_utxo(asset_id: [u8; 32], value: u64, spk: &Script) -> UnblindedUtxo {
     UnblindedUtxo {

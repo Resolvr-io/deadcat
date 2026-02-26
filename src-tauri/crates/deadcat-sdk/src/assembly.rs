@@ -62,13 +62,6 @@ pub struct IssuanceAssemblyInputs {
     pub lock_time: u32,
 }
 
-/// Result of assembling an issuance transaction (before signing).
-pub struct AssembledIssuance {
-    pub pset: PartiallySignedTransaction,
-    pub spending_path: SpendingPath,
-    pub current_state: MarketState,
-}
-
 /// Compute issuance entropy from the creation transaction.
 ///
 /// Extracts the defining outpoints from the creation tx's first two inputs and
@@ -104,7 +97,7 @@ pub fn compute_issuance_entropy(
 }
 
 /// Precomputed LP issuance entropy from the LP token creation transaction.
-pub struct LpIssuanceEntropy {
+pub(crate) struct LpIssuanceEntropy {
     pub blinding_nonce: [u8; 32],
     pub entropy: [u8; 32],
 }
@@ -113,7 +106,7 @@ pub struct LpIssuanceEntropy {
 ///
 /// The defining outpoint is the `previous_output` of the creation tx's first
 /// input — this is the standard Elements convention for `issueasset`.
-pub fn compute_lp_issuance_entropy(
+pub(crate) fn compute_lp_issuance_entropy(
     lp_creation_tx: &Transaction,
     rt_abf: &[u8; 32],
 ) -> Result<LpIssuanceEntropy> {
@@ -135,7 +128,9 @@ pub fn compute_lp_issuance_entropy(
 }
 
 /// Build the PSET for an issuance transaction (step E).
-pub fn build_issuance_pset(inputs: &IssuanceAssemblyInputs) -> Result<PartiallySignedTransaction> {
+pub(crate) fn build_issuance_pset(
+    inputs: &IssuanceAssemblyInputs,
+) -> Result<PartiallySignedTransaction> {
     match inputs.current_state {
         MarketState::Dormant => {
             let wallet_utxo = match &inputs.collateral_source {
@@ -201,7 +196,7 @@ pub fn build_issuance_pset(inputs: &IssuanceAssemblyInputs) -> Result<PartiallyS
 ///
 /// Sets up blinding keys on RT outputs and change outputs, provides input
 /// txout secrets, and calls `blind_last()`.
-pub fn blind_issuance_pset(
+fn blind_issuance_pset(
     pset: &mut PartiallySignedTransaction,
     inputs: &IssuanceAssemblyInputs,
     blinding_pubkey: PublicKey,
@@ -324,7 +319,7 @@ pub fn blind_issuance_pset(
 }
 
 /// Recover blinding factors for RT outputs (0, 1) using SLIP77 (step G).
-pub fn recover_blinding_factors(
+fn recover_blinding_factors(
     pset: &PartiallySignedTransaction,
     slip77_key: &lwk_wollet::elements_miniscript::confidential::slip77::MasterBlindingKey,
     change_spk: &Script,
@@ -470,7 +465,7 @@ fn build_pruning_env(
 /// Constructs an ElementsEnv from the PSET to enable Simplicity program pruning.
 /// Pruning replaces un-taken case branches with HIDDEN nodes (their CMR hashes),
 /// which is required by Simplicity's anti-DOS consensus rules.
-pub fn attach_witnesses(
+pub(crate) fn attach_witnesses(
     pset: &mut PartiallySignedTransaction,
     contract: &CompiledContract,
     state: MarketState,
@@ -537,12 +532,12 @@ pub fn attach_witnesses(
 }
 
 /// Full production assembly pipeline: build → blind → recover → attach witnesses.
-pub fn assemble_issuance(
+pub(crate) fn assemble_issuance(
     inputs: IssuanceAssemblyInputs,
     slip77_key: &lwk_wollet::elements_miniscript::confidential::slip77::MasterBlindingKey,
     blinding_pubkey: PublicKey,
     change_spk: &Script,
-) -> Result<AssembledIssuance> {
+) -> Result<PartiallySignedTransaction> {
     let state = inputs.current_state;
 
     let mut pset = build_issuance_pset(&inputs)?;
@@ -556,19 +551,9 @@ pub fn assemble_issuance(
         &inputs.no_reissuance_utxo,
     )?;
 
-    let spending_path = attach_witnesses(&mut pset, &inputs.contract, state, blinding)?;
+    attach_witnesses(&mut pset, &inputs.contract, state, blinding)?;
 
-    Ok(AssembledIssuance {
-        pset,
-        spending_path,
-        current_state: state,
-    })
-}
-
-/// Result of assembling a non-issuance transaction (before signing).
-pub struct AssembledTransaction {
-    pub pset: PartiallySignedTransaction,
-    pub spending_path: SpendingPath,
+    Ok(pset)
 }
 
 /// Ensure the fee output (OP_RETURN, empty script_pubkey) is the last output.
@@ -595,14 +580,14 @@ fn ensure_fee_output_last(pset: &mut PartiallySignedTransaction) {
 ///
 /// Unlike `attach_witnesses` (issuance-only, hardcoded indices 0/1/2), this
 /// function lets the caller specify which PSET inputs are covenant inputs.
-pub fn attach_covenant_witnesses(
+fn attach_covenant_witnesses(
     pset: &mut PartiallySignedTransaction,
     contract: &CompiledContract,
     state: MarketState,
     primary_path: SpendingPath,
     primary_index: usize,
     secondary_indices: &[usize],
-) -> Result<SpendingPath> {
+) -> Result<()> {
     let tx = Arc::new(pset_to_pruning_transaction(pset)?);
     let utxos: Vec<ElementsUtxo> = pset
         .inputs()
@@ -651,7 +636,7 @@ pub fn attach_covenant_witnesses(
             Some(build_witness_stack(&secondary_path, idx as u32)?);
     }
 
-    Ok(primary_path)
+    Ok(())
 }
 
 /// Blind a PSET by setting up RT outputs (if any), marking wallet outputs for
@@ -736,11 +721,11 @@ fn find_wallet_output_indices(
 }
 
 /// Assemble a post-resolution redemption transaction.
-pub fn assemble_post_resolution_redemption(
+pub(crate) fn assemble_post_resolution_redemption(
     contract: &CompiledContract,
     params: &crate::pset::post_resolution_redemption::PostResolutionRedemptionParams,
     blinding_pubkey: PublicKey,
-) -> Result<AssembledTransaction> {
+) -> Result<PartiallySignedTransaction> {
     let mut pset = crate::pset::post_resolution_redemption::build_post_resolution_redemption_pset(
         contract, params,
     )?;
@@ -764,7 +749,7 @@ pub fn assemble_post_resolution_redemption(
         tokens_burned: params.tokens_burned,
     };
 
-    let spending_path = attach_covenant_witnesses(
+    attach_covenant_witnesses(
         &mut pset,
         contract,
         params.resolved_state,
@@ -773,18 +758,15 @@ pub fn assemble_post_resolution_redemption(
         &[],
     )?;
 
-    Ok(AssembledTransaction {
-        pset,
-        spending_path,
-    })
+    Ok(pset)
 }
 
 /// Assemble an expiry redemption transaction.
-pub fn assemble_expiry_redemption(
+pub(crate) fn assemble_expiry_redemption(
     contract: &CompiledContract,
     params: &crate::pset::expiry_redemption::ExpiryRedemptionParams,
     blinding_pubkey: PublicKey,
-) -> Result<AssembledTransaction> {
+) -> Result<PartiallySignedTransaction> {
     let mut pset = crate::pset::expiry_redemption::build_expiry_redemption_pset(contract, params)?;
     ensure_fee_output_last(&mut pset);
 
@@ -807,7 +789,7 @@ pub fn assemble_expiry_redemption(
         burn_token_asset: params.burn_token_asset,
     };
 
-    let spending_path = attach_covenant_witnesses(
+    attach_covenant_witnesses(
         &mut pset,
         contract,
         MarketState::Unresolved,
@@ -816,10 +798,7 @@ pub fn assemble_expiry_redemption(
         &[],
     )?;
 
-    Ok(AssembledTransaction {
-        pset,
-        spending_path,
-    })
+    Ok(pset)
 }
 
 /// Assemble a cancellation transaction.
@@ -827,13 +806,13 @@ pub fn assemble_expiry_redemption(
 /// For partial cancellation: blind wallet outputs, witness at index 0 only.
 /// For full cancellation: blind RT + wallet outputs, recover blinding factors,
 /// witness at index 0 with secondaries [1, 2].
-pub fn assemble_cancellation(
+pub(crate) fn assemble_cancellation(
     contract: &CompiledContract,
     params: &crate::pset::cancellation::CancellationParams,
     slip77_key: &lwk_wollet::elements_miniscript::confidential::slip77::MasterBlindingKey,
     blinding_pubkey: PublicKey,
     change_spk: &Script,
-) -> Result<AssembledTransaction> {
+) -> Result<PartiallySignedTransaction> {
     let cpt = contract.params().collateral_per_token;
     let refund = params
         .pairs_burned
@@ -878,7 +857,7 @@ pub fn assemble_cancellation(
             blinding: Some(blinding),
         };
 
-        let spending_path = attach_covenant_witnesses(
+        attach_covenant_witnesses(
             &mut pset,
             contract,
             MarketState::Unresolved,
@@ -887,10 +866,7 @@ pub fn assemble_cancellation(
             &[1, 2],
         )?;
 
-        Ok(AssembledTransaction {
-            pset,
-            spending_path,
-        })
+        Ok(pset)
     } else {
         let wallet_outputs = find_wallet_output_indices(&pset, contract);
         let input_refs = build_input_refs(
@@ -912,7 +888,7 @@ pub fn assemble_cancellation(
             blinding: None,
         };
 
-        let spending_path = attach_covenant_witnesses(
+        attach_covenant_witnesses(
             &mut pset,
             contract,
             MarketState::Unresolved,
@@ -921,16 +897,13 @@ pub fn assemble_cancellation(
             &[],
         )?;
 
-        Ok(AssembledTransaction {
-            pset,
-            spending_path,
-        })
+        Ok(pset)
     }
 }
 
 /// Assemble an oracle resolve transaction.
 #[allow(clippy::too_many_arguments)]
-pub fn assemble_oracle_resolve(
+pub(crate) fn assemble_oracle_resolve(
     contract: &CompiledContract,
     params: &crate::pset::oracle_resolve::OracleResolveParams,
     oracle_signature: [u8; 64],
@@ -939,7 +912,7 @@ pub fn assemble_oracle_resolve(
     change_spk: &Script,
     yes_rt_input: &UnblindedUtxo,
     no_rt_input: &UnblindedUtxo,
-) -> Result<AssembledTransaction> {
+) -> Result<PartiallySignedTransaction> {
     let mut pset = crate::pset::oracle_resolve::build_oracle_resolve_pset(contract, params)?;
 
     // Oracle resolve: 4 outputs (RT0, RT1, collateral, fee). Only RT outputs are blinded.
@@ -967,7 +940,7 @@ pub fn assemble_oracle_resolve(
         blinding,
     };
 
-    let spending_path = attach_covenant_witnesses(
+    attach_covenant_witnesses(
         &mut pset,
         contract,
         MarketState::Unresolved,
@@ -976,10 +949,7 @@ pub fn assemble_oracle_resolve(
         &[1, 2],
     )?;
 
-    Ok(AssembledTransaction {
-        pset,
-        spending_path,
-    })
+    Ok(pset)
 }
 
 /// Build sequential input refs from fixed inputs, token groups, and a fee UTXO.
