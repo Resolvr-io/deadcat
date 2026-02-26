@@ -90,12 +90,13 @@ export function getPositionContracts(market: Market): {
   yes: number;
   no: number;
 } {
-  if (!state.walletBalance) return { yes: 0, no: 0 };
+  const balance = state.walletData?.balance;
+  if (!balance) return { yes: 0, no: 0 };
   const yesKey = reverseHex(market.yesAssetId);
   const noKey = reverseHex(market.noAssetId);
   return {
-    yes: state.walletBalance[yesKey] ?? 0,
-    no: state.walletBalance[noKey] ?? 0,
+    yes: balance[yesKey] ?? 0,
+    no: balance[noKey] ?? 0,
   };
 }
 

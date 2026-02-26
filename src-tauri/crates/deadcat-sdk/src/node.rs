@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use lwk_wollet::elements::{AssetId, Transaction, Txid};
 use lwk_wollet::{AddressResult, WalletTx, WalletTxOut};
 use nostr_sdk::prelude::*;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
 use crate::announcement::{ContractAnnouncement, ContractMetadata};
@@ -37,6 +37,19 @@ use crate::sdk::{
 use crate::state::MarketState;
 use crate::trade::types::{TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide};
 
+// ── Wallet snapshot ────────────────────────────────────────────────────────
+
+/// Cached wallet state captured at the end of every [`DeadcatNode::with_sdk`]
+/// call. Read queries (`balance`, `utxos`, `transactions`) are served directly
+/// from this snapshot via a `tokio::sync::watch` channel — no mutex, no
+/// `spawn_blocking`.
+#[derive(Clone, Debug)]
+pub struct WalletSnapshot {
+    pub balance: HashMap<AssetId, u64>,
+    pub utxos: Vec<WalletTxOut>,
+    pub transactions: Vec<WalletTx>,
+}
+
 // ── Struct ──────────────────────────────────────────────────────────────────
 
 /// Unified coordinator that owns the SDK wallet, Nostr discovery service,
@@ -47,6 +60,8 @@ use crate::trade::types::{TradeAmount, TradeDirection, TradeQuote, TradeResult, 
 /// `tokio::task::spawn_blocking`.
 pub struct DeadcatNode<S: DiscoveryStore = NoopStore> {
     sdk: Arc<Mutex<Option<DeadcatSdk>>>,
+    snapshot_tx: watch::Sender<Option<WalletSnapshot>>,
+    snapshot_rx: watch::Receiver<Option<WalletSnapshot>>,
     discovery: DiscoveryService<S>,
     keys: Keys,
     network: Network,
@@ -63,9 +78,12 @@ impl DeadcatNode<NoopStore> {
         config: DiscoveryConfig,
     ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
         let (discovery, rx) = DiscoveryService::new(keys.clone(), config);
+        let (snapshot_tx, snapshot_rx) = watch::channel(None);
         (
             Self {
                 sdk: Arc::new(Mutex::new(None)),
+                snapshot_tx,
+                snapshot_rx,
                 discovery,
                 keys,
                 network,
@@ -85,9 +103,12 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         config: DiscoveryConfig,
     ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
         let (discovery, rx) = DiscoveryService::with_store(keys.clone(), store.clone(), config);
+        let (snapshot_tx, snapshot_rx) = watch::channel(None);
         (
             Self {
                 sdk: Arc::new(Mutex::new(None)),
+                snapshot_tx,
+                snapshot_rx,
                 discovery,
                 keys,
                 network,
@@ -112,6 +133,14 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         }
         let sdk = DeadcatSdk::new(mnemonic, self.network, electrum_url, datadir)
             .map_err(NodeError::Sdk)?;
+        // Seed the snapshot so balance/utxos/transactions are available
+        // immediately, without waiting for the first with_sdk call.
+        let snapshot = WalletSnapshot {
+            balance: sdk.balance().unwrap_or_default(),
+            utxos: sdk.utxos().unwrap_or_default(),
+            transactions: sdk.transactions().unwrap_or_default(),
+        };
+        let _ = self.snapshot_tx.send(Some(snapshot));
         *guard = Some(sdk);
         Ok(())
     }
@@ -121,6 +150,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         if let Ok(mut guard) = self.sdk.lock() {
             *guard = None;
         }
+        let _ = self.snapshot_tx.send(None);
     }
 
     /// Returns `true` if the wallet is currently unlocked.
@@ -142,10 +172,19 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         R: Send + 'static,
     {
         let sdk = self.sdk.clone();
+        let snapshot_tx = self.snapshot_tx.clone();
         tokio::task::spawn_blocking(move || {
             let mut guard = sdk.lock().map_err(|_| NodeError::MutexPoisoned)?;
             let sdk = guard.as_mut().ok_or(NodeError::WalletLocked)?;
-            f(sdk).map_err(NodeError::Sdk)
+            let result = f(sdk);
+            // Capture snapshot while still holding the lock — reads cached state, no I/O
+            let snapshot = WalletSnapshot {
+                balance: sdk.balance().unwrap_or_default(),
+                utxos: sdk.utxos().unwrap_or_default(),
+                transactions: sdk.transactions().unwrap_or_default(),
+            };
+            let _ = snapshot_tx.send(Some(snapshot));
+            result.map_err(NodeError::Sdk)
         })
         .await
         .map_err(|e| NodeError::Task(e.to_string()))?
@@ -955,9 +994,13 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         self.with_sdk(|sdk| sdk.sync()).await
     }
 
-    /// Get the wallet balance by asset.
-    pub async fn balance(&self) -> Result<HashMap<AssetId, u64>, NodeError> {
-        self.with_sdk(|sdk| sdk.balance()).await
+    /// Get the wallet balance by asset (from cached snapshot — lock-free).
+    pub fn balance(&self) -> Result<HashMap<AssetId, u64>, NodeError> {
+        self.snapshot_rx
+            .borrow()
+            .as_ref()
+            .map(|s| s.balance.clone())
+            .ok_or(NodeError::WalletLocked)
     }
 
     /// Get a wallet address.
@@ -965,14 +1008,22 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         self.with_sdk(move |sdk| sdk.address(index)).await
     }
 
-    /// Get unspent wallet outputs.
-    pub async fn utxos(&self) -> Result<Vec<WalletTxOut>, NodeError> {
-        self.with_sdk(|sdk| sdk.utxos()).await
+    /// Get unspent wallet outputs (from cached snapshot — lock-free).
+    pub fn utxos(&self) -> Result<Vec<WalletTxOut>, NodeError> {
+        self.snapshot_rx
+            .borrow()
+            .as_ref()
+            .map(|s| s.utxos.clone())
+            .ok_or(NodeError::WalletLocked)
     }
 
-    /// Get wallet transaction history.
-    pub async fn transactions(&self) -> Result<Vec<WalletTx>, NodeError> {
-        self.with_sdk(|sdk| sdk.transactions()).await
+    /// Get wallet transaction history (from cached snapshot — lock-free).
+    pub fn transactions(&self) -> Result<Vec<WalletTx>, NodeError> {
+        self.snapshot_rx
+            .borrow()
+            .as_ref()
+            .map(|s| s.transactions.clone())
+            .ok_or(NodeError::WalletLocked)
     }
 
     /// Fetch a raw transaction from the Electrum backend.
@@ -1016,6 +1067,11 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// The network this node is configured for.
     pub fn network(&self) -> Network {
         self.network
+    }
+
+    /// Subscribe to wallet snapshot changes.
+    pub fn subscribe_snapshot(&self) -> watch::Receiver<Option<WalletSnapshot>> {
+        self.snapshot_rx.clone()
     }
 
     /// A reference to the underlying discovery service.

@@ -307,7 +307,7 @@ async fn trade_buy_yes_via_limit_order() {
     let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
     let yes_asset = AssetId::from_slice(&params.yes_token_asset).unwrap();
 
-    let balance_before = f.node.balance().await.unwrap();
+    let balance_before = f.node.balance().unwrap();
     assert_eq!(*balance_before.get(&yes_asset).unwrap_or(&0), 10);
 
     // Create a SellBase limit order: sell 5 YES tokens at 1000 sats/token
@@ -363,7 +363,7 @@ async fn trade_buy_yes_via_limit_order() {
     assert!(!result.pool_used);
 
     // Balance: 5 kept + 3 received = 8 YES tokens
-    let balance_after = f.node.balance().await.unwrap();
+    let balance_after = f.node.balance().unwrap();
     assert_eq!(*balance_after.get(&yes_asset).unwrap_or(&0), 8);
 }
 
@@ -462,7 +462,7 @@ async fn trade_buy_yes_via_amm_pool() {
 
     f.setup_pool(&params, lbtc_bytes, &market_id).await;
 
-    let balance_pre_trade = f.node.balance().await.unwrap();
+    let balance_pre_trade = f.node.balance().unwrap();
     let yes_pre = *balance_pre_trade.get(&yes_asset).unwrap_or(&0);
 
     let quote = f
@@ -495,7 +495,7 @@ async fn trade_buy_yes_via_amm_pool() {
     assert_eq!(result.num_orders_filled, 0);
     assert!(result.new_reserves.is_some());
 
-    let balance_post = f.node.balance().await.unwrap();
+    let balance_post = f.node.balance().unwrap();
     let yes_post = *balance_post.get(&yes_asset).unwrap_or(&0);
     assert_eq!(yes_post, yes_pre + expected_output);
 }
@@ -535,13 +535,7 @@ async fn trade_buy_yes_combined_pool_and_order() {
     f.mine_and_sync().await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let yes_pre = *f
-        .node
-        .balance()
-        .await
-        .unwrap()
-        .get(&yes_asset)
-        .unwrap_or(&0);
+    let yes_pre = *f.node.balance().unwrap().get(&yes_asset).unwrap_or(&0);
 
     let quote = f
         .node
@@ -580,13 +574,7 @@ async fn trade_buy_yes_combined_pool_and_order() {
     assert_eq!(result.num_orders_filled, 1);
     assert!(result.pool_used);
 
-    let yes_post = *f
-        .node
-        .balance()
-        .await
-        .unwrap()
-        .get(&yes_asset)
-        .unwrap_or(&0);
+    let yes_post = *f.node.balance().unwrap().get(&yes_asset).unwrap_or(&0);
     assert_eq!(yes_post, yes_pre + expected_output);
 }
 
@@ -605,7 +593,7 @@ async fn trade_sell_yes_via_limit_order() {
     let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
     let yes_asset = AssetId::from_slice(&params.yes_token_asset).unwrap();
 
-    let balance_before = f.node.balance().await.unwrap();
+    let balance_before = f.node.balance().unwrap();
     let yes_before = *balance_before.get(&yes_asset).unwrap_or(&0);
     assert_eq!(yes_before, 10);
 
@@ -660,7 +648,7 @@ async fn trade_sell_yes_via_limit_order() {
     assert_eq!(result.num_orders_filled, 1);
     assert!(!result.pool_used);
 
-    let balance_after = f.node.balance().await.unwrap();
+    let balance_after = f.node.balance().unwrap();
     let yes_after = *balance_after.get(&yes_asset).unwrap_or(&0);
     // SellQuote order locks L-BTC (not YES), so taker had 10 YES and sold 3.
     assert!(
@@ -683,7 +671,7 @@ async fn trade_sell_yes_via_amm_pool() {
 
     f.setup_pool(&params, lbtc_bytes, &market_id).await;
 
-    let balance_pre = f.node.balance().await.unwrap();
+    let balance_pre = f.node.balance().unwrap();
     let yes_pre = *balance_pre.get(&yes_asset).unwrap_or(&0);
     let lbtc_pre = *balance_pre.get(&lbtc).unwrap_or(&0);
 
@@ -718,7 +706,7 @@ async fn trade_sell_yes_via_amm_pool() {
     assert_eq!(result.num_orders_filled, 0);
     assert!(result.new_reserves.is_some());
 
-    let balance_post = f.node.balance().await.unwrap();
+    let balance_post = f.node.balance().unwrap();
     let yes_post = *balance_post.get(&yes_asset).unwrap_or(&0);
     let lbtc_post = *balance_post.get(&lbtc).unwrap_or(&0);
 
@@ -744,7 +732,7 @@ async fn trade_buy_no_via_amm_pool() {
 
     f.setup_pool(&params, lbtc_bytes, &market_id).await;
 
-    let balance_pre = f.node.balance().await.unwrap();
+    let balance_pre = f.node.balance().unwrap();
     let no_pre = *balance_pre.get(&no_asset).unwrap_or(&0);
 
     // Buy NO tokens with 50,000 sats
@@ -778,7 +766,7 @@ async fn trade_buy_no_via_amm_pool() {
     assert_eq!(result.num_orders_filled, 0);
     assert!(result.new_reserves.is_some());
 
-    let balance_post = f.node.balance().await.unwrap();
+    let balance_post = f.node.balance().unwrap();
     let no_post = *balance_post.get(&no_asset).unwrap_or(&0);
     assert_eq!(no_post, no_pre + expected_output);
 }

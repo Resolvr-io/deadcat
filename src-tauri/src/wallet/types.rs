@@ -52,3 +52,62 @@ pub struct LiquidSendResult {
     pub txid: String,
     pub fee_sat: u64,
 }
+
+/// Serializable event payload pushed to the frontend whenever the wallet
+/// snapshot changes (after every `with_sdk` call).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletSnapshotEvent {
+    pub balance: WalletBalance,
+    pub transactions: Vec<WalletTransaction>,
+    pub utxos: Vec<WalletUtxo>,
+}
+
+impl WalletSnapshotEvent {
+    /// Convert an SDK `WalletSnapshot` into the serializable frontend payload.
+    pub fn from_snapshot(
+        snapshot: &deadcat_sdk::node::WalletSnapshot,
+        policy_asset: &lwk_wollet::elements::AssetId,
+    ) -> Self {
+        let mut assets = HashMap::new();
+        for (asset_id, amount) in &snapshot.balance {
+            if *amount > 0 {
+                assets.insert(asset_id.to_string(), *amount);
+            }
+        }
+
+        let transactions = snapshot
+            .transactions
+            .iter()
+            .map(|tx| {
+                let balance_change = tx.balance.get(policy_asset).copied().unwrap_or(0);
+                WalletTransaction {
+                    txid: tx.txid.to_string(),
+                    balance_change,
+                    fee: tx.fee,
+                    height: tx.height,
+                    timestamp: tx.timestamp,
+                    tx_type: tx.type_.clone(),
+                }
+            })
+            .collect();
+
+        let utxos = snapshot
+            .utxos
+            .iter()
+            .map(|u| WalletUtxo {
+                txid: u.outpoint.txid.to_string(),
+                vout: u.outpoint.vout,
+                asset_id: u.unblinded.asset.to_string(),
+                value: u.unblinded.value,
+                height: u.height,
+            })
+            .collect();
+
+        Self {
+            balance: WalletBalance { assets },
+            transactions,
+            utxos,
+        }
+    }
+}

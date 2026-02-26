@@ -21,7 +21,7 @@ import {
   refreshWallet,
   syncCurrentHeightFromLwk,
 } from "./services/wallet.ts";
-import { app, state } from "./state.ts";
+import { app, createWalletData, state } from "./state.ts";
 import type {
   IdentityResponse,
   NostrBackupStatus,
@@ -29,6 +29,8 @@ import type {
   RelayBackupResult,
   Side,
   TradeIntent,
+  WalletTransaction,
+  WalletUtxo,
 } from "./types.ts";
 import { formatEstTime, formatSatsInput } from "./utils/format.ts";
 // Utils
@@ -349,15 +351,31 @@ void listen<{
   const payload = event.payload;
   if (payload.walletStatus === "locked" && state.walletStatus === "unlocked") {
     state.walletStatus = "locked";
-    state.walletBalance = null;
-    state.walletTransactions = [];
-    state.walletBackupWords = [];
-    state.walletBackupPassword = "";
-    state.walletShowBackup = false;
+    state.walletData = null;
     state.walletMnemonic = "";
     state.walletModal = "none";
     render();
   }
+});
+
+// Push wallet balance + transactions from backend whenever the snapshot changes
+void listen<{
+  balance: { assets: Record<string, number> };
+  transactions: WalletTransaction[];
+  utxos: WalletUtxo[];
+} | null>("wallet_snapshot", (event) => {
+  const payload = event.payload;
+  if (payload) {
+    if (!state.walletData) state.walletData = createWalletData();
+    state.walletData.balance = payload.balance.assets;
+    state.walletData.transactions = payload.transactions;
+    state.walletData.utxos = payload.utxos;
+  } else {
+    // A null snapshot means the wallet was locked
+    state.walletStatus = "locked";
+    state.walletData = null;
+  }
+  render();
 });
 
 // ── Auto-lock activity tracking ──────────────────────────────────────
@@ -479,26 +497,5 @@ setInterval(() => {
       render,
       updateEstClockLabels,
     );
-  }
-}, 60_000);
-
-// Auto-refresh wallet balance every 60s when unlocked (cached only, no Electrum sync)
-setInterval(() => {
-  if (
-    state.onboardingStep === null &&
-    state.walletStatus === "unlocked" &&
-    !state.walletLoading
-  ) {
-    (async () => {
-      try {
-        const balance = await invoke<{ assets: Record<string, number> }>(
-          "get_wallet_balance",
-        );
-        state.walletBalance = balance.assets;
-        if (state.view === "wallet") render();
-      } catch (_) {
-        // Silent — don't disrupt the user
-      }
-    })();
   }
 }, 60_000);

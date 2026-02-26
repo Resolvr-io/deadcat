@@ -260,15 +260,17 @@ impl DeadcatSdk {
 
     pub fn broadcast_and_sync(&mut self, tx: &Transaction) -> Result<Txid> {
         let txid = self.chain.broadcast(tx)?;
-        // Re-sync wallet after broadcast
-        let url: ElectrumUrl = self
-            .chain
-            .electrum_url()
-            .parse()
-            .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
-        let mut client = ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?;
-        lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, &mut client)
-            .map_err(|e| Error::Electrum(e.to_string()))?;
+        // Re-sync wallet after broadcast, retrying briefly if the electrum
+        // server hasn't indexed the mempool tx yet.
+        for attempt in 0..3 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            self.sync()?;
+            if self.transactions()?.iter().any(|t| t.txid == txid) {
+                break;
+            }
+        }
         Ok(txid)
     }
 

@@ -364,8 +364,8 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
     let node = guard.as_ref().ok_or("Node not initialized")?;
     node.sync_wallet().await.map_err(|e| format!("{e}"))?;
 
-    // Grab balance while we still hold the node lock
-    let wallet_balance = node.balance().await.ok().map(|m| {
+    // Grab balance from the snapshot (sync — no lock needed)
+    let wallet_balance = node.balance().ok().map(|m| {
         m.into_iter()
             .filter(|(_, v)| *v > 0)
             .map(|(k, v)| (k.to_string(), v))
@@ -404,7 +404,7 @@ async fn get_wallet_balance(app: AppHandle) -> Result<wallet::types::WalletBalan
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
-    let balance_map = node.balance().await.map_err(|e| format!("{e}"))?;
+    let balance_map = node.balance().map_err(|e| format!("{e}"))?;
 
     let mut assets = std::collections::HashMap::new();
     for (asset_id, amount) in balance_map.iter() {
@@ -438,7 +438,7 @@ async fn get_wallet_transactions(
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let policy_asset = node.policy_asset().await.map_err(|e| format!("{e}"))?;
-    let txs = node.transactions().await.map_err(|e| format!("{e}"))?;
+    let txs = node.transactions().map_err(|e| format!("{e}"))?;
     Ok(txs
         .iter()
         .map(|tx| {
@@ -470,8 +470,8 @@ async fn send_lbtc(
         .await
         .map_err(|e| format!("{e}"))?;
 
-    // Grab updated balance while we still hold the node lock
-    let wallet_balance = node.balance().await.ok().map(|m| {
+    // Grab updated balance from the snapshot (sync — no lock needed)
+    let wallet_balance = node.balance().ok().map(|m| {
         m.into_iter()
             .filter(|(_, v)| *v > 0)
             .map(|(k, v)| (k.to_string(), v))
