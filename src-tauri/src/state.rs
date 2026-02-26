@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
 use crate::wallet::types::WalletStatus;
 use crate::wallet::WalletManager;
 use crate::Network;
+
+/// Duration of inactivity (in seconds) before the wallet auto-locks.
+pub const AUTO_LOCK_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
 const LOCAL_STATE_FILE: &str = "deadcat_state.json";
 const CONFIG_FILE: &str = "network_config.json";
@@ -83,6 +87,8 @@ pub struct AppStateManager {
     wallet: Option<WalletManager>,
     local_state: LocalState,
     revision: u64,
+    /// Timestamp of last user activity (for auto-lock).
+    last_activity: Instant,
 }
 
 impl AppStateManager {
@@ -94,6 +100,7 @@ impl AppStateManager {
             wallet: None,
             local_state,
             revision: 0,
+            last_activity: Instant::now(),
         }
     }
 
@@ -185,6 +192,26 @@ impl AppStateManager {
 
     pub fn bump_revision(&mut self) {
         self.revision += 1;
+    }
+
+    /// Record user activity (resets the auto-lock timer).
+    pub fn touch_activity(&mut self) {
+        self.last_activity = Instant::now();
+    }
+
+    /// Check if the auto-lock timeout has elapsed. If so, lock the wallet
+    /// and return `true` so the caller can emit the updated state.
+    pub fn check_auto_lock(&mut self) -> bool {
+        if self.last_activity.elapsed().as_secs() >= AUTO_LOCK_TIMEOUT_SECS {
+            if let Some(wallet) = self.wallet.as_mut() {
+                if wallet.status() == WalletStatus::Unlocked {
+                    wallet.lock();
+                    self.bump_revision();
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub fn payment_swaps(&self) -> &[PaymentSwap] {

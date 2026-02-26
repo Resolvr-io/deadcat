@@ -972,7 +972,7 @@ export async function handleClick(
         state.walletPassword = "";
         state.walletModal = "none";
         state.walletShowBackup = false;
-        state.walletBackupMnemonic = "";
+        state.walletBackupWords = [];
         state.walletBackupPassword = "";
         resetReceiveState();
         resetSendState();
@@ -1208,7 +1208,7 @@ export async function handleClick(
         state.walletSwaps = [];
         state.walletPassword = "";
         state.walletShowBackup = false;
-        state.walletBackupMnemonic = "";
+        state.walletBackupWords = [];
         state.walletBackupPassword = "";
         state.walletModal = "none";
         resetReceiveState();
@@ -1249,7 +1249,7 @@ export async function handleClick(
         state.walletMnemonic = "";
         state.walletModal = "none";
         state.walletShowBackup = false;
-        state.walletBackupMnemonic = "";
+        state.walletBackupWords = [];
         state.walletBackupPassword = "";
         resetReceiveState();
         resetSendState();
@@ -1277,7 +1277,7 @@ export async function handleClick(
         state.walletMnemonic = "";
         state.walletModal = "none";
         state.walletShowBackup = false;
-        state.walletBackupMnemonic = "";
+        state.walletBackupWords = [];
         state.walletBackupPassword = "";
         resetReceiveState();
         resetSendState();
@@ -1627,7 +1627,7 @@ export async function handleClick(
 
   if (action === "show-backup") {
     state.walletShowBackup = true;
-    state.walletBackupMnemonic = "";
+    state.walletBackupWords = [];
     state.walletBackupPassword = "";
     state.walletError = "";
     render();
@@ -1636,7 +1636,7 @@ export async function handleClick(
 
   if (action === "hide-backup") {
     state.walletShowBackup = false;
-    state.walletBackupMnemonic = "";
+    state.walletBackupWords = [];
     state.walletBackupPassword = "";
     render();
     return;
@@ -1654,10 +1654,17 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        const mnemonic = await invoke<string>("get_wallet_mnemonic", {
-          password: state.walletBackupPassword,
+        const password = state.walletBackupPassword;
+        const count = await invoke<number>("get_mnemonic_word_count", {
+          password,
         });
-        state.walletBackupMnemonic = mnemonic;
+        const words: string[] = [];
+        for (let i = 0; i < count; i++) {
+          words.push(
+            await invoke<string>("get_mnemonic_word", { password, index: i }),
+          );
+        }
+        state.walletBackupWords = words;
         state.walletBackupPassword = "";
         state.walletBackedUp = true;
       } catch (e) {
@@ -1671,7 +1678,7 @@ export async function handleClick(
   }
 
   if (action === "copy-backup-mnemonic") {
-    void navigator.clipboard.writeText(state.walletBackupMnemonic);
+    void navigator.clipboard.writeText(state.walletBackupWords.join(" "));
     return;
   }
 

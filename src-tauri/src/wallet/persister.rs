@@ -7,6 +7,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 const WALLET_FILE: &str = "wallet_encrypted.json";
 
@@ -35,7 +36,8 @@ struct EncryptedWalletFile {
 pub struct MnemonicPersister {
     file_path: PathBuf,
     /// Cached mnemonic from a previous successful unlock (cleared on lock).
-    cached_mnemonic: Option<String>,
+    /// Wrapped in `Zeroizing` so the backing memory is zeroed on drop/clear.
+    cached_mnemonic: Option<Zeroizing<String>>,
 }
 
 impl MnemonicPersister {
@@ -52,12 +54,26 @@ impl MnemonicPersister {
 
     /// Return the cached mnemonic if available (skips Argon2 on repeat unlock).
     pub fn cached(&self) -> Option<&str> {
-        self.cached_mnemonic.as_deref()
+        self.cached_mnemonic.as_ref().map(|z| z.as_str())
     }
 
     /// Clear the cached mnemonic (call on lock).
     pub fn clear_cache(&mut self) {
         self.cached_mnemonic = None;
+    }
+
+    /// Return the word count of the cached mnemonic (12 or 24).
+    pub fn cached_word_count(&self) -> Option<usize> {
+        self.cached_mnemonic
+            .as_ref()
+            .map(|m| m.split_whitespace().count())
+    }
+
+    /// Return a single word from the cached mnemonic by zero-based index.
+    pub fn cached_word(&self, index: usize) -> Option<&str> {
+        self.cached_mnemonic
+            .as_ref()
+            .and_then(|m| m.split_whitespace().nth(index))
     }
 
     /// Remove the encrypted wallet file from disk and clear cache.
@@ -99,6 +115,33 @@ impl MnemonicPersister {
         Ok(())
     }
 
+    /// Decrypt and return a single word by index without caching the full mnemonic.
+    pub fn load_word(
+        &mut self,
+        password: &str,
+        index: usize,
+    ) -> Result<String, WalletPersistError> {
+        // If already cached, just return from cache
+        if let Some(word) = self.cached_word(index) {
+            return Ok(word.to_string());
+        }
+        // Otherwise decrypt, cache, and return the word
+        let _mnemonic = self.load(password)?;
+        self.cached_word(index)
+            .map(|w| w.to_string())
+            .ok_or_else(|| WalletPersistError::Crypto("word index out of range".to_string()))
+    }
+
+    /// Decrypt and return the word count without exposing the full mnemonic.
+    pub fn load_word_count(&mut self, password: &str) -> Result<usize, WalletPersistError> {
+        if let Some(count) = self.cached_word_count() {
+            return Ok(count);
+        }
+        let _mnemonic = self.load(password)?;
+        self.cached_word_count()
+            .ok_or_else(|| WalletPersistError::Crypto("no mnemonic available".to_string()))
+    }
+
     pub fn load(&mut self, password: &str) -> Result<String, WalletPersistError> {
         let contents = fs::read_to_string(&self.file_path)?;
         let file: EncryptedWalletFile = serde_json::from_str(&contents)?;
@@ -126,9 +169,10 @@ impl MnemonicPersister {
             .decrypt(nonce, ciphertext.as_ref())
             .map_err(|_| WalletPersistError::WrongPassword)?;
 
-        let mnemonic =
+        let mnemonic_str =
             String::from_utf8(plaintext).map_err(|e| WalletPersistError::Crypto(e.to_string()))?;
-        self.cached_mnemonic = Some(mnemonic.clone());
-        Ok(mnemonic)
+        let ret = mnemonic_str.clone();
+        self.cached_mnemonic = Some(Zeroizing::new(mnemonic_str));
+        Ok(ret)
     }
 }

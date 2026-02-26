@@ -11,7 +11,7 @@ use std::sync::{Mutex, RwLock};
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use state::{AppState, AppStateManager, PaymentSwap};
+use state::{AppState, AppStateManager, PaymentSwap, AUTO_LOCK_TIMEOUT_SECS};
 
 const APP_STATE_UPDATED_EVENT: &str = "app_state_updated";
 
@@ -207,6 +207,7 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
             .wallet_mut()
             .ok_or_else(|| "Wallet not initialized".to_string())?;
         wallet.unlock(&password).map_err(|e| e.to_string())?;
+        mgr.touch_activity(); // reset auto-lock timer on unlock
         mgr.bump_revision();
         let state = mgr.snapshot();
         let _ = app_handle.emit(APP_STATE_UPDATED_EVENT, &state);
@@ -365,6 +366,46 @@ async fn get_wallet_mnemonic(password: String, app: AppHandle) -> Result<String,
     })
     .await
     .map_err(|e| format!("mnemonic task failed: {e}"))?
+}
+
+/// Return the word count of the mnemonic (12 or 24) after verifying password.
+#[tauri::command]
+async fn get_mnemonic_word_count(password: String, app: AppHandle) -> Result<usize, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr.wallet_mut().ok_or("Wallet not initialized")?;
+        wallet
+            .persister_mut()
+            .load_word_count(&password)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("mnemonic_word_count task failed: {e}"))?
+}
+
+/// Return a single mnemonic word by zero-based index after verifying password.
+#[tauri::command]
+async fn get_mnemonic_word(
+    password: String,
+    index: usize,
+    app: AppHandle,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "wallet lock failed".to_string())?;
+        let wallet = mgr.wallet_mut().ok_or("Wallet not initialized")?;
+        wallet
+            .persister_mut()
+            .load_word(&password, index)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("mnemonic_word task failed: {e}"))?
 }
 
 // ============================================================================
@@ -796,6 +837,21 @@ async fn fetch_chain_tip(network: WalletNetwork) -> Result<ChainTipResponse, Str
 }
 
 // ============================================================================
+// Auto-lock / activity commands
+// ============================================================================
+
+/// Record user activity to reset the auto-lock timer.
+#[tauri::command]
+async fn record_activity(app: AppHandle) -> Result<(), String> {
+    let manager = app.state::<Mutex<AppStateManager>>();
+    let mut mgr = manager
+        .lock()
+        .map_err(|_| "state lock failed".to_string())?;
+    mgr.touch_activity();
+    Ok(())
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -843,6 +899,34 @@ pub fn run() {
 
             app.manage(Mutex::new(manager));
             app.manage(SdkState::default());
+
+            // Spawn auto-lock background timer
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let interval_secs = std::cmp::max(AUTO_LOCK_TIMEOUT_SECS / 5, 10);
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+                loop {
+                    interval.tick().await;
+                    let manager = app_handle.state::<Mutex<AppStateManager>>();
+                    let locked = {
+                        let mut mgr = match manager.lock() {
+                            Ok(m) => m,
+                            Err(_) => continue,
+                        };
+                        if mgr.check_auto_lock() {
+                            Some(mgr.snapshot())
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(state) = locked {
+                        log::info!("auto-lock: wallet locked after inactivity");
+                        emit_state(&app_handle, &state);
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -863,7 +947,11 @@ pub fn run() {
             get_wallet_address,
             get_wallet_transactions,
             get_wallet_mnemonic,
+            get_mnemonic_word_count,
+            get_mnemonic_word,
             send_lbtc,
+            // Activity / auto-lock
+            record_activity,
             // Payments (Boltz)
             pay_lightning_invoice,
             create_lightning_receive,

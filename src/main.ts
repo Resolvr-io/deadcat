@@ -1,5 +1,6 @@
 import "./style.css";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { renderCreateMarket } from "./components/create.ts";
 import { renderDetail } from "./components/detail.ts";
 import { renderHome } from "./components/home.ts";
@@ -338,6 +339,41 @@ async function initApp(): Promise<void> {
   dismissSplash();
 
   void syncCurrentHeightFromLwk("liquid-testnet", render, updateEstClockLabels);
+}
+
+// ── Backend state listener (auto-lock, etc.) ────────────────────────
+
+void listen<{
+  walletStatus: "not_created" | "locked" | "unlocked";
+}>("app_state_updated", (event) => {
+  const payload = event.payload;
+  if (payload.walletStatus === "locked" && state.walletStatus === "unlocked") {
+    state.walletStatus = "locked";
+    state.walletBalance = null;
+    state.walletTransactions = [];
+    state.walletBackupWords = [];
+    state.walletBackupPassword = "";
+    state.walletShowBackup = false;
+    state.walletMnemonic = "";
+    state.walletModal = "none";
+    render();
+  }
+});
+
+// ── Auto-lock activity tracking ──────────────────────────────────────
+
+let activityTimer: ReturnType<typeof setTimeout> | null = null;
+
+function reportActivity(): void {
+  if (activityTimer) return; // throttle: at most once per 30s
+  activityTimer = setTimeout(() => {
+    activityTimer = null;
+  }, 30_000);
+  void invoke("record_activity");
+}
+
+for (const evt of ["click", "keydown", "mousemove", "scroll"] as const) {
+  window.addEventListener(evt, reportActivity, { passive: true });
 }
 
 // ── Event listeners ──────────────────────────────────────────────────

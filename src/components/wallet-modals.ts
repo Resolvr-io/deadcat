@@ -4,6 +4,10 @@ import { hexToNpub } from "../utils/crypto.ts";
 
 export function renderMnemonicGrid(mnemonic: string): string {
   const words = mnemonic.split(" ");
+  return renderMnemonicWordsGrid(words);
+}
+
+export function renderMnemonicWordsGrid(words: string[]): string {
   return (
     '<div class="grid grid-cols-3 gap-2">' +
     words
@@ -32,7 +36,7 @@ export function renderBackupModal(loading: boolean): string {
     "</button>";
 
   let body: string;
-  if (state.walletBackupMnemonic) {
+  if (state.walletBackupWords.length > 0) {
     const backupStatus = state.nostrBackupStatus;
     const securityInfoHtml =
       '<details class="group">' +
@@ -69,7 +73,7 @@ export function renderBackupModal(loading: boolean): string {
         "</div>"
       : "";
     body =
-      renderMnemonicGrid(state.walletBackupMnemonic) +
+      renderMnemonicWordsGrid(state.walletBackupWords) +
       '<div class="flex gap-3">' +
       '<button data-action="copy-backup-mnemonic" class="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100">Copy to clipboard</button>' +
       '<button data-action="hide-backup" class="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100">Done</button>' +
