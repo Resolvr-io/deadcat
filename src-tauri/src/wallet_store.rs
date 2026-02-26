@@ -7,8 +7,8 @@ use lwk_signer::SwSigner;
 use lwk_wollet::{NoPersist, Wollet, WolletDescriptor};
 use serde::Serialize;
 
-use crate::SdkState;
 use crate::WalletNetwork;
+use crate::WalletStoreState;
 
 #[derive(Default)]
 pub struct WalletStore {
@@ -53,7 +53,7 @@ fn next_id(prefix: &str) -> String {
 
 #[tauri::command]
 pub fn create_software_signer(
-    state: tauri::State<'_, SdkState>,
+    state: tauri::State<'_, WalletStoreState>,
     mnemonic: Option<String>,
     is_mainnet: Option<bool>,
 ) -> Result<SoftwareSignerResponse, String> {
@@ -91,7 +91,7 @@ pub fn create_software_signer(
 
 #[tauri::command]
 pub fn create_wollet(
-    state: tauri::State<'_, SdkState>,
+    state: tauri::State<'_, WalletStoreState>,
     signer_id: String,
     descriptor: String,
     network: WalletNetwork,
@@ -137,7 +137,7 @@ pub fn create_wollet(
 
 #[tauri::command]
 pub fn wallet_new_address(
-    state: tauri::State<'_, SdkState>,
+    state: tauri::State<'_, WalletStoreState>,
     wallet_id: String,
 ) -> Result<AddressResponse, String> {
     let mut wallets = state
@@ -163,7 +163,7 @@ pub fn wallet_new_address(
 
 #[tauri::command]
 pub fn wallet_signer_id(
-    state: tauri::State<'_, SdkState>,
+    state: tauri::State<'_, WalletStoreState>,
     wallet_id: String,
 ) -> Result<String, String> {
     let wallets = state
