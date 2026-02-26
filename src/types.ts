@@ -191,6 +191,34 @@ export type PathAvailability = {
   cancel: boolean;
 };
 
+export type WalletTransaction = {
+  txid: string;
+  balanceChange: number;
+  fee: number;
+  height: number | null;
+  timestamp: number | null;
+  txType: string;
+};
+
+export type WalletUtxo = {
+  txid: string;
+  vout: number;
+  assetId: string;
+  value: number;
+  height: number | null;
+};
+
+export type WalletData = {
+  balance: Record<string, number>;
+  transactions: WalletTransaction[];
+  utxos: WalletUtxo[];
+  swaps: PaymentSwap[];
+  backupWords: string[];
+  backedUp: boolean;
+  showBackup: boolean;
+  backupPassword: string;
+};
+
 export type BaseCurrency =
   | "BTC"
   | "USD"

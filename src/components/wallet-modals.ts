@@ -28,7 +28,7 @@ export function renderMnemonicWordsGrid(words: string[]): string {
 }
 
 export function renderBackupModal(loading: boolean): string {
-  if (!state.walletShowBackup) return "";
+  if (!state.walletData?.showBackup) return "";
 
   const closeBtn =
     '<button data-action="hide-backup" class="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200">' +
@@ -36,7 +36,7 @@ export function renderBackupModal(loading: boolean): string {
     "</button>";
 
   let body: string;
-  if (state.walletBackupWords.length > 0) {
+  if ((state.walletData?.backupWords?.length ?? 0) > 0) {
     const backupStatus = state.nostrBackupStatus;
     const securityInfoHtml =
       '<details class="group">' +
@@ -73,7 +73,7 @@ export function renderBackupModal(loading: boolean): string {
         "</div>"
       : "";
     body =
-      renderMnemonicWordsGrid(state.walletBackupWords) +
+      renderMnemonicWordsGrid(state.walletData?.backupWords ?? []) +
       '<div class="flex gap-3">' +
       '<button data-action="copy-backup-mnemonic" class="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100">Copy to clipboard</button>' +
       '<button data-action="hide-backup" class="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100">Done</button>' +
@@ -83,7 +83,7 @@ export function renderBackupModal(loading: boolean): string {
     body =
       '<p class="text-sm text-slate-400">Enter your wallet password to reveal your recovery phrase.</p>' +
       '<input id="wallet-backup-password" type="password" maxlength="32" value="' +
-      state.walletBackupPassword +
+      (state.walletData?.backupPassword ?? "") +
       '" placeholder="Wallet password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
       '<button data-action="export-backup" class="w-full rounded-xl bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300"' +
       (loading ? " disabled" : "") +

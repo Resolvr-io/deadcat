@@ -1,5 +1,6 @@
 import { flowLabel, formatLbtc, formatSwapStatus } from "../services/wallet.ts";
 import { markets, state } from "../state.ts";
+import type { WalletUtxo } from "../types.ts";
 import { reverseHex } from "../utils/crypto.ts";
 import { satsToFiatStr } from "../utils/format.ts";
 import {
@@ -184,9 +185,10 @@ export function renderWallet(): string {
   }
 
   // Unlocked — clean dashboard
+  const wd = state.walletData;
   const policyBalance =
-    state.walletBalance && state.walletPolicyAssetId
-      ? (state.walletBalance[state.walletPolicyAssetId] ?? 0)
+    wd && state.walletPolicyAssetId
+      ? (wd.balance[state.walletPolicyAssetId] ?? 0)
       : 0;
 
   const creationTxToMarket = new Map(
@@ -217,16 +219,14 @@ export function renderWallet(): string {
   }
 
   // Token positions: non-policy assets with positive balance
-  const tokenPositions = state.walletBalance
-    ? Object.entries(state.walletBalance)
-        .filter(([id, amt]) => id !== state.walletPolicyAssetId && amt > 0)
-        .map(([id, amt]) => {
-          const info = assetLabel.get(id);
-          return { assetId: id, amount: amt, info };
-        })
-    : [];
+  const tokenPositions = Object.entries(wd?.balance ?? {})
+    .filter(([id, amt]) => id !== state.walletPolicyAssetId && amt > 0)
+    .map(([id, amt]) => {
+      const info = assetLabel.get(id);
+      return { assetId: id, amount: amt, info };
+    });
 
-  const txRows = state.walletTransactions
+  const txRows = (wd?.transactions ?? [])
     .map((tx) => {
       const marketId = creationTxToMarket.get(tx.txid);
       const isCreation = !!marketId;
@@ -294,7 +294,7 @@ export function renderWallet(): string {
     })
     .join("");
 
-  const swapRows = state.walletSwaps
+  const swapRows = (wd?.swaps ?? [])
     .map((sw) => {
       return (
         '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
@@ -318,6 +318,126 @@ export function renderWallet(): string {
       );
     })
     .join("");
+
+  // Build UTXO section
+  let utxoSection = "";
+  const utxos = wd?.utxos ?? [];
+  if (!state.walletBalanceHidden && utxos.length > 0) {
+    const lbtcUtxos = utxos.filter(
+      (u) => u.assetId === state.walletPolicyAssetId,
+    );
+    const tokenUtxos = utxos.filter(
+      (u) => u.assetId !== state.walletPolicyAssetId,
+    );
+    const explorerBase =
+      state.walletNetwork === "testnet"
+        ? "https://blockstream.info/liquidtestnet"
+        : "https://blockstream.info/liquid";
+
+    const utxoRow = (u: WalletUtxo, labelHtml: string): string => {
+      const shortOutpoint = `${u.txid.slice(0, 8)}...${u.txid.slice(-4)}:${u.vout}`;
+      const conf = u.height !== null ? String(u.height) : "unconfirmed";
+      const valueStr =
+        u.assetId === state.walletPolicyAssetId
+          ? formatLbtc(u.value)
+          : u.value.toLocaleString();
+      return (
+        '<div class="flex items-center justify-between border-b border-slate-800 py-2 text-xs">' +
+        '<div class="flex items-center gap-2 min-w-0">' +
+        labelHtml +
+        '<a href="' +
+        explorerBase +
+        "/tx/" +
+        u.txid +
+        '" target="_blank" rel="noopener" class="mono text-slate-500 hover:text-slate-300 transition truncate">' +
+        shortOutpoint +
+        "</a>" +
+        '<span class="text-slate-600">' +
+        conf +
+        "</span>" +
+        "</div>" +
+        '<span class="mono text-slate-300 shrink-0 ml-2">' +
+        valueStr +
+        "</span>" +
+        "</div>"
+      );
+    };
+
+    const lbtcRows = lbtcUtxos
+      .map((u) =>
+        utxoRow(
+          u,
+          '<span class="rounded bg-slate-700 px-1.5 py-0.5 text-[10px] font-medium text-slate-300 shrink-0">L-BTC</span>',
+        ),
+      )
+      .join("");
+
+    const tokenUtxoRows = tokenUtxos
+      .map((u) => {
+        const info = assetLabel.get(u.assetId);
+        if (info) {
+          const sideColor =
+            info.side === "YES" ? "text-emerald-300" : "text-red-300";
+          const sideBg =
+            info.side === "YES" ? "bg-emerald-500/20" : "bg-red-500/20";
+          const truncQ =
+            info.question.length > 35
+              ? `${info.question.slice(0, 35)}...`
+              : info.question;
+          return utxoRow(
+            u,
+            '<span class="rounded ' +
+              sideBg +
+              " px-1.5 py-0.5 text-[10px] font-medium " +
+              sideColor +
+              ' shrink-0">' +
+              info.side +
+              "</span>" +
+              '<button data-open-market="' +
+              info.marketId +
+              '" class="text-slate-400 hover:text-slate-200 transition cursor-pointer truncate text-left">' +
+              truncQ +
+              "</button>",
+          );
+        }
+        const shortAsset = `${u.assetId.slice(0, 8)}...${u.assetId.slice(-4)}`;
+        return utxoRow(
+          u,
+          '<span class="mono text-slate-500 shrink-0">' +
+            shortAsset +
+            "</span>",
+        );
+      })
+      .join("");
+
+    const chevronClass = state.walletUtxosExpanded ? " rotate-180" : "";
+    const expandedContent = state.walletUtxosExpanded
+      ? '<div class="mt-3">' +
+        (lbtcUtxos.length > 0
+          ? '<div class="mb-1 text-[10px] font-medium uppercase tracking-wider text-slate-500">L-BTC</div>' +
+            lbtcRows
+          : "") +
+        (tokenUtxos.length > 0
+          ? '<div class="mt-3 mb-1 text-[10px] font-medium uppercase tracking-wider text-slate-500">Tokens</div>' +
+            tokenUtxoRows
+          : "") +
+        "</div>"
+      : "";
+
+    utxoSection =
+      "<!-- UTXOs -->" +
+      '<div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">' +
+      '<button data-action="toggle-utxos-expanded" class="flex w-full items-center justify-between">' +
+      '<h3 class="font-semibold text-slate-100">UTXOs <span class="ml-1 text-xs font-normal text-slate-500">(' +
+      utxos.length +
+      ")</span></h3>" +
+      '<svg class="h-4 w-4 text-slate-400 transition' +
+      chevronClass +
+      '" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>' +
+      "</button>" +
+      expandedContent +
+      "</div>";
+  }
 
   return `
     <div class="phi-container py-8">
@@ -352,6 +472,18 @@ export function renderWallet(): string {
             <button data-action="set-wallet-unit" data-unit="sats" class="rounded-full px-3 py-1 transition ${state.walletUnit === "sats" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}">L-sats</button>
             <button data-action="set-wallet-unit" data-unit="btc" class="rounded-full px-3 py-1 transition ${state.walletUnit === "btc" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}">L-BTC</button>
           </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="grid grid-cols-2 gap-4">
+          <button data-action="open-receive" class="flex items-center justify-center gap-3 rounded-xl border border-emerald-400/30 bg-emerald-900/20 px-6 py-4 font-semibold text-emerald-300 transition hover:bg-emerald-900/40">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+            Receive
+          </button>
+          <button data-action="open-send" class="flex items-center justify-center gap-3 rounded-xl border border-slate-600 bg-slate-800/60 px-6 py-4 font-medium text-slate-200 transition hover:bg-slate-800">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            Send
+          </button>
         </div>
 
         ${
@@ -425,23 +557,13 @@ export function renderWallet(): string {
             : ""
         }
 
-        <!-- Action Buttons -->
-        <div class="grid grid-cols-2 gap-4">
-          <button data-action="open-receive" class="flex items-center justify-center gap-3 rounded-xl border border-emerald-400/30 bg-emerald-900/20 px-6 py-4 font-semibold text-emerald-300 transition hover:bg-emerald-900/40">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
-            Receive
-          </button>
-          <button data-action="open-send" class="flex items-center justify-center gap-3 rounded-xl border border-slate-600 bg-slate-800/60 px-6 py-4 font-medium text-slate-200 transition hover:bg-slate-800">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-            Send
-          </button>
-        </div>
+        ${utxoSection}
 
         <!-- Transactions -->
         <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
           <h3 class="mb-3 font-semibold text-slate-100">Transactions</h3>
           ${
-            state.walletTransactions.length === 0
+            (wd?.transactions ?? []).length === 0
               ? `<p class="text-sm text-slate-500">No transactions yet.</p>`
               : txRows
           }
@@ -449,7 +571,7 @@ export function renderWallet(): string {
 
         <!-- Swaps -->
         ${
-          state.walletSwaps.length > 0
+          (wd?.swaps ?? []).length > 0
             ? `
         <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
           <h3 class="mb-3 font-semibold text-slate-100">Swaps</h3>

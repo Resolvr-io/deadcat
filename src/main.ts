@@ -21,7 +21,7 @@ import {
   refreshWallet,
   syncCurrentHeightFromLwk,
 } from "./services/wallet.ts";
-import { app, state } from "./state.ts";
+import { app, createWalletData, state } from "./state.ts";
 import type {
   IdentityResponse,
   NostrBackupStatus,
@@ -29,6 +29,8 @@ import type {
   RelayBackupResult,
   Side,
   TradeIntent,
+  WalletTransaction,
+  WalletUtxo,
 } from "./types.ts";
 import { formatEstTime, formatSatsInput } from "./utils/format.ts";
 // Utils
@@ -349,11 +351,7 @@ void listen<{
   const payload = event.payload;
   if (payload.walletStatus === "locked" && state.walletStatus === "unlocked") {
     state.walletStatus = "locked";
-    state.walletBalance = null;
-    state.walletTransactions = [];
-    state.walletBackupWords = [];
-    state.walletBackupPassword = "";
-    state.walletShowBackup = false;
+    state.walletData = null;
     state.walletMnemonic = "";
     state.walletModal = "none";
     render();
@@ -363,22 +361,19 @@ void listen<{
 // Push wallet balance + transactions from backend whenever the snapshot changes
 void listen<{
   balance: { assets: Record<string, number> };
-  transactions: {
-    txid: string;
-    balanceChange: number;
-    fee: number;
-    height: number | null;
-    timestamp: number | null;
-    txType: string;
-  }[];
+  transactions: WalletTransaction[];
+  utxos: WalletUtxo[];
 } | null>("wallet_snapshot", (event) => {
   const payload = event.payload;
   if (payload) {
-    state.walletBalance = payload.balance.assets;
-    state.walletTransactions = payload.transactions;
+    if (!state.walletData) state.walletData = createWalletData();
+    state.walletData.balance = payload.balance.assets;
+    state.walletData.transactions = payload.transactions;
+    state.walletData.utxos = payload.utxos;
   } else {
-    state.walletBalance = null;
-    state.walletTransactions = [];
+    // A null snapshot means the wallet was locked
+    state.walletStatus = "locked";
+    state.walletData = null;
   }
   render();
 });
