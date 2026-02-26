@@ -734,6 +734,9 @@ export async function handleClick(
         state.walletData = null;
         state.walletPassword = "";
         state.walletMnemonic = "";
+        state.walletError = "";
+        state.walletStatus = "not_created";
+        state.onboardingError = "";
         state.settingsOpen = false;
         state.devResetPrompt = false;
         state.devResetConfirm = "";
@@ -976,6 +979,7 @@ export async function handleClick(
         await fetchWalletStatus();
         state.walletData = null;
         state.walletPassword = "";
+        state.walletError = "";
         state.walletModal = "none";
         resetReceiveState();
         resetSendState();
@@ -1219,6 +1223,7 @@ export async function handleClick(
         state.walletData = null;
         state.walletPassword = "";
         state.walletMnemonic = "";
+        state.walletError = "";
         state.walletModal = "none";
         resetReceiveState();
         resetSendState();
@@ -1242,6 +1247,7 @@ export async function handleClick(
         state.walletData = null;
         state.walletPassword = "";
         state.walletMnemonic = "";
+        state.walletError = "";
         state.walletModal = "none";
         resetReceiveState();
         resetSendState();
