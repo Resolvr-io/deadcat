@@ -180,7 +180,7 @@ export function renderOnboarding(): string {
       ${backupFoundHtml}
       <div class="mt-5 flex gap-2">
         <button data-action="${modeCreate || loading ? "" : "onboarding-set-wallet-mode"}" data-mode="create" class="flex-1 rounded-lg border px-4 py-2 text-sm transition ${modeCreate ? "border-emerald-400 bg-emerald-400/10 text-emerald-300" : "border-slate-700 text-slate-400 hover:bg-slate-800"} ${loading ? "opacity-50 cursor-not-allowed" : ""}" ${loading ? "disabled" : ""}>Create new</button>
-        <button data-action="${modeRestore || loading ? "" : "onboarding-set-wallet-mode"}" data-mode="restore" class="flex-1 rounded-lg border px-4 py-2 text-sm transition ${modeRestore ? "border-emerald-400 bg-emerald-400/10 text-emerald-300" : "border-slate-700 text-slate-400 hover:bg-slate-800"} ${loading ? "opacity-50 cursor-not-allowed" : ""}" ${loading ? "disabled" : ""}>Restore existing</button>
+        <button data-action="${modeRestore || loading ? "" : "onboarding-set-wallet-mode"}" data-mode="restore" class="flex-1 rounded-lg border px-4 py-2 text-sm transition ${modeRestore ? "border-emerald-400 bg-emerald-400/10 text-emerald-300" : "border-slate-700 text-slate-400 hover:bg-slate-800"} ${loading ? "opacity-50 cursor-not-allowed" : ""}" ${loading ? "disabled" : ""}>Restore from seed</button>
       </div>
       ${formHtml}
     </div>
