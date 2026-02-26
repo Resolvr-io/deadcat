@@ -360,6 +360,29 @@ void listen<{
   }
 });
 
+// Push wallet balance + transactions from backend whenever the snapshot changes
+void listen<{
+  balance: { assets: Record<string, number> };
+  transactions: {
+    txid: string;
+    balanceChange: number;
+    fee: number;
+    height: number | null;
+    timestamp: number | null;
+    txType: string;
+  }[];
+} | null>("wallet_snapshot", (event) => {
+  const payload = event.payload;
+  if (payload) {
+    state.walletBalance = payload.balance.assets;
+    state.walletTransactions = payload.transactions;
+  } else {
+    state.walletBalance = null;
+    state.walletTransactions = [];
+  }
+  render();
+});
+
 // ── Auto-lock activity tracking ──────────────────────────────────────
 
 let activityTimer: ReturnType<typeof setTimeout> | null = null;
@@ -479,26 +502,5 @@ setInterval(() => {
       render,
       updateEstClockLabels,
     );
-  }
-}, 60_000);
-
-// Auto-refresh wallet balance every 60s when unlocked (cached only, no Electrum sync)
-setInterval(() => {
-  if (
-    state.onboardingStep === null &&
-    state.walletStatus === "unlocked" &&
-    !state.walletLoading
-  ) {
-    (async () => {
-      try {
-        const balance = await invoke<{ assets: Record<string, number> }>(
-          "get_wallet_balance",
-        );
-        state.walletBalance = balance.assets;
-        if (state.view === "wallet") render();
-      } catch (_) {
-        // Silent — don't disrupt the user
-      }
-    })();
   }
 }, 60_000);

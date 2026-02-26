@@ -128,6 +128,7 @@ async fn construct_and_store_node(
 
     let (node, mut rx) =
         deadcat_sdk::node::DeadcatNode::with_store(keys, sdk_network, store_arc, config);
+    let mut snapshot_rx = node.subscribe_snapshot();
 
     // Replace any existing node (drops old node if any)
     let node_state = app.state::<NodeState>();
@@ -163,6 +164,22 @@ async fn construct_and_store_node(
             }
         }
         log::info!("discovery event forwarding loop ended");
+    });
+
+    // Forward wallet snapshot changes to the frontend
+    let app_snapshot = app.clone();
+    let policy_asset = sdk_network.into_lwk().policy_asset();
+    tokio::spawn(async move {
+        while snapshot_rx.changed().await.is_ok() {
+            let payload = {
+                let snap = snapshot_rx.borrow_and_update();
+                snap.as_ref().map(|s| {
+                    crate::wallet::types::WalletSnapshotEvent::from_snapshot(s, &policy_asset)
+                })
+            };
+            let _ = app_snapshot.emit("wallet_snapshot", &payload);
+        }
+        log::info!("wallet snapshot forwarding loop ended");
     });
 
     Ok(())
@@ -1120,7 +1137,7 @@ pub async fn get_wallet_utxos(
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
-    let utxos = node.utxos().await.map_err(|e| format!("{e}"))?;
+    let utxos = node.utxos().map_err(|e| format!("{e}"))?;
     Ok(utxos
         .iter()
         .map(|u| crate::wallet::types::WalletUtxo {
