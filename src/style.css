@@ -23,6 +23,10 @@
   box-sizing: border-box;
 }
 
+html {
+  background: #020617;
+}
+
 html,
 body {
   overflow-x: hidden;
@@ -419,9 +423,22 @@ select {
 
 ::-webkit-scrollbar-thumb {
   border-radius: 9999px;
-  background: rgba(148, 163, 184, 0.35);
+  border: 2px solid #0b1222;
+  background-color: #0b1222;
+}
+
+body:hover::-webkit-scrollbar-thumb {
+  background-color: #1e293b;
+}
+
+body:hover::-webkit-scrollbar-thumb:hover {
+  background-color: #334155;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.4);
+  background: #0b1222;
+}
+
+::-webkit-scrollbar-corner {
+  background: #0b1222;
 }
