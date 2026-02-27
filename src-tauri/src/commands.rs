@@ -386,13 +386,16 @@ pub async fn restore_mnemonic_from_nostr(app: tauri::AppHandle) -> Result<String
         .await
         .map_err(|e| format!("failed to fetch backup: {e}"))?;
 
-    let encrypted_content = {
-        let mut iter = events.iter();
-        let event = iter
-            .next()
-            .ok_or_else(|| "No wallet backup found on relays".to_string())?;
-        event.content.clone()
-    };
+    let encrypted_content = events
+        .iter()
+        .find(|e| {
+            !e.content.is_empty()
+                && !e.tags.iter().any(|t| {
+                    t.as_slice().first().map(|s| s.as_str()) == Some("deleted")
+                })
+        })
+        .map(|e| e.content.clone())
+        .ok_or_else(|| "No backup found on relays".to_string())?;
 
     discovery::nip44_decrypt_from_self(&keys, &encrypted_content)
 }
@@ -429,7 +432,13 @@ pub async fn check_nostr_backup(
                             .fetch_events(vec![f], Duration::from_secs(8))
                             .await
                         {
-                            Ok(events) => events.iter().next().is_some(),
+                            Ok(events) => events.iter().any(|e| {
+                                !e.content.is_empty()
+                                    && !e.tags.iter().any(|t| {
+                                        t.as_slice().first().map(|s| s.as_str())
+                                            == Some("deleted")
+                                    })
+                            }),
                             Err(_) => false,
                         }
                     }
@@ -462,6 +471,12 @@ pub async fn check_nostr_backup(
 #[tauri::command]
 pub async fn delete_nostr_backup(app: tauri::AppHandle) -> Result<String, String> {
     let (keys, client) = get_keys_and_client(&app).await?;
+
+    // Overwrite the addressable event with empty content first.
+    // Relays that ignore NIP-09 deletion will still replace the backup
+    // with this empty event, ensuring the mnemonic is no longer stored.
+    let empty_event = discovery::build_backup_empty_replacement(&keys)?;
+    let _ = discovery::publish_event(&client, empty_event).await;
 
     let event = discovery::build_backup_deletion_event(&keys)?;
     let event_id = discovery::publish_event(&client, event).await?;

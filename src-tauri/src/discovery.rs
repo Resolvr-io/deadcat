@@ -152,6 +152,20 @@ pub fn nip44_decrypt_from_self(keys: &Keys, ciphertext: &str) -> Result<String, 
         .map_err(|e| format!("nip44 decryption failed: {e}"))
 }
 
+/// Build an empty kind 30078 replacement event to overwrite backup content on relays.
+/// More reliable than NIP-09 deletion since relays must replace addressable events.
+pub fn build_backup_empty_replacement(keys: &Keys) -> Result<Event, String> {
+    let tags = vec![
+        Tag::identifier(WALLET_BACKUP_D_TAG),
+        Tag::custom(TagKind::custom("deleted"), vec!["true".to_string()]),
+    ];
+
+    EventBuilder::new(APP_EVENT_KIND, "")
+        .tags(tags)
+        .sign_with_keys(keys)
+        .map_err(|e| format!("failed to build empty replacement event: {e}"))
+}
+
 /// Build a kind 5 deletion event (NIP-09) targeting the wallet backup addressable event.
 pub fn build_backup_deletion_event(keys: &Keys) -> Result<Event, String> {
     let coordinate = format!(
