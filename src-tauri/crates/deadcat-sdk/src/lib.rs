@@ -1,16 +1,19 @@
 pub use simplicityhl::elements;
 pub use simplicityhl::simplicity;
 
-pub mod amm_pool;
+pub(crate) mod amm_pool;
 pub(crate) mod announcement;
 pub(crate) mod assembly;
 pub(crate) mod chain;
-pub mod discovery;
+pub(crate) mod discovery;
 pub(crate) mod error;
+#[cfg(any(test, feature = "testing"))]
 pub mod maker_order;
+#[cfg(not(any(test, feature = "testing")))]
+pub(crate) mod maker_order;
 pub(crate) mod network;
-pub mod node;
-pub mod prediction_market;
+pub(crate) mod node;
+pub(crate) mod prediction_market;
 pub(crate) mod pset;
 pub(crate) mod sdk;
 #[cfg(any(test, feature = "testing"))]
@@ -38,6 +41,9 @@ pub use sdk::{
 // Re-export LWK for app-layer use
 pub use lwk_wollet;
 
+// ── Node ──────────────────────────────────────────────────────────
+pub use node::WalletSnapshot;
+
 // ── Maker orders ───────────────────────────────────────────────────
 pub use maker_order::contract::CompiledMakerOrder;
 pub use maker_order::params::{
@@ -54,10 +60,47 @@ pub use trade::types::{
     LiquiditySource, RouteLeg, TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide,
 };
 
+// ── Discovery ─────────────────────────────────────────────────────
+pub use discovery::{
+    // Constants
+    APP_EVENT_KIND,
+    ATTESTATION_TAG,
+    // Types
+    AttestationContent,
+    AttestationResult,
+    CONTRACT_TAG,
+    ContractMetadataInput,
+    DEFAULT_RELAYS,
+    DiscoveredMarket,
+    DiscoveredOrder,
+    DiscoveredPool,
+    DiscoveryConfig,
+    DiscoveryEvent,
+    DiscoveryService,
+    DiscoveryStore,
+    NETWORK_TAG,
+    NoopStore,
+    OrderAnnouncement,
+    PoolAnnouncement,
+    // Functions
+    build_announcement_event,
+    build_attestation_event,
+    build_attestation_filter,
+    build_contract_filter,
+    connect_client,
+    discovered_market_to_contract_params,
+    fetch_announcements,
+    parse_announcement_event,
+    publish_event,
+    sign_attestation,
+};
+
 // ── Testing-only re-exports ────────────────────────────────────────
 // Internals exposed for integration tests; not part of the stable API.
-// Access via `pub mod` paths (taproot, maker_order, discovery, etc.)
-// for anything not listed here.
+// Access via `pub mod` paths (taproot, maker_order) for anything not
+// listed here.
+#[cfg(feature = "testing")]
+pub use discovery::build_order_event;
 #[cfg(feature = "testing")]
 pub use prediction_market::assembly::{
     CollateralSource, IssuanceAssemblyInputs, IssuanceEntropy, compute_issuance_entropy,

@@ -121,13 +121,12 @@ async fn construct_and_store_node(
         guard.clone()
     };
 
-    let config = deadcat_sdk::discovery::DiscoveryConfig {
+    let config = deadcat_sdk::DiscoveryConfig {
         relays,
         ..Default::default()
     };
 
-    let (node, mut rx) =
-        deadcat_sdk::node::DeadcatNode::with_store(keys, sdk_network, store_arc, config);
+    let (node, mut rx) = deadcat_sdk::DeadcatNode::with_store(keys, sdk_network, store_arc, config);
     let mut snapshot_rx = node.subscribe_snapshot();
 
     // Replace any existing node (drops old node if any)
@@ -146,7 +145,7 @@ async fn construct_and_store_node(
     // Forward discovery events to the frontend
     let app_handle = app.clone();
     tokio::spawn(async move {
-        use deadcat_sdk::discovery::DiscoveryEvent;
+        use deadcat_sdk::DiscoveryEvent;
         while let Ok(event) = rx.recv().await {
             match event {
                 DiscoveryEvent::MarketDiscovered(m) => {

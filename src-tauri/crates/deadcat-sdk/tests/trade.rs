@@ -10,15 +10,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bitcoincore_rpc::{Auth, Client as RpcClient, RpcApi};
-use deadcat_sdk::ContractMetadata;
-use deadcat_sdk::amm_pool::params::AmmPoolParams;
-use deadcat_sdk::discovery::DiscoveredMarket;
-use deadcat_sdk::discovery::DiscoveryConfig;
-use deadcat_sdk::maker_order::params::OrderDirection;
-use deadcat_sdk::node::DeadcatNode;
-use deadcat_sdk::prediction_market::params::PredictionMarketParams;
 use deadcat_sdk::taproot::NUMS_KEY_BYTES;
 use deadcat_sdk::testing::TestStore;
+use deadcat_sdk::{
+    AmmPoolParams, ContractMetadata, DeadcatNode, DiscoveredMarket, DiscoveryConfig,
+    OrderDirection, PredictionMarketParams,
+};
 use deadcat_sdk::{LiquiditySource, TradeAmount, TradeDirection, TradeSide};
 use lwk_test_util::{TEST_MNEMONIC, TestEnv, TestEnvBuilder, generate_mnemonic};
 use lwk_wollet::elements::AssetId;

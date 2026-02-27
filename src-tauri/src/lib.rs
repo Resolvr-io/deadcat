@@ -24,8 +24,7 @@ const APP_STATE_UPDATED_EVENT: &str = "app_state_updated";
 /// node call completes, especially before acquiring `AppStateManager`'s
 /// std Mutex, to avoid holding both locks simultaneously.
 pub struct NodeState {
-    pub node:
-        tokio::sync::Mutex<Option<deadcat_sdk::node::DeadcatNode<deadcat_store::DeadcatStore>>>,
+    pub node: tokio::sync::Mutex<Option<deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>>>,
 }
 
 impl Default for NodeState {
@@ -189,10 +188,8 @@ async fn create_wallet(password: String, app: AppHandle) -> Result<String, Strin
         let sdk_network = state::to_sdk_network(network);
 
         let mnemonic =
-            deadcat_sdk::node::DeadcatNode::<deadcat_sdk::discovery::NoopStore>::generate_mnemonic(
-                sdk_network,
-            )
-            .map_err(|e| format!("{e}"))?;
+            deadcat_sdk::DeadcatNode::<deadcat_sdk::NoopStore>::generate_mnemonic(sdk_network)
+                .map_err(|e| format!("{e}"))?;
 
         let persister = mgr.persister_mut().ok_or("Persister not initialized")?;
         persister

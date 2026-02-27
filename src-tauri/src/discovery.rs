@@ -8,7 +8,7 @@ use std::time::Duration;
 pub const WALLET_BACKUP_D_TAG: &str = "deadcat-wallet-backup";
 
 // Re-export SDK-owned types and functions for use by the app layer.
-pub use deadcat_sdk::discovery::{
+pub use deadcat_sdk::{
     // Builders
     build_announcement_event,
     build_attestation_event,

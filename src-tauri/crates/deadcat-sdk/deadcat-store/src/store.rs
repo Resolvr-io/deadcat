@@ -3,10 +3,9 @@ use diesel::sql_types::Integer;
 use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
-use deadcat_sdk::discovery::ContractMetadataInput;
 use deadcat_sdk::{
-    CompiledMakerOrder, CompiledPredictionMarket, MakerOrderParams, MarketId, MarketState,
-    OrderDirection, PredictionMarketParams, UnblindedUtxo,
+    CompiledMakerOrder, CompiledPredictionMarket, ContractMetadataInput, MakerOrderParams,
+    MarketId, MarketState, OrderDirection, PredictionMarketParams, UnblindedUtxo,
 };
 
 use crate::conversions::{
@@ -124,8 +123,8 @@ impl PoolStatus {
 
 #[derive(Debug, Clone)]
 pub struct AmmPoolInfo {
-    pub pool_id: deadcat_sdk::amm_pool::params::PoolId,
-    pub params: deadcat_sdk::amm_pool::params::AmmPoolParams,
+    pub pool_id: deadcat_sdk::PoolId,
+    pub params: deadcat_sdk::AmmPoolParams,
     pub status: PoolStatus,
     pub cmr: [u8; 32],
     pub issued_lp: u64,
@@ -604,13 +603,13 @@ impl DeadcatStore {
     /// the issued_lp and covenant_spk.
     pub fn ingest_amm_pool(
         &mut self,
-        params: &deadcat_sdk::amm_pool::params::AmmPoolParams,
+        params: &deadcat_sdk::AmmPoolParams,
         issued_lp: u64,
-        reserves: Option<&deadcat_sdk::amm_pool::math::PoolReserves>,
+        reserves: Option<&deadcat_sdk::PoolReserves>,
         nostr_event_id: Option<&str>,
         nostr_event_json: Option<&str>,
-    ) -> crate::Result<deadcat_sdk::amm_pool::params::PoolId> {
-        let pool_id = deadcat_sdk::amm_pool::params::PoolId::from_params(params);
+    ) -> crate::Result<deadcat_sdk::PoolId> {
+        let pool_id = deadcat_sdk::PoolId::from_params(params);
         let pool_id_bytes = pool_id.0.to_vec();
 
         let exists: bool = diesel::select(diesel::dsl::exists(
@@ -620,7 +619,7 @@ impl DeadcatStore {
 
         if exists {
             // Update issued_lp, reserves, covenant_spk, and Nostr metadata for existing pool
-            let compiled = deadcat_sdk::amm_pool::contract::CompiledAmmPool::new(*params)?;
+            let compiled = deadcat_sdk::CompiledAmmPool::new(*params)?;
             let update =
                 diesel::update(amm_pools::table.filter(amm_pools::pool_id.eq(&pool_id_bytes)));
             // Always update issued_lp, covenant_spk, and timestamp
@@ -654,7 +653,7 @@ impl DeadcatStore {
             return Ok(pool_id);
         }
 
-        let compiled = deadcat_sdk::amm_pool::contract::CompiledAmmPool::new(*params)?;
+        let compiled = deadcat_sdk::CompiledAmmPool::new(*params)?;
         let row = new_amm_pool_row(
             params,
             &compiled,
@@ -675,7 +674,7 @@ impl DeadcatStore {
 
     pub fn get_amm_pool(
         &mut self,
-        pool_id: &deadcat_sdk::amm_pool::params::PoolId,
+        pool_id: &deadcat_sdk::PoolId,
     ) -> crate::Result<Option<AmmPoolInfo>> {
         let row: Option<AmmPoolRow> = amm_pools::table
             .filter(amm_pools::pool_id.eq(pool_id.0.to_vec()))
@@ -695,15 +694,15 @@ impl DeadcatStore {
 
     pub fn update_pool_state(
         &mut self,
-        pool_id: &deadcat_sdk::amm_pool::params::PoolId,
-        params: &deadcat_sdk::amm_pool::params::AmmPoolParams,
+        pool_id: &deadcat_sdk::PoolId,
+        params: &deadcat_sdk::AmmPoolParams,
         issued_lp: u64,
         r_yes: u64,
         r_no: u64,
         r_lbtc: u64,
     ) -> crate::Result<()> {
         // Recompile to derive the new covenant scriptPubKey for the updated issued_lp.
-        let compiled = deadcat_sdk::amm_pool::contract::CompiledAmmPool::new(*params)?;
+        let compiled = deadcat_sdk::CompiledAmmPool::new(*params)?;
         diesel::update(amm_pools::table.filter(amm_pools::pool_id.eq(pool_id.0.to_vec())))
             .set((
                 amm_pools::issued_lp.eq(issued_lp as i64),
@@ -719,7 +718,7 @@ impl DeadcatStore {
 
     pub fn update_pool_status(
         &mut self,
-        pool_id: &deadcat_sdk::amm_pool::params::PoolId,
+        pool_id: &deadcat_sdk::PoolId,
         status: PoolStatus,
     ) -> crate::Result<()> {
         diesel::update(amm_pools::table.filter(amm_pools::pool_id.eq(pool_id.0.to_vec())))
@@ -734,7 +733,7 @@ impl DeadcatStore {
 
 // ==================== DiscoveryStore trait impl ====================
 
-impl deadcat_sdk::discovery::DiscoveryStore for DeadcatStore {
+impl deadcat_sdk::DiscoveryStore for DeadcatStore {
     fn ingest_market(
         &mut self,
         params: &PredictionMarketParams,
@@ -766,9 +765,9 @@ impl deadcat_sdk::discovery::DiscoveryStore for DeadcatStore {
 
     fn ingest_amm_pool(
         &mut self,
-        params: &deadcat_sdk::amm_pool::params::AmmPoolParams,
+        params: &deadcat_sdk::AmmPoolParams,
         issued_lp: u64,
-        reserves: Option<&deadcat_sdk::amm_pool::math::PoolReserves>,
+        reserves: Option<&deadcat_sdk::PoolReserves>,
         nostr_event_id: Option<&str>,
         nostr_event_json: Option<&str>,
     ) -> Result<(), String> {
@@ -785,8 +784,8 @@ impl deadcat_sdk::discovery::DiscoveryStore for DeadcatStore {
 
     fn update_pool_state(
         &mut self,
-        pool_id: &deadcat_sdk::amm_pool::params::PoolId,
-        params: &deadcat_sdk::amm_pool::params::AmmPoolParams,
+        pool_id: &deadcat_sdk::PoolId,
+        params: &deadcat_sdk::AmmPoolParams,
         issued_lp: u64,
         r_yes: u64,
         r_no: u64,

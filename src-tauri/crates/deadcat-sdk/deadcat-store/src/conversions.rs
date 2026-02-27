@@ -1,12 +1,10 @@
-use deadcat_sdk::amm_pool::contract::CompiledAmmPool;
-use deadcat_sdk::amm_pool::params::{AmmPoolParams, PoolId};
 use deadcat_sdk::elements::encode::{deserialize as elements_deserialize, serialize};
 use deadcat_sdk::elements::hashes::Hash;
 use deadcat_sdk::elements::{OutPoint, TxOut, Txid};
 use deadcat_sdk::{
-    CompiledMakerOrder, CompiledPredictionMarket, MakerOrderParams, MarketId, MarketState,
-    OrderDirection, PredictionMarketParams, UnblindedUtxo, derive_maker_receive,
-    maker_receive_script_pubkey,
+    AmmPoolParams, CompiledAmmPool, CompiledMakerOrder, CompiledPredictionMarket,
+    ContractMetadataInput, MakerOrderParams, MarketId, MarketState, OrderDirection, PoolId,
+    PredictionMarketParams, UnblindedUtxo, derive_maker_receive, maker_receive_script_pubkey,
 };
 
 use crate::error::StoreError;
@@ -17,7 +15,6 @@ use crate::models::{
 use crate::store::{
     AmmPoolInfo, IssuanceData, MakerOrderInfo, MarketInfo, OrderStatus, PoolStatus,
 };
-use deadcat_sdk::discovery::ContractMetadataInput;
 
 pub fn vec_to_array32(v: &[u8], field: &str) -> std::result::Result<[u8; 32], StoreError> {
     v.try_into().map_err(|_| {
@@ -382,7 +379,7 @@ pub fn new_amm_pool_row(
     params: &AmmPoolParams,
     compiled: &CompiledAmmPool,
     issued_lp: u64,
-    reserves: Option<&deadcat_sdk::amm_pool::math::PoolReserves>,
+    reserves: Option<&deadcat_sdk::PoolReserves>,
     nostr_event_id: Option<&str>,
     nostr_event_json: Option<&str>,
 ) -> NewAmmPoolRow {

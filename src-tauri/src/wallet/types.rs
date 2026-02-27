@@ -66,7 +66,7 @@ pub struct WalletSnapshotEvent {
 impl WalletSnapshotEvent {
     /// Convert an SDK `WalletSnapshot` into the serializable frontend payload.
     pub fn from_snapshot(
-        snapshot: &deadcat_sdk::node::WalletSnapshot,
+        snapshot: &deadcat_sdk::WalletSnapshot,
         policy_asset: &lwk_wollet::elements::AssetId,
     ) -> Self {
         let mut assets = HashMap::new();
