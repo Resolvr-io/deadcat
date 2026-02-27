@@ -5,6 +5,7 @@ import {
   issueTokens,
   marketToContractParamsJson,
 } from "../services/markets.ts";
+import { refreshRelayBackupStatus } from "../services/nostr.ts";
 import {
   fetchWalletSnapshot,
   fetchWalletStatus,
@@ -38,7 +39,6 @@ import type {
   NostrBackupStatus,
   OrderType,
   PaymentSwap,
-  RelayBackupResult,
   Side,
   SizeMode,
   TradeIntent,
@@ -917,7 +917,7 @@ export async function handleClick(
 
   // -- Relay management handlers --
 
-  if (action === "add-relay") {
+    if (action === "add-relay") {
     const input = document.getElementById(
       "relay-input",
     ) as HTMLInputElement | null;
@@ -929,14 +929,19 @@ export async function handleClick(
     }
     state.relayLoading = true;
     render();
-    (async () => {
-      try {
-        const list = await invoke<string[]>("add_relay", { url });
-        state.relays = list.map((u) => ({ url: u, has_backup: false }));
-        state.relayInput = "";
-        showToast("Relay added", "success");
-      } catch (e) {
-        showToast(`Failed to add relay: ${String(e)}`, "error");
+      (async () => {
+        try {
+          const list = await invoke<string[]>("add_relay", { url });
+          state.relays = list.map((u) => ({ url: u, has_backup: false }));
+          try {
+            await refreshRelayBackupStatus();
+          } catch (refreshError) {
+            console.warn("Failed to refresh relay backup status:", refreshError);
+          }
+          state.relayInput = "";
+          showToast("Relay added", "success");
+        } catch (e) {
+          showToast(`Failed to add relay: ${String(e)}`, "error");
       } finally {
         state.relayLoading = false;
         render();
@@ -945,18 +950,23 @@ export async function handleClick(
     return;
   }
 
-  if (action === "remove-relay") {
+    if (action === "remove-relay") {
     const url = actionEl?.dataset.relay;
     if (!url) return;
     state.relayLoading = true;
     render();
-    (async () => {
-      try {
-        const list = await invoke<string[]>("remove_relay", { url });
-        state.relays = list.map((u) => ({ url: u, has_backup: false }));
-        showToast("Relay removed", "success");
-      } catch (e) {
-        showToast(`Failed to remove relay: ${String(e)}`, "error");
+      (async () => {
+        try {
+          const list = await invoke<string[]>("remove_relay", { url });
+          state.relays = list.map((u) => ({ url: u, has_backup: false }));
+          try {
+            await refreshRelayBackupStatus();
+          } catch (refreshError) {
+            console.warn("Failed to refresh relay backup status:", refreshError);
+          }
+          showToast("Relay removed", "success");
+        } catch (e) {
+          showToast(`Failed to remove relay: ${String(e)}`, "error");
       } finally {
         state.relayLoading = false;
         render();
@@ -965,21 +975,26 @@ export async function handleClick(
     return;
   }
 
-  if (action === "reset-relays") {
+    if (action === "reset-relays") {
     state.relayLoading = true;
     render();
-    (async () => {
-      try {
-        await invoke("set_relay_list", {
-          relays: ["wss://relay.damus.io", "wss://relay.primal.net"],
-        });
-        state.relays = [
-          { url: "wss://relay.damus.io", has_backup: false },
-          { url: "wss://relay.primal.net", has_backup: false },
-        ];
-        showToast("Relays reset to defaults", "success");
-      } catch (e) {
-        showToast(`Failed to reset relays: ${String(e)}`, "error");
+      (async () => {
+        try {
+          await invoke("set_relay_list", {
+            relays: ["wss://relay.damus.io", "wss://relay.primal.net"],
+          });
+          state.relays = [
+            { url: "wss://relay.damus.io", has_backup: false },
+            { url: "wss://relay.primal.net", has_backup: false },
+          ];
+          try {
+            await refreshRelayBackupStatus();
+          } catch (refreshError) {
+            console.warn("Failed to refresh relay backup status:", refreshError);
+          }
+          showToast("Relays reset to defaults", "success");
+        } catch (e) {
+          showToast(`Failed to reset relays: ${String(e)}`, "error");
       } finally {
         state.relayLoading = false;
         render();
@@ -996,19 +1011,7 @@ export async function handleClick(
     (async () => {
       try {
         await invoke("backup_mnemonic_to_nostr", { password: "" });
-        // Refresh backup status
-        const status = await invoke<NostrBackupStatus>("check_nostr_backup");
-        state.nostrBackupStatus = status;
-        // Update relay backup indicators
-        if (status.relay_results) {
-          state.relays = state.relays.map((r) => ({
-            ...r,
-            has_backup:
-              status.relay_results.find(
-                (rr: RelayBackupResult) => rr.url === r.url,
-              )?.has_backup ?? false,
-          }));
-        }
+        await refreshRelayBackupStatus();
         showToast("Wallet backed up to Nostr relays", "success");
       } catch (e) {
         showToast(`Backup failed: ${String(e)}`, "error");
@@ -1045,17 +1048,7 @@ export async function handleClick(
     (async () => {
       try {
         await invoke("backup_mnemonic_to_nostr", { password });
-        const status = await invoke<NostrBackupStatus>("check_nostr_backup");
-        state.nostrBackupStatus = status;
-        if (status.relay_results) {
-          state.relays = state.relays.map((r) => ({
-            ...r,
-            has_backup:
-              status.relay_results.find(
-                (rr: RelayBackupResult) => rr.url === r.url,
-              )?.has_backup ?? false,
-          }));
-        }
+        await refreshRelayBackupStatus();
         state.nostrBackupPassword = "";
         state.nostrBackupPrompt = false;
         showToast("Wallet backed up to Nostr relays", "success");
@@ -1075,21 +1068,11 @@ export async function handleClick(
     (async () => {
       try {
         await invoke("delete_nostr_backup");
-        const status = await invoke<NostrBackupStatus>("check_nostr_backup");
-        state.nostrBackupStatus = status;
-        if (status.relay_results) {
-          state.relays = state.relays.map((r) => ({
-            ...r,
-            has_backup:
-              status.relay_results.find(
-                (rr: RelayBackupResult) => rr.url === r.url,
-              )?.has_backup ?? false,
-          }));
-        }
+        await refreshRelayBackupStatus();
+        const status = state.nostrBackupStatus;
         if (status.has_backup) {
-          const remaining = status.relay_results.filter(
-            (r: RelayBackupResult) => r.has_backup,
-          ).length;
+          const remaining = (status.relay_results ?? []).filter((r) => r.has_backup)
+            .length;
           showToast(
             `Backup still on ${remaining} relay${remaining !== 1 ? "s" : ""} — some relays may delay deletion`,
             "warning",
