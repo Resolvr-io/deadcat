@@ -1,4 +1,4 @@
-use crate::state::MarketState;
+use crate::prediction_market::state::MarketState;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

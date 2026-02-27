@@ -15,7 +15,7 @@ import { handleFocusout } from "./handlers/focusout.ts";
 import { handleInput } from "./handlers/input.ts";
 import { handleKeydown } from "./handlers/keydown.ts";
 // Services
-import { loadMarkets } from "./services/markets.ts";
+import { loadMarkets, refreshMarketsFromStore } from "./services/markets.ts";
 import {
   fetchWalletStatus,
   refreshWallet,
@@ -376,6 +376,20 @@ void listen<{
     state.walletData = null;
   }
   render();
+});
+
+// ── Discovery event listeners ────────────────────────────────────────
+
+void listen("discovery:market", () => {
+  void refreshMarketsFromStore().then(render);
+});
+
+void listen("discovery:attestation", () => {
+  void refreshMarketsFromStore().then(render);
+});
+
+void listen("discovery:pool", () => {
+  void refreshMarketsFromStore().then(render);
 });
 
 // ── Auto-lock activity tracking ──────────────────────────────────────

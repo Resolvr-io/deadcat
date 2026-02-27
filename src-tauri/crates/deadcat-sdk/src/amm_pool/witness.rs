@@ -137,18 +137,6 @@ pub fn build_amm_pool_witness(path: &AmmPoolSpendingPath) -> WitnessValues {
     WitnessValues::from(map)
 }
 
-/// Satisfy an AMM pool contract with the given spending path (no pruning).
-pub fn satisfy_amm_pool(
-    contract: &CompiledAmmPool,
-    path: &AmmPoolSpendingPath,
-) -> crate::error::Result<SatisfiedProgram> {
-    let witness_values = build_amm_pool_witness(path);
-    contract
-        .program()
-        .satisfy(witness_values)
-        .map_err(|e| crate::error::Error::Witness(format!("amm pool witness satisfaction: {e}")))
-}
-
 /// Satisfy an AMM pool contract with pruning enabled via an ElementsEnv.
 pub fn satisfy_amm_pool_with_env(
     contract: &CompiledAmmPool,

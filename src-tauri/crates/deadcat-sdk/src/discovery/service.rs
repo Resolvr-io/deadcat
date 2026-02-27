@@ -4,7 +4,7 @@ use nostr_sdk::prelude::*;
 use tokio::sync::broadcast;
 
 use crate::announcement::ContractAnnouncement;
-use crate::params::MarketId;
+use crate::prediction_market::params::MarketId;
 
 use super::attestation::{
     AttestationContent, AttestationResult, build_attestation_event, build_attestation_filter,
@@ -42,7 +42,7 @@ pub struct NoopStore;
 impl DiscoveryStore for NoopStore {
     fn ingest_market(
         &mut self,
-        _params: &crate::params::ContractParams,
+        _params: &crate::prediction_market::params::PredictionMarketParams,
         _meta: Option<&ContractMetadataInput>,
     ) -> Result<(), String> {
         Ok(())
@@ -63,9 +63,10 @@ impl DiscoveryStore for NoopStore {
         &mut self,
         _params: &crate::amm_pool::params::AmmPoolParams,
         _issued_lp: u64,
-        _reserves: Option<&crate::amm_pool::math::PoolReserves>,
         _nostr_event_id: Option<&str>,
         _nostr_event_json: Option<&str>,
+        _market_id: Option<&[u8; 32]>,
+        _creation_txid: Option<&[u8; 32]>,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -75,11 +76,56 @@ impl DiscoveryStore for NoopStore {
         _pool_id: &crate::amm_pool::params::PoolId,
         _params: &crate::amm_pool::params::AmmPoolParams,
         _issued_lp: u64,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn get_pool_info(
+        &mut self,
+        _pool_id: &crate::amm_pool::params::PoolId,
+    ) -> Result<Option<super::store_trait::PoolInfo>, String> {
+        Ok(None)
+    }
+
+    fn get_latest_pool_snapshot_resume(
+        &mut self,
+        _pool_id: &[u8; 32],
+    ) -> Result<Option<([u8; 32], u64)>, String> {
+        Ok(None)
+    }
+
+    fn insert_pool_snapshot(
+        &mut self,
+        _pool_id: &[u8; 32],
+        _txid: &[u8; 32],
         _r_yes: u64,
         _r_no: u64,
         _r_lbtc: u64,
+        _issued_lp: u64,
+        _block_height: Option<i32>,
     ) -> Result<(), String> {
         Ok(())
+    }
+
+    fn get_pool_id_for_market(
+        &mut self,
+        _market_id: &crate::prediction_market::params::MarketId,
+    ) -> Result<Option<crate::amm_pool::params::PoolId>, String> {
+        Ok(None)
+    }
+
+    fn get_latest_pool_snapshot(
+        &mut self,
+        _pool_id: &crate::amm_pool::params::PoolId,
+    ) -> Result<Option<super::store_trait::PoolSnapshot>, String> {
+        Ok(None)
+    }
+
+    fn get_pool_snapshot_history(
+        &mut self,
+        _pool_id: &crate::amm_pool::params::PoolId,
+    ) -> Result<Vec<super::store_trait::PoolSnapshot>, String> {
+        Ok(vec![])
     }
 }
 
@@ -394,7 +440,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
 /// Convert a DiscoveredMarket into ContractParams for store ingestion.
 pub fn discovered_market_to_contract_params(
     m: &DiscoveredMarket,
-) -> Result<crate::params::ContractParams, String> {
+) -> Result<crate::prediction_market::params::PredictionMarketParams, String> {
     let decode32 = |hex_str: &str, name: &str| -> Result<[u8; 32], String> {
         let bytes = hex::decode(hex_str).map_err(|e| format!("{name}: hex decode: {e}"))?;
         bytes
@@ -402,7 +448,7 @@ pub fn discovered_market_to_contract_params(
             .map_err(|_| format!("{name}: expected 32 bytes"))
     };
 
-    Ok(crate::params::ContractParams {
+    Ok(crate::prediction_market::params::PredictionMarketParams {
         oracle_public_key: decode32(&m.oracle_pubkey, "oracle_pubkey")?,
         collateral_asset_id: decode32(&m.collateral_asset_id, "collateral_asset_id")?,
         yes_token_asset: decode32(&m.yes_asset_id, "yes_asset_id")?,
@@ -548,7 +594,6 @@ pub(crate) fn persist_market_to_store<S: DiscoveryStore>(
         description: Some(market.description.clone()),
         category: Some(market.category.clone()),
         resolution_source: Some(market.resolution_source.clone()),
-        starting_yes_price: Some(market.starting_yes_price),
         creator_pubkey: hex::decode(&market.creator_pubkey).ok(),
         creation_txid: market.creation_txid.clone(),
         nevent: Some(market.nevent.clone()),
@@ -568,13 +613,22 @@ pub(crate) fn persist_pool_to_store<S: DiscoveryStore>(
     let Ok(params) = discovered_pool_to_amm_params(pool) else {
         return;
     };
+    let market_id: Option<[u8; 32]> = hex::decode(&pool.market_id)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+    let creation_txid: Option<[u8; 32]> = pool
+        .creation_txid
+        .as_deref()
+        .and_then(|s| hex::decode(s).ok())
+        .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
     if let Ok(mut s) = store.lock() {
         let _ = s.ingest_amm_pool(
             &params,
             pool.issued_lp,
-            Some(&pool.reserves),
             Some(&pool.id),
             pool.nostr_event_json.as_deref(),
+            market_id.as_ref(),
+            creation_txid.as_ref(),
         );
     }
 }

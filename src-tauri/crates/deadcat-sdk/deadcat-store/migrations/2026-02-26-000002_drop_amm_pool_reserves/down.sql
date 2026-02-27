@@ -1,0 +1,3 @@
+ALTER TABLE amm_pools ADD COLUMN r_yes BIGINT;
+ALTER TABLE amm_pools ADD COLUMN r_no BIGINT;
+ALTER TABLE amm_pools ADD COLUMN r_lbtc BIGINT;

@@ -1,11 +1,10 @@
 use std::time::Duration;
 
-use deadcat_sdk::announcement::{ContractAnnouncement, ContractMetadata};
-use deadcat_sdk::discovery::{
+use deadcat_sdk::{
     build_announcement_event, build_attestation_event, build_attestation_filter,
     build_contract_filter, parse_announcement_event, sign_attestation, AttestationContent,
+    ContractAnnouncement, ContractMetadata, MarketId, PredictionMarketParams,
 };
-use deadcat_sdk::params::{ContractParams, MarketId};
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
 use nostr_sdk::secp256k1;
@@ -16,12 +15,11 @@ fn test_metadata() -> ContractMetadata {
         description: "Resolved using median close basket.".to_string(),
         category: "Bitcoin".to_string(),
         resolution_source: "Exchange close basket".to_string(),
-        starting_yes_price: 57,
     }
 }
 
-fn test_params(oracle_pubkey: [u8; 32]) -> ContractParams {
-    ContractParams {
+fn test_params(oracle_pubkey: [u8; 32]) -> PredictionMarketParams {
+    PredictionMarketParams {
         oracle_public_key: oracle_pubkey,
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: [0x01; 32],
@@ -85,7 +83,6 @@ async fn publish_discover_roundtrip() {
     assert_eq!(market.category, "Bitcoin");
     assert_eq!(market.description, "Resolved using median close basket.");
     assert_eq!(market.resolution_source, "Exchange close basket");
-    assert_eq!(market.starting_yes_price, 57);
     assert_eq!(market.expiry_height, 3_650_000);
     assert_eq!(market.cpt_sats, 5000);
     assert_eq!(market.oracle_pubkey, hex::encode(oracle_pubkey));

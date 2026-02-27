@@ -68,7 +68,7 @@ export function renderHome(): string {
   }
 
   const featured = trending[state.trendingIndex % trending.length];
-  const featuredNo = 1 - featured.yesPrice;
+  const featuredNo = featured.yesPrice != null ? 1 - featured.yesPrice : null;
   const topMarkets = getFilteredMarkets().slice(0, 6);
   const topMovers = [...markets]
     .sort((a, b) => Math.abs(b.change24h) - Math.abs(a.change24h))
@@ -96,8 +96,8 @@ export function renderHome(): string {
                   <div class="rounded-lg bg-slate-900/60 p-2">Volume<br/><span class="text-slate-200">${formatVolumeBtc(featured.volumeBtc)}</span></div>
                 </div>
                 <div class="space-y-3 text-lg text-slate-200">
-                  <div class="flex items-center justify-between"><span>Yes contract</span><button data-open-market="${featured.id}" data-open-side="yes" data-open-intent="buy" class="rounded-full border border-emerald-600 px-4 py-1 text-emerald-300 transition hover:bg-emerald-500/10">${formatProbabilityWithPercent(featured.yesPrice)}</button></div>
-                  <div class="flex items-center justify-between"><span>No contract</span><button data-open-market="${featured.id}" data-open-side="no" data-open-intent="buy" class="rounded-full border border-rose-600 px-4 py-1 text-rose-300 transition hover:bg-rose-500/10">${formatProbabilityWithPercent(featuredNo)}</button></div>
+                  <div class="flex items-center justify-between"><span>Yes contract</span><button data-open-market="${featured.id}" data-open-side="yes" data-open-intent="buy" class="rounded-full border border-emerald-600 px-4 py-1 text-emerald-300 transition hover:bg-emerald-500/10">${featured.yesPrice != null ? formatProbabilityWithPercent(featured.yesPrice) : "\u2014"}</button></div>
+                  <div class="flex items-center justify-between"><span>No contract</span><button data-open-market="${featured.id}" data-open-side="no" data-open-intent="buy" class="rounded-full border border-rose-600 px-4 py-1 text-rose-300 transition hover:bg-rose-500/10">${featuredNo != null ? formatProbabilityWithPercent(featuredNo) : "\u2014"}</button></div>
                 </div>
                 <p class="mt-3 text-[15px] text-slate-400">${featured.description}</p>
                 <button data-open-market="${featured.id}" class="mt-5 rounded-xl bg-emerald-300 px-5 py-2.5 text-base font-medium text-slate-950">Open contract</button>
@@ -114,14 +114,15 @@ export function renderHome(): string {
             <div class="grid gap-3 md:grid-cols-2">
               ${topMarkets
                 .map((market) => {
-                  const no = 1 - market.yesPrice;
+                  const no =
+                    market.yesPrice != null ? 1 - market.yesPrice : null;
                   return `
                     <button data-open-market="${market.id}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
                       <p class="mb-2 text-xs text-slate-500">${market.category} ${market.isLive ? "· LIVE" : ""}</p>
                       <p class="mb-3 max-h-14 overflow-hidden text-base font-normal text-slate-200">${market.question}</p>
                       <div class="flex items-center justify-between text-xs sm:text-sm">
-                        <span class="text-emerald-300">Yes ${formatProbabilityWithPercent(market.yesPrice)}</span>
-                        <span class="text-rose-300">No ${formatProbabilityWithPercent(no)}</span>
+                        <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span>
+                        <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no) : "\u2014"}</span>
                         ${trendIndicator(market.change24h)}
                       </div>
                     </button>
@@ -143,7 +144,7 @@ export function renderHome(): string {
                     <button data-open-market="${market.id}" class="w-full text-left">
                       <div class="flex items-start justify-between gap-2">
                         <p class="w-full text-sm font-normal text-slate-300">${idx + 1}. ${market.question}</p>
-                        <p class="text-sm font-normal text-slate-100">${Math.round(market.yesPrice * 100)}%</p>
+                        <p class="text-sm font-normal text-slate-100">${market.yesPrice != null ? `${Math.round(market.yesPrice * 100)}%` : "\u2014"}</p>
                       </div>
                       <div class="mt-1 flex items-center justify-between">
                         <p class="text-xs text-slate-500">${market.category}</p>
@@ -198,7 +199,7 @@ export function renderMyMarkets(): string {
   const resolved = myMarkets.filter((m) => m.state === 2 || m.state === 3);
 
   const renderMarketCard = (market: Market): string => {
-    const no = 1 - market.yesPrice;
+    const no = market.yesPrice != null ? 1 - market.yesPrice : null;
     return `
       <button data-open-market="${market.id}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
         <div class="mb-2 flex items-center justify-between text-sm">
@@ -207,8 +208,8 @@ export function renderMyMarkets(): string {
         </div>
         <p class="mb-3 text-base font-normal text-slate-200">${market.question}</p>
         <div class="flex items-center justify-between text-sm">
-          <span class="text-emerald-300">Yes ${formatProbabilityWithPercent(market.yesPrice)}</span>
-          <span class="text-rose-300">No ${formatProbabilityWithPercent(no)}</span>
+          <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span>
+          <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no) : "\u2014"}</span>
         </div>
       </button>
     `;
@@ -308,7 +309,7 @@ export function renderCategoryPage(): string {
           <div class="grid gap-3 md:grid-cols-2">
             ${categoryMarkets
               .map((market) => {
-                const no = 1 - market.yesPrice;
+                const no = market.yesPrice != null ? 1 - market.yesPrice : null;
                 return `
                   <button data-open-market="${market.id}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
                     <div class="mb-2 flex items-center justify-between text-sm">
@@ -317,8 +318,8 @@ export function renderCategoryPage(): string {
                     </div>
                     <p class="mb-3 text-base font-normal text-slate-200">${market.question}</p>
                     <div class="flex items-center justify-between text-sm">
-                      <span class="text-emerald-300">Yes ${formatProbabilityWithPercent(market.yesPrice)}</span>
-                      <span class="text-rose-300">No ${formatProbabilityWithPercent(no)}</span>
+                      <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span>
+                      <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no) : "\u2014"}</span>
                       ${trendIndicator(market.change24h)}
                     </div>
                     <p class="mt-2 text-xs text-slate-500">Volume ${formatVolumeBtc(market.volumeBtc)} · ${market.description}</p>
@@ -339,9 +340,7 @@ export function renderCategoryPage(): string {
                         (market) => `
                       <button data-open-market="${market.id}" class="w-full text-left">
                         <p class="text-sm font-normal text-slate-300">${market.question}</p>
-                        <p class="mt-1 text-xs text-slate-500">Yes ${Math.round(
-                          market.yesPrice * 100,
-                        )}% · ${formatVolumeBtc(market.volumeBtc)} volume</p>
+                        <p class="mt-1 text-xs text-slate-500">${market.yesPrice != null ? `Yes ${Math.round(market.yesPrice * 100)}% · ` : ""}${formatVolumeBtc(market.volumeBtc)} volume</p>
                       </button>`,
                       )
                       .join("")

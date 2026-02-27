@@ -1,9 +1,9 @@
 use simplicityhl::elements::Script;
 use simplicityhl::elements::pset::PartiallySignedTransaction;
 
-use crate::contract::CompiledContract;
 use crate::error::{Error, Result};
-use crate::state::MarketState;
+use crate::prediction_market::contract::CompiledPredictionMarket;
+use crate::prediction_market::state::MarketState;
 
 use super::{
     UnblindedUtxo, add_pset_input, add_pset_output, burn_txout, covenant_spk, explicit_txout,
@@ -32,7 +32,7 @@ pub struct CancellationParams {
 
 /// Build the cancellation PSET (state 1 → 1 partial, 1 → 0 full).
 pub fn build_cancellation_pset(
-    contract: &CompiledContract,
+    contract: &CompiledPredictionMarket,
     params: &CancellationParams,
 ) -> Result<PartiallySignedTransaction> {
     let cpt = contract.params().collateral_per_token;

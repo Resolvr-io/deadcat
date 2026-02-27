@@ -9,8 +9,8 @@ use simplicityhl::types::{ResolvedType, TypeConstructible};
 use simplicityhl::value::ValueConstructible;
 use simplicityhl::{SatisfiedProgram, Value, WitnessValues};
 
-use crate::contract::CompiledContract;
-use crate::state::MarketState;
+use crate::prediction_market::contract::CompiledPredictionMarket;
+use crate::prediction_market::state::MarketState;
 
 /// Blinding factors for a reissuance token (confidential input/output).
 #[derive(Debug, Clone, Copy, Default)]
@@ -30,7 +30,7 @@ pub struct AllBlindingFactors {
 
 /// The spending path for a prediction market transaction.
 #[derive(Debug, Clone)]
-pub enum SpendingPath {
+pub enum PredictionMarketSpendingPath {
     InitialIssuance {
         blinding: AllBlindingFactors,
     },
@@ -78,7 +78,7 @@ fn unit_ty() -> ResolvedType {
 ///   Right(Left(Left(unit)))      = Path 5: Expiry Redemption
 ///   Right(Left(Right(unit)))     = Path 6: Cancellation
 ///   Right(Right(unit))           = Path 7: Secondary Covenant Input
-fn build_path_value(path: &SpendingPath) -> Value {
+fn build_path_value(path: &PredictionMarketSpendingPath) -> Value {
     let u = || Value::unit();
     let ut = unit_ty;
 
@@ -88,43 +88,43 @@ fn build_path_value(path: &SpendingPath) -> Value {
     let right_ty = || ResolvedType::either(pair_ty(), ut()); // Either<Either<(),()>, ()>
 
     match path {
-        SpendingPath::InitialIssuance { .. } => {
+        PredictionMarketSpendingPath::InitialIssuance { .. } => {
             // Left(Left(Left(unit)))
             let inner = Value::left(u(), ut());
             let inner = Value::left(inner, pair_ty());
             Value::left(inner, right_ty())
         }
-        SpendingPath::SubsequentIssuance { .. } => {
+        PredictionMarketSpendingPath::SubsequentIssuance { .. } => {
             // Left(Left(Right(unit)))
             let inner = Value::right(ut(), u());
             let inner = Value::left(inner, pair_ty());
             Value::left(inner, right_ty())
         }
-        SpendingPath::OracleResolve { .. } => {
+        PredictionMarketSpendingPath::OracleResolve { .. } => {
             // Left(Right(Left(unit)))
             let inner = Value::left(u(), ut());
             let inner = Value::right(pair_ty(), inner);
             Value::left(inner, right_ty())
         }
-        SpendingPath::PostResolutionRedemption { .. } => {
+        PredictionMarketSpendingPath::PostResolutionRedemption { .. } => {
             // Left(Right(Right(unit)))
             let inner = Value::right(ut(), u());
             let inner = Value::right(pair_ty(), inner);
             Value::left(inner, right_ty())
         }
-        SpendingPath::ExpiryRedemption { .. } => {
+        PredictionMarketSpendingPath::ExpiryRedemption { .. } => {
             // Right(Left(Left(unit)))
             let inner = Value::left(u(), ut());
             let inner = Value::left(inner, ut());
             Value::right(left_ty(), inner)
         }
-        SpendingPath::Cancellation { .. } => {
+        PredictionMarketSpendingPath::Cancellation { .. } => {
             // Right(Left(Right(unit)))
             let inner = Value::right(ut(), u());
             let inner = Value::left(inner, ut());
             Value::right(left_ty(), inner)
         }
-        SpendingPath::SecondaryCovenantInput => {
+        PredictionMarketSpendingPath::SecondaryCovenantInput => {
             // Right(Right(unit))
             let inner = Value::right(pair_ty(), u());
             Value::right(left_ty(), inner)
@@ -137,7 +137,7 @@ fn u256_val(bytes: &[u8; 32]) -> Value {
 }
 
 /// Build the complete witness values for a spending path.
-fn build_witness_values(path: &SpendingPath, state: MarketState) -> WitnessValues {
+fn build_witness_values(path: &PredictionMarketSpendingPath, state: MarketState) -> WitnessValues {
     let mut map = HashMap::new();
 
     // STATE witness
@@ -173,17 +173,17 @@ fn build_witness_values(path: &SpendingPath, state: MarketState) -> WitnessValue
     );
 
     match path {
-        SpendingPath::InitialIssuance { blinding } => {
+        PredictionMarketSpendingPath::InitialIssuance { blinding } => {
             set_blinding_map(&mut map, blinding);
             set_zero_oracle_map(&mut map);
             set_zero_redemption_map(&mut map);
         }
-        SpendingPath::SubsequentIssuance { blinding } => {
+        PredictionMarketSpendingPath::SubsequentIssuance { blinding } => {
             set_blinding_map(&mut map, blinding);
             set_zero_oracle_map(&mut map);
             set_zero_redemption_map(&mut map);
         }
-        SpendingPath::OracleResolve {
+        PredictionMarketSpendingPath::OracleResolve {
             outcome_yes,
             oracle_signature,
             blinding,
@@ -199,7 +199,7 @@ fn build_witness_values(path: &SpendingPath, state: MarketState) -> WitnessValue
             );
             set_zero_redemption_map(&mut map);
         }
-        SpendingPath::PostResolutionRedemption { tokens_burned } => {
+        PredictionMarketSpendingPath::PostResolutionRedemption { tokens_burned } => {
             set_zero_blinding_map(&mut map);
             set_zero_oracle_map(&mut map);
             map.insert(
@@ -215,7 +215,7 @@ fn build_witness_values(path: &SpendingPath, state: MarketState) -> WitnessValue
                 Value::u64(0),
             );
         }
-        SpendingPath::ExpiryRedemption {
+        PredictionMarketSpendingPath::ExpiryRedemption {
             tokens_burned,
             burn_token_asset,
         } => {
@@ -234,7 +234,7 @@ fn build_witness_values(path: &SpendingPath, state: MarketState) -> WitnessValue
                 Value::u64(0),
             );
         }
-        SpendingPath::Cancellation {
+        PredictionMarketSpendingPath::Cancellation {
             pairs_burned,
             blinding,
         } => {
@@ -257,7 +257,7 @@ fn build_witness_values(path: &SpendingPath, state: MarketState) -> WitnessValue
                 Value::u64(*pairs_burned),
             );
         }
-        SpendingPath::SecondaryCovenantInput => {
+        PredictionMarketSpendingPath::SecondaryCovenantInput => {
             set_zero_blinding_map(&mut map);
             set_zero_oracle_map(&mut map);
             set_zero_redemption_map(&mut map);
@@ -340,8 +340,8 @@ fn set_zero_redemption_map(map: &mut HashMap<WitnessName, Value>) {
 /// on-chain transactions that require pruning.
 #[cfg(any(test, feature = "testing"))]
 pub fn satisfy_contract(
-    contract: &CompiledContract,
-    path: &SpendingPath,
+    contract: &CompiledPredictionMarket,
+    path: &PredictionMarketSpendingPath,
     state: MarketState,
 ) -> Result<SatisfiedProgram, String> {
     let witness_values = build_witness_values(path, state);
@@ -354,8 +354,8 @@ pub fn satisfy_contract(
 /// replaced with HIDDEN nodes containing only their CMR. This is required by
 /// Simplicity's anti-DOS consensus rules (every visible node must be executed).
 pub fn satisfy_contract_with_env(
-    contract: &CompiledContract,
-    path: &SpendingPath,
+    contract: &CompiledPredictionMarket,
+    path: &PredictionMarketSpendingPath,
     state: MarketState,
     env: Option<&ElementsEnv<Arc<Transaction>>>,
 ) -> Result<SatisfiedProgram, String> {

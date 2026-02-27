@@ -16,6 +16,8 @@ pub struct MakerOrderRow {
     pub cosigner_pubkey: Vec<u8>,
     pub cmr: Vec<u8>,
     pub maker_base_pubkey: Option<Vec<u8>>,
+    /// Cached: re-derivable via `CompiledMakerOrder::new(params)?.script_pubkey(pubkey)`.
+    /// Stored to avoid ~100ms Simplicity recompilation per lookup.
     pub covenant_spk: Option<Vec<u8>>,
     pub order_status: i32,
     pub created_at: String,

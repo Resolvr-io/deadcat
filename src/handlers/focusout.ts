@@ -1,4 +1,4 @@
-import { SATS_PER_FULL_CONTRACT, state } from "../state.ts";
+import { state } from "../state.ts";
 import {
   commitLimitPriceDraft,
   commitTradeContractsDraft,
@@ -38,16 +38,8 @@ export function handleFocusout(e: FocusEvent, render: () => void): void {
   if (
     target.id === "create-question" ||
     target.id === "create-description" ||
-    target.id === "create-resolution-source" ||
-    target.id === "create-yes-sats"
+    target.id === "create-resolution-source"
   ) {
-    if (target.id === "create-yes-sats") {
-      const parsed = Math.round(Number(target.value) || 50);
-      state.createStartingYesSats = Math.max(
-        1,
-        Math.min(SATS_PER_FULL_CONTRACT - 1, parsed),
-      );
-    }
     if (state.view === "create") render();
   }
 }

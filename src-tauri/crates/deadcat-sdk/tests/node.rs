@@ -1,12 +1,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use deadcat_sdk::announcement::ContractAnnouncement;
-use deadcat_sdk::discovery::{DiscoveryConfig, DiscoveryEvent};
-use deadcat_sdk::node::DeadcatNode;
 use deadcat_sdk::testing::{
     TestStore, oracle_pubkey_from_keys, test_market_params, test_metadata, test_order_announcement,
 };
+use deadcat_sdk::{ContractAnnouncement, DeadcatNode, DiscoveryConfig, DiscoveryEvent};
 use deadcat_sdk::{NodeError, TradeAmount, TradeDirection, TradeSide};
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
@@ -190,7 +188,7 @@ async fn node_subscription_delivers_events() {
         creation_txid: None,
     };
 
-    let event = deadcat_sdk::discovery::build_announcement_event(&keys, &announcement).unwrap();
+    let event = deadcat_sdk::build_announcement_event(&keys, &announcement).unwrap();
     publisher.send_event(event).await.unwrap();
 
     // Wait for broadcast event

@@ -85,7 +85,7 @@ impl MakerOrderParams {
     }
 
     /// Build SimplicityHL `Arguments` for contract compilation.
-    pub fn build_arguments(&self) -> Arguments {
+    pub(crate) fn build_arguments(&self) -> Arguments {
         let map = HashMap::from([
             (
                 WitnessName::from_str_unchecked("BASE_ASSET_ID"),
@@ -143,7 +143,7 @@ impl MakerOrderParams {
 ///     IS_SELL_BASE              //  1 byte (0x00 or 0x01)
 /// )
 /// ```
-pub fn order_uid(
+pub(crate) fn order_uid(
     maker_base_pubkey: &[u8; 32],
     order_nonce: &[u8; 32],
     params: &MakerOrderParams,
@@ -170,7 +170,7 @@ pub fn order_uid(
 /// ```text
 /// tweak = SHA256("deadcat/order_tweak" || order_uid)
 /// ```
-pub fn order_tweak(order_uid: &[u8; 32]) -> [u8; 32] {
+pub(crate) fn order_tweak(order_uid: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"deadcat/order_tweak");
     hasher.update(order_uid);
@@ -185,7 +185,7 @@ pub fn order_tweak(order_uid: &[u8; 32]) -> [u8; 32] {
 /// ```
 ///
 /// Returns the x-only serialization of the tweaked key.
-pub fn derive_p_order(maker_base_pubkey: &[u8; 32], tweak: &[u8; 32]) -> [u8; 32] {
+pub(crate) fn derive_p_order(maker_base_pubkey: &[u8; 32], tweak: &[u8; 32]) -> [u8; 32] {
     let secp = Secp256k1::new();
     let base_key = XOnlyPublicKey::from_slice(maker_base_pubkey).expect("valid x-only public key");
     let scalar =
@@ -212,7 +212,7 @@ pub fn maker_receive_script_pubkey(p_order: &[u8; 32]) -> Vec<u8> {
 /// Compute the SHA256 hash of a maker receive scriptPubKey.
 ///
 /// This is the value baked into the covenant as `MAKER_RECEIVE_SPK_HASH`.
-pub fn maker_receive_spk_hash(p_order: &[u8; 32]) -> [u8; 32] {
+pub(crate) fn maker_receive_spk_hash(p_order: &[u8; 32]) -> [u8; 32] {
     let spk = maker_receive_script_pubkey(p_order);
     sha256::Hash::hash(&spk).to_byte_array()
 }

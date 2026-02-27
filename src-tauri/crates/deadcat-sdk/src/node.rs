@@ -14,8 +14,8 @@ use nostr_sdk::prelude::*;
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
+use crate::amm_pool::math::{PoolReserves, implied_probability_bps};
 use crate::announcement::{ContractAnnouncement, ContractMetadata};
-use crate::contract::CompiledContract;
 use crate::discovery::config::DiscoveryConfig;
 use crate::discovery::events::DiscoveryEvent;
 use crate::discovery::market::DiscoveredMarket;
@@ -29,17 +29,37 @@ use crate::discovery::{
 use crate::error::{Error, NodeError};
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
 use crate::network::Network;
-use crate::params::{ContractParams, MarketId};
+use crate::prediction_market::contract::CompiledPredictionMarket;
+use crate::prediction_market::params::{MarketId, PredictionMarketParams};
+use crate::prediction_market::state::MarketState;
 use crate::sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, DeadcatSdk, FillOrderResult,
     IssuanceResult, RedemptionResult, ResolutionResult,
 };
-use crate::state::MarketState;
 use crate::trade::types::{TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide};
+
+// ── Market price types ───────────────────────────────────────────────────────
+
+/// Current market price derived from AMM pool reserves.
+#[derive(Debug, Clone)]
+pub struct MarketPrice {
+    pub yes_bps: u16,
+    pub no_bps: u16,
+    pub reserves: PoolReserves,
+}
+
+/// A single historical price observation.
+#[derive(Debug, Clone)]
+pub struct PricePoint {
+    pub block_height: Option<i32>,
+    pub yes_bps: u16,
+    pub no_bps: u16,
+    pub reserves: PoolReserves,
+}
 
 // ── Wallet snapshot ────────────────────────────────────────────────────────
 
-/// Cached wallet state captured at the end of every [`DeadcatNode::with_sdk`]
+/// Cached wallet state captured at the end of every SDK
 /// call. Read queries (`balance`, `utxos`, `transactions`) are served directly
 /// from this snapshot via a `tokio::sync::watch` channel — no mutex, no
 /// `spawn_blocking`.
@@ -201,25 +221,77 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         persist_pool_to_store(&self.store, pool);
     }
 
-    /// Persist updated pool state (issued_lp + reserves) to the store.
-    fn persist_pool_state(
-        &self,
-        params: &crate::amm_pool::params::AmmPoolParams,
-        issued_lp: u64,
-        r_yes: u64,
-        r_no: u64,
-        r_lbtc: u64,
-    ) {
+    /// Persist updated pool state (issued_lp + covenant_spk) to the store.
+    /// Reserves are tracked exclusively in pool_state_snapshots.
+    fn persist_pool_state(&self, params: &crate::amm_pool::params::AmmPoolParams, issued_lp: u64) {
         if let Some(ref store) = self.store
             && let Ok(mut guard) = store.lock()
         {
             let pool_id = crate::amm_pool::params::PoolId::from_params(params);
-            if let Err(e) =
-                guard.update_pool_state(&pool_id, params, issued_lp, r_yes, r_no, r_lbtc)
-            {
+            if let Err(e) = guard.update_pool_state(&pool_id, params, issued_lp) {
                 log::warn!("failed to persist pool state: {e}");
             }
         }
+    }
+
+    // ── Market price queries (synchronous, store reads only) ──────────
+
+    /// Current implied-probability price for a market, derived from its pool.
+    ///
+    /// Returns `Ok(None)` when no pool or no snapshot exists for the market.
+    pub fn market_price(&self, market_id: &MarketId) -> Result<Option<MarketPrice>, NodeError> {
+        let store = match self.store {
+            Some(ref s) => s,
+            None => return Ok(None),
+        };
+        let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+        let pool_id = match guard.get_pool_id_for_market(market_id) {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(NodeError::Discovery(e)),
+        };
+        let snap = match guard.get_latest_pool_snapshot(&pool_id) {
+            Ok(Some(s)) => s,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(NodeError::Discovery(e)),
+        };
+        match implied_probability_bps(&snap.reserves) {
+            Some((yes_bps, no_bps)) => Ok(Some(MarketPrice {
+                yes_bps,
+                no_bps,
+                reserves: snap.reserves,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    /// Full price history for a market's pool (one entry per chain-walk snapshot).
+    pub fn market_price_history(&self, market_id: &MarketId) -> Result<Vec<PricePoint>, NodeError> {
+        let store = match self.store {
+            Some(ref s) => s,
+            None => return Ok(vec![]),
+        };
+        let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+        let pool_id = match guard.get_pool_id_for_market(market_id) {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(vec![]),
+            Err(e) => return Err(NodeError::Discovery(e)),
+        };
+        let snaps = guard
+            .get_pool_snapshot_history(&pool_id)
+            .map_err(NodeError::Discovery)?;
+        Ok(snaps
+            .into_iter()
+            .filter_map(|s| {
+                let (yes_bps, no_bps) = implied_probability_bps(&s.reserves)?;
+                Some(PricePoint {
+                    block_height: s.block_height,
+                    yes_bps,
+                    no_bps,
+                    reserves: s.reserves,
+                })
+            })
+            .collect())
     }
 
     /// Publish an updated NIP-33 replaceable pool announcement after LP state changes.
@@ -251,6 +323,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                 r_no,
                 r_lbtc,
             },
+            creation_txid: None,
         };
 
         if let Err(e) = self.discovery.announce_pool(&announcement).await {
@@ -327,12 +400,13 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             no_asset_id: bytes_to_hex(&params.no_token_asset),
             yes_reissuance_token: bytes_to_hex(&params.yes_reissuance_token),
             no_reissuance_token: bytes_to_hex(&params.no_reissuance_token),
-            starting_yes_price: announcement.metadata.starting_yes_price,
             creator_pubkey: self.keys.public_key().to_hex(),
             created_at: nostr_sdk::Timestamp::now().as_u64(),
             creation_txid: announcement.creation_txid,
             state: 0,
             nostr_event_json: None,
+            yes_price_bps: None,
+            no_price_bps: None,
         };
 
         // 4. Persist to store
@@ -355,7 +429,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Issue token pairs for an existing market.
     pub async fn issue_tokens(
         &self,
-        params: ContractParams,
+        params: PredictionMarketParams,
         creation_txid: Txid,
         pairs: u64,
         fee_amount: u64,
@@ -475,7 +549,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Resolve a market on-chain with an oracle signature.
     pub async fn resolve_market(
         &self,
-        params: ContractParams,
+        params: PredictionMarketParams,
         outcome_yes: bool,
         oracle_sig: [u8; 64],
         fee_amount: u64,
@@ -489,7 +563,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Redeem winning tokens after oracle resolution.
     pub async fn redeem_tokens(
         &self,
-        params: ContractParams,
+        params: PredictionMarketParams,
         tokens: u64,
         fee_amount: u64,
     ) -> Result<RedemptionResult, NodeError> {
@@ -500,7 +574,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Redeem tokens after market expiry (no oracle resolution).
     pub async fn redeem_expired(
         &self,
-        params: ContractParams,
+        params: PredictionMarketParams,
         token_asset: [u8; 32],
         tokens: u64,
         fee_amount: u64,
@@ -512,7 +586,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Cancel token pairs by burning equal YES and NO tokens.
     pub async fn cancel_tokens(
         &self,
-        params: ContractParams,
+        params: PredictionMarketParams,
         pairs: u64,
         fee_amount: u64,
     ) -> Result<CancellationResult, NodeError> {
@@ -555,6 +629,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         // 2. Build and publish Nostr announcement
         let compiled = crate::amm_pool::contract::CompiledAmmPool::new(result.pool_params)
             .map_err(NodeError::Sdk)?;
+        let creation_txid_hex = txid.to_string();
         let announcement = PoolAnnouncement {
             version: 1,
             params: result.pool_params,
@@ -567,6 +642,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                 r_no: initial_r_no,
                 r_lbtc: initial_r_lbtc,
             },
+            creation_txid: Some(creation_txid_hex.clone()),
         };
 
         let event_id = self
@@ -594,6 +670,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             reserves: announcement.reserves,
             creator_pubkey: self.keys.public_key().to_hex(),
             created_at: nostr_sdk::Timestamp::now().as_u64(),
+            creation_txid: Some(creation_txid_hex),
             nostr_event_json: None,
         };
 
@@ -642,8 +719,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         )
         .await;
 
-        // Persist updated reserves to store
-        self.persist_pool_state(&pool_params, issued_lp, nr.r_yes, nr.r_no, nr.r_lbtc);
+        self.persist_pool_state(&pool_params, issued_lp);
 
         Ok(result)
     }
@@ -689,13 +765,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         )
         .await;
 
-        self.persist_pool_state(
-            &pool_params,
-            result.new_issued_lp,
-            nr.r_yes,
-            nr.r_no,
-            nr.r_lbtc,
-        );
+        self.persist_pool_state(&pool_params, result.new_issued_lp);
 
         Ok(result)
     }
@@ -725,13 +795,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         )
         .await;
 
-        self.persist_pool_state(
-            &pool_params,
-            result.new_issued_lp,
-            nr.r_yes,
-            nr.r_no,
-            nr.r_lbtc,
-        );
+        self.persist_pool_state(&pool_params, result.new_issued_lp);
 
         Ok(result)
     }
@@ -746,7 +810,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     #[allow(clippy::too_many_arguments)]
     pub async fn quote_trade(
         &self,
-        contract_params: ContractParams,
+        contract_params: PredictionMarketParams,
         market_id: &str,
         side: TradeSide,
         direction: TradeDirection,
@@ -911,13 +975,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             )
             .await;
 
-            self.persist_pool_state(
-                &pool_params,
-                issued_lp,
-                new_reserves.r_yes,
-                new_reserves.r_no,
-                new_reserves.r_lbtc,
-            );
+            self.persist_pool_state(&pool_params, issued_lp);
         }
 
         Ok(result)
@@ -1037,9 +1095,12 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     }
 
     /// Scan covenant addresses to determine the current on-chain state of a market.
-    pub async fn market_state(&self, params: ContractParams) -> Result<MarketState, NodeError> {
+    pub async fn market_state(
+        &self,
+        params: PredictionMarketParams,
+    ) -> Result<MarketState, NodeError> {
         self.with_sdk(move |sdk| {
-            let contract = CompiledContract::new(params)?;
+            let contract = CompiledPredictionMarket::new(params)?;
             let (state, _utxos) = sdk.scan_market_state(&contract)?;
             Ok(state)
         })
@@ -1054,6 +1115,99 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         fee_rate: Option<f32>,
     ) -> Result<(Txid, u64), NodeError> {
         self.with_sdk(move |sdk| sdk.send_lbtc(&address, amount, fee_rate))
+            .await
+    }
+
+    // ── Pool Chain Walk ────────────────────────────────────────────────
+
+    /// Sync a pool's on-chain state history. Returns new snapshots since last sync.
+    ///
+    /// Reads pool params + creation_txid from store, checks for last snapshot (for
+    /// incremental sync), calls `walk_pool_chain`, persists new snapshots to store,
+    /// and updates the `amm_pools` current reserves.
+    pub async fn sync_pool_chain(
+        &self,
+        pool_id: &crate::amm_pool::params::PoolId,
+    ) -> Result<Vec<crate::amm_pool::chain_walk::PoolStateSnapshot>, NodeError> {
+        use crate::amm_pool::chain_walk::walk_pool_chain;
+        use simplicityhl::elements::hashes::Hash;
+
+        // Read pool info from store via trait methods
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| NodeError::Discovery("no store configured".into()))?;
+
+        let (params, creation_txid_bytes, resume_from) = {
+            let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+            let pool_info = guard
+                .get_pool_info(pool_id)
+                .map_err(|e| NodeError::Discovery(format!("store error: {e}")))?
+                .ok_or_else(|| NodeError::Discovery("pool not found in store".into()))?;
+
+            let creation_txid = pool_info
+                .creation_txid
+                .ok_or_else(|| NodeError::Discovery("pool has no creation_txid".into()))?;
+
+            // Check for last snapshot for incremental sync
+            let resume: Option<([u8; 32], u64)> = guard
+                .get_latest_pool_snapshot_resume(&pool_id.0)
+                .map_err(|e| NodeError::Discovery(format!("store error: {e}")))?;
+
+            (pool_info.params, creation_txid, resume)
+        };
+
+        let creation_txid = Txid::from_byte_array(creation_txid_bytes);
+        let resume = resume_from.map(|(txid_bytes, lp)| (Txid::from_byte_array(txid_bytes), lp));
+        let pool_id_owned = *pool_id;
+
+        // Run chain walk on blocking thread
+        let snapshots = self
+            .with_sdk(move |sdk| {
+                walk_pool_chain(sdk.chain_backend(), &params, creation_txid, resume)
+            })
+            .await?;
+
+        // Persist snapshots to store
+        if !snapshots.is_empty() {
+            let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+            for snap in &snapshots {
+                let txid_bytes = *snap.txid.as_byte_array();
+                guard
+                    .insert_pool_snapshot(
+                        &pool_id_owned.0,
+                        &txid_bytes,
+                        snap.r_yes,
+                        snap.r_no,
+                        snap.r_lbtc,
+                        snap.issued_lp,
+                        snap.block_height,
+                    )
+                    .map_err(|e| NodeError::Discovery(format!("store insert error: {e}")))?;
+            }
+
+            // Update amm_pools current reserves from the last snapshot
+            if let Some(last) = snapshots.last() {
+                guard
+                    .update_pool_state(&pool_id_owned, &params, last.issued_lp)
+                    .map_err(|e| NodeError::Discovery(format!("store update error: {e}")))?;
+            }
+        }
+
+        Ok(snapshots)
+    }
+
+    /// Validate a market was created at its Dormant covenant address.
+    pub async fn validate_market_creation(
+        &self,
+        params: PredictionMarketParams,
+        creation_txid: String,
+    ) -> Result<bool, NodeError> {
+        let txid: Txid = creation_txid
+            .parse()
+            .map_err(|e| NodeError::Discovery(format!("bad txid: {e}")))?;
+
+        self.with_sdk(move |sdk| sdk.validate_market_creation(&params, &txid))
             .await
     }
 

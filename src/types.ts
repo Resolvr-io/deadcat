@@ -117,12 +117,22 @@ export type DiscoveredMarket = {
   no_asset_id: string;
   yes_reissuance_token: string;
   no_reissuance_token: string;
-  starting_yes_price: number;
   creator_pubkey: string;
   created_at: number;
   creation_txid: string | null;
   state: CovenantState;
   nostr_event_json?: string | null;
+  yes_price_bps?: number | null;
+  no_price_bps?: number | null;
+};
+
+export type PricePoint = {
+  block_height: number | null;
+  yes_price_bps: number;
+  no_price_bps: number;
+  r_yes: number;
+  r_no: number;
+  r_lbtc: number;
 };
 
 export type IssuanceResult = {
@@ -176,7 +186,7 @@ export type Market = {
   collateralUtxos: CollateralUtxo[];
   resolveTx?: ResolveTx;
   nostrEventJson: string | null;
-  yesPrice: number;
+  yesPrice: number | null;
   change24h: number;
   volumeBtc: number;
   liquidityBtc: number;

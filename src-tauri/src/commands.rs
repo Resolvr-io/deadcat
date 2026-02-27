@@ -1,14 +1,13 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use deadcat_store::{ContractMetadataInput, MarketFilter};
+use deadcat_store::MarketFilter;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
 use crate::discovery::{
-    self, discovered_market_to_contract_params, ContractMetadata, CreateContractRequest,
-    DiscoveredMarket, IdentityResponse,
+    self, ContractMetadata, CreateContractRequest, DiscoveredMarket, IdentityResponse,
 };
 use crate::state::AppStateManager;
 use crate::{NodeState, NostrAppState};
@@ -24,9 +23,6 @@ fn validate_request(request: &CreateContractRequest) -> Result<(), String> {
     }
     if request.resolution_source.trim().is_empty() || request.resolution_source.len() > 120 {
         return Err("resolution_source must be 1-120 characters".to_string());
-    }
-    if request.starting_yes_price < 1 || request.starting_yes_price > 99 {
-        return Err("starting_yes_price must be 1-99".to_string());
     }
     if request.collateral_per_token == 0 {
         return Err("collateral_per_token must be > 0".to_string());
@@ -121,13 +117,12 @@ async fn construct_and_store_node(
         guard.clone()
     };
 
-    let config = deadcat_sdk::discovery::config::DiscoveryConfig {
+    let config = deadcat_sdk::DiscoveryConfig {
         relays,
         ..Default::default()
     };
 
-    let (node, mut rx) =
-        deadcat_sdk::node::DeadcatNode::with_store(keys, sdk_network, store_arc, config);
+    let (node, mut rx) = deadcat_sdk::DeadcatNode::with_store(keys, sdk_network, store_arc, config);
     let mut snapshot_rx = node.subscribe_snapshot();
 
     // Replace any existing node (drops old node if any)
@@ -146,7 +141,7 @@ async fn construct_and_store_node(
     // Forward discovery events to the frontend
     let app_handle = app.clone();
     tokio::spawn(async move {
-        use deadcat_sdk::discovery::DiscoveryEvent;
+        use deadcat_sdk::DiscoveryEvent;
         while let Ok(event) = rx.recv().await {
             match event {
                 DiscoveryEvent::MarketDiscovered(m) => {
@@ -645,10 +640,17 @@ pub async fn fetch_nostr_profile(
 
 #[tauri::command]
 pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    node.fetch_markets().await.map_err(|e| format!("{e}"))
+    // Fetch from Nostr (persists to store as side-effect)
+    {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        let node = guard.as_ref().ok_or("Node not initialized")?;
+        if let Err(e) = node.fetch_markets().await {
+            log::warn!("Nostr fetch failed (serving from store): {e}");
+        }
+    }
+    // Return from store — single source of truth
+    list_contracts(app)
 }
 
 /// Publish a contract to Nostr (Nostr-only mode — no on-chain tx).
@@ -694,7 +696,7 @@ pub async fn publish_contract(
 
     // Asset IDs are zero — no on-chain issuance has occurred yet.
     // They get populated when the market is created on-chain via create_contract_onchain.
-    let contract_params = deadcat_sdk::params::ContractParams {
+    let contract_params = deadcat_sdk::PredictionMarketParams {
         oracle_public_key: oracle_pubkey_bytes,
         collateral_asset_id: [0u8; 32],
         yes_token_asset: [0u8; 32],
@@ -710,10 +712,9 @@ pub async fn publish_contract(
         description: request.description.clone(),
         category: request.category.clone(),
         resolution_source: request.resolution_source.clone(),
-        starting_yes_price: request.starting_yes_price,
     };
 
-    let announcement = deadcat_sdk::announcement::ContractAnnouncement {
+    let announcement = deadcat_sdk::ContractAnnouncement {
         version: 1,
         contract_params,
         metadata: metadata.clone(),
@@ -751,12 +752,13 @@ pub async fn publish_contract(
         no_asset_id: hex::encode([0u8; 32]),
         yes_reissuance_token: hex::encode([0u8; 32]),
         no_reissuance_token: hex::encode([0u8; 32]),
-        starting_yes_price: request.starting_yes_price,
         creator_pubkey,
         created_at: nostr_sdk::Timestamp::now().as_u64(),
         creation_txid: None,
         state: 0,
         nostr_event_json: None,
+        yes_price_bps: None,
+        no_price_bps: None,
     })
 }
 
@@ -770,7 +772,7 @@ pub async fn oracle_attest(
         .map_err(|e| format!("invalid market_id hex: {e}"))?
         .try_into()
         .map_err(|_| "market_id must be exactly 32 bytes".to_string())?;
-    let market_id = deadcat_sdk::params::MarketId(market_id_bytes);
+    let market_id = deadcat_sdk::MarketId(market_id_bytes);
 
     // Get a connected client (handles relay connection)
     let (_keys, client) = get_keys_and_client(&app).await?;
@@ -853,7 +855,6 @@ pub async fn create_contract_onchain(
         description: request.description,
         category: request.category,
         resolution_source: request.resolution_source,
-        starting_yes_price: request.starting_yes_price,
     };
 
     let (market, _txid) = node
@@ -894,7 +895,7 @@ pub async fn issue_tokens(
     pairs: u64,
     app: tauri::AppHandle,
 ) -> Result<IssuanceResultResponse, String> {
-    let params: deadcat_sdk::params::ContractParams =
+    let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
@@ -941,7 +942,7 @@ pub async fn cancel_tokens(
     pairs: u64,
     app: tauri::AppHandle,
 ) -> Result<CancellationResultResponse, String> {
-    let params: deadcat_sdk::params::ContractParams =
+    let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
@@ -985,7 +986,7 @@ pub async fn resolve_market(
     oracle_signature_hex: String,
     app: tauri::AppHandle,
 ) -> Result<ResolutionResultResponse, String> {
-    let params: deadcat_sdk::params::ContractParams =
+    let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
@@ -1032,7 +1033,7 @@ pub async fn redeem_tokens(
     tokens: u64,
     app: tauri::AppHandle,
 ) -> Result<RedemptionResultResponse, String> {
-    let params: deadcat_sdk::params::ContractParams =
+    let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
@@ -1067,7 +1068,7 @@ pub async fn redeem_expired(
     tokens: u64,
     app: tauri::AppHandle,
 ) -> Result<RedemptionResultResponse, String> {
-    let params: deadcat_sdk::params::ContractParams =
+    let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
@@ -1109,7 +1110,7 @@ pub async fn get_market_state(
     contract_params_json: String,
     app: tauri::AppHandle,
 ) -> Result<MarketStateResponse, String> {
-    let params: deadcat_sdk::params::ContractParams =
+    let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
@@ -1155,59 +1156,6 @@ pub async fn get_wallet_utxos(
 // =========================================================================
 
 #[tauri::command]
-pub fn ingest_discovered_markets(
-    markets: Vec<DiscoveredMarket>,
-    app: tauri::AppHandle,
-) -> Result<u32, String> {
-    let store_arc = {
-        let state_handle = app.state::<Mutex<AppStateManager>>();
-        let mgr = state_handle
-            .lock()
-            .map_err(|_| "state lock failed".to_string())?;
-        mgr.store()
-            .cloned()
-            .ok_or_else(|| "Store not initialized".to_string())?
-    };
-
-    let mut store = store_arc
-        .lock()
-        .map_err(|_| "store lock failed".to_string())?;
-
-    let mut count = 0u32;
-    for market in &markets {
-        let params = match discovered_market_to_contract_params(market) {
-            Ok(p) => p,
-            Err(e) => {
-                log::warn!("skipping market {}: {e}", market.market_id);
-                continue;
-            }
-        };
-
-        let metadata = ContractMetadataInput {
-            question: Some(market.question.clone()),
-            description: Some(market.description.clone()),
-            category: Some(market.category.clone()),
-            resolution_source: Some(market.resolution_source.clone()),
-            starting_yes_price: Some(market.starting_yes_price),
-            creator_pubkey: hex::decode(&market.creator_pubkey).ok(),
-            creation_txid: market.creation_txid.clone(),
-            nevent: Some(market.nevent.clone()),
-            nostr_event_id: Some(market.id.clone()),
-            nostr_event_json: market.nostr_event_json.clone(),
-        };
-
-        match store.ingest_market(&params, Some(&metadata)) {
-            Ok(_) => count += 1,
-            Err(e) => {
-                log::warn!("failed to ingest market {}: {e}", market.market_id);
-            }
-        }
-    }
-
-    Ok(count)
-}
-
-#[tauri::command]
 pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
     let store_arc = {
         let state_handle = app.state::<Mutex<AppStateManager>>();
@@ -1229,13 +1177,42 @@ pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, St
 
     let mut result = Vec::with_capacity(infos.len());
     for info in &infos {
-        result.push(market_info_to_discovered(info));
+        // Look up pool price from latest snapshot
+        let (yes_bps, no_bps) = pool_price_for_market(&mut store, info.market_id.as_bytes());
+        result.push(market_info_to_discovered(info, yes_bps, no_bps));
     }
     Ok(result)
 }
 
+/// Look up pool price from the latest snapshot for a market.
+fn pool_price_for_market(
+    store: &mut deadcat_store::DeadcatStore,
+    market_id: &[u8; 32],
+) -> (Option<u16>, Option<u16>) {
+    let pool = match store.get_pool_for_market(market_id) {
+        Ok(Some(p)) => p,
+        _ => return (None, None),
+    };
+    let snap = match store.get_latest_pool_snapshot(&pool.pool_id.0) {
+        Ok(Some(s)) => s,
+        _ => return (None, None),
+    };
+    let reserves = deadcat_sdk::PoolReserves {
+        r_yes: snap.r_yes,
+        r_no: snap.r_no,
+        r_lbtc: snap.r_lbtc,
+    };
+    deadcat_sdk::implied_probability_bps(&reserves)
+        .map(|(y, n)| (Some(y), Some(n)))
+        .unwrap_or((None, None))
+}
+
 /// Convert a `MarketInfo` (store type) back to `DiscoveredMarket` (frontend type).
-fn market_info_to_discovered(info: &deadcat_store::MarketInfo) -> DiscoveredMarket {
+fn market_info_to_discovered(
+    info: &deadcat_store::MarketInfo,
+    yes_price_bps: Option<u16>,
+    no_price_bps: Option<u16>,
+) -> DiscoveredMarket {
     let p = &info.params;
     let market_id_hex = hex::encode(info.market_id.as_bytes());
     DiscoveredMarket {
@@ -1254,7 +1231,6 @@ fn market_info_to_discovered(info: &deadcat_store::MarketInfo) -> DiscoveredMark
         no_asset_id: hex::encode(p.no_token_asset),
         yes_reissuance_token: hex::encode(p.yes_reissuance_token),
         no_reissuance_token: hex::encode(p.no_reissuance_token),
-        starting_yes_price: info.starting_yes_price.unwrap_or(50),
         creator_pubkey: info
             .creator_pubkey
             .as_ref()
@@ -1264,6 +1240,8 @@ fn market_info_to_discovered(info: &deadcat_store::MarketInfo) -> DiscoveredMark
         creation_txid: info.creation_txid.clone(),
         state: info.state.as_u64() as u8,
         nostr_event_json: info.nostr_event_json.clone(),
+        yes_price_bps,
+        no_price_bps,
     }
 }
 
@@ -1271,4 +1249,68 @@ fn parse_iso_datetime_to_unix(s: &str) -> u64 {
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .map(|dt| dt.and_utc().timestamp() as u64)
         .unwrap_or(0)
+}
+
+// =========================================================================
+// Pool chain-walk commands
+// =========================================================================
+
+/// Sync a pool's on-chain state history (chain walk).
+#[tauri::command]
+pub async fn sync_pool(pool_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let pool_id_bytes: [u8; 32] = hex::decode(&pool_id)
+        .map_err(|e| format!("invalid pool_id hex: {e}"))?
+        .try_into()
+        .map_err(|_| "pool_id must be exactly 32 bytes".to_string())?;
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    node.sync_pool_chain(&deadcat_sdk::PoolId(pool_id_bytes))
+        .await
+        .map_err(|e| format!("{e}"))?;
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PricePoint {
+    pub block_height: Option<i32>,
+    pub yes_price_bps: u16,
+    pub no_price_bps: u16,
+    pub r_yes: u64,
+    pub r_no: u64,
+    pub r_lbtc: u64,
+}
+
+/// Get price history for a market's pool (all snapshots as price points).
+#[tauri::command]
+pub async fn get_pool_price_history(
+    market_id: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<PricePoint>, String> {
+    let market_id_bytes: [u8; 32] = hex::decode(&market_id)
+        .map_err(|e| format!("invalid market_id hex: {e}"))?
+        .try_into()
+        .map_err(|_| "market_id must be exactly 32 bytes".to_string())?;
+    let mid = deadcat_sdk::MarketId(market_id_bytes);
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+
+    let history = node
+        .market_price_history(&mid)
+        .map_err(|e| format!("{e}"))?;
+
+    Ok(history
+        .into_iter()
+        .map(|p| PricePoint {
+            block_height: p.block_height,
+            yes_price_bps: p.yes_bps,
+            no_price_bps: p.no_bps,
+            r_yes: p.reserves.r_yes,
+            r_no: p.reserves.r_no,
+            r_lbtc: p.reserves.r_lbtc,
+        })
+        .collect())
 }

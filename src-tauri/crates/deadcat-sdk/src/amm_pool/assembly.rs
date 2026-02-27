@@ -11,12 +11,6 @@ use crate::error::{Error, Result};
 use super::contract::CompiledAmmPool;
 use super::witness::{AmmPoolSpendingPath, satisfy_amm_pool_with_env, serialize_satisfied};
 
-/// Result of assembling an AMM pool transaction (before signing).
-pub struct AssembledPoolTransaction {
-    pub pset: PartiallySignedTransaction,
-    pub spending_path: AmmPoolSpendingPath,
-}
-
 /// Attach AMM pool Simplicity witness stacks to covenant inputs in the PSET.
 ///
 /// - Input 0: primary path (Swap or LpDepositWithdraw)

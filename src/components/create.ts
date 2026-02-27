@@ -1,4 +1,4 @@
-import { categories, SATS_PER_FULL_CONTRACT, state } from "../state.ts";
+import { categories, state } from "../state.ts";
 
 const chevronSvg =
   '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-slate-400"><polyline points="6 9 12 15 18 9"/></svg>';
@@ -177,15 +177,6 @@ function renderCalendar(): string {
 }
 
 export function renderCreateMarket(): string {
-  const yesSats = Math.max(
-    1,
-    Math.min(
-      SATS_PER_FULL_CONTRACT - 1,
-      Math.round(state.createStartingYesSats),
-    ),
-  );
-  const noSats = SATS_PER_FULL_CONTRACT - yesSats;
-
   const settlementDisplay = state.createSettlementInput
     ? new Date(state.createSettlementInput).toLocaleString("en-US", {
         weekday: "short",
@@ -258,10 +249,6 @@ export function renderCreateMarket(): string {
               <input id="create-resolution-source" value="${state.createResolutionSource}" maxlength="120" class="dc-input" placeholder="Official source (e.g., NHC advisory, FEC filing, exchange index)" />
             </div>
 
-            <div>
-              <label for="create-yes-sats" class="mb-1 block text-xs text-slate-400">Starting Yes price (sats out of 100)</label>
-              <input id="create-yes-sats" type="number" min="1" max="99" step="1" value="${yesSats}" class="dc-input" />
-            </div>
           </div>
         </section>
 
@@ -271,14 +258,9 @@ export function renderCreateMarket(): string {
           <div class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
             <p class="text-sm text-slate-200">${state.createQuestion.trim() || "Your market question will appear here."}</p>
             <p class="text-xs text-slate-400">${state.createDescription.trim() || "Settlement rule summary will appear here."}</p>
-            <div class="grid grid-cols-2 gap-2">
-              <div class="rounded-lg border border-slate-800 bg-slate-900/60 p-2 text-center text-emerald-400">Yes ${yesSats} sats</div>
-              <div class="rounded-lg border border-slate-800 bg-slate-900/60 p-2 text-center text-rose-400">No ${noSats} sats</div>
-            </div>
             <p class="text-xs text-slate-400">Category: <span class="text-slate-200">${state.createCategory}</span></p>
             <p class="text-xs text-slate-400">Settlement deadline: <span class="text-slate-200">${state.createSettlementInput ? settlementDisplay : "Not set"}</span></p>
             <p class="text-xs text-slate-400">Resolution source: <span class="text-slate-200">${state.createResolutionSource.trim() || "Not set"}</span></p>
-            <p class="text-xs text-slate-500">Yes + No = ${SATS_PER_FULL_CONTRACT} sats</p>
           </div>
           <button data-action="submit-create-market" class="mt-4 w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50" ${state.marketCreating ? "disabled" : ""}>${state.marketCreating ? "Creating Market..." : "Create Market"}</button>
           <p class="mt-2 text-xs text-slate-500">${state.marketCreating ? "Building transaction, broadcasting, and announcing. This may take a moment." : "Creates the on-chain contract and announces the market. Your key is the oracle signing key."}</p>

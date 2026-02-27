@@ -63,12 +63,8 @@ pub fn build_maker_order_cancel_witness(maker_cancel_sig: &[u8; 64]) -> WitnessV
     WitnessValues::from(map)
 }
 
-/// Backward-compatible alias for `build_maker_order_fill_witness`.
-pub fn build_maker_order_witness(cosigner_signature: &[u8; 64]) -> WitnessValues {
-    build_maker_order_fill_witness(cosigner_signature)
-}
-
 /// Satisfy a compiled maker order contract with the given cosigner signature (fill path).
+#[cfg_attr(not(any(test, feature = "testing")), allow(dead_code))]
 pub fn satisfy_maker_order(
     contract: &CompiledMakerOrder,
     cosigner_signature: &[u8; 64],
@@ -130,29 +126,5 @@ mod tests {
         let (prog, wit) = serialize_satisfied(&satisfied);
         assert!(!prog.is_empty());
         assert!(!wit.is_empty());
-    }
-
-    #[test]
-    fn backward_compat_alias_matches_fill() {
-        let sig = [0xef; 64];
-        let fill_witness = build_maker_order_fill_witness(&sig);
-        let alias_witness = build_maker_order_witness(&sig);
-
-        let params = test_params();
-        let s1 = CompiledMakerOrder::new(params)
-            .unwrap()
-            .program()
-            .satisfy(fill_witness)
-            .unwrap();
-        let s2 = CompiledMakerOrder::new(params)
-            .unwrap()
-            .program()
-            .satisfy(alias_witness)
-            .unwrap();
-
-        let (p1, w1) = serialize_satisfied(&s1);
-        let (p2, w2) = serialize_satisfied(&s2);
-        assert_eq!(p1, p2);
-        assert_eq!(w1, w2);
     }
 }

@@ -8,8 +8,7 @@ use std::time::Duration;
 pub const WALLET_BACKUP_D_TAG: &str = "deadcat-wallet-backup";
 
 // Re-export SDK-owned types and functions for use by the app layer.
-pub use deadcat_sdk::announcement::{ContractAnnouncement, ContractMetadata};
-pub use deadcat_sdk::discovery::{
+pub use deadcat_sdk::{
     // Builders
     build_announcement_event,
     build_attestation_event,
@@ -34,6 +33,7 @@ pub use deadcat_sdk::discovery::{
     DEFAULT_RELAYS,
     NETWORK_TAG,
 };
+pub use deadcat_sdk::{ContractAnnouncement, ContractMetadata};
 
 // ---------------------------------------------------------------------------
 // App-layer-only types (Tauri command request/response types)
@@ -53,7 +53,6 @@ pub struct CreateContractRequest {
     pub description: String,
     pub category: String,
     pub resolution_source: String,
-    pub starting_yes_price: u8,
     pub settlement_deadline_unix: u64,
     pub collateral_per_token: u64,
 }
@@ -322,7 +321,7 @@ pub fn generate_keys(app_data_dir: &std::path::Path) -> Result<Keys, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deadcat_sdk::{ContractParams, MarketId};
+    use deadcat_sdk::{MarketId, PredictionMarketParams};
     use nostr_sdk::secp256k1;
 
     fn test_metadata() -> ContractMetadata {
@@ -331,12 +330,11 @@ mod tests {
             description: "Resolves via exchange data.".to_string(),
             category: "Bitcoin".to_string(),
             resolution_source: "Exchange basket".to_string(),
-            starting_yes_price: 55,
         }
     }
 
-    fn test_params() -> ContractParams {
-        ContractParams {
+    fn test_params() -> PredictionMarketParams {
+        PredictionMarketParams {
             oracle_public_key: [0xaa; 32],
             collateral_asset_id: [0xbb; 32],
             yes_token_asset: [0x01; 32],

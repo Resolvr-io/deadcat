@@ -2137,13 +2137,6 @@ export async function handleClick(
         );
         return;
       }
-      const yesSats = Math.max(
-        1,
-        Math.min(
-          SATS_PER_FULL_CONTRACT - 1,
-          Math.round(state.createStartingYesSats),
-        ),
-      );
       const deadlineUnix = Math.floor(
         new Date(state.createSettlementInput).getTime() / 1000,
       );
@@ -2160,21 +2153,17 @@ export async function handleClick(
                 description,
                 category: state.createCategory,
                 resolution_source: source,
-                starting_yes_price: yesSats,
                 settlement_deadline_unix: deadlineUnix,
                 collateral_per_token: 5000,
               },
             },
           );
-          // Ingest the newly created market into the store
-          await invoke("ingest_discovered_markets", { markets: [result] });
           markets.push(discoveredToMarket(result));
           state.view = "home";
           state.createQuestion = "";
           state.createDescription = "";
           state.createResolutionSource = "";
           state.createSettlementInput = defaultSettlementInput();
-          state.createStartingYesSats = 50;
           showToast(
             `Market created! txid: ${result.creation_txid ?? "unknown"}`,
             "success",

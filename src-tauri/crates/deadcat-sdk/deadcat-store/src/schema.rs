@@ -12,13 +12,36 @@ diesel::table! {
         cosigner_pubkey -> Binary,
         cmr -> Binary,
         issued_lp -> BigInt,
-        r_yes -> Nullable<BigInt>,
-        r_no -> Nullable<BigInt>,
-        r_lbtc -> Nullable<BigInt>,
         covenant_spk -> Binary,
         pool_status -> Integer,
         created_at -> Text,
         updated_at -> Text,
+        nostr_event_id -> Nullable<Text>,
+        nostr_event_json -> Nullable<Text>,
+        market_id -> Nullable<Binary>,
+        creation_txid -> Nullable<Binary>,
+    }
+}
+
+diesel::table! {
+    maker_orders (id) {
+        id -> Integer,
+        base_asset_id -> Binary,
+        quote_asset_id -> Binary,
+        price -> BigInt,
+        min_fill_lots -> BigInt,
+        min_remainder_lots -> BigInt,
+        direction -> Integer,
+        maker_receive_spk_hash -> Binary,
+        cosigner_pubkey -> Binary,
+        cmr -> Binary,
+        maker_base_pubkey -> Nullable<Binary>,
+        covenant_spk -> Nullable<Binary>,
+        order_status -> Integer,
+        created_at -> Text,
+        updated_at -> Text,
+        order_nonce -> Nullable<Binary>,
+        maker_receive_spk -> Nullable<Binary>,
         nostr_event_id -> Nullable<Text>,
         nostr_event_json -> Nullable<Text>,
     }
@@ -51,36 +74,38 @@ diesel::table! {
         description -> Nullable<Text>,
         category -> Nullable<Text>,
         resolution_source -> Nullable<Text>,
-        starting_yes_price -> Nullable<Integer>,
         creator_pubkey -> Nullable<Binary>,
         creation_txid -> Nullable<Text>,
         nevent -> Nullable<Text>,
         nostr_event_id -> Nullable<Text>,
         nostr_event_json -> Nullable<Text>,
+        dormant_txid -> Nullable<Text>,
+        unresolved_txid -> Nullable<Text>,
+        resolved_yes_txid -> Nullable<Text>,
+        resolved_no_txid -> Nullable<Text>,
     }
 }
 
 diesel::table! {
-    maker_orders (id) {
+    pool_state_snapshots (id) {
         id -> Integer,
-        base_asset_id -> Binary,
-        quote_asset_id -> Binary,
-        price -> BigInt,
-        min_fill_lots -> BigInt,
-        min_remainder_lots -> BigInt,
-        direction -> Integer,
-        maker_receive_spk_hash -> Binary,
-        cosigner_pubkey -> Binary,
-        cmr -> Binary,
-        maker_base_pubkey -> Nullable<Binary>,
-        covenant_spk -> Nullable<Binary>,
-        order_status -> Integer,
+        pool_id -> Binary,
+        txid -> Binary,
+        r_yes -> BigInt,
+        r_no -> BigInt,
+        r_lbtc -> BigInt,
+        issued_lp -> BigInt,
+        block_height -> Nullable<Integer>,
         created_at -> Text,
+    }
+}
+
+diesel::table! {
+    sync_state (id) {
+        id -> Integer,
+        last_block_hash -> Nullable<Binary>,
+        last_block_height -> Integer,
         updated_at -> Text,
-        order_nonce -> Nullable<Binary>,
-        maker_receive_spk -> Nullable<Binary>,
-        nostr_event_id -> Nullable<Text>,
-        nostr_event_json -> Nullable<Text>,
     }
 }
 
@@ -105,17 +130,16 @@ diesel::table! {
     }
 }
 
-diesel::table! {
-    sync_state (id) {
-        id -> Integer,
-        last_block_hash -> Nullable<Binary>,
-        last_block_height -> Integer,
-        updated_at -> Text,
-    }
-}
-
+diesel::joinable!(pool_state_snapshots -> amm_pools (pool_id));
 diesel::joinable!(utxos -> amm_pools (amm_pool_id));
-diesel::joinable!(utxos -> markets (market_id));
 diesel::joinable!(utxos -> maker_orders (maker_order_id));
+diesel::joinable!(utxos -> markets (market_id));
 
-diesel::allow_tables_to_appear_in_same_query!(amm_pools, markets, maker_orders, utxos, sync_state,);
+diesel::allow_tables_to_appear_in_same_query!(
+    amm_pools,
+    maker_orders,
+    markets,
+    pool_state_snapshots,
+    sync_state,
+    utxos,
+);

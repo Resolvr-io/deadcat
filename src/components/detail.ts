@@ -158,7 +158,7 @@ export function chartSkeleton(
     return out;
   };
 
-  const yes = market.yesPrice;
+  const yes = market.yesPrice ?? 0.5;
   const now = new Date();
   const scaleHoursByKey: Record<"1H" | "3H" | "6H" | "12H" | "1D", number> = {
     "1H": 1,
@@ -590,7 +590,7 @@ export function renderActionTicket(market: Market): string {
       : 0;
   const redeemCollateral = state.tokensInput * redeemRate;
   const yesDisplaySats = clampContractPriceSats(
-    Math.round(market.yesPrice * SATS_PER_FULL_CONTRACT),
+    Math.round((market.yesPrice ?? 0.5) * SATS_PER_FULL_CONTRACT),
   );
   const noDisplaySats = SATS_PER_FULL_CONTRACT - yesDisplaySats;
   const estimatedExecutionFeeSats = Math.round(
@@ -804,7 +804,7 @@ export function renderActionTicket(market: Market): string {
 
 export function renderDetail(): string {
   const market = getSelectedMarket();
-  const noPrice = 1 - market.yesPrice;
+  const noPrice = market.yesPrice != null ? 1 - market.yesPrice : null;
   const paths = getPathAvailability(market);
   const expired = isExpired(market);
   const estimatedSettlementDate = getEstimatedSettlementDate(market);
@@ -839,8 +839,8 @@ export function renderDetail(): string {
             <p class="mb-3 text-base text-slate-400">${market.description}</p>
 
             <div class="mb-4 grid gap-3 sm:grid-cols-3">
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Yes price<br/><span class="text-lg font-medium text-emerald-400">${formatProbabilityWithPercent(market.yesPrice)}</span></div>
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">No price<br/><span class="text-lg font-medium text-rose-400">${formatProbabilityWithPercent(noPrice)}</span></div>
+              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Yes price<br/><span class="text-lg font-medium text-emerald-400">${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span></div>
+              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">No price<br/><span class="text-lg font-medium text-rose-400">${noPrice != null ? formatProbabilityWithPercent(noPrice) : "\u2014"}</span></div>
               <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Settlement deadline<br/><span class="text-slate-100">Est. by ${formatSettlementDateTime(estimatedSettlementDate)}</span></div>
             </div>
 

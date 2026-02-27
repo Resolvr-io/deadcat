@@ -1,9 +1,9 @@
 use simplicityhl::elements::LockTime;
 use simplicityhl::elements::pset::PartiallySignedTransaction;
 
-use crate::contract::CompiledContract;
 use crate::error::Result;
-use crate::state::MarketState;
+use crate::prediction_market::contract::CompiledPredictionMarket;
+use crate::prediction_market::state::MarketState;
 
 use super::{
     UnblindedUtxo, add_pset_input, add_pset_output, covenant_spk, explicit_txout, fee_txout,
@@ -24,7 +24,7 @@ pub struct OracleResolveParams {
 /// Build the oracle resolve PSET (state 1 → 2 or 3).
 /// Transitions from Unresolved to ResolvedYes or ResolvedNo.
 pub fn build_oracle_resolve_pset(
-    contract: &CompiledContract,
+    contract: &CompiledPredictionMarket,
     params: &OracleResolveParams,
 ) -> Result<PartiallySignedTransaction> {
     let new_state = if params.outcome_yes {

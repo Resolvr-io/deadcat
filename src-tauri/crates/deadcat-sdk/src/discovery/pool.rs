@@ -16,6 +16,8 @@ pub struct PoolAnnouncement {
     pub covenant_cmr: String,
     pub outpoints: Vec<String>,
     pub reserves: PoolReserves,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_txid: Option<String>,
 }
 
 /// Parsed from a Nostr event — what a trader or LP sees.
@@ -37,6 +39,8 @@ pub struct DiscoveredPool {
     pub reserves: PoolReserves,
     pub creator_pubkey: String,
     pub created_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creation_txid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nostr_event_json: Option<String>,
 }
@@ -104,11 +108,13 @@ pub fn parse_pool_event(event: &Event) -> Result<DiscoveredPool, String> {
         reserves: announcement.reserves,
         creator_pubkey: event.pubkey.to_hex(),
         created_at: event.created_at.as_u64(),
+        creation_txid: announcement.creation_txid,
         nostr_event_json: None,
     })
 }
 
 /// Fetch AMM pool announcements from relays.
+#[allow(dead_code)]
 pub async fn fetch_pools(
     client: &Client,
     market_id_hex: Option<&str>,
@@ -167,6 +173,7 @@ mod tests {
                 r_no: 500_000,
                 r_lbtc: 250_000,
             },
+            creation_txid: Some(hex::encode([0xdd; 32])),
         }
     }
 

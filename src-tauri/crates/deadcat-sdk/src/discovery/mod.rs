@@ -4,13 +4,13 @@
 //! `order_announcement`, `order_discovery`, and the app-layer `discovery.rs`)
 //! into a single SDK-owned module.
 
-pub mod attestation;
-pub mod config;
-pub mod events;
-pub mod market;
-pub mod pool;
-pub mod service;
-pub mod store_trait;
+pub(crate) mod attestation;
+pub(crate) mod config;
+pub(crate) mod events;
+pub(crate) mod market;
+pub(crate) mod pool;
+pub(crate) mod service;
+pub(crate) mod store_trait;
 
 use std::time::Duration;
 
@@ -59,17 +59,14 @@ pub use market::{
 
 pub use attestation::{
     AttestationContent, AttestationResult, build_attestation_event, build_attestation_filter,
-    build_attestation_subscription_filter, parse_attestation_event, sign_attestation,
+    sign_attestation,
 };
 
 // ---------------------------------------------------------------------------
 // Re-exports: pool
 // ---------------------------------------------------------------------------
 
-pub use pool::{
-    DiscoveredPool, PoolAnnouncement, build_pool_event, build_pool_filter, fetch_pools,
-    parse_pool_event,
-};
+pub use pool::{DiscoveredPool, PoolAnnouncement};
 
 // ---------------------------------------------------------------------------
 // Re-exports: config, events, service, store_trait
@@ -77,8 +74,8 @@ pub use pool::{
 
 pub use config::DiscoveryConfig;
 pub use events::DiscoveryEvent;
-pub use service::{DiscoveryService, discovered_market_to_contract_params};
-pub use store_trait::{ContractMetadataInput, DiscoveryStore};
+pub use service::{DiscoveryService, NoopStore, discovered_market_to_contract_params};
+pub use store_trait::{ContractMetadataInput, DiscoveryStore, PoolInfo, PoolSnapshot};
 
 // ---------------------------------------------------------------------------
 // Order types (moved from order_announcement.rs)
@@ -259,6 +256,7 @@ pub async fn fetch_announcements(client: &Client) -> Result<Vec<DiscoveredMarket
 }
 
 /// Fetch limit orders from relays, optionally filtered by market ID.
+#[allow(dead_code)]
 pub async fn fetch_orders(
     client: &Client,
     market_id_hex: Option<&str>,

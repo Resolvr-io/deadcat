@@ -15,9 +15,14 @@ pub struct MarketRow {
     pub collateral_per_token: i64,
     pub expiry_time: i32,
     pub cmr: Vec<u8>,
+    /// Cached: re-derivable via `CompiledPredictionMarket::new(params)?.script_pubkey(state)`.
+    /// Stored to avoid ~640ms Simplicity recompilation per lookup.
     pub dormant_spk: Vec<u8>,
+    /// Cached: see `dormant_spk`.
     pub unresolved_spk: Vec<u8>,
+    /// Cached: see `dormant_spk`.
     pub resolved_yes_spk: Vec<u8>,
+    /// Cached: see `dormant_spk`.
     pub resolved_no_spk: Vec<u8>,
     pub current_state: i32,
     pub created_at: String,
@@ -30,12 +35,15 @@ pub struct MarketRow {
     pub description: Option<String>,
     pub category: Option<String>,
     pub resolution_source: Option<String>,
-    pub starting_yes_price: Option<i32>,
     pub creator_pubkey: Option<Vec<u8>>,
     pub creation_txid: Option<String>,
     pub nevent: Option<String>,
     pub nostr_event_id: Option<String>,
     pub nostr_event_json: Option<String>,
+    pub dormant_txid: Option<String>,
+    pub unresolved_txid: Option<String>,
+    pub resolved_yes_txid: Option<String>,
+    pub resolved_no_txid: Option<String>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -59,7 +67,6 @@ pub struct NewMarketRow {
     pub description: Option<String>,
     pub category: Option<String>,
     pub resolution_source: Option<String>,
-    pub starting_yes_price: Option<i32>,
     pub creator_pubkey: Option<Vec<u8>>,
     pub creation_txid: Option<String>,
     pub nevent: Option<String>,

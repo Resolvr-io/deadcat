@@ -118,6 +118,7 @@ mod tests {
             },
             creator_pubkey: "pubkey".into(),
             created_at: 0,
+            creation_txid: None,
             nostr_event_json: None,
         }
     }

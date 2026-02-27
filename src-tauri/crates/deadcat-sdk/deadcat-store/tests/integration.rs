@@ -9,7 +9,7 @@ use deadcat_sdk::elements::{
     TxInWitness, TxOut, TxOutWitness, Txid,
 };
 use deadcat_sdk::{
-    ContractParams, MakerOrderParams, MarketId, MarketState, OrderDirection, UnblindedUtxo,
+    MakerOrderParams, MarketId, MarketState, OrderDirection, PredictionMarketParams, UnblindedUtxo,
     derive_maker_receive, maker_receive_script_pubkey,
 };
 
@@ -20,8 +20,8 @@ use deadcat_store::{
 
 // ==================== Test Helpers ====================
 
-fn test_params() -> ContractParams {
-    ContractParams {
+fn test_params() -> PredictionMarketParams {
+    PredictionMarketParams {
         oracle_public_key: [0xaa; 32],
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: [0x01; 32],
@@ -33,8 +33,8 @@ fn test_params() -> ContractParams {
     }
 }
 
-fn test_params_2() -> ContractParams {
-    ContractParams {
+fn test_params_2() -> PredictionMarketParams {
+    PredictionMarketParams {
         oracle_public_key: [0xcc; 32],
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: [0x11; 32],
@@ -124,11 +124,11 @@ fn make_chain_utxo(txid: [u8; 32], vout: u32, asset_id: [u8; 32], value: u64) ->
 /// This avoids fragile index-based assumptions about SPK ordering.
 fn get_market_spk(
     _store: &mut DeadcatStore,
-    params: &ContractParams,
+    params: &PredictionMarketParams,
     state: MarketState,
 ) -> Vec<u8> {
-    use deadcat_sdk::CompiledContract;
-    let compiled = CompiledContract::new(*params).unwrap();
+    use deadcat_sdk::CompiledPredictionMarket;
+    let compiled = CompiledPredictionMarket::new(*params).unwrap();
     compiled.script_pubkey(state).as_bytes().to_vec()
 }
 
@@ -1278,7 +1278,7 @@ fn build_mock_issuance_tx(issuances: &[([u8; 32], u32, [u8; 32], u64, u64, Tweak
 fn test_sync_extracts_issuance_entropy() {
     // Build a market with known issuance entropies, then verify sync extracts them.
     // We compute token IDs from known outpoints + contract hashes, then build
-    // ContractParams using those IDs.
+    // PredictionMarketParams using those IDs.
     let yes_prevout_txid = [0xA1; 32];
     let yes_prevout_vout = 0u32;
     let yes_contract_hash = [0xC1; 32];
@@ -1302,7 +1302,7 @@ fn test_sync_extracts_issuance_entropy() {
     let no_token = AssetId::reissuance_token_from_entropy(no_entropy, false);
 
     // Create a market with these computed asset/token IDs
-    let custom_params = ContractParams {
+    let custom_params = PredictionMarketParams {
         oracle_public_key: [0xaa; 32],
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: yes_asset.into_inner().to_byte_array(),
@@ -1388,7 +1388,7 @@ fn test_sync_extracts_entropy_from_creation_tx() {
     let no_asset = AssetId::from_entropy(no_entropy);
     let no_token = AssetId::reissuance_token_from_entropy(no_entropy, false);
 
-    let custom_params = ContractParams {
+    let custom_params = PredictionMarketParams {
         oracle_public_key: [0xcc; 32],
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: yes_asset.into_inner().to_byte_array(),
@@ -1461,7 +1461,7 @@ fn test_sync_skips_entropy_when_tx_unavailable() {
     let no_asset = AssetId::from_entropy(no_entropy);
     let no_token = AssetId::reissuance_token_from_entropy(no_entropy, false);
 
-    let custom_params = ContractParams {
+    let custom_params = PredictionMarketParams {
         oracle_public_key: [0xdd; 32],
         collateral_asset_id: [0xbb; 32],
         yes_token_asset: yes_asset.into_inner().to_byte_array(),
@@ -1508,7 +1508,6 @@ fn test_ingest_market_with_metadata_roundtrip() {
         description: Some("Resolves via exchange data.".to_string()),
         category: Some("Bitcoin".to_string()),
         resolution_source: Some("CoinGecko".to_string()),
-        starting_yes_price: Some(55),
         creator_pubkey: Some(vec![0xdd; 32]),
         creation_txid: Some("abc123def456".to_string()),
         nevent: Some("nevent1qtest".to_string()),
@@ -1525,7 +1524,6 @@ fn test_ingest_market_with_metadata_roundtrip() {
     );
     assert_eq!(info.category.as_deref(), Some("Bitcoin"));
     assert_eq!(info.resolution_source.as_deref(), Some("CoinGecko"));
-    assert_eq!(info.starting_yes_price, Some(55));
     assert_eq!(info.creator_pubkey.as_deref(), Some([0xdd; 32].as_slice()));
     assert_eq!(info.creation_txid.as_deref(), Some("abc123def456"));
     assert_eq!(info.nevent.as_deref(), Some("nevent1qtest"));
@@ -1542,7 +1540,6 @@ fn test_ingest_market_without_metadata() {
     assert!(info.description.is_none());
     assert!(info.category.is_none());
     assert!(info.resolution_source.is_none());
-    assert!(info.starting_yes_price.is_none());
     assert!(info.creator_pubkey.is_none());
     assert!(info.creation_txid.is_none());
     assert!(info.nevent.is_none());
@@ -1667,4 +1664,282 @@ fn test_maker_order_nostr_event_json_none_by_default() {
 
     let info = store.get_maker_order(order_id).unwrap().unwrap();
     assert!(info.nostr_event_json.is_none());
+}
+
+// ==================== Pool State Snapshot Tests ====================
+
+fn test_amm_pool_params() -> deadcat_sdk::AmmPoolParams {
+    deadcat_sdk::AmmPoolParams {
+        yes_asset_id: [0x01; 32],
+        no_asset_id: [0x02; 32],
+        lbtc_asset_id: [0x03; 32],
+        lp_asset_id: [0x04; 32],
+        lp_reissuance_token_id: [0x05; 32],
+        fee_bps: 30,
+        cosigner_pubkey: NUMS_KEY_BYTES,
+    }
+}
+
+fn test_amm_pool_params_2() -> deadcat_sdk::AmmPoolParams {
+    deadcat_sdk::AmmPoolParams {
+        yes_asset_id: [0x11; 32],
+        no_asset_id: [0x12; 32],
+        lbtc_asset_id: [0x13; 32],
+        lp_asset_id: [0x14; 32],
+        lp_reissuance_token_id: [0x15; 32],
+        fee_bps: 50,
+        cosigner_pubkey: NUMS_KEY_BYTES,
+    }
+}
+
+#[test]
+fn test_insert_and_get_latest_pool_snapshot() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_amm_pool_params();
+    let pool_id = store
+        .ingest_amm_pool(&params, 1_000_000, None, None, None, None)
+        .unwrap();
+
+    let txid1 = [0xaa; 32];
+    let txid2 = [0xbb; 32];
+
+    store
+        .insert_pool_snapshot(
+            &pool_id.0,
+            &txid1,
+            500_000,
+            500_000,
+            250_000,
+            1_000_000,
+            Some(100),
+        )
+        .unwrap();
+    store
+        .insert_pool_snapshot(
+            &pool_id.0,
+            &txid2,
+            480_000,
+            520_000,
+            250_000,
+            1_000_000,
+            Some(101),
+        )
+        .unwrap();
+
+    let latest = store.get_latest_pool_snapshot(&pool_id.0).unwrap().unwrap();
+    assert_eq!(latest.txid, txid2);
+    assert_eq!(latest.r_yes, 480_000);
+    assert_eq!(latest.r_no, 520_000);
+    assert_eq!(latest.block_height, Some(101));
+}
+
+#[test]
+fn test_get_pool_snapshots_chronological_order() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_amm_pool_params();
+    let pool_id = store
+        .ingest_amm_pool(&params, 1_000_000, None, None, None, None)
+        .unwrap();
+
+    let txid1 = [0xaa; 32];
+    let txid2 = [0xbb; 32];
+    let txid3 = [0xcc; 32];
+
+    store
+        .insert_pool_snapshot(
+            &pool_id.0,
+            &txid1,
+            500_000,
+            500_000,
+            250_000,
+            1_000_000,
+            Some(100),
+        )
+        .unwrap();
+    store
+        .insert_pool_snapshot(
+            &pool_id.0,
+            &txid2,
+            480_000,
+            520_000,
+            250_000,
+            1_000_000,
+            Some(101),
+        )
+        .unwrap();
+    store
+        .insert_pool_snapshot(
+            &pool_id.0,
+            &txid3,
+            460_000,
+            540_000,
+            250_000,
+            1_000_000,
+            Some(102),
+        )
+        .unwrap();
+
+    let all = store.get_pool_snapshots(&pool_id.0).unwrap();
+    assert_eq!(all.len(), 3);
+    assert_eq!(all[0].txid, txid1);
+    assert_eq!(all[1].txid, txid2);
+    assert_eq!(all[2].txid, txid3);
+}
+
+#[test]
+fn test_insert_pool_snapshot_idempotent() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_amm_pool_params();
+    let pool_id = store
+        .ingest_amm_pool(&params, 1_000_000, None, None, None, None)
+        .unwrap();
+
+    let txid = [0xaa; 32];
+
+    store
+        .insert_pool_snapshot(
+            &pool_id.0,
+            &txid,
+            500_000,
+            500_000,
+            250_000,
+            1_000_000,
+            Some(100),
+        )
+        .unwrap();
+    // Insert same (pool_id, txid) again — should be ignored
+    store
+        .insert_pool_snapshot(&pool_id.0, &txid, 999, 999, 999, 999, Some(200))
+        .unwrap();
+
+    let all = store.get_pool_snapshots(&pool_id.0).unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].r_yes, 500_000); // original values preserved
+}
+
+#[test]
+fn test_get_latest_pool_snapshot_empty() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_amm_pool_params();
+    let pool_id = store
+        .ingest_amm_pool(&params, 1_000_000, None, None, None, None)
+        .unwrap();
+
+    assert!(
+        store
+            .get_latest_pool_snapshot(&pool_id.0)
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.get_pool_snapshots(&pool_id.0).unwrap().is_empty());
+}
+
+#[test]
+fn test_get_pool_for_market() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let market_id = [0xff; 32];
+    let params = test_amm_pool_params();
+
+    // Ingest pool with market_id
+    store
+        .ingest_amm_pool(&params, 1_000_000, None, None, Some(&market_id), None)
+        .unwrap();
+
+    let pool = store.get_pool_for_market(&market_id).unwrap();
+    assert!(pool.is_some());
+    let pool = pool.unwrap();
+    assert_eq!(pool.market_id, Some(market_id));
+
+    // Nonexistent market_id returns None
+    assert!(store.get_pool_for_market(&[0x00; 32]).unwrap().is_none());
+}
+
+#[test]
+fn test_get_pool_for_market_prefers_active() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let market_id = [0xff; 32];
+
+    // Ingest two pools for the same market
+    let params1 = test_amm_pool_params();
+    store
+        .ingest_amm_pool(&params1, 1_000_000, None, None, Some(&market_id), None)
+        .unwrap();
+
+    let params2 = test_amm_pool_params_2();
+    store
+        .ingest_amm_pool(&params2, 2_000_000, None, None, Some(&market_id), None)
+        .unwrap();
+
+    // Both are Active — should return one of them
+    let pool = store.get_pool_for_market(&market_id).unwrap().unwrap();
+    assert_eq!(pool.market_id, Some(market_id));
+}
+
+#[test]
+fn test_update_market_state_txid() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_params();
+    let mid = store.ingest_market(&params, None).unwrap();
+
+    // All four state variants should succeed without error
+    store
+        .update_market_state_txid(&mid, MarketState::Dormant, "txid_dormant")
+        .unwrap();
+    store
+        .update_market_state_txid(&mid, MarketState::Unresolved, "txid_unresolved")
+        .unwrap();
+    store
+        .update_market_state_txid(&mid, MarketState::ResolvedYes, "txid_yes")
+        .unwrap();
+    store
+        .update_market_state_txid(&mid, MarketState::ResolvedNo, "txid_no")
+        .unwrap();
+
+    // Market still exists and is readable
+    let info = store.get_market(&mid).unwrap();
+    assert!(info.is_some());
+}
+
+#[test]
+fn test_ingest_amm_pool_with_market_id_and_creation_txid() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_amm_pool_params();
+    let market_id = [0xee; 32];
+    let creation_txid = [0xdd; 32];
+
+    let pool_id = store
+        .ingest_amm_pool(
+            &params,
+            1_000_000,
+            None,
+            None,
+            Some(&market_id),
+            Some(&creation_txid),
+        )
+        .unwrap();
+
+    let info = store.get_amm_pool(&pool_id).unwrap().unwrap();
+    assert_eq!(info.market_id, Some(market_id));
+    assert_eq!(info.creation_txid, Some(creation_txid));
+}
+
+#[test]
+fn test_ingest_amm_pool_does_not_overwrite_existing_market_id() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_amm_pool_params();
+    let market_id = [0xee; 32];
+    let new_market_id = [0xff; 32];
+
+    // First ingest sets market_id
+    store
+        .ingest_amm_pool(&params, 1_000_000, None, None, Some(&market_id), None)
+        .unwrap();
+
+    // Second ingest tries to set a different market_id — should be ignored (filter: is_null)
+    let pool_id = store
+        .ingest_amm_pool(&params, 1_000_000, None, None, Some(&new_market_id), None)
+        .unwrap();
+
+    let info = store.get_amm_pool(&pool_id).unwrap().unwrap();
+    assert_eq!(info.market_id, Some(market_id)); // original preserved
 }

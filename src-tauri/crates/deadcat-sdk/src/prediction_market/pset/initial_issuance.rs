@@ -2,9 +2,9 @@ use simplicityhl::elements::pset::PartiallySignedTransaction;
 use simplicityhl::elements::secp256k1_zkp::Tweak;
 use simplicityhl::elements::{LockTime, Script};
 
-use crate::contract::CompiledContract;
 use crate::error::{Error, Result};
-use crate::state::MarketState;
+use crate::prediction_market::contract::CompiledPredictionMarket;
+use crate::prediction_market::state::MarketState;
 
 use super::{
     UnblindedUtxo, add_pset_input, add_pset_output, covenant_spk, explicit_txout, fee_txout,
@@ -49,7 +49,7 @@ pub struct InitialIssuanceParams {
 /// Output 5: fee
 /// Output 6+: optional change
 pub fn build_initial_issuance_pset(
-    contract: &CompiledContract,
+    contract: &CompiledPredictionMarket,
     params: &InitialIssuanceParams,
 ) -> Result<PartiallySignedTransaction> {
     let cpt = contract.params().collateral_per_token;

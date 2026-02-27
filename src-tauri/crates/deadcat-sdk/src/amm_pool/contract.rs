@@ -45,7 +45,14 @@ impl CompiledAmmPool {
     }
 
     /// The compiled program (for witness satisfaction).
+    #[cfg(any(test, feature = "testing"))]
     pub fn program(&self) -> &CompiledProgram {
+        &self.program
+    }
+
+    /// The compiled program (for witness satisfaction).
+    #[cfg(not(any(test, feature = "testing")))]
+    pub(crate) fn program(&self) -> &CompiledProgram {
         &self.program
     }
 

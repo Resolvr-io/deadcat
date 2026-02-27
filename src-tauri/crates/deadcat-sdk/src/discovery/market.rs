@@ -23,13 +23,18 @@ pub struct DiscoveredMarket {
     pub no_asset_id: String,
     pub yes_reissuance_token: String,
     pub no_reissuance_token: String,
-    pub starting_yes_price: u8,
     pub creator_pubkey: String,
     pub created_at: u64,
     pub creation_txid: Option<String>,
     pub state: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nostr_event_json: Option<String>,
+    /// Live YES probability in basis points (0–10000) from AMM pool reserves, if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub yes_price_bps: Option<u16>,
+    /// Live NO probability in basis points (0–10000) from AMM pool reserves, if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_price_bps: Option<u16>,
 }
 
 /// Build a Nostr event for a contract announcement.
@@ -92,19 +97,20 @@ pub fn parse_announcement_event(event: &Event) -> Result<DiscoveredMarket, Strin
         no_asset_id: bytes_to_hex(&params.no_token_asset),
         yes_reissuance_token: bytes_to_hex(&params.yes_reissuance_token),
         no_reissuance_token: bytes_to_hex(&params.no_reissuance_token),
-        starting_yes_price: announcement.metadata.starting_yes_price,
         creator_pubkey: event.pubkey.to_hex(),
         created_at: event.created_at.as_u64(),
         creation_txid: announcement.creation_txid,
         state: 0, // Default Dormant for discovered markets
         nostr_event_json: serde_json::to_string(event).ok(),
+        yes_price_bps: None,
+        no_price_bps: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ContractParams;
+    use crate::PredictionMarketParams;
     use crate::announcement::ContractMetadata;
 
     fn test_metadata() -> ContractMetadata {
@@ -113,12 +119,11 @@ mod tests {
             description: "Resolves via exchange data.".to_string(),
             category: "Bitcoin".to_string(),
             resolution_source: "Exchange basket".to_string(),
-            starting_yes_price: 55,
         }
     }
 
-    fn test_params() -> ContractParams {
-        ContractParams {
+    fn test_params() -> PredictionMarketParams {
+        PredictionMarketParams {
             oracle_public_key: [0xaa; 32],
             collateral_asset_id: [0xbb; 32],
             yes_token_asset: [0x01; 32],

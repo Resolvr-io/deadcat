@@ -14,13 +14,8 @@ use lwk_wollet::{
 use rand::RngCore;
 use rand::thread_rng;
 
-use crate::assembly::{
-    CollateralSource, IssuanceAssemblyInputs, assemble_cancellation, assemble_expiry_redemption,
-    assemble_issuance, assemble_oracle_resolve, assemble_post_resolution_redemption,
-    compute_issuance_entropy, txout_secrets_from_unblinded,
-};
+use crate::assembly::{pset_to_pruning_transaction, txout_secrets_from_unblinded};
 use crate::chain::{ChainBackend, ElectrumBackend};
-use crate::contract::CompiledContract;
 use crate::error::{Error, Result};
 use crate::maker_order::contract::CompiledMakerOrder;
 use crate::maker_order::params::{
@@ -33,14 +28,20 @@ use crate::maker_order::pset::fill_order::{
 };
 use crate::maker_order::witness::serialize_satisfied as serialize_maker_order_satisfied;
 use crate::network::Network;
-use crate::params::ContractParams;
+use crate::prediction_market::assembly::{
+    CollateralSource, IssuanceAssemblyInputs, assemble_cancellation, assemble_expiry_redemption,
+    assemble_issuance, assemble_oracle_resolve, assemble_post_resolution_redemption,
+    compute_issuance_entropy,
+};
+use crate::prediction_market::contract::CompiledPredictionMarket;
+use crate::prediction_market::params::PredictionMarketParams;
+use crate::prediction_market::pset::cancellation::CancellationParams;
+use crate::prediction_market::pset::creation::{CreationParams, build_creation_pset};
+use crate::prediction_market::pset::expiry_redemption::ExpiryRedemptionParams;
+use crate::prediction_market::pset::oracle_resolve::OracleResolveParams;
+use crate::prediction_market::pset::post_resolution_redemption::PostResolutionRedemptionParams;
+use crate::prediction_market::state::MarketState;
 use crate::pset::UnblindedUtxo;
-use crate::pset::cancellation::CancellationParams;
-use crate::pset::creation::{CreationParams, build_creation_pset};
-use crate::pset::expiry_redemption::ExpiryRedemptionParams;
-use crate::pset::oracle_resolve::OracleResolveParams;
-use crate::pset::post_resolution_redemption::PostResolutionRedemptionParams;
-use crate::state::MarketState;
 use crate::taproot::NUMS_KEY_BYTES;
 
 /// Result of a successful token issuance.
@@ -278,6 +279,7 @@ impl DeadcatSdk {
         self.chain.fetch_transaction(txid)
     }
 
+    #[cfg_attr(not(any(test, feature = "testing")), allow(dead_code))]
     pub fn network(&self) -> Network {
         self.network
     }
@@ -286,7 +288,7 @@ impl DeadcatSdk {
         self.chain.electrum_url()
     }
 
-    pub fn chain(&self) -> &ElectrumBackend {
+    pub(crate) fn chain_backend(&self) -> &ElectrumBackend {
         &self.chain
     }
 
@@ -330,7 +332,7 @@ impl DeadcatSdk {
         expiry_time: u32,
         min_utxo_value: u64,
         fee_amount: u64,
-    ) -> Result<(Txid, ContractParams)> {
+    ) -> Result<(Txid, PredictionMarketParams)> {
         self.sync()?;
 
         let raw_utxos = self.utxos()?;
@@ -361,7 +363,7 @@ impl DeadcatSdk {
             .map_err(|e| Error::Query(format!("bad change address: {}", e)))?;
 
         // Compile contract — types are identical, no bridging needed
-        let contract = CompiledContract::create(
+        let contract = CompiledPredictionMarket::create(
             oracle_public_key,
             policy_bytes,
             collateral_per_token,
@@ -445,12 +447,12 @@ impl DeadcatSdk {
     /// (subsequent issuance) state and builds the appropriate transaction.
     pub fn issue_tokens(
         &mut self,
-        params: &ContractParams,
+        params: &PredictionMarketParams,
         creation_txid: &Txid,
         pairs: u64,
         fee_amount: u64,
     ) -> Result<IssuanceResult> {
-        let contract = CompiledContract::new(*params)?;
+        let contract = CompiledPredictionMarket::new(*params)?;
 
         // A. Scan market state
         let (current_state, covenant_utxos) = self.scan_market_state(&contract)?;
@@ -538,7 +540,7 @@ impl DeadcatSdk {
     /// Returns the state and the UTXOs found at the corresponding covenant address.
     pub(crate) fn scan_market_state(
         &self,
-        contract: &CompiledContract,
+        contract: &CompiledPredictionMarket,
     ) -> Result<(MarketState, Vec<(OutPoint, TxOut)>)> {
         let dormant_spk = contract.script_pubkey(MarketState::Dormant);
         let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
@@ -571,7 +573,7 @@ impl DeadcatSdk {
     fn classify_covenant_utxos(
         &self,
         covenant_utxos: &[(OutPoint, TxOut)],
-        params: &ContractParams,
+        params: &PredictionMarketParams,
         _current_state: MarketState,
     ) -> Result<(UnblindedUtxo, UnblindedUtxo, Option<UnblindedUtxo>)> {
         let yes_rt_id = AssetId::from_slice(&params.yes_reissuance_token)
@@ -629,7 +631,7 @@ impl DeadcatSdk {
     /// Select wallet UTXOs for collateral and fee, returning unblinded UTXOs and change address.
     fn select_wallet_utxos(
         &mut self,
-        params: &ContractParams,
+        params: &PredictionMarketParams,
         pairs: u64,
         fee_amount: u64,
     ) -> Result<(UnblindedUtxo, UnblindedUtxo, lwk_wollet::elements::Address)> {
@@ -712,12 +714,12 @@ impl DeadcatSdk {
     /// back to Dormant. Otherwise it stays Unresolved (partial cancellation).
     pub fn cancel_tokens(
         &mut self,
-        params: &ContractParams,
+        params: &PredictionMarketParams,
         pairs_to_burn: u64,
         fee_amount: u64,
     ) -> Result<CancellationResult> {
         self.sync()?;
-        let contract = CompiledContract::new(*params)?;
+        let contract = CompiledPredictionMarket::new(*params)?;
 
         let (current_state, covenant_utxos) = self.scan_market_state(&contract)?;
         if current_state != MarketState::Unresolved {
@@ -805,13 +807,13 @@ impl DeadcatSdk {
     /// fee change, so the entire fee UTXO is consumed as the fee.
     pub fn resolve_market(
         &mut self,
-        params: &ContractParams,
+        params: &PredictionMarketParams,
         outcome_yes: bool,
         oracle_signature: [u8; 64],
         fee_amount: u64,
     ) -> Result<ResolutionResult> {
         self.sync()?;
-        let contract = CompiledContract::new(*params)?;
+        let contract = CompiledPredictionMarket::new(*params)?;
 
         let (current_state, covenant_utxos) = self.scan_market_state(&contract)?;
         if current_state != MarketState::Unresolved {
@@ -881,12 +883,12 @@ impl DeadcatSdk {
     /// Burns winning tokens and reclaims 2x collateral_per_token per token.
     pub fn redeem_tokens(
         &mut self,
-        params: &ContractParams,
+        params: &PredictionMarketParams,
         tokens_to_burn: u64,
         fee_amount: u64,
     ) -> Result<RedemptionResult> {
         self.sync()?;
-        let contract = CompiledContract::new(*params)?;
+        let contract = CompiledPredictionMarket::new(*params)?;
 
         let (current_state, covenant_utxos) = self.scan_market_state(&contract)?;
         if !current_state.is_resolved() {
@@ -949,13 +951,13 @@ impl DeadcatSdk {
     /// Requires the market to still be Unresolved and block height past expiry.
     pub fn redeem_expired(
         &mut self,
-        params: &ContractParams,
+        params: &PredictionMarketParams,
         token_asset: [u8; 32],
         tokens_to_burn: u64,
         fee_amount: u64,
     ) -> Result<RedemptionResult> {
         self.sync()?;
-        let contract = CompiledContract::new(*params)?;
+        let contract = CompiledPredictionMarket::new(*params)?;
 
         let (current_state, covenant_utxos) = self.scan_market_state(&contract)?;
         if current_state != MarketState::Unresolved {
@@ -1389,7 +1391,6 @@ impl DeadcatSdk {
 
         // 8. Attach Simplicity cancel witness to covenant input (input 0)
         {
-            use crate::assembly::pset_to_pruning_transaction;
             use simplicityhl::elements::taproot::ControlBlock;
             use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 
@@ -1634,7 +1635,6 @@ impl DeadcatSdk {
         // 8. Attach Simplicity witness with pruning to covenant input (input 1)
         let covenant_input_idx = 1; // takers-first: input 0 = taker, input 1 = maker order
         {
-            use crate::assembly::pset_to_pruning_transaction;
             use simplicityhl::elements::taproot::ControlBlock;
             use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 
@@ -2531,7 +2531,6 @@ impl DeadcatSdk {
 
         // 8. Attach maker order witnesses for each order input
         {
-            use crate::assembly::pset_to_pruning_transaction;
             use simplicityhl::elements::taproot::ControlBlock;
             use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 
@@ -2604,7 +2603,7 @@ impl DeadcatSdk {
     /// Find the explicit collateral UTXO from a set of covenant UTXOs.
     fn find_collateral_utxo(
         covenant_utxos: &[(OutPoint, TxOut)],
-        params: &ContractParams,
+        params: &PredictionMarketParams,
     ) -> Result<UnblindedUtxo> {
         let collateral_id = AssetId::from_slice(&params.collateral_asset_id)
             .map_err(|e| Error::Unblind(format!("bad collateral asset: {e}")))?;
@@ -2780,9 +2779,40 @@ impl DeadcatSdk {
             "no wallet address blinding key could unblind this UTXO".into(),
         ))
     }
+
+    // ── Market Validation ──────────────────────────────────────────────
+
+    /// Validate that a market's creation tx exists at the Dormant covenant address
+    /// with the expected collateral asset.
+    pub(crate) fn validate_market_creation(
+        &self,
+        params: &PredictionMarketParams,
+        creation_txid: &Txid,
+    ) -> Result<bool> {
+        let tx = self.chain.fetch_transaction(creation_txid)?;
+        validate_market_creation_tx(params, &tx)
+    }
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────
+
+/// Check that a transaction has at least one output at the Dormant covenant SPK
+/// with the expected collateral asset.
+fn validate_market_creation_tx(params: &PredictionMarketParams, tx: &Transaction) -> Result<bool> {
+    use simplicityhl::elements::confidential;
+
+    let compiled = CompiledPredictionMarket::new(*params)?;
+    let dormant_spk = compiled.script_pubkey(MarketState::Dormant);
+    let expected_asset = AssetId::from_slice(&params.collateral_asset_id)
+        .map_err(|e| Error::Query(format!("bad collateral asset id: {e}")))?;
+
+    let valid = tx.output.iter().any(|out| {
+        out.script_pubkey == dormant_spk
+            && matches!(out.asset, confidential::Asset::Explicit(id) if id == expected_asset)
+    });
+
+    Ok(valid)
+}
 
 /// Convert a LWK `WalletTxOut` + full `TxOut` into the SDK's `UnblindedUtxo`.
 ///
@@ -3006,5 +3036,134 @@ mod tests {
             h.finalize().into()
         };
         assert_eq!(hash_a, hash_a2);
+    }
+
+    #[test]
+    fn validate_market_creation_tx_valid() {
+        use simplicityhl::elements::confidential;
+        use simplicityhl::elements::{LockTime, Sequence, TxIn, TxInWitness, TxOut, TxOutWitness};
+
+        let params = PredictionMarketParams {
+            oracle_public_key: [0xaa; 32],
+            collateral_asset_id: [0xbb; 32],
+            yes_token_asset: [0x01; 32],
+            no_token_asset: [0x02; 32],
+            yes_reissuance_token: [0x03; 32],
+            no_reissuance_token: [0x04; 32],
+            collateral_per_token: 100_000,
+            expiry_time: 1_000_000,
+        };
+
+        let compiled = CompiledPredictionMarket::new(params).unwrap();
+        let dormant_spk = compiled.script_pubkey(MarketState::Dormant);
+        let collateral_asset = AssetId::from_slice(&params.collateral_asset_id).unwrap();
+
+        let tx = Transaction {
+            version: 2,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                is_pegin: false,
+                script_sig: Script::new(),
+                sequence: Sequence::MAX,
+                asset_issuance: Default::default(),
+                witness: TxInWitness::default(),
+            }],
+            output: vec![TxOut {
+                asset: confidential::Asset::Explicit(collateral_asset),
+                value: confidential::Value::Explicit(100_000),
+                nonce: confidential::Nonce::Null,
+                script_pubkey: dormant_spk,
+                witness: TxOutWitness::default(),
+            }],
+        };
+
+        assert!(validate_market_creation_tx(&params, &tx).unwrap());
+    }
+
+    #[test]
+    fn validate_market_creation_tx_wrong_asset() {
+        use simplicityhl::elements::confidential;
+        use simplicityhl::elements::{LockTime, Sequence, TxIn, TxInWitness, TxOut, TxOutWitness};
+
+        let params = PredictionMarketParams {
+            oracle_public_key: [0xaa; 32],
+            collateral_asset_id: [0xbb; 32],
+            yes_token_asset: [0x01; 32],
+            no_token_asset: [0x02; 32],
+            yes_reissuance_token: [0x03; 32],
+            no_reissuance_token: [0x04; 32],
+            collateral_per_token: 100_000,
+            expiry_time: 1_000_000,
+        };
+
+        let compiled = CompiledPredictionMarket::new(params).unwrap();
+        let dormant_spk = compiled.script_pubkey(MarketState::Dormant);
+        let wrong_asset = AssetId::from_slice(&[0xcc; 32]).unwrap();
+
+        let tx = Transaction {
+            version: 2,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                is_pegin: false,
+                script_sig: Script::new(),
+                sequence: Sequence::MAX,
+                asset_issuance: Default::default(),
+                witness: TxInWitness::default(),
+            }],
+            output: vec![TxOut {
+                asset: confidential::Asset::Explicit(wrong_asset),
+                value: confidential::Value::Explicit(100_000),
+                nonce: confidential::Nonce::Null,
+                script_pubkey: dormant_spk,
+                witness: TxOutWitness::default(),
+            }],
+        };
+
+        // SPK matches but asset is wrong — should return false
+        assert!(!validate_market_creation_tx(&params, &tx).unwrap());
+    }
+
+    #[test]
+    fn validate_market_creation_tx_wrong_spk() {
+        use simplicityhl::elements::confidential;
+        use simplicityhl::elements::{LockTime, Sequence, TxIn, TxInWitness, TxOut, TxOutWitness};
+
+        let params = PredictionMarketParams {
+            oracle_public_key: [0xaa; 32],
+            collateral_asset_id: [0xbb; 32],
+            yes_token_asset: [0x01; 32],
+            no_token_asset: [0x02; 32],
+            yes_reissuance_token: [0x03; 32],
+            no_reissuance_token: [0x04; 32],
+            collateral_per_token: 100_000,
+            expiry_time: 1_000_000,
+        };
+
+        let collateral_asset = AssetId::from_slice(&params.collateral_asset_id).unwrap();
+
+        let tx = Transaction {
+            version: 2,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                is_pegin: false,
+                script_sig: Script::new(),
+                sequence: Sequence::MAX,
+                asset_issuance: Default::default(),
+                witness: TxInWitness::default(),
+            }],
+            output: vec![TxOut {
+                asset: confidential::Asset::Explicit(collateral_asset),
+                value: confidential::Value::Explicit(100_000),
+                nonce: confidential::Nonce::Null,
+                script_pubkey: Script::new(), // wrong SPK
+                witness: TxOutWitness::default(),
+            }],
+        };
+
+        // Asset matches but SPK is wrong — should return false
+        assert!(!validate_market_creation_tx(&params, &tx).unwrap());
     }
 }

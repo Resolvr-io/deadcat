@@ -24,8 +24,7 @@ const APP_STATE_UPDATED_EVENT: &str = "app_state_updated";
 /// node call completes, especially before acquiring `AppStateManager`'s
 /// std Mutex, to avoid holding both locks simultaneously.
 pub struct NodeState {
-    pub node:
-        tokio::sync::Mutex<Option<deadcat_sdk::node::DeadcatNode<deadcat_store::DeadcatStore>>>,
+    pub node: tokio::sync::Mutex<Option<deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>>>,
 }
 
 impl Default for NodeState {
@@ -188,11 +187,14 @@ async fn create_wallet(password: String, app: AppHandle) -> Result<String, Strin
         let network = mgr.network().ok_or("Network not initialized")?;
         let sdk_network = state::to_sdk_network(network);
 
-        let mnemonic = deadcat_sdk::node::DeadcatNode::<deadcat_sdk::discovery::service::NoopStore>::generate_mnemonic(sdk_network)
-            .map_err(|e| format!("{e}"))?;
+        let mnemonic =
+            deadcat_sdk::DeadcatNode::<deadcat_sdk::NoopStore>::generate_mnemonic(sdk_network)
+                .map_err(|e| format!("{e}"))?;
 
         let persister = mgr.persister_mut().ok_or("Persister not initialized")?;
-        persister.save(&mnemonic, &password).map_err(|e| e.to_string())?;
+        persister
+            .save(&mnemonic, &password)
+            .map_err(|e| e.to_string())?;
 
         mgr.bump_revision();
         let state = mgr.snapshot();
@@ -1144,8 +1146,9 @@ pub fn run() {
             commands::redeem_expired,
             commands::get_market_state,
             commands::get_wallet_utxos,
-            commands::ingest_discovered_markets,
             commands::list_contracts,
+            commands::sync_pool,
+            commands::get_pool_price_history,
             // Wallet store (SDK)
             wallet_store::create_software_signer,
             wallet_store::create_wollet,
