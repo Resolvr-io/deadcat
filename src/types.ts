@@ -117,7 +117,6 @@ export type DiscoveredMarket = {
   no_asset_id: string;
   yes_reissuance_token: string;
   no_reissuance_token: string;
-  starting_yes_price: number;
   creator_pubkey: string;
   created_at: number;
   creation_txid: string | null;
@@ -187,7 +186,7 @@ export type Market = {
   collateralUtxos: CollateralUtxo[];
   resolveTx?: ResolveTx;
   nostrEventJson: string | null;
-  yesPrice: number;
+  yesPrice: number | null;
   change24h: number;
   volumeBtc: number;
   liquidityBtc: number;

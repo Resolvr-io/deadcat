@@ -432,7 +432,6 @@ pub fn test_metadata() -> ContractMetadata {
         description: "Resolved using median close basket.".to_string(),
         category: "Bitcoin".to_string(),
         resolution_source: "Exchange close basket".to_string(),
-        starting_yes_price: 57,
     }
 }
 

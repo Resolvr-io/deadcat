@@ -124,7 +124,6 @@ export const state: {
   createSettlementPickerDropdown: string;
   createSettlementViewYear: number;
   createSettlementViewMonth: number;
-  createStartingYesSats: number;
   walletStatus: "not_created" | "locked" | "unlocked";
   walletNetwork: "mainnet" | "testnet" | "regtest";
   walletData: WalletData | null;
@@ -252,7 +251,6 @@ export const state: {
   createSettlementViewMonth: new Date(
     Date.now() + 30 * 24 * 60 * 60 * 1000,
   ).getMonth(),
-  createStartingYesSats: 50,
   walletStatus: "not_created",
   walletNetwork: "testnet",
   walletData: null,

@@ -24,9 +24,6 @@ fn validate_request(request: &CreateContractRequest) -> Result<(), String> {
     if request.resolution_source.trim().is_empty() || request.resolution_source.len() > 120 {
         return Err("resolution_source must be 1-120 characters".to_string());
     }
-    if request.starting_yes_price < 1 || request.starting_yes_price > 99 {
-        return Err("starting_yes_price must be 1-99".to_string());
-    }
     if request.collateral_per_token == 0 {
         return Err("collateral_per_token must be > 0".to_string());
     }
@@ -715,7 +712,6 @@ pub async fn publish_contract(
         description: request.description.clone(),
         category: request.category.clone(),
         resolution_source: request.resolution_source.clone(),
-        starting_yes_price: request.starting_yes_price,
     };
 
     let announcement = deadcat_sdk::ContractAnnouncement {
@@ -756,7 +752,6 @@ pub async fn publish_contract(
         no_asset_id: hex::encode([0u8; 32]),
         yes_reissuance_token: hex::encode([0u8; 32]),
         no_reissuance_token: hex::encode([0u8; 32]),
-        starting_yes_price: request.starting_yes_price,
         creator_pubkey,
         created_at: nostr_sdk::Timestamp::now().as_u64(),
         creation_txid: None,
@@ -860,7 +855,6 @@ pub async fn create_contract_onchain(
         description: request.description,
         category: request.category,
         resolution_source: request.resolution_source,
-        starting_yes_price: request.starting_yes_price,
     };
 
     let (market, _txid) = node
@@ -1237,7 +1231,6 @@ fn market_info_to_discovered(
         no_asset_id: hex::encode(p.no_token_asset),
         yes_reissuance_token: hex::encode(p.yes_reissuance_token),
         no_reissuance_token: hex::encode(p.no_reissuance_token),
-        starting_yes_price: info.starting_yes_price.unwrap_or(50),
         creator_pubkey: info
             .creator_pubkey
             .as_ref()

@@ -10,7 +10,6 @@ pub struct ContractMetadataInput {
     pub description: Option<String>,
     pub category: Option<String>,
     pub resolution_source: Option<String>,
-    pub starting_yes_price: Option<u8>,
     pub creator_pubkey: Option<Vec<u8>>,
     pub creation_txid: Option<String>,
     pub nevent: Option<String>,

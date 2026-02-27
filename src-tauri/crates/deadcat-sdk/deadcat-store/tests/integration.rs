@@ -1508,7 +1508,6 @@ fn test_ingest_market_with_metadata_roundtrip() {
         description: Some("Resolves via exchange data.".to_string()),
         category: Some("Bitcoin".to_string()),
         resolution_source: Some("CoinGecko".to_string()),
-        starting_yes_price: Some(55),
         creator_pubkey: Some(vec![0xdd; 32]),
         creation_txid: Some("abc123def456".to_string()),
         nevent: Some("nevent1qtest".to_string()),
@@ -1525,7 +1524,6 @@ fn test_ingest_market_with_metadata_roundtrip() {
     );
     assert_eq!(info.category.as_deref(), Some("Bitcoin"));
     assert_eq!(info.resolution_source.as_deref(), Some("CoinGecko"));
-    assert_eq!(info.starting_yes_price, Some(55));
     assert_eq!(info.creator_pubkey.as_deref(), Some([0xdd; 32].as_slice()));
     assert_eq!(info.creation_txid.as_deref(), Some("abc123def456"));
     assert_eq!(info.nevent.as_deref(), Some("nevent1qtest"));
@@ -1542,7 +1540,6 @@ fn test_ingest_market_without_metadata() {
     assert!(info.description.is_none());
     assert!(info.category.is_none());
     assert!(info.resolution_source.is_none());
-    assert!(info.starting_yes_price.is_none());
     assert!(info.creator_pubkey.is_none());
     assert!(info.creation_txid.is_none());
     assert!(info.nevent.is_none());

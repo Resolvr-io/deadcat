@@ -594,7 +594,6 @@ pub(crate) fn persist_market_to_store<S: DiscoveryStore>(
         description: Some(market.description.clone()),
         category: Some(market.category.clone()),
         resolution_source: Some(market.resolution_source.clone()),
-        starting_yes_price: Some(market.starting_yes_price),
         creator_pubkey: hex::decode(&market.creator_pubkey).ok(),
         creation_txid: market.creation_txid.clone(),
         nevent: Some(market.nevent.clone()),

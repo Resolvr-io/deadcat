@@ -41,10 +41,7 @@ export function discoveredToMarket(d: DiscoveredMarket): Market {
     creationTxid: d.creation_txid,
     collateralUtxos: [],
     nostrEventJson: d.nostr_event_json ?? null,
-    yesPrice:
-      d.yes_price_bps != null
-        ? d.yes_price_bps / 10000
-        : d.starting_yes_price / 100,
+    yesPrice: d.yes_price_bps != null ? d.yes_price_bps / 10000 : null,
     change24h: 0,
     volumeBtc: 0,
     liquidityBtc: 0,

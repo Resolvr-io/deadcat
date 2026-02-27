@@ -1,4 +1,4 @@
-import { SATS_PER_FULL_CONTRACT, state } from "../state.ts";
+import { state } from "../state.ts";
 
 export function handleInput(e: Event, render: () => void): void {
   const target = e.target as HTMLInputElement;
@@ -182,15 +182,6 @@ export function handleInput(e: Event, render: () => void): void {
 
   if (target.id === "create-resolution-source") {
     state.createResolutionSource = target.value;
-    return;
-  }
-
-  if (target.id === "create-yes-sats") {
-    const parsed = Math.round(Number(target.value) || 50);
-    state.createStartingYesSats = Math.max(
-      1,
-      Math.min(SATS_PER_FULL_CONTRACT - 1, parsed),
-    );
     return;
   }
 }

@@ -53,7 +53,6 @@ pub struct CreateContractRequest {
     pub description: String,
     pub category: String,
     pub resolution_source: String,
-    pub starting_yes_price: u8,
     pub settlement_deadline_unix: u64,
     pub collateral_per_token: u64,
 }
@@ -331,7 +330,6 @@ mod tests {
             description: "Resolves via exchange data.".to_string(),
             category: "Bitcoin".to_string(),
             resolution_source: "Exchange basket".to_string(),
-            starting_yes_price: 55,
         }
     }
 

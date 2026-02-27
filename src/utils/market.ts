@@ -78,7 +78,8 @@ export function clampContractPriceSats(value: number): number {
 }
 
 export function getBasePriceSats(market: Market, side: Side): number {
-  const raw = side === "yes" ? market.yesPrice : 1 - market.yesPrice;
+  const raw =
+    side === "yes" ? (market.yesPrice ?? 0.5) : 1 - (market.yesPrice ?? 0.5);
   return clampContractPriceSats(raw * SATS_PER_FULL_CONTRACT);
 }
 

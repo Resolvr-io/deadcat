@@ -9,7 +9,6 @@ pub struct ContractMetadata {
     pub description: String,
     pub category: String,
     pub resolution_source: String,
-    pub starting_yes_price: u8,
 }
 
 /// Published to Nostr, contains both SDK params + metadata.

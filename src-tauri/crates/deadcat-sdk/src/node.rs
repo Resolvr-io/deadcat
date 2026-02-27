@@ -400,7 +400,6 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             no_asset_id: bytes_to_hex(&params.no_token_asset),
             yes_reissuance_token: bytes_to_hex(&params.yes_reissuance_token),
             no_reissuance_token: bytes_to_hex(&params.no_reissuance_token),
-            starting_yes_price: announcement.metadata.starting_yes_price,
             creator_pubkey: self.keys.public_key().to_hex(),
             created_at: nostr_sdk::Timestamp::now().as_u64(),
             creation_txid: announcement.creation_txid,

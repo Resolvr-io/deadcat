@@ -49,7 +49,6 @@ fn test_metadata() -> ContractMetadata {
         description: "Used for trade integration tests".to_string(),
         category: "Test".to_string(),
         resolution_source: "Test oracle".to_string(),
-        starting_yes_price: 50,
     }
 }
 

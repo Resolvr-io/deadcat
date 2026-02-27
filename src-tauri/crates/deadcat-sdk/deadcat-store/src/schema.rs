@@ -74,7 +74,6 @@ diesel::table! {
         description -> Nullable<Text>,
         category -> Nullable<Text>,
         resolution_source -> Nullable<Text>,
-        starting_yes_price -> Nullable<Integer>,
         creator_pubkey -> Nullable<Binary>,
         creation_txid -> Nullable<Text>,
         nevent -> Nullable<Text>,

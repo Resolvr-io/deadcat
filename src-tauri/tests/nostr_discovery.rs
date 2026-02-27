@@ -15,7 +15,6 @@ fn test_metadata() -> ContractMetadata {
         description: "Resolved using median close basket.".to_string(),
         category: "Bitcoin".to_string(),
         resolution_source: "Exchange close basket".to_string(),
-        starting_yes_price: 57,
     }
 }
 
@@ -84,7 +83,6 @@ async fn publish_discover_roundtrip() {
     assert_eq!(market.category, "Bitcoin");
     assert_eq!(market.description, "Resolved using median close basket.");
     assert_eq!(market.resolution_source, "Exchange close basket");
-    assert_eq!(market.starting_yes_price, 57);
     assert_eq!(market.expiry_height, 3_650_000);
     assert_eq!(market.cpt_sats, 5000);
     assert_eq!(market.oracle_pubkey, hex::encode(oracle_pubkey));

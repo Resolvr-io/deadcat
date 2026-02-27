@@ -23,7 +23,6 @@ pub struct DiscoveredMarket {
     pub no_asset_id: String,
     pub yes_reissuance_token: String,
     pub no_reissuance_token: String,
-    pub starting_yes_price: u8,
     pub creator_pubkey: String,
     pub created_at: u64,
     pub creation_txid: Option<String>,
@@ -98,7 +97,6 @@ pub fn parse_announcement_event(event: &Event) -> Result<DiscoveredMarket, Strin
         no_asset_id: bytes_to_hex(&params.no_token_asset),
         yes_reissuance_token: bytes_to_hex(&params.yes_reissuance_token),
         no_reissuance_token: bytes_to_hex(&params.no_reissuance_token),
-        starting_yes_price: announcement.metadata.starting_yes_price,
         creator_pubkey: event.pubkey.to_hex(),
         created_at: event.created_at.as_u64(),
         creation_txid: announcement.creation_txid,
@@ -121,7 +119,6 @@ mod tests {
             description: "Resolves via exchange data.".to_string(),
             category: "Bitcoin".to_string(),
             resolution_source: "Exchange basket".to_string(),
-            starting_yes_price: 55,
         }
     }
 
