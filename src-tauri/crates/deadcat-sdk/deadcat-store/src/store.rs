@@ -4,7 +4,7 @@ use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 use deadcat_sdk::{
-    CompiledMakerOrder, CompiledPredictionMarket, ContractMetadataInput, MakerOrderParams,
+    CompiledMakerOrder, CompiledPredictionMarket, DiscoveredMarketMetadata, MakerOrderParams,
     MarketId, MarketState, OrderDirection, PredictionMarketParams, UnblindedUtxo,
 };
 
@@ -211,7 +211,7 @@ impl DeadcatStore {
     pub fn ingest_market(
         &mut self,
         params: &PredictionMarketParams,
-        metadata: Option<&ContractMetadataInput>,
+        metadata: Option<&DiscoveredMarketMetadata>,
     ) -> crate::Result<MarketId> {
         let mid = params.market_id();
         let mid_bytes = mid.as_bytes().to_vec();
@@ -881,7 +881,7 @@ impl deadcat_sdk::DiscoveryStore for DeadcatStore {
     fn ingest_market(
         &mut self,
         params: &PredictionMarketParams,
-        meta: Option<&ContractMetadataInput>,
+        meta: Option<&DiscoveredMarketMetadata>,
     ) -> Result<(), String> {
         self.ingest_market(params, meta)
             .map(|_| ())

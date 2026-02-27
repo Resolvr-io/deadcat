@@ -3,9 +3,9 @@ use crate::amm_pool::params::{AmmPoolParams, PoolId};
 use crate::maker_order::params::MakerOrderParams;
 use crate::prediction_market::params::{MarketId, PredictionMarketParams};
 
-/// Metadata passed alongside a market when persisting to the store.
+/// Metadata discovered alongside a market from Nostr announcements.
 #[derive(Debug, Clone, Default)]
-pub struct ContractMetadataInput {
+pub struct DiscoveredMarketMetadata {
     pub question: Option<String>,
     pub description: Option<String>,
     pub category: Option<String>,
@@ -26,7 +26,7 @@ pub trait DiscoveryStore: Send + 'static {
     fn ingest_market(
         &mut self,
         params: &PredictionMarketParams,
-        meta: Option<&ContractMetadataInput>,
+        meta: Option<&DiscoveredMarketMetadata>,
     ) -> Result<(), String>;
 
     /// Persist a discovered maker order. If it already exists, this should be a no-op.

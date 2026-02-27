@@ -279,7 +279,7 @@ use nostr_sdk::Keys;
 
 use crate::announcement::ContractMetadata;
 use crate::discovery::OrderAnnouncement;
-use crate::discovery::store_trait::{ContractMetadataInput, DiscoveryStore};
+use crate::discovery::store_trait::{DiscoveredMarketMetadata, DiscoveryStore};
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
 use crate::prediction_market::params::PredictionMarketParams;
 use crate::taproot::NUMS_KEY_BYTES;
@@ -297,7 +297,7 @@ impl DiscoveryStore for TestStore {
     fn ingest_market(
         &mut self,
         params: &PredictionMarketParams,
-        _meta: Option<&ContractMetadataInput>,
+        _meta: Option<&DiscoveredMarketMetadata>,
     ) -> std::result::Result<(), String> {
         let mid = params.market_id();
         if !self.markets.iter().any(|p| p.market_id() == mid) {

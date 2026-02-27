@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::amm_pool::math::{PoolReserves, SwapPair};
+use crate::amm_pool::math::{PoolReserves, SwapDirection, SwapPair};
 use crate::amm_pool::params::AmmPoolParams;
 use crate::maker_order::params::MakerOrderParams;
 use crate::pset::UnblindedUtxo;
@@ -138,7 +138,7 @@ pub(crate) struct PoolSwapLeg {
     pub pool_utxos: PoolUtxos,
     pub swap_pair: SwapPair,
     #[allow(dead_code)] // kept for API completeness; not consumed by witness path
-    pub sell_a: bool,
+    pub swap_direction: SwapDirection,
     /// Amount the taker deposits into the pool.
     pub delta_in: u64,
     /// Amount the taker receives from the pool.

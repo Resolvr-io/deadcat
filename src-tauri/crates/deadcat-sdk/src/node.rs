@@ -688,7 +688,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         issued_lp: u64,
         swap_pair: crate::amm_pool::math::SwapPair,
         delta_in: u64,
-        sell_a: bool,
+        direction: crate::amm_pool::math::SwapDirection,
         fee_amount: u64,
         market_id: String,
     ) -> Result<crate::sdk::PoolSwapResult, NodeError> {
@@ -699,7 +699,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                     issued_lp,
                     swap_pair,
                     delta_in,
-                    sell_a,
+                    direction,
                     fee_amount,
                 )
             })

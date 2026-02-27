@@ -53,7 +53,7 @@ pub use maker_order::params::{
 // ── AMM pools ──────────────────────────────────────────────────────
 pub use amm_pool::chain_walk::PoolStateSnapshot;
 pub use amm_pool::contract::CompiledAmmPool;
-pub use amm_pool::math::{PoolReserves, SwapPair, implied_probability_bps};
+pub use amm_pool::math::{PoolReserves, SwapDirection, SwapPair, implied_probability_bps};
 pub use amm_pool::params::{AmmPoolParams, PoolId};
 
 // ── Trade routing ──────────────────────────────────────────────────
@@ -70,9 +70,9 @@ pub use discovery::{
     AttestationContent,
     AttestationResult,
     CONTRACT_TAG,
-    ContractMetadataInput,
     DEFAULT_RELAYS,
     DiscoveredMarket,
+    DiscoveredMarketMetadata,
     DiscoveredOrder,
     DiscoveredPool,
     DiscoveryConfig,
