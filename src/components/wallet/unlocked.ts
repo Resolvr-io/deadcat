@@ -1,7 +1,11 @@
-import { flowLabel, formatLbtc, formatSwapStatus } from "../../services/wallet.ts";
+import { formatLbtc } from "../../services/wallet.ts";
 import { markets, state } from "../../state.ts";
 import { reverseHex } from "../../utils/crypto.ts";
 import { satsToFiatStr } from "../../utils/format.ts";
+import {
+  renderWalletSwapRows,
+  renderWalletTransactionRows,
+} from "./activity.ts";
 import {
   renderWalletUtxoSection,
   type WalletAssetLabel,
@@ -56,108 +60,16 @@ export function renderWalletUnlocked(params: {
       return { assetId: id, amount: amt, info };
     });
 
-  const txRows = (wd?.transactions ?? [])
-    .map((tx) => {
-      const marketId = creationTxToMarket.get(tx.txid);
-      const isCreation = !!marketId;
-      const isIssuance = tx.txType === "issuance" || tx.txType === "reissuance";
-      const sign = tx.balanceChange >= 0 ? "+" : "";
-      const color =
-        isCreation || isIssuance
-          ? "text-violet-300"
-          : tx.balanceChange >= 0
-            ? "text-emerald-300"
-            : "text-red-300";
-      const icon =
-        isCreation || isIssuance
-          ? "&#9670;"
-          : tx.balanceChange >= 0
-            ? "&#8595;"
-            : "&#8593;";
-      let label = "";
-      if (isCreation) {
-        label =
-          '<button data-open-market="' +
-          marketId +
-          '" class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 hover:bg-violet-500/30 transition cursor-pointer">Market Creation</button>';
-      } else if (isIssuance) {
-        label =
-          '<span class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">Issuance</span>';
-      }
-      const date = tx.timestamp
-        ? new Date(tx.timestamp * 1000).toLocaleString()
-        : "unconfirmed";
-      const shortTxid = `${tx.txid.slice(0, 10)}...${tx.txid.slice(-6)}`;
-      return (
-        '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm select-none">' +
-        '<div class="flex items-center gap-2">' +
-        '<span class="' +
-        color +
-        '">' +
-        icon +
-        "</span>" +
-        '<button data-action="open-explorer-tx" data-txid="' +
-        tx.txid +
-        '" class="mono text-slate-400 hover:text-slate-200 transition cursor-pointer">' +
-        shortTxid +
-        "</button>" +
-        label +
-        '<span class="text-slate-500">' +
-        date +
-        "</span>" +
-        "</div>" +
-        '<div class="text-right">' +
-        (state.walletBalanceHidden
-          ? '<span class="inline-flex gap-0.5 text-slate-500">' +
-            PAW_ICON +
-            PAW_ICON +
-            "</span>"
-          : '<span class="' +
-            color +
-            '">' +
-            sign +
-            formatLbtc(tx.balanceChange) +
-            "</span>" +
-            (state.baseCurrency !== "BTC"
-              ? '<div class="text-xs text-slate-500">' +
-                satsToFiatStr(Math.abs(tx.balanceChange)) +
-                "</div>"
-              : "")) +
-        "</div>" +
-        "</div>"
-      );
-    })
-    .join("");
+  const txRows = renderWalletTransactionRows({
+    creationTxToMarket,
+    pawIcon: PAW_ICON,
+    walletData: wd ?? null,
+  });
 
-  const swapRows = (wd?.swaps ?? [])
-    .map((sw) => {
-      return (
-        '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
-        "<div>" +
-        '<span class="text-slate-300">' +
-        flowLabel(sw.flow) +
-        "</span>" +
-        (state.walletBalanceHidden
-          ? '<span class="ml-2 inline-flex gap-0.5 text-slate-500">' +
-            PAW_ICON +
-            PAW_ICON +
-            "</span>"
-          : '<span class="ml-2 text-slate-500">' +
-            sw.invoiceAmountSat.toLocaleString() +
-            " sats</span>") +
-        "</div>" +
-        '<div class="flex items-center gap-2">' +
-        '<span class="text-xs text-slate-500">' +
-        formatSwapStatus(sw.status) +
-        "</span>" +
-        '<button data-action="refresh-swap" data-swap-id="' +
-        sw.id +
-        '" class="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800">Refresh</button>' +
-        "</div>" +
-        "</div>"
-      );
-    })
-    .join("");
+  const swapRows = renderWalletSwapRows({
+    pawIcon: PAW_ICON,
+    walletData: wd ?? null,
+  });
 
   const utxoSection = renderWalletUtxoSection({
     assetLabel,
