@@ -294,6 +294,10 @@ impl DeadcatSdk {
         self.network.into_lwk().policy_asset()
     }
 
+    pub fn wallet_tip_height(&self) -> u32 {
+        self.wollet.tip().height()
+    }
+
     // ── Boltz key derivation ─────────────────────────────────────────────
 
     pub fn boltz_submarine_refund_pubkey_hex(&self) -> Result<String> {

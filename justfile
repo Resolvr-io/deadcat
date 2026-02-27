@@ -38,7 +38,7 @@ cargo-clippy:
 	cd src-tauri && cargo clippy --all-targets -- -D warnings
 
 cargo-test:
-	cd src-tauri && cargo test --workspace --exclude deadcat-sdk
+	cd src-tauri && env -u RUST_LOG cargo test --workspace --exclude deadcat-sdk
 	cd src-tauri/crates/deadcat-sdk && ulimit -n 10240 && \
 		ARCH="$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]')"; \
 		case "$ARCH" in \
@@ -48,4 +48,4 @@ cargo-test:
 		esac; \
 		ELEMENTSD_EXEC=$PWD/tests/elementsd-$TRIPLE \
 		ELECTRS_LIQUID_EXEC=$PWD/tests/electrs-$TRIPLE \
-		cargo test
+		env -u RUST_LOG cargo test

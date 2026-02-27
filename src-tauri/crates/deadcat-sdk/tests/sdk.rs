@@ -15,6 +15,10 @@ use std::time::Duration;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+const SYNC_RETRIES: usize = 20;
+const SYNC_INITIAL_DELAY_MS: u64 = 10;
+const SYNC_MAX_DELAY_MS: u64 = 250;
+
 struct TestFixture {
     env: TestEnv,
     sdk: DeadcatSdk,
@@ -49,7 +53,6 @@ impl TestFixture {
             self.env
                 .elementsd_sendtoaddress(addr.address(), sats_each, None);
         }
-        self.env.elementsd_generate(1);
     }
 
     /// Fund + sync in one call.
@@ -58,11 +61,35 @@ impl TestFixture {
         self.mine_and_sync(1);
     }
 
+    fn sync_to_height(&mut self, target_height: u64) {
+        let mut delay = Duration::from_millis(SYNC_INITIAL_DELAY_MS);
+        for attempt in 0..SYNC_RETRIES {
+            self.sdk.sync().unwrap();
+            if u64::from(self.sdk.wallet_tip_height()) >= target_height {
+                return;
+            }
+
+            if attempt + 1 < SYNC_RETRIES {
+                std::thread::sleep(delay);
+                delay = std::cmp::min(
+                    delay.saturating_mul(2),
+                    Duration::from_millis(SYNC_MAX_DELAY_MS),
+                );
+            }
+        }
+
+        panic!(
+            "wallet tip did not reach target height {} (current: {})",
+            target_height,
+            self.sdk.wallet_tip_height()
+        );
+    }
+
     /// Mine `n` blocks, wait for electrs to index, then sync the wallet.
     fn mine_and_sync(&mut self, n: u32) {
+        let target_height = self.env.elementsd_height() + u64::from(n);
         self.env.elementsd_generate(n);
-        std::thread::sleep(Duration::from_millis(500));
-        self.sdk.sync().unwrap();
+        self.sync_to_height(target_height);
     }
 }
 
@@ -84,13 +111,21 @@ pub fn sync<S: BlockchainBackend>(wollet: &mut Wollet, client: &mut S) {
 }
 
 pub fn wait_for_tx<S: BlockchainBackend>(wollet: &mut Wollet, client: &mut S, txid: &Txid) {
-    for _ in 0..120 {
+    let mut delay = Duration::from_millis(SYNC_INITIAL_DELAY_MS);
+    for attempt in 0..SYNC_RETRIES {
         sync(wollet, client);
         let list = wollet.transactions().unwrap();
         if list.iter().any(|e| &e.txid == txid) {
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        if attempt + 1 < SYNC_RETRIES {
+            std::thread::sleep(delay);
+            delay = std::cmp::min(
+                delay.saturating_mul(2),
+                Duration::from_millis(SYNC_MAX_DELAY_MS),
+            );
+        }
     }
     panic!("Wallet does not have {txid} in its list");
 }

@@ -994,6 +994,11 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         self.with_sdk(|sdk| sdk.sync()).await
     }
 
+    /// Get the wallet tip height from the local wollet cache.
+    pub async fn wallet_tip_height(&self) -> Result<u32, NodeError> {
+        self.with_sdk(|sdk| Ok(sdk.wallet_tip_height())).await
+    }
+
     /// Get the wallet balance by asset (from cached snapshot — lock-free).
     pub fn balance(&self) -> Result<HashMap<AssetId, u64>, NodeError> {
         self.snapshot_rx
