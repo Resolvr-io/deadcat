@@ -13,6 +13,11 @@ export function handleInput(e: Event, render: () => void): void {
     return;
   }
 
+  if (target.id === "onboarding-wallet-password-confirm") {
+    state.onboardingWalletPasswordConfirm = target.value;
+    return;
+  }
+
   if (target.id === "onboarding-wallet-mnemonic") {
     state.onboardingWalletMnemonic = (
       target as unknown as HTMLTextAreaElement
@@ -70,6 +75,11 @@ export function handleInput(e: Event, render: () => void): void {
 
   if (target.id === "wallet-password") {
     state.walletPassword = target.value;
+    return;
+  }
+
+  if (target.id === "wallet-password-confirm") {
+    state.walletPasswordConfirm = target.value;
     return;
   }
 

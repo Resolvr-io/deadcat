@@ -341,6 +341,11 @@ export async function handleClick(
       render();
       return;
     }
+    if (state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm) {
+      state.onboardingError = "Passwords do not match.";
+      render();
+      return;
+    }
     state.onboardingLoading = true;
     state.onboardingError = "";
     showOverlayLoader("Creating wallet...");
@@ -387,6 +392,11 @@ export async function handleClick(
       render();
       return;
     }
+    if (state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm) {
+      state.onboardingError = "Passwords do not match.";
+      render();
+      return;
+    }
     state.onboardingLoading = true;
     state.onboardingError = "";
     showOverlayLoader("Restoring wallet...");
@@ -420,6 +430,11 @@ export async function handleClick(
   if (action === "onboarding-nostr-restore-wallet") {
     if (!state.onboardingWalletPassword) {
       state.onboardingError = "Password is required.";
+      render();
+      return;
+    }
+    if (state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm) {
+      state.onboardingError = "Passwords do not match.";
       render();
       return;
     }
@@ -733,6 +748,7 @@ export async function handleClick(
         state.nostrNsecRevealed = null;
         state.walletData = null;
         state.walletPassword = "";
+        state.walletPasswordConfirm = "";
         state.walletMnemonic = "";
         state.walletError = "";
         state.walletStatus = "not_created";
@@ -906,12 +922,6 @@ export async function handleClick(
   }
 
   if (action === "delete-nostr-backup") {
-    if (
-      !confirm(
-        "Delete your encrypted wallet backup from all relays? You can re-upload it later.",
-      )
-    )
-      return;
     state.nostrBackupLoading = true;
     render();
     (async () => {
@@ -928,7 +938,17 @@ export async function handleClick(
               )?.has_backup ?? false,
           }));
         }
-        showToast("Backup deletion request sent to relays", "success");
+        if (status.has_backup) {
+          const remaining = status.relay_results.filter(
+            (r: RelayBackupResult) => r.has_backup,
+          ).length;
+          showToast(
+            `Backup still on ${remaining} relay${remaining !== 1 ? "s" : ""} — some relays may delay deletion`,
+            "warning",
+          );
+        } else {
+          showToast("Backup deleted from all relays", "success");
+        }
       } catch (e) {
         showToast(`Delete failed: ${String(e)}`, "error");
       } finally {
@@ -952,7 +972,7 @@ export async function handleClick(
         showToast("Recovery phrase retrieved from Nostr", "success");
       } catch (e) {
         hideOverlayLoader();
-        showToast(`No backup found: ${String(e)}`, "error");
+        showToast(String(e), "error");
       }
     })();
     return;
@@ -979,6 +999,7 @@ export async function handleClick(
         await fetchWalletStatus();
         state.walletData = null;
         state.walletPassword = "";
+        state.walletPasswordConfirm = "";
         state.walletError = "";
         state.walletModal = "none";
         resetReceiveState();
@@ -1001,6 +1022,7 @@ export async function handleClick(
   if (action === "open-wallet") {
     state.walletError = "";
     state.walletPassword = "";
+    state.walletPasswordConfirm = "";
     state.settingsOpen = false;
     state.view = "wallet";
     render();
@@ -1038,6 +1060,11 @@ export async function handleClick(
       render();
       return;
     }
+    if (state.walletPassword !== state.walletPasswordConfirm) {
+      state.walletError = "Passwords do not match.";
+      render();
+      return;
+    }
     state.walletLoading = true;
     state.walletError = "";
     showOverlayLoader("Creating wallet...");
@@ -1049,6 +1076,7 @@ export async function handleClick(
         });
         state.walletMnemonic = mnemonic;
         state.walletPassword = "";
+        state.walletPasswordConfirm = "";
         await fetchWalletStatus();
         // Stay on not_created so mnemonic screen shows
         state.walletStatus = "not_created";
@@ -1066,6 +1094,7 @@ export async function handleClick(
     state.walletMnemonic = "";
     state.walletStatus = "locked";
     state.walletPassword = "";
+    state.walletPasswordConfirm = "";
     render();
     return;
   }
@@ -1073,6 +1102,7 @@ export async function handleClick(
   if (action === "toggle-restore") {
     state.walletShowRestore = !state.walletShowRestore;
     state.walletError = "";
+    state.walletPasswordConfirm = "";
     render();
     return;
   }
@@ -1083,18 +1113,26 @@ export async function handleClick(
       render();
       return;
     }
+    if (state.walletPassword !== state.walletPasswordConfirm) {
+      state.walletError = "Passwords do not match.";
+      render();
+      return;
+    }
     state.walletLoading = true;
     state.walletError = "";
     showOverlayLoader("Restoring wallet...");
     render();
     (async () => {
       try {
+        const pw = state.walletPassword;
         await invoke("restore_wallet", {
           mnemonic: state.walletRestoreMnemonic.trim(),
-          password: state.walletPassword,
+          password: pw,
         });
         state.walletRestoreMnemonic = "";
         state.walletPassword = "";
+        state.walletPasswordConfirm = "";
+        await invoke("unlock_wallet", { password: pw });
         updateOverlayMessage("Scanning blockchain...");
         await invoke("sync_wallet");
         await fetchWalletStatus();
@@ -1188,6 +1226,7 @@ export async function handleClick(
         await fetchWalletStatus();
         state.walletData = null;
         state.walletPassword = "";
+        state.walletPasswordConfirm = "";
         state.walletModal = "none";
         resetReceiveState();
         resetSendState();
@@ -1204,6 +1243,7 @@ export async function handleClick(
     state.walletDeletePrompt = true;
     state.walletDeleteConfirm = "";
     render();
+    document.getElementById("wallet-delete-confirm")?.scrollIntoView({ block: "center" });
     return;
   }
 
@@ -1222,14 +1262,16 @@ export async function handleClick(
         await fetchWalletStatus();
         state.walletData = null;
         state.walletPassword = "";
+        state.walletPasswordConfirm = "";
         state.walletMnemonic = "";
+        state.walletRestoreMnemonic = "";
         state.walletError = "";
         state.walletModal = "none";
+        state.walletShowRestore = false;
         resetReceiveState();
         resetSendState();
         state.walletDeletePrompt = false;
         state.walletDeleteConfirm = "";
-        state.settingsOpen = false;
         showToast("Wallet removed", "success");
       } catch (e) {
         showToast(`Failed to remove wallet: ${String(e)}`, "error");
@@ -1246,9 +1288,12 @@ export async function handleClick(
         await fetchWalletStatus();
         state.walletData = null;
         state.walletPassword = "";
+        state.walletPasswordConfirm = "";
         state.walletMnemonic = "";
+        state.walletRestoreMnemonic = "";
         state.walletError = "";
         state.walletModal = "none";
+        state.walletShowRestore = false;
         resetReceiveState();
         resetSendState();
         showToast(
