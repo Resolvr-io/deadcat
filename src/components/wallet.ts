@@ -7,11 +7,12 @@ import { satsToFiatStr } from "../utils/format.ts";
 const PAW_ICON = `<svg class="inline-block h-[1em] w-[1em] align-text-bottom" viewBox="0 0 90 79" fill="currentColor"><path d="M26.62,28.27c4.09,2.84,9.4,2.58,12.27-.69,2.3-2.63,3.06-5.82,3.08-10-.35-5.03-1.89-10.34-6.28-14.44C29.51-2.63,21.1-.1,19.06,8.08c-1.74,6.91,1.71,16.11,7.56,20.18Z"/><path d="M22.98,41.99c.21-1.73.04-3.62-.43-5.3-1.46-5.21-4-9.77-9.08-12.33C7.34,21.27-.31,24.39,0,32.36c-.03,7.11,5.17,14.41,11.8,16.58,5.57,1.82,10.49-1.16,11.17-6.95Z"/><path d="M63.4,28.27c5.85-4.06,9.3-13.26,7.57-20.19C68.92-.12,60.51-2.64,54.33,3.13c-4.4,4.1-5.93,9.41-6.28,14.44.02,4.18.78,7.37,3.08,10,2.87,3.28,8.17,3.54,12.27.7Z"/><path d="M76.54,24.36c-5.08,2.56-7.62,7.12-9.08,12.33-.47,1.68-.63,3.57-.43,5.3.69,5.79,5.61,8.77,11.16,6.96,6.63-2.17,11.83-9.47,11.8-16.58.32-7.99-7.32-11.1-13.45-8.01Z"/><path d="M65.95,49.84c-2.36-2.86-4.3-6.01-6.45-9.02-.89-1.24-1.8-2.47-2.78-3.65-2.76-3.35-7.24-5.02-11.72-5.02s-8.96,1.68-11.72,5.02c-.98,1.19-1.89,2.41-2.78,3.65-2.15,3.01-4.08,6.15-6.45,9.02-1.77,2.15-4.25,3.82-6.11,5.92-4.14,4.69-4.72,9.96-1.94,15.3,2.79,5.37,8.01,7.6,14.41,7.9,4.82.23,9.23-1.95,13.98-2.16.22-.01.42-.01.62-.01s.4,0,.61.01c4.75.21,9.16,2.38,13.98,2.16,6.39-.3,11.62-2.53,14.41-7.9,2.77-5.34,2.2-10.61-1.94-15.3-1.87-2.1-4.35-3.77-6.12-5.92Z"/></svg>`;
 
 import {
-  renderMnemonicGrid,
   renderModalTabs,
   renderReceiveModal,
   renderSendModal,
 } from "./wallet-modals.ts";
+import { renderWalletLocked } from "./wallet/locked.ts";
+import { renderWalletSetup } from "./wallet/setup.ts";
 
 export function renderWalletModal(): string {
   if (state.walletModal === "none") return "";
@@ -62,131 +63,11 @@ export function renderWallet(): string {
   const loadingHtml = "";
 
   if (state.walletStatus === "not_created") {
-    if (state.walletMnemonic) {
-      return `
-        <div class="phi-container py-8">
-          <div class="mx-auto max-w-lg space-y-6">
-            <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet Created ${networkBadge}</h2>
-            <div class="rounded-lg border border-slate-600 bg-slate-900/40 p-4 space-y-3">
-              <p class="text-sm font-medium text-slate-200">Back up your recovery phrase in a safe place.</p>
-              ${renderMnemonicGrid(state.walletMnemonic)}
-              <button data-action="copy-mnemonic" class="mt-2 w-full rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">Copy to clipboard</button>
-            </div>
-            ${errorHtml}
-            <button data-action="dismiss-mnemonic" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300">I've saved my recovery phrase</button>
-          </div>
-        </div>
-      `;
-    }
-
-    const isCreate = !state.walletShowRestore;
-    const isRestore = state.walletShowRestore;
-
-    return `
-      <div class="phi-container py-8">
-        <div class="mx-auto max-w-lg space-y-6">
-          <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet ${networkBadge}</h2>
-          <p class="text-sm text-slate-400">Set up a Liquid (L-BTC) wallet to participate in markets.</p>
-          ${errorHtml}
-
-          ${
-            state.nostrNpub && !loading
-              ? `<button data-action="nostr-restore-wallet" class="w-full rounded-xl border border-slate-700 bg-slate-900/50 p-4 text-left transition hover:border-slate-600">
-            <div class="flex items-center gap-3">
-              <svg class="h-6 w-6 text-slate-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/></svg>
-              <div>
-                <p class="text-sm font-medium text-slate-300">Restore from Nostr Backup</p>
-                <p class="mt-0.5 text-xs text-slate-500">Fetch encrypted backup from your relays</p>
-              </div>
-            </div>
-          </button>`
-              : ""
-          }
-
-          <div class="grid grid-cols-2 gap-3">
-            <button data-action="${isCreate || loading ? "" : "toggle-restore"}" class="rounded-xl border ${isCreate ? "border-emerald-500/50 bg-emerald-500/10" : "border-slate-700 bg-slate-900/50 hover:border-slate-600"} p-4 text-left transition ${loading ? "opacity-50 cursor-not-allowed" : ""}" ${loading ? "disabled" : ""}>
-              <svg class="h-6 w-6 ${isCreate ? "text-emerald-400" : "text-slate-500"}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-              <p class="mt-2 text-sm font-medium ${isCreate ? "text-emerald-300" : "text-slate-300"}">Create New</p>
-              <p class="mt-0.5 text-xs ${isCreate ? "text-emerald-400/60" : "text-slate-500"}">Generate a fresh wallet</p>
-            </button>
-            <button data-action="${isRestore || loading ? "" : "toggle-restore"}" class="rounded-xl border ${isRestore ? "border-emerald-500/50 bg-emerald-500/10" : "border-slate-700 bg-slate-900/50 hover:border-slate-600"} p-4 text-left transition ${loading ? "opacity-50 cursor-not-allowed" : ""}" ${loading ? "disabled" : ""}>
-              <svg class="h-6 w-6 ${isRestore ? "text-emerald-400" : "text-slate-500"}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3"/></svg>
-              <p class="mt-2 text-sm font-medium ${isRestore ? "text-emerald-300" : "text-slate-300"}">Restore</p>
-              <p class="mt-0.5 text-xs ${isRestore ? "text-emerald-400/60" : "text-slate-500"}">From recovery phrase</p>
-            </button>
-          </div>
-
-          ${
-            isCreate
-              ? `
-            <div class="space-y-4 rounded-xl border border-slate-700 bg-slate-900/50 p-6">
-              <div>
-                <label for="wallet-password" class="text-xs font-medium text-slate-400">Encryption Password</label>
-                <p class="mt-0.5 text-[11px] text-slate-500">Used to encrypt your wallet on this device.</p>
-              </div>
-              <input id="wallet-password" type="password" maxlength="32" value="${state.walletPassword}" placeholder="Enter a password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
-              <input id="wallet-password-confirm" type="password" maxlength="32" value="${state.walletPasswordConfirm}" placeholder="Confirm password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border ${state.walletPasswordConfirm && state.walletPassword !== state.walletPasswordConfirm ? "border-red-500/50" : "border-slate-700"} bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
-              <button data-action="create-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Creating..." : "Create Wallet"}</button>
-            </div>
-          `
-              : `
-            <div class="space-y-4 rounded-xl border border-slate-700 bg-slate-900/50 p-6">
-              <div>
-                <label for="wallet-restore-mnemonic" class="text-xs font-medium text-slate-400">Recovery Phrase</label>
-                <p class="mt-0.5 text-[11px] text-slate-500">Enter your 12-word recovery phrase to restore your wallet.</p>
-              </div>
-              <textarea id="wallet-restore-mnemonic" placeholder="word1 word2 word3 ..." rows="3" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm outline-none ring-emerald-400 focus:ring-2 mono disabled:opacity-50" ${loading ? "disabled" : ""}>${state.walletRestoreMnemonic}</textarea>
-              <div>
-                <label for="wallet-password" class="text-xs font-medium text-slate-400">Encryption Password</label>
-                <p class="mt-0.5 text-[11px] text-slate-500">Set a password to encrypt the restored wallet.</p>
-              </div>
-              <input id="wallet-password" type="password" maxlength="32" value="${state.walletPassword}" placeholder="Enter a password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
-              <input id="wallet-password-confirm" type="password" maxlength="32" value="${state.walletPasswordConfirm}" placeholder="Confirm password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border ${state.walletPasswordConfirm && state.walletPassword !== state.walletPasswordConfirm ? "border-red-500/50" : "border-slate-700"} bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
-              <button data-action="restore-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Restoring..." : "Restore Wallet"}</button>
-            </div>
-          `
-          }
-        </div>
-      </div>
-    `;
+    return renderWalletSetup({ errorHtml, loading, networkBadge });
   }
 
   if (state.walletStatus === "locked") {
-    return `
-      <div class="phi-container py-8">
-        <div class="mx-auto max-w-lg space-y-6">
-          <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet ${networkBadge}</h2>
-          <p class="text-sm text-slate-400">Wallet locked. Enter your password to unlock.</p>
-          ${errorHtml}
-          ${loadingHtml}
-          <div class="space-y-4 rounded-lg border border-slate-700 bg-slate-900/50 p-6">
-            <input id="wallet-password" type="password" maxlength="32" value="${state.walletPassword}" placeholder="Password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
-            <button data-action="unlock-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Unlocking..." : "Unlock"}</button>
-          </div>
-          <details class="group">
-            <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-400 transition select-none">Forgot your password?</summary>
-            <div class="mt-3 rounded-lg border border-slate-800 bg-slate-900/50 p-4 space-y-3">
-              <p class="text-xs text-slate-400">The password protects your wallet on this device only. If you've forgotten it, you can delete the wallet and restore it using either method below. <strong class="text-slate-300">Your funds are safe</strong> as long as you have your recovery phrase or nsec.</p>
-              <div class="space-y-1.5">
-                ${
-                  state.nostrNpub
-                    ? `<div class="flex items-start gap-2">
-                  <svg class="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
-                  <p class="text-xs text-slate-400"><strong class="text-slate-300">Restore from Nostr backup</strong> — If you backed up to relays, your nsec is all you need. No password required.</p>
-                </div>`
-                    : ""
-                }
-                <div class="flex items-start gap-2">
-                  <svg class="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3"/></svg>
-                  <p class="text-xs text-slate-400"><strong class="text-slate-300">Restore from recovery phrase</strong> — Enter your 12-word seed phrase and set a new password.</p>
-                </div>
-              </div>
-              <button data-action="forgot-password-delete" class="w-full rounded-lg border border-rose-700/40 px-4 py-2 text-xs text-rose-400 hover:bg-rose-900/20 transition">Delete Wallet & Restore</button>
-            </div>
-          </details>
-        </div>
-      </div>
-    `;
+    return renderWalletLocked({ errorHtml, loading, networkBadge });
   }
 
   // Unlocked — clean dashboard
