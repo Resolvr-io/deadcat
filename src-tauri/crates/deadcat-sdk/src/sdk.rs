@@ -288,6 +288,10 @@ impl DeadcatSdk {
         self.chain.electrum_url()
     }
 
+    pub(crate) fn chain_backend(&self) -> &ElectrumBackend {
+        &self.chain
+    }
+
     pub fn policy_asset(&self) -> AssetId {
         self.network.into_lwk().policy_asset()
     }
@@ -2775,9 +2779,40 @@ impl DeadcatSdk {
             "no wallet address blinding key could unblind this UTXO".into(),
         ))
     }
+
+    // ── Market Validation ──────────────────────────────────────────────
+
+    /// Validate that a market's creation tx exists at the Dormant covenant address
+    /// with the expected collateral asset.
+    pub(crate) fn validate_market_creation(
+        &self,
+        params: &PredictionMarketParams,
+        creation_txid: &Txid,
+    ) -> Result<bool> {
+        let tx = self.chain.fetch_transaction(creation_txid)?;
+        validate_market_creation_tx(params, &tx)
+    }
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────
+
+/// Check that a transaction has at least one output at the Dormant covenant SPK
+/// with the expected collateral asset.
+fn validate_market_creation_tx(params: &PredictionMarketParams, tx: &Transaction) -> Result<bool> {
+    use simplicityhl::elements::confidential;
+
+    let compiled = CompiledPredictionMarket::new(*params)?;
+    let dormant_spk = compiled.script_pubkey(MarketState::Dormant);
+    let expected_asset = AssetId::from_slice(&params.collateral_asset_id)
+        .map_err(|e| Error::Query(format!("bad collateral asset id: {e}")))?;
+
+    let valid = tx.output.iter().any(|out| {
+        out.script_pubkey == dormant_spk
+            && matches!(out.asset, confidential::Asset::Explicit(id) if id == expected_asset)
+    });
+
+    Ok(valid)
+}
 
 /// Convert a LWK `WalletTxOut` + full `TxOut` into the SDK's `UnblindedUtxo`.
 ///
@@ -3001,5 +3036,134 @@ mod tests {
             h.finalize().into()
         };
         assert_eq!(hash_a, hash_a2);
+    }
+
+    #[test]
+    fn validate_market_creation_tx_valid() {
+        use simplicityhl::elements::confidential;
+        use simplicityhl::elements::{LockTime, Sequence, TxIn, TxInWitness, TxOut, TxOutWitness};
+
+        let params = PredictionMarketParams {
+            oracle_public_key: [0xaa; 32],
+            collateral_asset_id: [0xbb; 32],
+            yes_token_asset: [0x01; 32],
+            no_token_asset: [0x02; 32],
+            yes_reissuance_token: [0x03; 32],
+            no_reissuance_token: [0x04; 32],
+            collateral_per_token: 100_000,
+            expiry_time: 1_000_000,
+        };
+
+        let compiled = CompiledPredictionMarket::new(params).unwrap();
+        let dormant_spk = compiled.script_pubkey(MarketState::Dormant);
+        let collateral_asset = AssetId::from_slice(&params.collateral_asset_id).unwrap();
+
+        let tx = Transaction {
+            version: 2,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                is_pegin: false,
+                script_sig: Script::new(),
+                sequence: Sequence::MAX,
+                asset_issuance: Default::default(),
+                witness: TxInWitness::default(),
+            }],
+            output: vec![TxOut {
+                asset: confidential::Asset::Explicit(collateral_asset),
+                value: confidential::Value::Explicit(100_000),
+                nonce: confidential::Nonce::Null,
+                script_pubkey: dormant_spk,
+                witness: TxOutWitness::default(),
+            }],
+        };
+
+        assert!(validate_market_creation_tx(&params, &tx).unwrap());
+    }
+
+    #[test]
+    fn validate_market_creation_tx_wrong_asset() {
+        use simplicityhl::elements::confidential;
+        use simplicityhl::elements::{LockTime, Sequence, TxIn, TxInWitness, TxOut, TxOutWitness};
+
+        let params = PredictionMarketParams {
+            oracle_public_key: [0xaa; 32],
+            collateral_asset_id: [0xbb; 32],
+            yes_token_asset: [0x01; 32],
+            no_token_asset: [0x02; 32],
+            yes_reissuance_token: [0x03; 32],
+            no_reissuance_token: [0x04; 32],
+            collateral_per_token: 100_000,
+            expiry_time: 1_000_000,
+        };
+
+        let compiled = CompiledPredictionMarket::new(params).unwrap();
+        let dormant_spk = compiled.script_pubkey(MarketState::Dormant);
+        let wrong_asset = AssetId::from_slice(&[0xcc; 32]).unwrap();
+
+        let tx = Transaction {
+            version: 2,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                is_pegin: false,
+                script_sig: Script::new(),
+                sequence: Sequence::MAX,
+                asset_issuance: Default::default(),
+                witness: TxInWitness::default(),
+            }],
+            output: vec![TxOut {
+                asset: confidential::Asset::Explicit(wrong_asset),
+                value: confidential::Value::Explicit(100_000),
+                nonce: confidential::Nonce::Null,
+                script_pubkey: dormant_spk,
+                witness: TxOutWitness::default(),
+            }],
+        };
+
+        // SPK matches but asset is wrong — should return false
+        assert!(!validate_market_creation_tx(&params, &tx).unwrap());
+    }
+
+    #[test]
+    fn validate_market_creation_tx_wrong_spk() {
+        use simplicityhl::elements::confidential;
+        use simplicityhl::elements::{LockTime, Sequence, TxIn, TxInWitness, TxOut, TxOutWitness};
+
+        let params = PredictionMarketParams {
+            oracle_public_key: [0xaa; 32],
+            collateral_asset_id: [0xbb; 32],
+            yes_token_asset: [0x01; 32],
+            no_token_asset: [0x02; 32],
+            yes_reissuance_token: [0x03; 32],
+            no_reissuance_token: [0x04; 32],
+            collateral_per_token: 100_000,
+            expiry_time: 1_000_000,
+        };
+
+        let collateral_asset = AssetId::from_slice(&params.collateral_asset_id).unwrap();
+
+        let tx = Transaction {
+            version: 2,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                is_pegin: false,
+                script_sig: Script::new(),
+                sequence: Sequence::MAX,
+                asset_issuance: Default::default(),
+                witness: TxInWitness::default(),
+            }],
+            output: vec![TxOut {
+                asset: confidential::Asset::Explicit(collateral_asset),
+                value: confidential::Value::Explicit(100_000),
+                nonce: confidential::Nonce::Null,
+                script_pubkey: Script::new(), // wrong SPK
+                witness: TxOutWitness::default(),
+            }],
+        };
+
+        // Asset matches but SPK is wrong — should return false
+        assert!(!validate_market_creation_tx(&params, &tx).unwrap());
     }
 }

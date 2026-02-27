@@ -30,6 +30,12 @@ pub struct DiscoveredMarket {
     pub state: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nostr_event_json: Option<String>,
+    /// Live YES probability in basis points (0–10000) from AMM pool reserves, if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub yes_price_bps: Option<u16>,
+    /// Live NO probability in basis points (0–10000) from AMM pool reserves, if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_price_bps: Option<u16>,
 }
 
 /// Build a Nostr event for a contract announcement.
@@ -98,6 +104,8 @@ pub fn parse_announcement_event(event: &Event) -> Result<DiscoveredMarket, Strin
         creation_txid: announcement.creation_txid,
         state: 0, // Default Dormant for discovered markets
         nostr_event_json: serde_json::to_string(event).ok(),
+        yes_price_bps: None,
+        no_price_bps: None,
     })
 }
 

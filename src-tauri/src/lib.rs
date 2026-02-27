@@ -1147,6 +1147,8 @@ pub fn run() {
             commands::get_market_state,
             commands::get_wallet_utxos,
             commands::list_contracts,
+            commands::sync_pool,
+            commands::get_pool_price_history,
             // Wallet store (SDK)
             wallet_store::create_software_signer,
             wallet_store::create_wollet,

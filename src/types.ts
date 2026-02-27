@@ -123,6 +123,17 @@ export type DiscoveredMarket = {
   creation_txid: string | null;
   state: CovenantState;
   nostr_event_json?: string | null;
+  yes_price_bps?: number | null;
+  no_price_bps?: number | null;
+};
+
+export type PricePoint = {
+  block_height: number | null;
+  yes_price_bps: number;
+  no_price_bps: number;
+  r_yes: number;
+  r_no: number;
+  r_lbtc: number;
 };
 
 export type IssuanceResult = {

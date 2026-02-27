@@ -63,9 +63,10 @@ impl DiscoveryStore for NoopStore {
         &mut self,
         _params: &crate::amm_pool::params::AmmPoolParams,
         _issued_lp: u64,
-        _reserves: Option<&crate::amm_pool::math::PoolReserves>,
         _nostr_event_id: Option<&str>,
         _nostr_event_json: Option<&str>,
+        _market_id: Option<&[u8; 32]>,
+        _creation_txid: Option<&[u8; 32]>,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -75,11 +76,56 @@ impl DiscoveryStore for NoopStore {
         _pool_id: &crate::amm_pool::params::PoolId,
         _params: &crate::amm_pool::params::AmmPoolParams,
         _issued_lp: u64,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn get_pool_info(
+        &mut self,
+        _pool_id: &crate::amm_pool::params::PoolId,
+    ) -> Result<Option<super::store_trait::PoolInfo>, String> {
+        Ok(None)
+    }
+
+    fn get_latest_pool_snapshot_resume(
+        &mut self,
+        _pool_id: &[u8; 32],
+    ) -> Result<Option<([u8; 32], u64)>, String> {
+        Ok(None)
+    }
+
+    fn insert_pool_snapshot(
+        &mut self,
+        _pool_id: &[u8; 32],
+        _txid: &[u8; 32],
         _r_yes: u64,
         _r_no: u64,
         _r_lbtc: u64,
+        _issued_lp: u64,
+        _block_height: Option<i32>,
     ) -> Result<(), String> {
         Ok(())
+    }
+
+    fn get_pool_id_for_market(
+        &mut self,
+        _market_id: &crate::prediction_market::params::MarketId,
+    ) -> Result<Option<crate::amm_pool::params::PoolId>, String> {
+        Ok(None)
+    }
+
+    fn get_latest_pool_snapshot(
+        &mut self,
+        _pool_id: &crate::amm_pool::params::PoolId,
+    ) -> Result<Option<super::store_trait::PoolSnapshot>, String> {
+        Ok(None)
+    }
+
+    fn get_pool_snapshot_history(
+        &mut self,
+        _pool_id: &crate::amm_pool::params::PoolId,
+    ) -> Result<Vec<super::store_trait::PoolSnapshot>, String> {
+        Ok(vec![])
     }
 }
 
@@ -568,13 +614,22 @@ pub(crate) fn persist_pool_to_store<S: DiscoveryStore>(
     let Ok(params) = discovered_pool_to_amm_params(pool) else {
         return;
     };
+    let market_id: Option<[u8; 32]> = hex::decode(&pool.market_id)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+    let creation_txid: Option<[u8; 32]> = pool
+        .creation_txid
+        .as_deref()
+        .and_then(|s| hex::decode(s).ok())
+        .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
     if let Ok(mut s) = store.lock() {
         let _ = s.ingest_amm_pool(
             &params,
             pool.issued_lp,
-            Some(&pool.reserves),
             Some(&pool.id),
             pool.nostr_event_json.as_deref(),
+            market_id.as_ref(),
+            creation_txid.as_ref(),
         );
     }
 }

@@ -388,6 +388,10 @@ void listen("discovery:attestation", () => {
   void refreshMarketsFromStore().then(render);
 });
 
+void listen("discovery:pool", () => {
+  void refreshMarketsFromStore().then(render);
+});
+
 // ── Auto-lock activity tracking ──────────────────────────────────────
 
 let activityTimer: ReturnType<typeof setTimeout> | null = null;

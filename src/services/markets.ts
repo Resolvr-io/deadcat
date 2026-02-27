@@ -5,6 +5,7 @@ import type {
   IssuanceResult,
   Market,
   MarketCategory,
+  PricePoint,
 } from "../types.ts";
 import { hexToBytes } from "../utils/crypto.ts";
 
@@ -40,7 +41,10 @@ export function discoveredToMarket(d: DiscoveredMarket): Market {
     creationTxid: d.creation_txid,
     collateralUtxos: [],
     nostrEventJson: d.nostr_event_json ?? null,
-    yesPrice: d.starting_yes_price / 100,
+    yesPrice:
+      d.yes_price_bps != null
+        ? d.yes_price_bps / 10000
+        : d.starting_yes_price / 100,
     change24h: 0,
     volumeBtc: 0,
     liquidityBtc: 0,
@@ -91,4 +95,14 @@ export async function issueTokens(
     creationTxid: market.creationTxid,
     pairs,
   });
+}
+
+export async function syncPool(poolId: string): Promise<void> {
+  await invoke("sync_pool", { poolId });
+}
+
+export async function loadPriceHistory(
+  marketId: string,
+): Promise<PricePoint[]> {
+  return invoke<PricePoint[]>("get_pool_price_history", { marketId });
 }

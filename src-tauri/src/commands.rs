@@ -762,6 +762,8 @@ pub async fn publish_contract(
         creation_txid: None,
         state: 0,
         nostr_event_json: None,
+        yes_price_bps: None,
+        no_price_bps: None,
     })
 }
 
@@ -1181,13 +1183,42 @@ pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, St
 
     let mut result = Vec::with_capacity(infos.len());
     for info in &infos {
-        result.push(market_info_to_discovered(info));
+        // Look up pool price from latest snapshot
+        let (yes_bps, no_bps) = pool_price_for_market(&mut store, info.market_id.as_bytes());
+        result.push(market_info_to_discovered(info, yes_bps, no_bps));
     }
     Ok(result)
 }
 
+/// Look up pool price from the latest snapshot for a market.
+fn pool_price_for_market(
+    store: &mut deadcat_store::DeadcatStore,
+    market_id: &[u8; 32],
+) -> (Option<u16>, Option<u16>) {
+    let pool = match store.get_pool_for_market(market_id) {
+        Ok(Some(p)) => p,
+        _ => return (None, None),
+    };
+    let snap = match store.get_latest_pool_snapshot(&pool.pool_id.0) {
+        Ok(Some(s)) => s,
+        _ => return (None, None),
+    };
+    let reserves = deadcat_sdk::PoolReserves {
+        r_yes: snap.r_yes,
+        r_no: snap.r_no,
+        r_lbtc: snap.r_lbtc,
+    };
+    deadcat_sdk::implied_probability_bps(&reserves)
+        .map(|(y, n)| (Some(y), Some(n)))
+        .unwrap_or((None, None))
+}
+
 /// Convert a `MarketInfo` (store type) back to `DiscoveredMarket` (frontend type).
-fn market_info_to_discovered(info: &deadcat_store::MarketInfo) -> DiscoveredMarket {
+fn market_info_to_discovered(
+    info: &deadcat_store::MarketInfo,
+    yes_price_bps: Option<u16>,
+    no_price_bps: Option<u16>,
+) -> DiscoveredMarket {
     let p = &info.params;
     let market_id_hex = hex::encode(info.market_id.as_bytes());
     DiscoveredMarket {
@@ -1216,6 +1247,8 @@ fn market_info_to_discovered(info: &deadcat_store::MarketInfo) -> DiscoveredMark
         creation_txid: info.creation_txid.clone(),
         state: info.state.as_u64() as u8,
         nostr_event_json: info.nostr_event_json.clone(),
+        yes_price_bps,
+        no_price_bps,
     }
 }
 
@@ -1223,4 +1256,68 @@ fn parse_iso_datetime_to_unix(s: &str) -> u64 {
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .map(|dt| dt.and_utc().timestamp() as u64)
         .unwrap_or(0)
+}
+
+// =========================================================================
+// Pool chain-walk commands
+// =========================================================================
+
+/// Sync a pool's on-chain state history (chain walk).
+#[tauri::command]
+pub async fn sync_pool(pool_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let pool_id_bytes: [u8; 32] = hex::decode(&pool_id)
+        .map_err(|e| format!("invalid pool_id hex: {e}"))?
+        .try_into()
+        .map_err(|_| "pool_id must be exactly 32 bytes".to_string())?;
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    node.sync_pool_chain(&deadcat_sdk::PoolId(pool_id_bytes))
+        .await
+        .map_err(|e| format!("{e}"))?;
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PricePoint {
+    pub block_height: Option<i32>,
+    pub yes_price_bps: u16,
+    pub no_price_bps: u16,
+    pub r_yes: u64,
+    pub r_no: u64,
+    pub r_lbtc: u64,
+}
+
+/// Get price history for a market's pool (all snapshots as price points).
+#[tauri::command]
+pub async fn get_pool_price_history(
+    market_id: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<PricePoint>, String> {
+    let market_id_bytes: [u8; 32] = hex::decode(&market_id)
+        .map_err(|e| format!("invalid market_id hex: {e}"))?
+        .try_into()
+        .map_err(|_| "market_id must be exactly 32 bytes".to_string())?;
+    let mid = deadcat_sdk::MarketId(market_id_bytes);
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+
+    let history = node
+        .market_price_history(&mid)
+        .map_err(|e| format!("{e}"))?;
+
+    Ok(history
+        .into_iter()
+        .map(|p| PricePoint {
+            block_height: p.block_height,
+            yes_price_bps: p.yes_bps,
+            no_price_bps: p.no_bps,
+            r_yes: p.reserves.r_yes,
+            r_no: p.reserves.r_no,
+            r_lbtc: p.reserves.r_lbtc,
+        })
+        .collect())
 }

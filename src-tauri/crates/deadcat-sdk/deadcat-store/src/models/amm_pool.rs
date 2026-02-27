@@ -15,15 +15,17 @@ pub struct AmmPoolRow {
     pub cosigner_pubkey: Vec<u8>,
     pub cmr: Vec<u8>,
     pub issued_lp: i64,
-    pub r_yes: Option<i64>,
-    pub r_no: Option<i64>,
-    pub r_lbtc: Option<i64>,
+    /// Cached: re-derivable from AmmPoolParams + issued_lp via
+    /// `CompiledAmmPool::new(params)?.script_pubkey(issued_lp)`.
+    /// Stored to avoid ~800ms Simplicity recompilation per lookup.
     pub covenant_spk: Vec<u8>,
     pub pool_status: i32,
     pub created_at: String,
     pub updated_at: String,
     pub nostr_event_id: Option<String>,
     pub nostr_event_json: Option<String>,
+    pub market_id: Option<Vec<u8>>,
+    pub creation_txid: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -39,11 +41,10 @@ pub struct NewAmmPoolRow {
     pub cosigner_pubkey: Vec<u8>,
     pub cmr: Vec<u8>,
     pub issued_lp: i64,
-    pub r_yes: Option<i64>,
-    pub r_no: Option<i64>,
-    pub r_lbtc: Option<i64>,
     pub covenant_spk: Vec<u8>,
     pub pool_status: i32,
     pub nostr_event_id: Option<String>,
     pub nostr_event_json: Option<String>,
+    pub market_id: Option<Vec<u8>>,
+    pub creation_txid: Option<Vec<u8>>,
 }

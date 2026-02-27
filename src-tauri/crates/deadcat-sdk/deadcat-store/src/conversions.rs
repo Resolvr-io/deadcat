@@ -361,27 +361,36 @@ impl TryFrom<&AmmPoolRow> for AmmPoolInfo {
             status: PoolStatus::from_i32(row.pool_status)?,
             cmr: vec_to_array32(&row.cmr, "cmr")?,
             issued_lp: row.issued_lp as u64,
-            r_yes: row.r_yes.map(|v| v as u64),
-            r_no: row.r_no.map(|v| v as u64),
-            r_lbtc: row.r_lbtc.map(|v| v as u64),
             covenant_spk: row.covenant_spk.clone(),
             nostr_event_id: row.nostr_event_id.clone(),
             nostr_event_json: row.nostr_event_json.clone(),
             created_at: row.created_at.clone(),
             updated_at: row.updated_at.clone(),
+            market_id: row
+                .market_id
+                .as_ref()
+                .map(|v| vec_to_array32(v, "market_id"))
+                .transpose()?,
+            creation_txid: row
+                .creation_txid
+                .as_ref()
+                .map(|v| vec_to_array32(v, "creation_txid"))
+                .transpose()?,
         })
     }
 }
 
 // --- AmmPoolParams + CompiledAmmPool -> NewAmmPoolRow ---
 
+#[allow(clippy::too_many_arguments)]
 pub fn new_amm_pool_row(
     params: &AmmPoolParams,
     compiled: &CompiledAmmPool,
     issued_lp: u64,
-    reserves: Option<&deadcat_sdk::PoolReserves>,
     nostr_event_id: Option<&str>,
     nostr_event_json: Option<&str>,
+    market_id: Option<&[u8; 32]>,
+    creation_txid: Option<&[u8; 32]>,
 ) -> NewAmmPoolRow {
     let pool_id = PoolId::from_params(params);
     NewAmmPoolRow {
@@ -395,12 +404,11 @@ pub fn new_amm_pool_row(
         cosigner_pubkey: params.cosigner_pubkey.to_vec(),
         cmr: compiled.cmr().as_ref().to_vec(),
         issued_lp: issued_lp as i64,
-        r_yes: reserves.map(|r| r.r_yes as i64),
-        r_no: reserves.map(|r| r.r_no as i64),
-        r_lbtc: reserves.map(|r| r.r_lbtc as i64),
         covenant_spk: compiled.script_pubkey(issued_lp).as_bytes().to_vec(),
         pool_status: PoolStatus::Active.as_i32(),
         nostr_event_id: nostr_event_id.map(|s| s.to_string()),
         nostr_event_json: nostr_event_json.map(|s| s.to_string()),
+        market_id: market_id.map(|id| id.to_vec()),
+        creation_txid: creation_txid.map(|id| id.to_vec()),
     }
 }

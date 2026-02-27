@@ -8,7 +8,8 @@ mod sync;
 pub use deadcat_sdk::ContractMetadataInput;
 pub use error::StoreError;
 pub use store::{
-    DeadcatStore, IssuanceData, MakerOrderInfo, MarketFilter, MarketInfo, OrderFilter, OrderStatus,
+    AmmPoolInfo, DeadcatStore, IssuanceData, MakerOrderInfo, MarketFilter, MarketInfo, OrderFilter,
+    OrderStatus, PoolStateSnapshotInfo, PoolStatus,
 };
 pub use sync::{ChainSource, ChainUtxo, MarketStateChange, OrderStatusChange, SyncReport};
 

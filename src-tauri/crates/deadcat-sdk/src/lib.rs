@@ -42,7 +42,7 @@ pub use sdk::{
 pub use lwk_wollet;
 
 // ── Node ──────────────────────────────────────────────────────────
-pub use node::WalletSnapshot;
+pub use node::{MarketPrice, PricePoint, WalletSnapshot};
 
 // ── Maker orders ───────────────────────────────────────────────────
 pub use maker_order::contract::CompiledMakerOrder;
@@ -51,8 +51,9 @@ pub use maker_order::params::{
 };
 
 // ── AMM pools ──────────────────────────────────────────────────────
+pub use amm_pool::chain_walk::PoolStateSnapshot;
 pub use amm_pool::contract::CompiledAmmPool;
-pub use amm_pool::math::{PoolReserves, SwapPair};
+pub use amm_pool::math::{PoolReserves, SwapPair, implied_probability_bps};
 pub use amm_pool::params::{AmmPoolParams, PoolId};
 
 // ── Trade routing ──────────────────────────────────────────────────
@@ -82,6 +83,8 @@ pub use discovery::{
     NoopStore,
     OrderAnnouncement,
     PoolAnnouncement,
+    PoolInfo,
+    PoolSnapshot,
     // Functions
     build_announcement_event,
     build_attestation_event,

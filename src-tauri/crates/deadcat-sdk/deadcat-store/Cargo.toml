@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 deadcat-sdk = { path = ".." }
-diesel = { version = "2", features = ["sqlite", "r2d2"] }
+diesel = { version = "2", features = ["sqlite", "r2d2", "64-column-tables"] }
 diesel_migrations = "2"
 thiserror = "2"
 

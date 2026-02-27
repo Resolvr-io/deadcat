@@ -525,6 +525,21 @@ pub fn compute_lp_proportional_withdraw(
     })
 }
 
+/// Implied probability of YES and NO outcomes in basis points (0–10000).
+///
+/// YES probability = `r_no / (r_yes + r_no)` — a higher NO reserve means YES
+/// is more likely (the market has priced YES up).
+///
+/// Returns `None` if both reserves are zero.
+pub fn implied_probability_bps(reserves: &PoolReserves) -> Option<(u16, u16)> {
+    let total = reserves.r_yes + reserves.r_no;
+    if total == 0 {
+        return None;
+    }
+    let yes_bps = ((reserves.r_no as f64 / total as f64) * 10_000.0).round() as u16;
+    Some((yes_bps, 10_000u16.saturating_sub(yes_bps)))
+}
+
 /// Spot price of YES tokens in L-BTC terms.
 pub fn spot_price_yes_lbtc(reserves: &PoolReserves) -> f64 {
     if reserves.r_yes == 0 {
@@ -893,5 +908,40 @@ mod tests {
 
         // Roundtrip should lose value to fees
         assert!(step2.delta_out < 10_000, "roundtrip should lose to fees");
+    }
+
+    #[test]
+    fn implied_probability_50_50() {
+        let reserves = PoolReserves {
+            r_yes: 10_000,
+            r_no: 10_000,
+            r_lbtc: 5_000,
+        };
+        let (yes_bps, no_bps) = implied_probability_bps(&reserves).unwrap();
+        assert_eq!(yes_bps, 5000);
+        assert_eq!(no_bps, 5000);
+    }
+
+    #[test]
+    fn implied_probability_70_30() {
+        // More NO reserves → YES is more likely
+        let reserves = PoolReserves {
+            r_yes: 3_000,
+            r_no: 7_000,
+            r_lbtc: 5_000,
+        };
+        let (yes_bps, no_bps) = implied_probability_bps(&reserves).unwrap();
+        assert_eq!(yes_bps, 7000);
+        assert_eq!(no_bps, 3000);
+    }
+
+    #[test]
+    fn implied_probability_zero_reserves() {
+        let reserves = PoolReserves {
+            r_yes: 0,
+            r_no: 0,
+            r_lbtc: 5_000,
+        };
+        assert!(implied_probability_bps(&reserves).is_none());
     }
 }

@@ -323,9 +323,10 @@ impl DiscoveryStore for TestStore {
         &mut self,
         _params: &crate::amm_pool::params::AmmPoolParams,
         _issued_lp: u64,
-        _reserves: Option<&crate::amm_pool::math::PoolReserves>,
         _nostr_event_id: Option<&str>,
         _nostr_event_json: Option<&str>,
+        _market_id: Option<&[u8; 32]>,
+        _creation_txid: Option<&[u8; 32]>,
     ) -> std::result::Result<(), String> {
         Ok(())
     }
@@ -335,11 +336,56 @@ impl DiscoveryStore for TestStore {
         _pool_id: &crate::amm_pool::params::PoolId,
         _params: &crate::amm_pool::params::AmmPoolParams,
         _issued_lp: u64,
+    ) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
+    fn get_pool_info(
+        &mut self,
+        _pool_id: &crate::amm_pool::params::PoolId,
+    ) -> std::result::Result<Option<crate::discovery::store_trait::PoolInfo>, String> {
+        Ok(None)
+    }
+
+    fn get_latest_pool_snapshot_resume(
+        &mut self,
+        _pool_id: &[u8; 32],
+    ) -> std::result::Result<Option<([u8; 32], u64)>, String> {
+        Ok(None)
+    }
+
+    fn insert_pool_snapshot(
+        &mut self,
+        _pool_id: &[u8; 32],
+        _txid: &[u8; 32],
         _r_yes: u64,
         _r_no: u64,
         _r_lbtc: u64,
+        _issued_lp: u64,
+        _block_height: Option<i32>,
     ) -> std::result::Result<(), String> {
         Ok(())
+    }
+
+    fn get_pool_id_for_market(
+        &mut self,
+        _market_id: &crate::prediction_market::params::MarketId,
+    ) -> std::result::Result<Option<crate::amm_pool::params::PoolId>, String> {
+        Ok(None)
+    }
+
+    fn get_latest_pool_snapshot(
+        &mut self,
+        _pool_id: &crate::amm_pool::params::PoolId,
+    ) -> std::result::Result<Option<crate::discovery::store_trait::PoolSnapshot>, String> {
+        Ok(None)
+    }
+
+    fn get_pool_snapshot_history(
+        &mut self,
+        _pool_id: &crate::amm_pool::params::PoolId,
+    ) -> std::result::Result<Vec<crate::discovery::store_trait::PoolSnapshot>, String> {
+        Ok(vec![])
     }
 }
 
