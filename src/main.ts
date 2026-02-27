@@ -44,6 +44,7 @@ import {
 // ── Core render ──────────────────────────────────────────────────────
 
 let chartAspectSyncRaf: number | null = null;
+let chartHoverRenderRaf: number | null = null;
 const CHART_ASPECT_MIN = 1.2;
 const CHART_ASPECT_MAX = 8;
 const CHART_ASPECT_EPSILON = 0.005;
@@ -104,6 +105,14 @@ function scheduleChartAspectSync(): void {
   chartAspectSyncRaf = requestAnimationFrame(() => {
     chartAspectSyncRaf = null;
     syncChartAspectFromLayout();
+  });
+}
+
+function scheduleChartHoverRender(): void {
+  if (chartHoverRenderRaf !== null) return;
+  chartHoverRenderRaf = requestAnimationFrame(() => {
+    chartHoverRenderRaf = null;
+    render();
   });
 }
 
@@ -407,7 +416,7 @@ app.addEventListener("mousemove", (event) => {
     if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
       state.chartHoverMarketId = null;
       state.chartHoverX = null;
-      render();
+      scheduleChartHoverRender();
     }
     return;
   }
@@ -439,14 +448,14 @@ app.addEventListener("mousemove", (event) => {
 
   state.chartHoverMarketId = marketId;
   state.chartHoverX = hoverX;
-  render();
+  scheduleChartHoverRender();
 });
 
 app.addEventListener("mouseleave", () => {
   if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
     state.chartHoverMarketId = null;
     state.chartHoverX = null;
-    render();
+    scheduleChartHoverRender();
   }
 });
 
@@ -460,7 +469,7 @@ app.addEventListener("mouseout", (event) => {
   if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
     state.chartHoverMarketId = null;
     state.chartHoverX = null;
-    render();
+    scheduleChartHoverRender();
   }
 });
 
