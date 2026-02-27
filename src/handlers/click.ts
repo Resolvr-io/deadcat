@@ -2166,8 +2166,6 @@ export async function handleClick(
               },
             },
           );
-          // Ingest the newly created market into the store
-          await invoke("ingest_discovered_markets", { markets: [result] });
           markets.push(discoveredToMarket(result));
           state.view = "home";
           state.createQuestion = "";

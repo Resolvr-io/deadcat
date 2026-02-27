@@ -59,17 +59,14 @@ pub use market::{
 
 pub use attestation::{
     AttestationContent, AttestationResult, build_attestation_event, build_attestation_filter,
-    build_attestation_subscription_filter, parse_attestation_event, sign_attestation,
+    sign_attestation,
 };
 
 // ---------------------------------------------------------------------------
 // Re-exports: pool
 // ---------------------------------------------------------------------------
 
-pub use pool::{
-    DiscoveredPool, PoolAnnouncement, build_pool_event, build_pool_filter, fetch_pools,
-    parse_pool_event,
-};
+pub use pool::{DiscoveredPool, PoolAnnouncement};
 
 // ---------------------------------------------------------------------------
 // Re-exports: config, events, service, store_trait
@@ -259,6 +256,7 @@ pub async fn fetch_announcements(client: &Client) -> Result<Vec<DiscoveredMarket
 }
 
 /// Fetch limit orders from relays, optionally filtered by market ID.
+#[allow(dead_code)]
 pub async fn fetch_orders(
     client: &Client,
     market_id_hex: Option<&str>,

@@ -49,16 +49,20 @@ export function discoveredToMarket(d: DiscoveredMarket): Market {
 
 export async function loadMarkets(): Promise<void> {
   try {
-    // 1. Fetch from Nostr
-    const discovered = await invoke<DiscoveredMarket[]>("discover_contracts");
-    // 2. Ingest into store (incompatible contracts silently dropped)
-    await invoke("ingest_discovered_markets", { markets: discovered });
-    // 3. Load from store (only compatible, compiled contracts with on-chain state)
+    const stored = await invoke<DiscoveredMarket[]>("discover_contracts");
+    setMarkets(stored.map(discoveredToMarket));
+  } catch (error) {
+    console.warn("Failed to load markets:", error);
+    setMarkets([]);
+  }
+}
+
+export async function refreshMarketsFromStore(): Promise<void> {
+  try {
     const stored = await invoke<DiscoveredMarket[]>("list_contracts");
     setMarkets(stored.map(discoveredToMarket));
   } catch (error) {
-    console.warn("Failed to discover contracts:", error);
-    setMarkets([]);
+    console.warn("Failed to refresh markets from store:", error);
   }
 }
 

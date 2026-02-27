@@ -109,6 +109,7 @@ pub fn parse_pool_event(event: &Event) -> Result<DiscoveredPool, String> {
 }
 
 /// Fetch AMM pool announcements from relays.
+#[allow(dead_code)]
 pub async fn fetch_pools(
     client: &Client,
     market_id_hex: Option<&str>,

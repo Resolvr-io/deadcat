@@ -1,14 +1,13 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use deadcat_store::{ContractMetadataInput, MarketFilter};
+use deadcat_store::MarketFilter;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
 use crate::discovery::{
-    self, discovered_market_to_contract_params, ContractMetadata, CreateContractRequest,
-    DiscoveredMarket, IdentityResponse,
+    self, ContractMetadata, CreateContractRequest, DiscoveredMarket, IdentityResponse,
 };
 use crate::state::AppStateManager;
 use crate::{NodeState, NostrAppState};
@@ -644,10 +643,17 @@ pub async fn fetch_nostr_profile(
 
 #[tauri::command]
 pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    node.fetch_markets().await.map_err(|e| format!("{e}"))
+    // Fetch from Nostr (persists to store as side-effect)
+    {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        let node = guard.as_ref().ok_or("Node not initialized")?;
+        if let Err(e) = node.fetch_markets().await {
+            log::warn!("Nostr fetch failed (serving from store): {e}");
+        }
+    }
+    // Return from store — single source of truth
+    list_contracts(app)
 }
 
 /// Publish a contract to Nostr (Nostr-only mode — no on-chain tx).
@@ -1152,59 +1158,6 @@ pub async fn get_wallet_utxos(
 // =========================================================================
 // Market store commands
 // =========================================================================
-
-#[tauri::command]
-pub fn ingest_discovered_markets(
-    markets: Vec<DiscoveredMarket>,
-    app: tauri::AppHandle,
-) -> Result<u32, String> {
-    let store_arc = {
-        let state_handle = app.state::<Mutex<AppStateManager>>();
-        let mgr = state_handle
-            .lock()
-            .map_err(|_| "state lock failed".to_string())?;
-        mgr.store()
-            .cloned()
-            .ok_or_else(|| "Store not initialized".to_string())?
-    };
-
-    let mut store = store_arc
-        .lock()
-        .map_err(|_| "store lock failed".to_string())?;
-
-    let mut count = 0u32;
-    for market in &markets {
-        let params = match discovered_market_to_contract_params(market) {
-            Ok(p) => p,
-            Err(e) => {
-                log::warn!("skipping market {}: {e}", market.market_id);
-                continue;
-            }
-        };
-
-        let metadata = ContractMetadataInput {
-            question: Some(market.question.clone()),
-            description: Some(market.description.clone()),
-            category: Some(market.category.clone()),
-            resolution_source: Some(market.resolution_source.clone()),
-            starting_yes_price: Some(market.starting_yes_price),
-            creator_pubkey: hex::decode(&market.creator_pubkey).ok(),
-            creation_txid: market.creation_txid.clone(),
-            nevent: Some(market.nevent.clone()),
-            nostr_event_id: Some(market.id.clone()),
-            nostr_event_json: market.nostr_event_json.clone(),
-        };
-
-        match store.ingest_market(&params, Some(&metadata)) {
-            Ok(_) => count += 1,
-            Err(e) => {
-                log::warn!("failed to ingest market {}: {e}", market.market_id);
-            }
-        }
-    }
-
-    Ok(count)
-}
 
 #[tauri::command]
 pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {

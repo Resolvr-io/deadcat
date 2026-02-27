@@ -1146,7 +1146,6 @@ pub fn run() {
             commands::redeem_expired,
             commands::get_market_state,
             commands::get_wallet_utxos,
-            commands::ingest_discovered_markets,
             commands::list_contracts,
             // Wallet store (SDK)
             wallet_store::create_software_signer,
