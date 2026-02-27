@@ -14,7 +14,7 @@ use deadcat_sdk::{
 };
 
 use deadcat_store::{
-    ChainSource, ChainUtxo, ContractMetadataInput, DeadcatStore, IssuanceData, MarketFilter,
+    ChainSource, ChainUtxo, DeadcatStore, DiscoveredMarketMetadata, IssuanceData, MarketFilter,
     OrderFilter, OrderStatus,
 };
 
@@ -1503,7 +1503,7 @@ fn test_ingest_market_with_metadata_roundtrip() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_params();
 
-    let metadata = ContractMetadataInput {
+    let metadata = DiscoveredMarketMetadata {
         question: Some("Will BTC hit 100k?".to_string()),
         description: Some("Resolves via exchange data.".to_string()),
         category: Some("Bitcoin".to_string()),
@@ -1552,7 +1552,7 @@ fn test_ingest_market_metadata_persists_across_reopen() {
 
     let market_id = {
         let mut store = DeadcatStore::open(&db_path).unwrap();
-        let metadata = ContractMetadataInput {
+        let metadata = DiscoveredMarketMetadata {
             question: Some("Test question".to_string()),
             category: Some("Politics".to_string()),
             ..Default::default()
@@ -1573,11 +1573,11 @@ fn test_ingest_market_metadata_persists_across_reopen() {
 fn test_list_markets_includes_metadata() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
 
-    let metadata1 = ContractMetadataInput {
+    let metadata1 = DiscoveredMarketMetadata {
         question: Some("Question 1".to_string()),
         ..Default::default()
     };
-    let metadata2 = ContractMetadataInput {
+    let metadata2 = DiscoveredMarketMetadata {
         question: Some("Question 2".to_string()),
         ..Default::default()
     };
@@ -1608,7 +1608,7 @@ fn test_market_nostr_event_json_roundtrip() {
     let params = test_params();
 
     let event_json = r#"{"id":"abc123","content":"test"}"#;
-    let metadata = ContractMetadataInput {
+    let metadata = DiscoveredMarketMetadata {
         question: Some("Test question".to_string()),
         nostr_event_id: Some("abc123".to_string()),
         nostr_event_json: Some(event_json.to_string()),

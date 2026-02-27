@@ -143,6 +143,10 @@ pub struct DeadcatSdk {
 }
 
 impl DeadcatSdk {
+    /// Create an SDK instance backed by a persistent Liquid wallet.
+    ///
+    /// Derives a SLIP-77 blinding key and `elwpkh` descriptor from the
+    /// mnemonic and stores wallet state under `datadir/<network>/wallet_db`.
     pub fn new(
         mnemonic: &str,
         network: Network,
@@ -181,6 +185,7 @@ impl DeadcatSdk {
 
     // ── Wallet queries ───────────────────────────────────────────────────
 
+    /// Full-scan the wallet against the Electrum server.
     pub fn sync(&mut self) -> Result<()> {
         let url: ElectrumUrl = self
             .chain
@@ -193,6 +198,7 @@ impl DeadcatSdk {
         Ok(())
     }
 
+    /// Return the wallet's balance per asset.
     pub fn balance(&self) -> Result<HashMap<AssetId, u64>> {
         let balance = self
             .wollet
@@ -217,6 +223,7 @@ impl DeadcatSdk {
             .map_err(|e| Error::Query(e.to_string()))
     }
 
+    /// Sign, finalize, and extract a transaction from a PSET.
     pub fn sign_pset(&self, mut pset: PartiallySignedTransaction) -> Result<Transaction> {
         self.wollet
             .add_details(&mut pset)
@@ -229,6 +236,7 @@ impl DeadcatSdk {
             .map_err(|e| Error::Finalize(e.to_string()))
     }
 
+    /// Build, sign, and broadcast a simple L-BTC send. Returns `(txid, fee_sat)`.
     pub fn send_lbtc(
         &mut self,
         address_str: &str,
@@ -279,7 +287,7 @@ impl DeadcatSdk {
         self.chain.fetch_transaction(txid)
     }
 
-    #[cfg_attr(not(any(test, feature = "testing")), allow(dead_code))]
+    #[cfg(any(test, feature = "testing"))]
     pub fn network(&self) -> Network {
         self.network
     }
@@ -459,7 +467,7 @@ impl DeadcatSdk {
 
         // B. Classify and unblind covenant UTXOs
         let (yes_rt, no_rt, collateral_covenant_utxo) =
-            self.classify_covenant_utxos(&covenant_utxos, params, current_state)?;
+            self.classify_covenant_utxos(&covenant_utxos, params)?;
 
         // C. Compute issuance entropy
         let creation_tx = self.fetch_transaction(creation_txid)?;
@@ -574,7 +582,6 @@ impl DeadcatSdk {
         &self,
         covenant_utxos: &[(OutPoint, TxOut)],
         params: &PredictionMarketParams,
-        _current_state: MarketState,
     ) -> Result<(UnblindedUtxo, UnblindedUtxo, Option<UnblindedUtxo>)> {
         let yes_rt_id = AssetId::from_slice(&params.yes_reissuance_token)
             .map_err(|e| Error::Unblind(format!("bad YES reissuance asset: {e}")))?;
@@ -727,7 +734,7 @@ impl DeadcatSdk {
         }
 
         let (yes_rt, no_rt, collateral_covenant_utxo) =
-            self.classify_covenant_utxos(&covenant_utxos, params, current_state)?;
+            self.classify_covenant_utxos(&covenant_utxos, params)?;
 
         let collateral = collateral_covenant_utxo
             .ok_or_else(|| Error::CovenantScan("collateral UTXO not found at covenant".into()))?;
@@ -821,7 +828,7 @@ impl DeadcatSdk {
         }
 
         let (yes_rt, no_rt, collateral_covenant_utxo) =
-            self.classify_covenant_utxos(&covenant_utxos, params, current_state)?;
+            self.classify_covenant_utxos(&covenant_utxos, params)?;
 
         let collateral = collateral_covenant_utxo
             .ok_or_else(|| Error::CovenantScan("collateral UTXO not found at covenant".into()))?;
@@ -1118,8 +1125,8 @@ impl DeadcatSdk {
     /// Blind wallet-destination outputs in a maker order PSET.
     ///
     /// `wallet_inputs`: the wallet UTXOs used as PSET inputs (in order).
-    /// `first_wallet_output`: index of the first output to blind (all subsequent
-    ///   non-fee outputs are also blinded).
+    /// `blind_output_indices`: PSET output indices to blind.
+    /// `change_addr`: confidential address whose blinding key is applied.
     fn blind_order_pset(
         &self,
         pset: &mut PartiallySignedTransaction,
@@ -1164,9 +1171,10 @@ impl DeadcatSdk {
     /// Blind selected outputs in an AMM pool PSET that has mixed covenant
     /// (explicit) and wallet (confidential) inputs.
     ///
-    /// `all_inputs_with_indices`: pairs of (pset_input_index, UnblindedUtxo)
-    ///   for ALL inputs (pool covenant + wallet). Required for surjection proofs.
+    /// `wallet_inputs_with_indices`: pairs of (pset_input_index, UnblindedUtxo)
+    ///   for the wallet inputs. Required for surjection proofs.
     /// `blind_output_indices`: PSET output indices to blind (RT + wallet outputs).
+    /// `change_addr`: confidential address whose blinding key is applied.
     fn blind_pool_pset(
         &self,
         pset: &mut PartiallySignedTransaction,
@@ -1939,16 +1947,13 @@ impl DeadcatSdk {
     }
 
     /// Execute a swap against an AMM pool.
-    ///
-    /// - `sell_a = false`: sell B (second-named in pair), receive A (first-named).
-    /// - `sell_a = true`: sell A (first-named in pair), receive B (second-named).
     pub fn pool_swap(
         &mut self,
         pool_params: &crate::amm_pool::params::AmmPoolParams,
         issued_lp: u64,
         swap_pair: crate::amm_pool::math::SwapPair,
         delta_in: u64,
-        sell_a: bool,
+        direction: crate::amm_pool::math::SwapDirection,
         fee_amount: u64,
     ) -> Result<PoolSwapResult> {
         use crate::amm_pool::math::{PoolReserves, compute_swap_exact_input};
@@ -1964,35 +1969,43 @@ impl DeadcatSdk {
             r_lbtc: pool_lbtc.value,
         };
 
-        let swap_result =
-            compute_swap_exact_input(&reserves, swap_pair, delta_in, pool_params.fee_bps, sell_a)?;
+        let swap_result = compute_swap_exact_input(
+            &reserves,
+            swap_pair,
+            delta_in,
+            pool_params.fee_bps,
+            direction,
+        )?;
 
         // Determine which asset the trader sends in and receives out based on
-        // the pair and sell_a flag (no need to inspect reserve changes).
-        let (trader_send_asset, trader_receive_asset) = if sell_a {
-            // Sell A (first-named), receive B (second-named)
-            match swap_pair {
-                crate::amm_pool::math::SwapPair::YesNo => {
-                    (pool_params.yes_asset_id, pool_params.no_asset_id)
-                }
-                crate::amm_pool::math::SwapPair::YesLbtc => {
-                    (pool_params.yes_asset_id, pool_params.lbtc_asset_id)
-                }
-                crate::amm_pool::math::SwapPair::NoLbtc => {
-                    (pool_params.no_asset_id, pool_params.lbtc_asset_id)
+        // the pair and direction.
+        let (trader_send_asset, trader_receive_asset) = match direction {
+            crate::amm_pool::math::SwapDirection::SellA => {
+                // Sell A (first-named), receive B (second-named)
+                match swap_pair {
+                    crate::amm_pool::math::SwapPair::YesNo => {
+                        (pool_params.yes_asset_id, pool_params.no_asset_id)
+                    }
+                    crate::amm_pool::math::SwapPair::YesLbtc => {
+                        (pool_params.yes_asset_id, pool_params.lbtc_asset_id)
+                    }
+                    crate::amm_pool::math::SwapPair::NoLbtc => {
+                        (pool_params.no_asset_id, pool_params.lbtc_asset_id)
+                    }
                 }
             }
-        } else {
-            // Sell B (second-named), receive A (first-named)
-            match swap_pair {
-                crate::amm_pool::math::SwapPair::YesNo => {
-                    (pool_params.no_asset_id, pool_params.yes_asset_id)
-                }
-                crate::amm_pool::math::SwapPair::YesLbtc => {
-                    (pool_params.lbtc_asset_id, pool_params.yes_asset_id)
-                }
-                crate::amm_pool::math::SwapPair::NoLbtc => {
-                    (pool_params.lbtc_asset_id, pool_params.no_asset_id)
+            crate::amm_pool::math::SwapDirection::SellB => {
+                // Sell B (second-named), receive A (first-named)
+                match swap_pair {
+                    crate::amm_pool::math::SwapPair::YesNo => {
+                        (pool_params.no_asset_id, pool_params.yes_asset_id)
+                    }
+                    crate::amm_pool::math::SwapPair::YesLbtc => {
+                        (pool_params.lbtc_asset_id, pool_params.yes_asset_id)
+                    }
+                    crate::amm_pool::math::SwapPair::NoLbtc => {
+                        (pool_params.lbtc_asset_id, pool_params.no_asset_id)
+                    }
                 }
             }
         };

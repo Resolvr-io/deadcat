@@ -75,7 +75,7 @@ pub use pool::{DiscoveredPool, PoolAnnouncement};
 pub use config::DiscoveryConfig;
 pub use events::DiscoveryEvent;
 pub use service::{DiscoveryService, NoopStore, discovered_market_to_contract_params};
-pub use store_trait::{ContractMetadataInput, DiscoveryStore, PoolInfo, PoolSnapshot};
+pub use store_trait::{DiscoveredMarketMetadata, DiscoveryStore, PoolInfo, PoolSnapshot};
 
 // ---------------------------------------------------------------------------
 // Order types (moved from order_announcement.rs)

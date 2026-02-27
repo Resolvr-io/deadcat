@@ -3,7 +3,7 @@ use deadcat_sdk::elements::hashes::Hash;
 use deadcat_sdk::elements::{OutPoint, TxOut, Txid};
 use deadcat_sdk::{
     AmmPoolParams, CompiledAmmPool, CompiledMakerOrder, CompiledPredictionMarket,
-    ContractMetadataInput, MakerOrderParams, MarketId, MarketState, OrderDirection, PoolId,
+    DiscoveredMarketMetadata, MakerOrderParams, MarketId, MarketState, OrderDirection, PoolId,
     PredictionMarketParams, UnblindedUtxo, derive_maker_receive, maker_receive_script_pubkey,
 };
 
@@ -126,7 +126,7 @@ impl TryFrom<&MarketRow> for MarketInfo {
 pub fn new_market_row(
     params: &PredictionMarketParams,
     compiled: &CompiledPredictionMarket,
-    metadata: Option<&ContractMetadataInput>,
+    metadata: Option<&DiscoveredMarketMetadata>,
 ) -> NewMarketRow {
     let market_id = params.market_id();
     NewMarketRow {

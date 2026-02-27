@@ -8,7 +8,8 @@
 //! 3. Route the remaining amount through the AMM pool.
 
 use crate::amm_pool::math::{
-    PoolReserves, SwapPair, compute_swap_exact_input, spot_price_no_lbtc, spot_price_yes_lbtc,
+    PoolReserves, SwapDirection, SwapPair, compute_swap_exact_input, spot_price_no_lbtc,
+    spot_price_yes_lbtc,
 };
 use crate::amm_pool::params::AmmPoolParams;
 use crate::discovery::DiscoveredOrder;
@@ -96,16 +97,16 @@ fn order_sell_price(order: &ScannedOrder, target_token_asset: &[u8; 32]) -> Opti
 // ── Core routing ────────────────────────────────────────────────────────
 
 /// Map `TradeSide` + `TradeDirection` to AMM swap parameters.
-pub(crate) fn swap_params(side: TradeSide, direction: TradeDirection) -> (SwapPair, bool) {
+pub(crate) fn swap_params(side: TradeSide, direction: TradeDirection) -> (SwapPair, SwapDirection) {
     match (side, direction) {
-        // Buy YES: deposit L-BTC, receive YES → YesLbtc, sell_a=false
-        (TradeSide::Yes, TradeDirection::Buy) => (SwapPair::YesLbtc, false),
-        // Sell YES: deposit YES, receive L-BTC → YesLbtc, sell_a=true
-        (TradeSide::Yes, TradeDirection::Sell) => (SwapPair::YesLbtc, true),
-        // Buy NO: deposit L-BTC, receive NO → NoLbtc, sell_a=false
-        (TradeSide::No, TradeDirection::Buy) => (SwapPair::NoLbtc, false),
-        // Sell NO: deposit NO, receive L-BTC → NoLbtc, sell_a=true
-        (TradeSide::No, TradeDirection::Sell) => (SwapPair::NoLbtc, true),
+        // Buy YES: deposit L-BTC, receive YES → YesLbtc, SellB
+        (TradeSide::Yes, TradeDirection::Buy) => (SwapPair::YesLbtc, SwapDirection::SellB),
+        // Sell YES: deposit YES, receive L-BTC → YesLbtc, SellA
+        (TradeSide::Yes, TradeDirection::Sell) => (SwapPair::YesLbtc, SwapDirection::SellA),
+        // Buy NO: deposit L-BTC, receive NO → NoLbtc, SellB
+        (TradeSide::No, TradeDirection::Buy) => (SwapPair::NoLbtc, SwapDirection::SellB),
+        // Sell NO: deposit NO, receive L-BTC → NoLbtc, SellA
+        (TradeSide::No, TradeDirection::Sell) => (SwapPair::NoLbtc, SwapDirection::SellA),
     }
 }
 
@@ -209,13 +210,13 @@ pub(crate) fn build_execution_plan(
     let pool_leg = if remaining_input > 0 {
         match pool {
             Some(scanned_pool) => {
-                let (swap_pair, sell_a) = swap_params(side, direction);
+                let (swap_pair, swap_direction) = swap_params(side, direction);
                 let swap = compute_swap_exact_input(
                     &scanned_pool.reserves,
                     swap_pair,
                     remaining_input,
                     scanned_pool.params.fee_bps,
-                    sell_a,
+                    swap_direction,
                 )?;
                 total_output += swap.delta_out;
                 Some(PoolSwapLeg {
@@ -223,7 +224,7 @@ pub(crate) fn build_execution_plan(
                     issued_lp: scanned_pool.issued_lp,
                     pool_utxos: scanned_pool.utxos.clone(),
                     swap_pair,
-                    sell_a,
+                    swap_direction,
                     delta_in: swap.delta_in,
                     delta_out: swap.delta_out,
                     new_reserves: swap.new_reserves,
@@ -576,19 +577,19 @@ mod tests {
     fn swap_params_mapping() {
         assert_eq!(
             swap_params(TradeSide::Yes, TradeDirection::Buy),
-            (SwapPair::YesLbtc, false)
+            (SwapPair::YesLbtc, SwapDirection::SellB)
         );
         assert_eq!(
             swap_params(TradeSide::Yes, TradeDirection::Sell),
-            (SwapPair::YesLbtc, true)
+            (SwapPair::YesLbtc, SwapDirection::SellA)
         );
         assert_eq!(
             swap_params(TradeSide::No, TradeDirection::Buy),
-            (SwapPair::NoLbtc, false)
+            (SwapPair::NoLbtc, SwapDirection::SellB)
         );
         assert_eq!(
             swap_params(TradeSide::No, TradeDirection::Sell),
-            (SwapPair::NoLbtc, true)
+            (SwapPair::NoLbtc, SwapDirection::SellA)
         );
     }
 

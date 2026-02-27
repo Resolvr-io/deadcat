@@ -296,7 +296,7 @@ pub(crate) fn build_trade_pset(params: &TradePsetParams) -> Result<TradePsetResu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amm_pool::math::{PoolReserves, SwapPair};
+    use crate::amm_pool::math::{PoolReserves, SwapDirection, SwapPair};
     use crate::amm_pool::params::AmmPoolParams;
     use crate::maker_order::params::MakerOrderParams;
     use crate::taproot::NUMS_KEY_BYTES;
@@ -376,7 +376,7 @@ mod tests {
             issued_lp: 1000,
             pool_utxos: test_pool_utxos(10_000, 10_000, 50_000),
             swap_pair: SwapPair::YesLbtc,
-            sell_a: false,
+            swap_direction: SwapDirection::SellB,
             delta_in,
             delta_out,
             new_reserves: PoolReserves {

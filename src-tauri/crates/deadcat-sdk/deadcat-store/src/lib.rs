@@ -5,7 +5,7 @@ mod schema;
 mod store;
 mod sync;
 
-pub use deadcat_sdk::ContractMetadataInput;
+pub use deadcat_sdk::DiscoveredMarketMetadata;
 pub use error::StoreError;
 pub use store::{
     AmmPoolInfo, DeadcatStore, IssuanceData, MakerOrderInfo, MarketFilter, MarketInfo, OrderFilter,

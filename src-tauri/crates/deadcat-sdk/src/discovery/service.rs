@@ -18,11 +18,19 @@ use super::market::{
 use super::pool::{
     DiscoveredPool, PoolAnnouncement, build_pool_event, build_pool_filter, parse_pool_event,
 };
-use super::store_trait::{ContractMetadataInput, DiscoveryStore};
+use super::store_trait::{DiscoveredMarketMetadata, DiscoveryStore};
 use super::{
     ATTESTATION_TAG, CONTRACT_TAG, DiscoveredOrder, ORDER_TAG, OrderAnnouncement, POOL_TAG,
     build_order_event, build_order_filter, parse_order_event,
 };
+
+/// Decode a hex string into a fixed-size 32-byte array.
+fn hex_to_bytes32(hex_str: &str, field: &str) -> Result<[u8; 32], String> {
+    let bytes = hex::decode(hex_str).map_err(|e| format!("{field}: hex decode: {e}"))?;
+    bytes
+        .try_into()
+        .map_err(|_| format!("{field}: expected 32 bytes"))
+}
 
 /// Unified Nostr discovery service for markets, orders, and attestations.
 ///
@@ -43,7 +51,7 @@ impl DiscoveryStore for NoopStore {
     fn ingest_market(
         &mut self,
         _params: &crate::prediction_market::params::PredictionMarketParams,
-        _meta: Option<&ContractMetadataInput>,
+        _meta: Option<&DiscoveredMarketMetadata>,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -441,20 +449,13 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
 pub fn discovered_market_to_contract_params(
     m: &DiscoveredMarket,
 ) -> Result<crate::prediction_market::params::PredictionMarketParams, String> {
-    let decode32 = |hex_str: &str, name: &str| -> Result<[u8; 32], String> {
-        let bytes = hex::decode(hex_str).map_err(|e| format!("{name}: hex decode: {e}"))?;
-        bytes
-            .try_into()
-            .map_err(|_| format!("{name}: expected 32 bytes"))
-    };
-
     Ok(crate::prediction_market::params::PredictionMarketParams {
-        oracle_public_key: decode32(&m.oracle_pubkey, "oracle_pubkey")?,
-        collateral_asset_id: decode32(&m.collateral_asset_id, "collateral_asset_id")?,
-        yes_token_asset: decode32(&m.yes_asset_id, "yes_asset_id")?,
-        no_token_asset: decode32(&m.no_asset_id, "no_asset_id")?,
-        yes_reissuance_token: decode32(&m.yes_reissuance_token, "yes_reissuance_token")?,
-        no_reissuance_token: decode32(&m.no_reissuance_token, "no_reissuance_token")?,
+        oracle_public_key: hex_to_bytes32(&m.oracle_pubkey, "oracle_pubkey")?,
+        collateral_asset_id: hex_to_bytes32(&m.collateral_asset_id, "collateral_asset_id")?,
+        yes_token_asset: hex_to_bytes32(&m.yes_asset_id, "yes_asset_id")?,
+        no_token_asset: hex_to_bytes32(&m.no_asset_id, "no_asset_id")?,
+        yes_reissuance_token: hex_to_bytes32(&m.yes_reissuance_token, "yes_reissuance_token")?,
+        no_reissuance_token: hex_to_bytes32(&m.no_reissuance_token, "no_reissuance_token")?,
         collateral_per_token: m.cpt_sats,
         expiry_time: m.expiry_height,
     })
@@ -464,30 +465,26 @@ pub fn discovered_market_to_contract_params(
 fn discovered_order_to_maker_params(
     o: &DiscoveredOrder,
 ) -> Result<crate::maker_order::params::MakerOrderParams, String> {
-    let decode32 = |hex_str: &str, name: &str| -> Result<[u8; 32], String> {
-        let bytes = hex::decode(hex_str).map_err(|e| format!("{name}: hex decode: {e}"))?;
-        bytes
-            .try_into()
-            .map_err(|_| format!("{name}: expected 32 bytes"))
-    };
-
     let direction = match o.direction.as_str() {
         "sell-base" => crate::maker_order::params::OrderDirection::SellBase,
         "sell-quote" => crate::maker_order::params::OrderDirection::SellQuote,
         other => return Err(format!("unknown direction: {other}")),
     };
 
-    let maker_pubkey = decode32(&o.maker_base_pubkey, "maker_base_pubkey")?;
+    let maker_pubkey = hex_to_bytes32(&o.maker_base_pubkey, "maker_base_pubkey")?;
 
     Ok(crate::maker_order::params::MakerOrderParams {
-        base_asset_id: decode32(&o.base_asset_id, "base_asset_id")?,
-        quote_asset_id: decode32(&o.quote_asset_id, "quote_asset_id")?,
+        base_asset_id: hex_to_bytes32(&o.base_asset_id, "base_asset_id")?,
+        quote_asset_id: hex_to_bytes32(&o.quote_asset_id, "quote_asset_id")?,
         price: o.price,
         min_fill_lots: o.min_fill_lots,
         min_remainder_lots: o.min_remainder_lots,
         direction,
-        maker_receive_spk_hash: decode32(&o.maker_receive_spk_hash, "maker_receive_spk_hash")?,
-        cosigner_pubkey: decode32(&o.cosigner_pubkey, "cosigner_pubkey")?,
+        maker_receive_spk_hash: hex_to_bytes32(
+            &o.maker_receive_spk_hash,
+            "maker_receive_spk_hash",
+        )?,
+        cosigner_pubkey: hex_to_bytes32(&o.cosigner_pubkey, "cosigner_pubkey")?,
         maker_pubkey,
     })
 }
@@ -496,21 +493,17 @@ fn discovered_order_to_maker_params(
 fn discovered_pool_to_amm_params(
     p: &DiscoveredPool,
 ) -> Result<crate::amm_pool::params::AmmPoolParams, String> {
-    let decode32 = |hex_str: &str, name: &str| -> Result<[u8; 32], String> {
-        let bytes = hex::decode(hex_str).map_err(|e| format!("{name}: hex decode: {e}"))?;
-        bytes
-            .try_into()
-            .map_err(|_| format!("{name}: expected 32 bytes"))
-    };
-
     Ok(crate::amm_pool::params::AmmPoolParams {
-        yes_asset_id: decode32(&p.yes_asset_id, "yes_asset_id")?,
-        no_asset_id: decode32(&p.no_asset_id, "no_asset_id")?,
-        lbtc_asset_id: decode32(&p.lbtc_asset_id, "lbtc_asset_id")?,
-        lp_asset_id: decode32(&p.lp_asset_id, "lp_asset_id")?,
-        lp_reissuance_token_id: decode32(&p.lp_reissuance_token_id, "lp_reissuance_token_id")?,
+        yes_asset_id: hex_to_bytes32(&p.yes_asset_id, "yes_asset_id")?,
+        no_asset_id: hex_to_bytes32(&p.no_asset_id, "no_asset_id")?,
+        lbtc_asset_id: hex_to_bytes32(&p.lbtc_asset_id, "lbtc_asset_id")?,
+        lp_asset_id: hex_to_bytes32(&p.lp_asset_id, "lp_asset_id")?,
+        lp_reissuance_token_id: hex_to_bytes32(
+            &p.lp_reissuance_token_id,
+            "lp_reissuance_token_id",
+        )?,
         fee_bps: p.fee_bps,
-        cosigner_pubkey: decode32(&p.cosigner_pubkey, "cosigner_pubkey")?,
+        cosigner_pubkey: hex_to_bytes32(&p.cosigner_pubkey, "cosigner_pubkey")?,
     })
 }
 
@@ -589,7 +582,7 @@ pub(crate) fn persist_market_to_store<S: DiscoveryStore>(
     let Ok(params) = discovered_market_to_contract_params(market) else {
         return;
     };
-    let meta = ContractMetadataInput {
+    let meta = DiscoveredMarketMetadata {
         question: Some(market.question.clone()),
         description: Some(market.description.clone()),
         category: Some(market.category.clone()),

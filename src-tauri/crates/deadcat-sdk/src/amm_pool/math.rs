@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -14,6 +12,18 @@ pub enum SwapPair {
     YesLbtc = 1,
     /// NO ↔ L-BTC (YES unchanged)
     NoLbtc = 2,
+}
+
+/// Direction of a swap within a [`SwapPair`].
+///
+/// Each pair names two assets `(A, B)` — e.g. `YesLbtc` is `(YES, L-BTC)`.
+/// `SellA` means the trader deposits A and receives B; `SellB` is the reverse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SwapDirection {
+    /// Sell the first-named asset (A), receive the second (B).
+    SellA,
+    /// Sell the second-named asset (B), receive the first (A).
+    SellB,
 }
 
 impl SwapPair {
@@ -46,21 +56,36 @@ pub struct SwapResult {
     /// Reserves after the swap.
     pub new_reserves: PoolReserves,
     /// Price impact as a fraction (e.g. 0.05 = 5%).
+    #[allow(dead_code)] // public API field; no current prod readers
     pub price_impact: f64,
 }
 
 /// FEE_DENOM is always 10000 (basis point denominator).
 const FEE_DENOM: u64 = 10_000;
 
-/// Select the two reserves involved in a swap pair and the unchanged one.
-///
-/// Returns `(reserve_a, reserve_b)` where A is the first-named asset and
-/// B is the second-named asset in the pair.
-fn select_reserves(reserves: &PoolReserves, pair: SwapPair) -> (u64, u64) {
+/// The two reserves involved in a swap pair.
+struct PairReserves {
+    /// Reserve of the first-named asset (A) in the pair.
+    a: u64,
+    /// Reserve of the second-named asset (B) in the pair.
+    b: u64,
+}
+
+/// Select the two reserves involved in a swap pair.
+fn select_reserves(reserves: &PoolReserves, pair: SwapPair) -> PairReserves {
     match pair {
-        SwapPair::YesNo => (reserves.r_yes, reserves.r_no),
-        SwapPair::YesLbtc => (reserves.r_yes, reserves.r_lbtc),
-        SwapPair::NoLbtc => (reserves.r_no, reserves.r_lbtc),
+        SwapPair::YesNo => PairReserves {
+            a: reserves.r_yes,
+            b: reserves.r_no,
+        },
+        SwapPair::YesLbtc => PairReserves {
+            a: reserves.r_yes,
+            b: reserves.r_lbtc,
+        },
+        SwapPair::NoLbtc => PairReserves {
+            a: reserves.r_no,
+            b: reserves.r_lbtc,
+        },
     }
 }
 
@@ -93,11 +118,7 @@ fn rebuild_reserves(
 /// Compute a swap where the trader specifies the exact input amount.
 ///
 /// Within the pair `(A, B)`, A is the first-named asset and B is the second.
-///
-/// - `sell_a = false` (default): trader deposits B, receives A.
-///   For `YesLbtc`: deposit L-BTC, receive YES.
-/// - `sell_a = true`: trader deposits A, receives B.
-///   For `YesLbtc`: deposit YES, receive L-BTC.
+/// `direction` controls which asset the trader deposits and which they receive.
 ///
 /// Uses the formula from design doc §19.2:
 ///   `effective_in = delta_in * (FEE_DENOM - fee_bps) / FEE_DENOM`
@@ -107,11 +128,14 @@ pub fn compute_swap_exact_input(
     pair: SwapPair,
     delta_in: u64,
     fee_bps: u64,
-    sell_a: bool,
+    direction: SwapDirection,
 ) -> Result<SwapResult> {
-    let (r_a, r_b) = select_reserves(reserves, pair);
+    let pair_r = select_reserves(reserves, pair);
     // r_sell = reserve the trader deposits into, r_buy = reserve trader withdraws from
-    let (r_sell, r_buy) = if sell_a { (r_a, r_b) } else { (r_b, r_a) };
+    let (r_sell, r_buy) = match direction {
+        SwapDirection::SellA => (pair_r.a, pair_r.b),
+        SwapDirection::SellB => (pair_r.b, pair_r.a),
+    };
 
     if r_sell == 0 || r_buy == 0 {
         return Err(Error::ReserveDepleted);
@@ -147,10 +171,9 @@ pub fn compute_swap_exact_input(
 
     let new_r_sell = r_sell + delta_in;
     let new_r_buy = r_buy - delta_out;
-    let (new_a, new_b) = if sell_a {
-        (new_r_sell, new_r_buy)
-    } else {
-        (new_r_buy, new_r_sell)
+    let (new_a, new_b) = match direction {
+        SwapDirection::SellA => (new_r_sell, new_r_buy),
+        SwapDirection::SellB => (new_r_buy, new_r_sell),
     };
     let new_reserves = rebuild_reserves(reserves, pair, new_a, new_b);
 
@@ -171,10 +194,10 @@ pub fn compute_swap_exact_input(
     })
 }
 
+#[allow(dead_code)] // public API; no current prod callers
 /// Compute a swap where the trader specifies the exact output amount.
 ///
-/// - `sell_a = false` (default): trader pays B, receives `delta_out` of A.
-/// - `sell_a = true`: trader pays A, receives `delta_out` of B.
+/// `direction` controls which asset the trader deposits and which they receive.
 ///
 /// Uses the formula from design doc §19.1:
 ///   `delta_in = ceil(r_sell * delta_out * FEE_DENOM / ((r_buy - delta_out) * (FEE_DENOM - fee_bps)))`
@@ -183,10 +206,13 @@ pub fn compute_swap_exact_output(
     pair: SwapPair,
     delta_out: u64,
     fee_bps: u64,
-    sell_a: bool,
+    direction: SwapDirection,
 ) -> Result<SwapResult> {
-    let (r_a, r_b) = select_reserves(reserves, pair);
-    let (r_sell, r_buy) = if sell_a { (r_a, r_b) } else { (r_b, r_a) };
+    let pair_r = select_reserves(reserves, pair);
+    let (r_sell, r_buy) = match direction {
+        SwapDirection::SellA => (pair_r.a, pair_r.b),
+        SwapDirection::SellB => (pair_r.b, pair_r.a),
+    };
 
     if r_sell == 0 || r_buy == 0 {
         return Err(Error::ReserveDepleted);
@@ -214,10 +240,9 @@ pub fn compute_swap_exact_output(
 
     let new_r_sell = r_sell + delta_in;
     let new_r_buy = r_buy - delta_out;
-    let (new_a, new_b) = if sell_a {
-        (new_r_sell, new_r_buy)
-    } else {
-        (new_r_buy, new_r_sell)
+    let (new_a, new_b) = match direction {
+        SwapDirection::SellA => (new_r_sell, new_r_buy),
+        SwapDirection::SellB => (new_r_buy, new_r_sell),
     };
     let new_reserves = rebuild_reserves(reserves, pair, new_a, new_b);
 
@@ -237,6 +262,7 @@ pub fn compute_swap_exact_output(
     })
 }
 
+#[allow(dead_code)] // public API; no current prod callers
 /// Compute the maximum LP tokens mintable for a given deposit.
 ///
 /// Given current reserves and `issued_lp`, and the new reserves after deposit,
@@ -276,6 +302,7 @@ pub fn compute_lp_deposit(
     Ok(lp_mint)
 }
 
+#[allow(dead_code)] // used by compute_lp_deposit
 /// Wide 256-bit unsigned integer as (hi, lo) pair of u128.
 /// Only implements the operations needed for cubic invariant checking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -322,6 +349,7 @@ impl U256 {
     }
 }
 
+#[allow(dead_code)]
 /// Check the cubic invariant: `new_lp^3 * old_product <= old_lp^3 * new_product`
 /// using wide arithmetic to avoid overflow.
 ///
@@ -359,6 +387,7 @@ fn cubic_invariant_holds(old_lp: u64, new_lp: u64, old: &PoolReserves, new: &Poo
     le_512(lhs, rhs)
 }
 
+#[allow(dead_code)]
 /// Compute n^3 as a U256 (result fits in 192 bits for u64 input).
 fn cube_u64(n: u64) -> U256 {
     let v = n as u128;
@@ -366,6 +395,7 @@ fn cube_u64(n: u64) -> U256 {
     sq.mul_u128(v)
 }
 
+#[allow(dead_code)]
 /// Multiply a U256 by a u128, producing a 384-bit result as (u128_hi, U256_lo).
 fn mul_u256_u128(a: U256, b: u128) -> (u128, U256) {
     // a.lo * b -> U256
@@ -391,6 +421,7 @@ fn mul_u256_u128(a: U256, b: u128) -> (u128, U256) {
     )
 }
 
+#[allow(dead_code)]
 /// Multiply a 384-bit value (u128, U256) by a u64, producing a 512-bit value
 /// stored as (U256_hi, U256_lo). Result is at most 384+64 = 448 bits, but we
 /// store in 512 for simplicity.
@@ -426,6 +457,7 @@ fn mul_384_u64(a: (u128, U256), b: u64) -> (U256, U256) {
     )
 }
 
+#[allow(dead_code)]
 /// Add two u128 values, returning (sum, carry) where carry is 0 or 1.
 fn carrying_add(a: u128, b: u128) -> (u128, u128) {
     let sum = a.wrapping_add(b);
@@ -433,6 +465,7 @@ fn carrying_add(a: u128, b: u128) -> (u128, u128) {
     (sum, carry)
 }
 
+#[allow(dead_code)]
 /// Compare two 512-bit values stored as (U256_hi, U256_lo).
 fn le_512(a: (U256, U256), b: (U256, U256)) -> bool {
     if a.0.hi != b.0.hi {
@@ -447,6 +480,7 @@ fn le_512(a: (U256, U256), b: (U256, U256)) -> bool {
     a.1.lo <= b.1.lo
 }
 
+#[allow(dead_code)]
 /// Verify and adjust the LP mint amount so the cubic invariant holds.
 ///
 /// Invariant: `new_lp^3 * old_product <= old_lp^3 * new_product`
@@ -557,6 +591,7 @@ pub fn spot_price_no_lbtc(reserves: &PoolReserves) -> f64 {
 }
 
 /// Spot price of YES tokens in NO terms.
+#[cfg(test)]
 pub fn spot_price_yes_no(reserves: &PoolReserves) -> f64 {
     if reserves.r_yes == 0 {
         return 0.0;
@@ -590,8 +625,14 @@ mod tests {
         // R_yes = 1,000,000, R_lbtc = 500,000, fee = 30 bps
         // Trader deposits 10,000 L-BTC, receives YES tokens
         let reserves = default_reserves();
-        let result =
-            compute_swap_exact_input(&reserves, SwapPair::YesLbtc, 10_000, 30, false).unwrap();
+        let result = compute_swap_exact_input(
+            &reserves,
+            SwapPair::YesLbtc,
+            10_000,
+            30,
+            SwapDirection::SellB,
+        )
+        .unwrap();
 
         // effective_input = 10,000 * 9970 / 10000 = 9,970
         // delta_out = floor(1,000,000 * 9970 / (500,000 + 9970)) = floor(9,970,000,000 / 509,970) ≈ 19,550
@@ -608,8 +649,14 @@ mod tests {
     fn exact_output_swap_yes_lbtc() {
         let reserves = default_reserves();
         // Trader wants exactly 19,000 YES tokens, paying L-BTC
-        let result =
-            compute_swap_exact_output(&reserves, SwapPair::YesLbtc, 19_000, 30, false).unwrap();
+        let result = compute_swap_exact_output(
+            &reserves,
+            SwapPair::YesLbtc,
+            19_000,
+            30,
+            SwapDirection::SellB,
+        )
+        .unwrap();
 
         assert_eq!(result.delta_out, 19_000);
         assert!(result.delta_in > 9_000 && result.delta_in < 11_000);
@@ -624,14 +671,24 @@ mod tests {
             r_no: 1000,
             r_lbtc: 1000,
         };
-        assert!(compute_swap_exact_input(&reserves, SwapPair::YesLbtc, 100, 30, false).is_err());
+        assert!(
+            compute_swap_exact_input(&reserves, SwapPair::YesLbtc, 100, 30, SwapDirection::SellB)
+                .is_err()
+        );
     }
 
     #[test]
     fn swap_output_exceeds_reserve_fails() {
         let reserves = default_reserves();
         assert!(
-            compute_swap_exact_output(&reserves, SwapPair::YesLbtc, 1_000_001, 30, false).is_err()
+            compute_swap_exact_output(
+                &reserves,
+                SwapPair::YesLbtc,
+                1_000_001,
+                30,
+                SwapDirection::SellB
+            )
+            .is_err()
         );
     }
 
@@ -809,18 +866,18 @@ mod tests {
         assert_eq!(mint, 0, "deposit too small to mint even 1 LP token");
     }
 
-    // ── sell_a (reverse direction) tests ────────────────────────────────
+    // ── SwapDirection tests ────────────────────────────────────────────
 
     #[test]
     fn exact_input_swap_sell_a_yes_lbtc() {
-        // sell_a=true with YesLbtc: trader sells YES, receives L-BTC
+        // SellA with YesLbtc: trader sells YES, receives L-BTC
         let reserves = default_reserves();
         let result = compute_swap_exact_input(
             &reserves,
             SwapPair::YesLbtc,
             10_000,
             30,
-            true, // sell YES
+            SwapDirection::SellA,
         )
         .unwrap();
 
@@ -834,16 +891,11 @@ mod tests {
 
     #[test]
     fn exact_input_swap_sell_a_yes_no() {
-        // sell_a=true with YesNo: trader sells YES, receives NO
+        // SellA with YesNo: trader sells YES, receives NO
         let reserves = default_reserves();
-        let result = compute_swap_exact_input(
-            &reserves,
-            SwapPair::YesNo,
-            5_000,
-            30,
-            true, // sell YES
-        )
-        .unwrap();
+        let result =
+            compute_swap_exact_input(&reserves, SwapPair::YesNo, 5_000, 30, SwapDirection::SellA)
+                .unwrap();
 
         assert!(result.new_reserves.r_yes > reserves.r_yes);
         assert!(result.new_reserves.r_no < reserves.r_no);
@@ -852,16 +904,11 @@ mod tests {
 
     #[test]
     fn exact_output_swap_sell_a() {
-        // sell_a=true with NoLbtc: trader sells NO, receives exactly 1000 L-BTC
+        // SellA with NoLbtc: trader sells NO, receives exactly 1000 L-BTC
         let reserves = default_reserves();
-        let result = compute_swap_exact_output(
-            &reserves,
-            SwapPair::NoLbtc,
-            1_000,
-            30,
-            true, // sell NO
-        )
-        .unwrap();
+        let result =
+            compute_swap_exact_output(&reserves, SwapPair::NoLbtc, 1_000, 30, SwapDirection::SellA)
+                .unwrap();
 
         assert_eq!(result.delta_out, 1_000);
         assert!(result.new_reserves.r_no > reserves.r_no);
@@ -870,11 +917,17 @@ mod tests {
     }
 
     #[test]
-    fn sell_a_false_matches_original_behavior() {
-        // Verify sell_a=false produces the same results as the old API
+    fn sell_b_matches_original_behavior() {
+        // Verify SellB produces the same results as the old API
         let reserves = default_reserves();
-        let result =
-            compute_swap_exact_input(&reserves, SwapPair::YesLbtc, 10_000, 30, false).unwrap();
+        let result = compute_swap_exact_input(
+            &reserves,
+            SwapPair::YesLbtc,
+            10_000,
+            30,
+            SwapDirection::SellB,
+        )
+        .unwrap();
 
         // Original convention: deposit B (LBTC), receive A (YES)
         assert_eq!(result.new_reserves.r_lbtc, 510_000);
@@ -883,9 +936,9 @@ mod tests {
     }
 
     #[test]
-    fn sell_a_both_directions_consistent() {
-        // If trader sells 10k YES for LBTC (sell_a=true), then sells the LBTC
-        // back for YES (sell_a=false), they should end up with less than 10k YES
+    fn roundtrip_both_directions_consistent() {
+        // If trader sells 10k YES for LBTC (SellA), then sells the LBTC
+        // back for YES (SellB), they should end up with less than 10k YES
         // due to fees.
         let reserves = default_reserves();
         let step1 = compute_swap_exact_input(
@@ -893,7 +946,7 @@ mod tests {
             SwapPair::YesLbtc,
             10_000,
             30,
-            true, // sell YES, get LBTC
+            SwapDirection::SellA, // sell YES, get LBTC
         )
         .unwrap();
 
@@ -902,7 +955,7 @@ mod tests {
             SwapPair::YesLbtc,
             step1.delta_out,
             30,
-            false, // sell LBTC, get YES
+            SwapDirection::SellB, // sell LBTC, get YES
         )
         .unwrap();
 
