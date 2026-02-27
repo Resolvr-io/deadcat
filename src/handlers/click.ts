@@ -6,11 +6,13 @@ import {
   marketToContractParamsJson,
 } from "../services/markets.ts";
 import {
+  fetchWalletSnapshot,
   fetchWalletStatus,
   generateQr,
   refreshWallet,
   resetReceiveState,
   resetSendState,
+  restoreWalletAndSync,
 } from "../services/wallet.ts";
 import {
   createWalletData,
@@ -40,7 +42,6 @@ import type {
   Side,
   SizeMode,
   TradeIntent,
-  WalletTransaction,
 } from "../types.ts";
 import {
   hideOverlayLoader,
@@ -552,16 +553,12 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        await invoke("restore_wallet", {
-          mnemonic: state.onboardingWalletMnemonic.trim(),
+        await restoreWalletAndSync({
+          mnemonic: state.onboardingWalletMnemonic,
           password: state.onboardingWalletPassword,
+          unlock: true,
+          setStep: updateOverlayMessage,
         });
-        updateOverlayMessage("Unlocking wallet...");
-        await invoke("unlock_wallet", {
-          password: state.onboardingWalletPassword,
-        });
-        updateOverlayMessage("Scanning blockchain...");
-        await invoke("sync_wallet");
         updateOverlayMessage("Loading markets...");
         showToast("Wallet restored!", "success");
         await finishOnboarding();
@@ -597,16 +594,12 @@ export async function handleClick(
       try {
         const mnemonic = await invoke<string>("restore_mnemonic_from_nostr");
         updateOverlayMessage("Restoring wallet...");
-        await invoke("restore_wallet", {
-          mnemonic: mnemonic.trim(),
+        await restoreWalletAndSync({
+          mnemonic,
           password: state.onboardingWalletPassword,
+          unlock: true,
+          setStep: updateOverlayMessage,
         });
-        updateOverlayMessage("Unlocking wallet...");
-        await invoke("unlock_wallet", {
-          password: state.onboardingWalletPassword,
-        });
-        updateOverlayMessage("Scanning blockchain...");
-        await invoke("sync_wallet");
         updateOverlayMessage("Loading markets...");
         showToast("Wallet restored from Nostr backup!", "success");
         await finishOnboarding();
@@ -1185,14 +1178,10 @@ export async function handleClick(
     if (state.walletStatus === "unlocked" && state.walletData) {
       void invoke("sync_wallet")
         .then(async () => {
-          const [balance, txs, swaps] = await Promise.all([
-            invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
-            invoke<WalletTransaction[]>("get_wallet_transactions"),
-            invoke<PaymentSwap[]>("list_payment_swaps"),
-          ]);
+          const { balance, transactions, swaps } = await fetchWalletSnapshot();
           if (state.walletData) {
-            state.walletData.balance = balance.assets;
-            state.walletData.transactions = txs;
+            state.walletData.balance = balance;
+            state.walletData.transactions = transactions;
             state.walletData.swaps = swaps;
           }
           render();
@@ -1284,28 +1273,24 @@ export async function handleClick(
     (async () => {
       try {
         const pw = state.walletPassword;
-        await invoke("restore_wallet", {
-          mnemonic: state.walletRestoreMnemonic.trim(),
+        await restoreWalletAndSync({
+          mnemonic: state.walletRestoreMnemonic,
           password: pw,
+          unlock: true,
+          setStep: updateOverlayMessage,
         });
         state.walletRestoreMnemonic = "";
         state.walletPassword = "";
         state.walletPasswordConfirm = "";
-        await invoke("unlock_wallet", { password: pw });
-        updateOverlayMessage("Scanning blockchain...");
-        await invoke("sync_wallet");
         await fetchWalletStatus();
         if (state.walletStatus === "unlocked") {
-          const balance = await invoke<{ assets: Record<string, number> }>(
-            "get_wallet_balance",
-          );
-          const txs = await invoke<WalletTransaction[]>(
-            "get_wallet_transactions",
-          );
+          const { balance, transactions } = await fetchWalletSnapshot({
+            includeSwaps: false,
+          });
           state.walletData = {
             ...createWalletData(),
-            balance: balance.assets,
-            transactions: txs,
+            balance,
+            transactions,
           };
         }
         state.walletLoading = false;
@@ -1338,15 +1323,11 @@ export async function handleClick(
         state.walletPassword = "";
         await fetchWalletStatus();
         // Load cached wallet data instantly (no Electrum sync)
-        const [balance, txs, swaps] = await Promise.all([
-          invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
-          invoke<WalletTransaction[]>("get_wallet_transactions"),
-          invoke<PaymentSwap[]>("list_payment_swaps"),
-        ]);
+        const { balance, transactions, swaps } = await fetchWalletSnapshot();
         state.walletData = {
           ...createWalletData(),
-          balance: balance.assets,
-          transactions: txs,
+          balance,
+          transactions,
           swaps,
         };
         state.walletLoading = false;
@@ -1355,13 +1336,13 @@ export async function handleClick(
         // Background Electrum sync -- updates balances when done
         invoke("sync_wallet")
           .then(async () => {
-            const [freshBalance, freshTxs] = await Promise.all([
-              invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
-              invoke<WalletTransaction[]>("get_wallet_transactions"),
-            ]);
+            const { balance: freshBalance, transactions: freshTransactions } =
+              await fetchWalletSnapshot({
+                includeSwaps: false,
+              });
             if (state.walletData) {
-              state.walletData.balance = freshBalance.assets;
-              state.walletData.transactions = freshTxs;
+              state.walletData.balance = freshBalance;
+              state.walletData.transactions = freshTransactions;
             }
             render();
           })
