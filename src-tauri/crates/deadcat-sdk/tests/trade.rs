@@ -17,13 +17,20 @@ use deadcat_sdk::{
     OrderDirection, PredictionMarketParams,
 };
 use deadcat_sdk::{LiquiditySource, TradeAmount, TradeDirection, TradeSide};
-use lwk_test_util::{TEST_MNEMONIC, TestEnv, TestEnvBuilder, generate_mnemonic};
+use lwk_test_util::{TestEnv, TestEnvBuilder, generate_mnemonic};
 use lwk_wollet::elements::AssetId;
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
 use tempfile::TempDir;
 
 // ── Helpers ─────────────────────────────────────────────────────────────
+
+const SYNC_RETRIES: usize = 20;
+const SYNC_INITIAL_DELAY_MS: u64 = 10;
+const SYNC_MAX_DELAY_MS: u64 = 250;
+const DISCOVERY_RETRIES: usize = 30;
+const DISCOVERY_INITIAL_DELAY_MS: u64 = 20;
+const DISCOVERY_MAX_DELAY_MS: u64 = 250;
 
 fn hex_to_32(hex: &str) -> [u8; 32] {
     let bytes = hex::decode(hex).unwrap();
@@ -106,6 +113,7 @@ impl TradeTestFixture {
         let env = TestEnvBuilder::from_env().with_electrum().build();
         let mock = MockRelay::run().await.unwrap();
         let rpc = elementsd_rpc(&env);
+        let mnemonic = generate_mnemonic();
 
         let keys = Keys::generate();
         let store = Arc::new(Mutex::new(TestStore::default()));
@@ -121,7 +129,7 @@ impl TradeTestFixture {
         );
 
         let temp_dir = tempfile::tempdir().unwrap();
-        node.unlock_wallet(TEST_MNEMONIC, &env.electrum_url(), temp_dir.path())
+        node.unlock_wallet(&mnemonic, &env.electrum_url(), temp_dir.path())
             .unwrap();
 
         Self {
@@ -133,6 +141,71 @@ impl TradeTestFixture {
             _mock: mock,
             rpc,
         }
+    }
+
+    async fn sync_node_to_height(node: &DeadcatNode<TestStore>, target_height: u64) {
+        let mut delay = Duration::from_millis(SYNC_INITIAL_DELAY_MS);
+        for attempt in 0..SYNC_RETRIES {
+            node.sync_wallet().await.unwrap();
+            let tip_height = node.wallet_tip_height().await.unwrap();
+            if u64::from(tip_height) >= target_height {
+                return;
+            }
+
+            if attempt + 1 < SYNC_RETRIES {
+                tokio::time::sleep(delay).await;
+                delay = std::cmp::min(
+                    delay.saturating_mul(2),
+                    Duration::from_millis(SYNC_MAX_DELAY_MS),
+                );
+            }
+        }
+
+        panic!("wallet tip did not reach target height {target_height}");
+    }
+
+    async fn wait_for_order_discovery(&self, market_id: &str, min_count: usize) {
+        let mut delay = Duration::from_millis(DISCOVERY_INITIAL_DELAY_MS);
+        for attempt in 0..DISCOVERY_RETRIES {
+            let count = self.node.fetch_orders(Some(market_id)).await.unwrap().len();
+            if count >= min_count {
+                return;
+            }
+
+            if attempt + 1 < DISCOVERY_RETRIES {
+                tokio::time::sleep(delay).await;
+                delay = std::cmp::min(
+                    delay.saturating_mul(2),
+                    Duration::from_millis(DISCOVERY_MAX_DELAY_MS),
+                );
+            }
+        }
+
+        panic!(
+            "timed out waiting for at least {min_count} discovered orders for market {market_id}"
+        );
+    }
+
+    async fn wait_for_pool_discovery(&self, market_id: &str, min_count: usize) {
+        let mut delay = Duration::from_millis(DISCOVERY_INITIAL_DELAY_MS);
+        for attempt in 0..DISCOVERY_RETRIES {
+            let count = self.node.fetch_pools(Some(market_id)).await.unwrap().len();
+            if count >= min_count {
+                return;
+            }
+
+            if attempt + 1 < DISCOVERY_RETRIES {
+                tokio::time::sleep(delay).await;
+                delay = std::cmp::min(
+                    delay.saturating_mul(2),
+                    Duration::from_millis(DISCOVERY_MAX_DELAY_MS),
+                );
+            }
+        }
+
+        panic!(
+            "timed out waiting for at least {min_count} discovered pools for market {market_id}"
+        );
     }
 
     /// Fund the node wallet with `count` L-BTC UTXOs of `sats_each`.
@@ -153,9 +226,9 @@ impl TradeTestFixture {
 
     /// Mine a block and sync the wallet.
     async fn mine_and_sync(&self) {
+        let target_height = self.env.elementsd_height() + 1;
         self.env.elementsd_generate(1);
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        self.node.sync_wallet().await.unwrap();
+        Self::sync_node_to_height(&self.node, target_height).await;
     }
 
     /// Create a market on-chain + Nostr, issue token pairs, return params + market_id.
@@ -200,7 +273,6 @@ impl TradeTestFixture {
 
         // Confirm the issuance so elementsd can spend the reissuance token
         self.env.elementsd_generate(1);
-        tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Transfer the reissuance token to the SDK wallet
         let addr = self.node.address(None).await.unwrap();
@@ -271,7 +343,7 @@ impl TradeTestFixture {
             .unwrap();
 
         self.mine_and_sync().await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        self.wait_for_pool_discovery(market_id, 1).await;
 
         pool_params
     }
@@ -283,9 +355,9 @@ impl TradeTestFixture {
             self.env
                 .elementsd_sendtoaddress(addr.address(), sats_each, None);
         }
+        let target_height = self.env.elementsd_height() + 1;
         self.env.elementsd_generate(1);
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        node.sync_wallet().await.unwrap();
+        Self::sync_node_to_height(node, target_height).await;
     }
 }
 
@@ -326,8 +398,7 @@ async fn trade_buy_yes_via_limit_order() {
         .unwrap();
 
     f.mine_and_sync().await;
-    // Give mock relay time to index the event
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    f.wait_for_order_discovery(&market_id, 1).await;
 
     // Quote: buy YES tokens with 3000 sats (should get 3 tokens at 1000 sats/token)
     let quote = f
@@ -395,7 +466,7 @@ async fn trade_stale_quote_fails_on_execute() {
         .unwrap();
 
     f.mine_and_sync().await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    f.wait_for_order_discovery(&market_id, 1).await;
 
     // Create a second node with its own wallet
     let (node_b, _temp_b) = f.create_second_node().await;
@@ -529,7 +600,7 @@ async fn trade_buy_yes_combined_pool_and_order() {
         .unwrap();
 
     f.mine_and_sync().await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    f.wait_for_order_discovery(&market_id, 1).await;
 
     let yes_pre = *f.node.balance().unwrap().get(&yes_asset).unwrap_or(&0);
 
@@ -614,7 +685,7 @@ async fn trade_sell_yes_via_limit_order() {
         .unwrap();
 
     f.mine_and_sync().await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    f.wait_for_order_discovery(&market_id, 1).await;
 
     // Quote: sell 3 YES tokens → should receive 3000 sats
     let quote = f
