@@ -341,7 +341,9 @@ export async function handleClick(
       render();
       return;
     }
-    if (state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm) {
+    if (
+      state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
+    ) {
       state.onboardingError = "Passwords do not match.";
       render();
       return;
@@ -392,7 +394,9 @@ export async function handleClick(
       render();
       return;
     }
-    if (state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm) {
+    if (
+      state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
+    ) {
       state.onboardingError = "Passwords do not match.";
       render();
       return;
@@ -433,7 +437,9 @@ export async function handleClick(
       render();
       return;
     }
-    if (state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm) {
+    if (
+      state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
+    ) {
       state.onboardingError = "Passwords do not match.";
       render();
       return;
@@ -1243,7 +1249,9 @@ export async function handleClick(
     state.walletDeletePrompt = true;
     state.walletDeleteConfirm = "";
     render();
-    document.getElementById("wallet-delete-confirm")?.scrollIntoView({ block: "center" });
+    document
+      .getElementById("wallet-delete-confirm")
+      ?.scrollIntoView({ block: "center" });
     return;
   }
 

@@ -148,7 +148,11 @@ export function renderOnboarding(): string {
 
   // Mode-specific form content
   let formHtml = "";
-  const confirmBorder = state.onboardingWalletPasswordConfirm && state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm ? "border-red-500/50" : "border-slate-700";
+  const confirmBorder =
+    state.onboardingWalletPasswordConfirm &&
+    state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
+      ? "border-red-500/50"
+      : "border-slate-700";
   if (modeNostrRestore) {
     formHtml = `
       <div class="mt-5 space-y-3">
