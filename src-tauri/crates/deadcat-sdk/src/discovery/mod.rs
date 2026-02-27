@@ -221,7 +221,7 @@ pub async fn connect_client(relay_url: Option<&str>) -> Result<Client, String> {
                 .map_err(|e| format!("failed to add relay {url}: {e}"))?;
         }
     }
-    client.connect().await;
+    client.connect_with_timeout(Duration::from_secs(5)).await;
     Ok(client)
 }
 
