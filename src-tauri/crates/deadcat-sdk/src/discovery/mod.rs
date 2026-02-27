@@ -74,7 +74,10 @@ pub use pool::{DiscoveredPool, PoolAnnouncement};
 
 pub use config::DiscoveryConfig;
 pub use events::DiscoveryEvent;
-pub use service::{DiscoveryService, NoopStore, discovered_market_to_contract_params};
+pub use service::{
+    DiscoveryService, NoopStore, discovered_market_to_contract_params,
+    discovered_pool_to_amm_params,
+};
 pub use store_trait::{DiscoveredMarketMetadata, DiscoveryStore, PoolInfo, PoolSnapshot};
 
 // ---------------------------------------------------------------------------

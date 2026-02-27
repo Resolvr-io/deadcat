@@ -25,12 +25,30 @@ const APP_STATE_UPDATED_EVENT: &str = "app_state_updated";
 /// std Mutex, to avoid holding both locks simultaneously.
 pub struct NodeState {
     pub node: tokio::sync::Mutex<Option<deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>>>,
+    /// Handle to the chain watcher thread (if running).
+    pub watcher_handle: tokio::sync::Mutex<Option<deadcat_sdk::ChainWatcherHandle>>,
+    /// JoinHandle for the chain event processing loop.
+    pub event_handler: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Default for NodeState {
     fn default() -> Self {
         Self {
             node: tokio::sync::Mutex::new(None),
+            watcher_handle: tokio::sync::Mutex::new(None),
+            event_handler: tokio::sync::Mutex::new(None),
+        }
+    }
+}
+
+impl NodeState {
+    /// Shut down the chain watcher and its event loop (if running).
+    async fn shutdown_watcher(&self) {
+        if let Some(handle) = self.watcher_handle.lock().await.take() {
+            handle.shutdown();
+        }
+        if let Some(join) = self.event_handler.lock().await.take() {
+            join.abort();
         }
     }
 }
@@ -276,6 +294,38 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
     let electrum_url = sdk_network.default_electrum_url();
     node.unlock_wallet(&mnemonic, electrum_url, &data_dir)
         .map_err(|e| format!("{e}"))?;
+
+    // 2b. Start the chain watcher for push-based monitoring
+    let watcher_config = deadcat_sdk::ChainWatcherConfig::new(electrum_url);
+    let (watcher_handle, event_rx) = deadcat_sdk::spawn_chain_watcher(watcher_config);
+
+    // Bootstrap: subscribe all known contracts from the store
+    if let Err(e) = node.bootstrap_watcher(&watcher_handle) {
+        log::warn!("chain watcher bootstrap failed: {e}");
+    }
+
+    // Spawn the event processing loop.
+    // prepare_chain_event() captures cloned Arc handles so we can drop the
+    // node lock before awaiting the work — avoids blocking Tauri commands.
+    let watcher_handle_clone = watcher_handle.clone();
+    let app_for_events = app_handle.clone();
+    let event_join = tokio::spawn(async move {
+        let node_state = app_for_events.state::<NodeState>();
+        let mut event_rx = event_rx;
+        while let Some(event) = event_rx.recv().await {
+            let work = {
+                let guard = node_state.node.lock().await;
+                let Some(node) = guard.as_ref() else { continue };
+                node.prepare_chain_event(event, &watcher_handle_clone)
+            }; // guard dropped here
+            work.await;
+        }
+    });
+
+    // Store handles for later shutdown
+    *node_state.watcher_handle.lock().await = Some(watcher_handle);
+    *node_state.event_handler.lock().await = Some(event_join);
+
     drop(guard);
 
     // 3. Update app state
@@ -302,8 +352,10 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
 
 #[tauri::command]
 async fn lock_wallet(app: AppHandle) -> Result<AppState, String> {
-    // Lock the node's wallet
     let node_state = app.state::<NodeState>();
+    node_state.shutdown_watcher().await;
+
+    // Lock the node's wallet
     let guard = node_state.node.lock().await;
     if let Some(node) = guard.as_ref() {
         node.lock_wallet();
@@ -331,8 +383,10 @@ async fn lock_wallet(app: AppHandle) -> Result<AppState, String> {
 
 #[tauri::command]
 async fn delete_wallet(app: AppHandle) -> Result<AppState, String> {
-    // Lock/drop the wallet in the node
     let node_state = app.state::<NodeState>();
+    node_state.shutdown_watcher().await;
+
+    // Lock/drop the wallet in the node
     let guard = node_state.node.lock().await;
     if let Some(node) = guard.as_ref() {
         node.lock_wallet();
@@ -1063,8 +1117,8 @@ pub fn run() {
                     };
 
                     if should_lock {
-                        // Also lock via the node
                         let node_state = app_handle.state::<NodeState>();
+                        node_state.shutdown_watcher().await;
                         let guard = node_state.node.lock().await;
                         if let Some(node) = guard.as_ref() {
                             node.lock_wallet();

@@ -5,6 +5,7 @@ pub(crate) mod amm_pool;
 pub(crate) mod announcement;
 pub(crate) mod assembly;
 pub(crate) mod chain;
+pub(crate) mod chain_watcher;
 pub(crate) mod discovery;
 pub(crate) mod error;
 #[cfg(any(test, feature = "testing"))]
@@ -92,10 +93,16 @@ pub use discovery::{
     build_contract_filter,
     connect_client,
     discovered_market_to_contract_params,
+    discovered_pool_to_amm_params,
     fetch_announcements,
     parse_announcement_event,
     publish_event,
     sign_attestation,
+};
+
+// ── Chain watcher ────────────────────────────────────────────────
+pub use chain_watcher::{
+    ChainEvent, ChainWatcherConfig, ChainWatcherHandle, ScriptOwner, spawn_chain_watcher,
 };
 
 // ── Testing-only re-exports ────────────────────────────────────────
