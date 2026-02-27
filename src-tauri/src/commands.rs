@@ -390,9 +390,10 @@ pub async fn restore_mnemonic_from_nostr(app: tauri::AppHandle) -> Result<String
         .iter()
         .find(|e| {
             !e.content.is_empty()
-                && !e.tags.iter().any(|t| {
-                    t.as_slice().first().map(|s| s.as_str()) == Some("deleted")
-                })
+                && !e
+                    .tags
+                    .iter()
+                    .any(|t| t.as_slice().first().map(|s| s.as_str()) == Some("deleted"))
         })
         .map(|e| e.content.clone())
         .ok_or_else(|| "No backup found on relays".to_string())?;
@@ -435,8 +436,7 @@ pub async fn check_nostr_backup(
                             Ok(events) => events.iter().any(|e| {
                                 !e.content.is_empty()
                                     && !e.tags.iter().any(|t| {
-                                        t.as_slice().first().map(|s| s.as_str())
-                                            == Some("deleted")
+                                        t.as_slice().first().map(|s| s.as_str()) == Some("deleted")
                                     })
                             }),
                             Err(_) => false,
