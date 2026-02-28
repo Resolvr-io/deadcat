@@ -399,6 +399,10 @@ impl DiscoveryStore for TestStore {
     ) -> std::result::Result<Vec<(crate::amm_pool::params::PoolId, Vec<u8>)>, String> {
         Ok(vec![])
     }
+
+    fn get_all_nostr_events(&mut self) -> std::result::Result<Vec<String>, String> {
+        Ok(vec![])
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1057,6 +1057,30 @@ impl deadcat_sdk::DiscoveryStore for DeadcatStore {
             })
             .collect()
     }
+
+    fn get_all_nostr_events(&mut self) -> Result<Vec<String>, String> {
+        let market_events: Vec<Option<String>> = markets::table
+            .select(markets::nostr_event_json)
+            .filter(markets::nostr_event_json.is_not_null())
+            .load(&mut self.conn)
+            .map_err(|e| format!("get_all_nostr_events (markets): {e}"))?;
+        let order_events: Vec<Option<String>> = maker_orders::table
+            .select(maker_orders::nostr_event_json)
+            .filter(maker_orders::nostr_event_json.is_not_null())
+            .load(&mut self.conn)
+            .map_err(|e| format!("get_all_nostr_events (orders): {e}"))?;
+        let pool_events: Vec<Option<String>> = amm_pools::table
+            .select(amm_pools::nostr_event_json)
+            .filter(amm_pools::nostr_event_json.is_not_null())
+            .load(&mut self.conn)
+            .map_err(|e| format!("get_all_nostr_events (pools): {e}"))?;
+        Ok(market_events
+            .into_iter()
+            .chain(order_events)
+            .chain(pool_events)
+            .flatten()
+            .collect())
+    }
 }
 
 // ==================== Sync internals (free functions taking &mut conn) ====================

@@ -306,6 +306,7 @@ All four event types use NIP-33 parameterized replaceable events (kind 30078 fal
 - Incoming events are parsed, persisted to the `DiscoveryStore` (if present), and broadcast via `tokio::broadcast` channel.
 - **One-shot fetches** (`fetch_markets`, `fetch_orders`, `fetch_pools`, `fetch_attestation`) are available for on-demand queries.
 - **Publishing** (`announce_market`, `announce_order`, `announce_pool`, `publish_attestation`) signs and sends events.
+- **Reconciliation** (`reconcile()`) re-sends all stored Nostr event JSON to relays, ensuring events that were silently dropped remain available. NIP-33 replaceable events make this idempotent. A standalone `send_reconciliation_events()` function supports the two-phase lock-drop pattern used by the app layer.
 
 The oracle's signing key is the same as the Nostr identity key (x-only Schnorr via BIP-340).
 
@@ -370,7 +371,7 @@ while let Some(event) = event_rx.recv().await {
 - `broadcast(tx)` — submit a transaction to the network
 - `get_script_history(script)` — get all txids that touched a script (with confirmation heights)
 
-Each call creates a fresh TCP connection. This is the main performance bottleneck that the ChainWatcher addresses for subscription-based monitoring.
+Connections are cached in thread-local storage (`RAW_CLIENT` for `electrum_client::Client`, `LWK_CLIENT` for `lwk_wollet::ElectrumClient`). Both clients are `!Send`, so they can't live inside the `Send` `ElectrumBackend` struct — thread-locals sidestep this. All SDK calls run on Tokio's blocking pool via `spawn_blocking`, which reuses OS threads, so the cached client persists across calls. Cache entries are keyed by URL to handle network switches, and cleared on error to force reconnect.
 
 ### Wallet Sync
 
@@ -419,7 +420,7 @@ The Tauri app (`src-tauri/src/`) wires everything together:
 
 ### State
 
-- **`NodeState`**: holds `tokio::sync::Mutex<Option<DeadcatNode<DeadcatStore>>>` + chain watcher handle + event loop join handle
+- **`NodeState`**: holds `tokio::sync::Mutex<Option<DeadcatNode<DeadcatStore>>>` + chain watcher handle + event loop join handle + reconciliation task handle
 - **`AppStateManager`**: holds `std::Mutex`-wrapped app config (network, wallet state, persister, store). Separate mutex type from NodeState to avoid holding both locks simultaneously.
 
 ### Wallet Lifecycle
@@ -439,11 +440,9 @@ When Nostr discovers a new market or pool, the app-layer event loop:
 
 ## Intentional Design Trade-offs
 
-**Fresh Electrum connections per SDK call.** `ElectrumBackend` creates a new TCP connection for every `scan_script_utxos`, `fetch_transaction`, etc. This adds latency but sidesteps connection lifecycle management. The ChainWatcher compensates for subscription-based monitoring, but manual operations still create fresh connections.
-
 **Node lock held for entire SDK closure.** `with_sdk` holds the `Mutex<Option<DeadcatSdk>>` for the duration of every blocking operation (which may include multiple Electrum round-trips). This serializes all SDK calls. The alternative — fine-grained locking — would risk inconsistent wallet state between steps of a multi-step operation.
 
-**Nostr operations are non-atomic with on-chain operations.** `create_market` broadcasts the on-chain transaction first, then publishes to Nostr. If Nostr fails, the on-chain state has already changed. Re-announcement can retry independently, but there's a window where the market exists on-chain but isn't discoverable.
+**Nostr operations are non-atomic with on-chain operations.** `create_market` broadcasts the on-chain transaction first, then publishes to Nostr. If Nostr fails, the on-chain state has already changed. The reconciliation task (runs on startup + every 30 minutes) mitigates this by re-sending all stored events to relays, but there is still a window where the market exists on-chain but isn't discoverable.
 
 **Pool announcements carry stale outpoints.** `PoolAnnouncement.outpoints` is intentionally left empty on updates. The authoritative pool state comes from chain walking, not from Nostr. The announcement primarily serves as a discovery beacon; reserves in the announcement are best-effort.
 

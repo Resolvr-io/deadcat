@@ -30,6 +30,8 @@ pub struct NodeState {
     pub watcher_handle: tokio::sync::Mutex<Option<deadcat_sdk::ChainWatcherHandle>>,
     /// JoinHandle for the chain event processing loop.
     pub event_handler: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// JoinHandle for the periodic reconciliation task. Aborted on node replacement.
+    pub reconcile_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Default for NodeState {
@@ -38,6 +40,7 @@ impl Default for NodeState {
             node: tokio::sync::Mutex::new(None),
             watcher_handle: tokio::sync::Mutex::new(None),
             event_handler: tokio::sync::Mutex::new(None),
+            reconcile_task: tokio::sync::Mutex::new(None),
         }
     }
 }
@@ -849,6 +852,7 @@ pub fn run() {
             commands::list_contracts,
             commands::sync_pool,
             commands::get_pool_price_history,
+            commands::reconcile_nostr,
             // Wallet store (SDK)
             wallet_store::create_software_signer,
             wallet_store::create_wollet,
