@@ -1,42 +1,36 @@
 import { state } from "../state.ts";
 
-export function handleInput(e: Event, render: () => void): void {
-  const target = e.target as HTMLInputElement;
+type InputHandler = (target: HTMLInputElement, render: () => void) => void;
 
-  if (target.id === "onboarding-nostr-nsec") {
+function asTextarea(target: HTMLInputElement): HTMLTextAreaElement {
+  return target as unknown as HTMLTextAreaElement;
+}
+
+const INPUT_HANDLERS: Record<string, InputHandler> = {
+  "onboarding-nostr-nsec": (target) => {
     state.onboardingNostrNsec = target.value;
-    return;
-  }
-
-  if (target.id === "onboarding-wallet-password") {
+  },
+  "onboarding-wallet-password": (target) => {
     state.onboardingWalletPassword = target.value;
-    return;
-  }
-
-  if (target.id === "onboarding-wallet-password-confirm") {
+  },
+  "onboarding-wallet-password-confirm": (target) => {
     state.onboardingWalletPasswordConfirm = target.value;
-    return;
-  }
-
-  if (target.id === "onboarding-wallet-mnemonic") {
-    state.onboardingWalletMnemonic = (
-      target as unknown as HTMLTextAreaElement
-    ).value;
-    return;
-  }
-
-  if (target.id === "global-search" || target.id === "global-search-mobile") {
+  },
+  "onboarding-wallet-mnemonic": (target) => {
+    state.onboardingWalletMnemonic = asTextarea(target).value;
+  },
+  "global-search": (target, render) => {
     state.search = target.value;
     if (state.view === "home") render();
-    return;
-  }
-
-  if (target.id === "trade-size-sats") {
+  },
+  "global-search-mobile": (target, render) => {
+    state.search = target.value;
+    if (state.view === "home") render();
+  },
+  "trade-size-sats": (target) => {
     state.tradeSizeSatsDraft = target.value;
-    return;
-  }
-
-  if (target.id === "trade-size-contracts") {
+  },
+  "trade-size-contracts": (target) => {
     const cleaned = target.value
       .replace(/[^\d.]/g, "")
       .replace(/(\..*)\./g, "$1");
@@ -53,124 +47,86 @@ export function handleInput(e: Event, render: () => void): void {
     if (target.value !== normalized) {
       target.value = normalized;
     }
-    return;
-  }
-
-  if (target.id === "limit-price") {
+  },
+  "limit-price": (target) => {
     state.limitPriceDraft = target.value.replace(/[^\d]/g, "").slice(0, 2);
-    return;
-  }
-
-  if (target.id === "pairs-input") {
+  },
+  "pairs-input": (target, render) => {
     state.pairsInput = Math.max(1, Math.floor(Number(target.value) || 1));
     render();
-    return;
-  }
-
-  if (target.id === "tokens-input") {
+  },
+  "tokens-input": (target, render) => {
     state.tokensInput = Math.max(1, Math.floor(Number(target.value) || 1));
     render();
-    return;
-  }
-
-  if (target.id === "wallet-password") {
+  },
+  "wallet-password": (target) => {
     state.walletPassword = target.value;
-    return;
-  }
-
-  if (target.id === "wallet-password-confirm") {
+  },
+  "wallet-password-confirm": (target) => {
     state.walletPasswordConfirm = target.value;
-    return;
-  }
-
-  if (target.id === "wallet-restore-mnemonic") {
-    state.walletRestoreMnemonic = (
-      target as unknown as HTMLTextAreaElement
-    ).value;
-    return;
-  }
-
-  if (target.id === "nostr-import-nsec") {
+  },
+  "wallet-restore-mnemonic": (target) => {
+    state.walletRestoreMnemonic = asTextarea(target).value;
+  },
+  "nostr-import-nsec": (target) => {
     state.nostrImportNsec = target.value;
-    return;
-  }
-
-  if (target.id === "nostr-replace-confirm") {
+  },
+  "nostr-replace-confirm": (target, render) => {
     state.nostrReplaceConfirm = target.value;
     render();
-    return;
-  }
-
-  if (target.id === "wallet-delete-confirm") {
+  },
+  "wallet-delete-confirm": (target, render) => {
     state.walletDeleteConfirm = target.value;
     render();
-    return;
-  }
-
-  if (target.id === "dev-reset-confirm") {
+  },
+  "dev-reset-confirm": (target, render) => {
     state.devResetConfirm = target.value;
     render();
-    return;
-  }
-
-  if (target.id === "relay-input") {
+  },
+  "relay-input": (target) => {
     state.relayInput = target.value;
-    return;
-  }
-
-  if (target.id === "receive-amount") {
+  },
+  "receive-amount": (target) => {
     const v = target.value.replace(/^-/, "");
     state.receiveAmount = v;
     if (target.value !== v) target.value = v;
-    return;
-  }
-
-  if (target.id === "send-invoice") {
+  },
+  "send-invoice": (target) => {
     state.sendInvoice = target.value;
-    return;
-  }
-
-  if (target.id === "send-liquid-address") {
+  },
+  "send-liquid-address": (target) => {
     state.sendLiquidAddress = target.value;
-    return;
-  }
-
-  if (target.id === "send-liquid-amount") {
+  },
+  "send-liquid-amount": (target) => {
     const v = target.value.replace(/^-/, "");
     state.sendLiquidAmount = v;
     if (target.value !== v) target.value = v;
-    return;
-  }
-
-  if (target.id === "send-btc-amount") {
+  },
+  "send-btc-amount": (target) => {
     const v = target.value.replace(/^-/, "");
     state.sendBtcAmount = v;
     if (target.value !== v) target.value = v;
-    return;
-  }
-
-  if (target.id === "wallet-backup-password") {
+  },
+  "wallet-backup-password": (target) => {
     if (state.walletData) state.walletData.backupPassword = target.value;
-    return;
-  }
-
-  if (target.id === "settings-backup-password") {
+  },
+  "settings-backup-password": (target) => {
     state.nostrBackupPassword = target.value;
-    return;
-  }
-
-  if (target.id === "create-question") {
+  },
+  "create-question": (target) => {
     state.createQuestion = target.value;
-    return;
-  }
-
-  if (target.id === "create-description") {
+  },
+  "create-description": (target) => {
     state.createDescription = target.value;
-    return;
-  }
-
-  if (target.id === "create-resolution-source") {
+  },
+  "create-resolution-source": (target) => {
     state.createResolutionSource = target.value;
-    return;
-  }
+  },
+};
+
+export function handleInput(e: Event, render: () => void): void {
+  const target = e.target as HTMLInputElement;
+  const handler = INPUT_HANDLERS[target.id];
+  if (!handler) return;
+  handler(target, render);
 }

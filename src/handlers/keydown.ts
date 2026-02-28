@@ -8,9 +8,71 @@ import {
   setLimitPriceSats,
 } from "../utils/market.ts";
 
+function clickAction(action: string): void {
+  const button = document.querySelector(
+    `[data-action='${action}']`,
+  ) as HTMLElement | null;
+  button?.click();
+}
+
+type EnterHandler = (target: HTMLInputElement, render: () => void) => void;
+
+const ENTER_HANDLERS: Record<string, EnterHandler> = {
+  "onboarding-nostr-nsec": (_target, _render) => {
+    clickAction("onboarding-import-nostr");
+  },
+  "onboarding-wallet-password": (_target, _render) => {
+    const actionName =
+      state.onboardingWalletMode === "nostr-restore"
+        ? "onboarding-nostr-restore-wallet"
+        : state.onboardingWalletMode === "create"
+          ? "onboarding-create-wallet"
+          : "onboarding-restore-wallet";
+    clickAction(actionName);
+  },
+  "nostr-replace-confirm": (_target, _render) => {
+    if (state.nostrReplaceConfirm.trim().toUpperCase() === "DELETE") {
+      clickAction("nostr-replace-confirm");
+    }
+  },
+  "wallet-delete-confirm": (_target, _render) => {
+    if (state.walletDeleteConfirm.trim().toUpperCase() === "DELETE") {
+      clickAction("wallet-delete-confirm");
+    }
+  },
+  "dev-reset-confirm": (_target, _render) => {
+    if (state.devResetConfirm.trim().toUpperCase() === "RESET") {
+      clickAction("dev-reset-confirm");
+    }
+  },
+  "wallet-backup-password": (_target, _render) => {
+    clickAction("export-backup");
+  },
+  "settings-backup-password": (_target, _render) => {
+    clickAction("settings-backup-wallet");
+  },
+  "wallet-password": (_target, _render) => {
+    if (state.walletStatus === "not_created") {
+      clickAction(state.walletShowRestore ? "restore-wallet" : "create-wallet");
+      return;
+    }
+    if (state.walletStatus === "locked") {
+      clickAction("unlock-wallet");
+    }
+  },
+  "trade-size-sats": (_target, render) => {
+    commitTradeSizeSatsDraft();
+    render();
+  },
+  "trade-size-contracts": (_target, render) => {
+    commitTradeContractsDraft(getSelectedMarket());
+    render();
+  },
+};
+
 export function handleKeydown(
   e: KeyboardEvent,
-  deps: { render: () => void; openMarket: (id: string) => void },
+  deps: { render: () => void },
 ): void {
   const { render } = deps;
   const target = e.target as HTMLInputElement;
@@ -54,117 +116,9 @@ export function handleKeydown(
 
   if (e.key !== "Enter") return;
 
-  if (target.id === "onboarding-nostr-nsec") {
-    e.preventDefault();
-    const btn = document.querySelector(
-      "[data-action='onboarding-import-nostr']",
-    ) as HTMLElement | null;
-    btn?.click();
-    return;
-  }
+  const handler = ENTER_HANDLERS[target.id];
+  if (!handler) return;
 
-  if (target.id === "onboarding-wallet-password") {
-    e.preventDefault();
-    const actionName =
-      state.onboardingWalletMode === "nostr-restore"
-        ? "onboarding-nostr-restore-wallet"
-        : state.onboardingWalletMode === "create"
-          ? "onboarding-create-wallet"
-          : "onboarding-restore-wallet";
-    const btn = document.querySelector(
-      `[data-action='${actionName}']`,
-    ) as HTMLElement | null;
-    btn?.click();
-    return;
-  }
-
-  if (target.id === "nostr-replace-confirm") {
-    e.preventDefault();
-    if (state.nostrReplaceConfirm.trim().toUpperCase() === "DELETE") {
-      const btn = document.querySelector(
-        "[data-action='nostr-replace-confirm']",
-      ) as HTMLElement | null;
-      btn?.click();
-    }
-    return;
-  }
-
-  if (target.id === "wallet-delete-confirm") {
-    e.preventDefault();
-    if (state.walletDeleteConfirm.trim().toUpperCase() === "DELETE") {
-      const btn = document.querySelector(
-        "[data-action='wallet-delete-confirm']",
-      ) as HTMLElement | null;
-      btn?.click();
-    }
-    return;
-  }
-
-  if (target.id === "dev-reset-confirm") {
-    e.preventDefault();
-    if (state.devResetConfirm.trim().toUpperCase() === "RESET") {
-      const btn = document.querySelector(
-        "[data-action='dev-reset-confirm']",
-      ) as HTMLElement | null;
-      btn?.click();
-    }
-    return;
-  }
-
-  if (target.id === "wallet-backup-password") {
-    e.preventDefault();
-    const btn = document.querySelector(
-      "[data-action='export-backup']",
-    ) as HTMLElement | null;
-    btn?.click();
-    return;
-  }
-
-  if (target.id === "settings-backup-password") {
-    e.preventDefault();
-    const btn = document.querySelector(
-      "[data-action='settings-backup-wallet']",
-    ) as HTMLElement | null;
-    btn?.click();
-    return;
-  }
-
-  if (target.id === "wallet-password") {
-    e.preventDefault();
-    if (state.walletStatus === "not_created") {
-      if (state.walletShowRestore) {
-        target
-          .closest("[data-action='restore-wallet']")
-          ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        const btn = document.querySelector(
-          "[data-action='restore-wallet']",
-        ) as HTMLElement | null;
-        btn?.click();
-      } else {
-        const btn = document.querySelector(
-          "[data-action='create-wallet']",
-        ) as HTMLElement | null;
-        btn?.click();
-      }
-    } else if (state.walletStatus === "locked") {
-      const btn = document.querySelector(
-        "[data-action='unlock-wallet']",
-      ) as HTMLElement | null;
-      btn?.click();
-    }
-    return;
-  }
-
-  if (target.id === "trade-size-sats") {
-    e.preventDefault();
-    commitTradeSizeSatsDraft();
-    render();
-    return;
-  }
-
-  if (target.id === "trade-size-contracts") {
-    e.preventDefault();
-    commitTradeContractsDraft(getSelectedMarket());
-    render();
-  }
+  e.preventDefault();
+  handler(target, render);
 }
