@@ -1,6 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Action, ActionDomain } from "../actions.ts";
+import { tauriInvoke as invoke } from "../api/tauri.ts";
 import {
   discoveredToMarket,
   issueTokens,

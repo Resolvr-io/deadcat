@@ -1,6 +1,6 @@
 import "./style.css";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { tauriApi } from "./api/tauri.ts";
 import { renderCreateMarket } from "./components/create.ts";
 import { renderDetail } from "./components/detail.ts";
 import { renderHome } from "./components/home.ts";
@@ -24,9 +24,6 @@ import {
 } from "./services/wallet.ts";
 import { app, createWalletData, state } from "./state.ts";
 import type {
-  IdentityResponse,
-  NostrBackupStatus,
-  NostrProfile,
   Side,
   TradeIntent,
   WalletTransaction,
@@ -215,7 +212,8 @@ async function finishOnboarding(): Promise<void> {
       .then(render)
       .catch(() => {});
 
-    invoke<NostrProfile | null>("fetch_nostr_profile")
+    tauriApi
+      .fetchNostrProfile()
       .then((profile) => {
         if (profile) {
           state.nostrProfile = profile;
@@ -247,9 +245,7 @@ async function initApp(): Promise<void> {
   // 1. Try to load existing Nostr identity (no auto-generation)
   let hasNostrIdentity = false;
   try {
-    const identity = await invoke<IdentityResponse | null>(
-      "init_nostr_identity",
-    );
+    const identity = await tauriApi.initNostrIdentity();
     if (identity) {
       state.nostrPubkey = identity.pubkey_hex;
       state.nostrNpub = identity.npub;
@@ -265,7 +261,8 @@ async function initApp(): Promise<void> {
       .then(render)
       .catch(() => {});
 
-    invoke<NostrProfile | null>("fetch_nostr_profile")
+    tauriApi
+      .fetchNostrProfile()
       .then((profile) => {
         if (profile) {
           state.nostrProfile = profile;
@@ -293,7 +290,8 @@ async function initApp(): Promise<void> {
     if (!needsNostr && needsWallet) {
       state.onboardingBackupScanning = true;
       render();
-      invoke<NostrBackupStatus>("check_nostr_backup")
+      tauriApi
+        .checkNostrBackup()
         .then((status) => {
           if (status.has_backup) {
             state.onboardingBackupFound = true;
@@ -380,7 +378,7 @@ function reportActivity(): void {
   activityTimer = setTimeout(() => {
     activityTimer = null;
   }, 30_000);
-  void invoke("record_activity");
+  void tauriApi.recordActivity();
 }
 
 for (const evt of ["click", "keydown", "mousemove", "scroll"] as const) {
