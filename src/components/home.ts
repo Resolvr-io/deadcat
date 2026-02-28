@@ -1,3 +1,4 @@
+import { OPEN_WALLET_ACTION } from "../actions.ts";
 import { chartSkeleton } from "../components/detail.ts";
 import { markets, state } from "../state.ts";
 import type { CovenantState, Market, MarketCategory } from "../types.ts";
@@ -57,7 +58,7 @@ export function renderHome(): string {
           state.walletStatus !== "unlocked"
             ? `
           <p class="mb-4 text-sm text-amber-300">Set up your wallet first to start trading</p>
-          <button data-action="nav-wallet" class="mr-3 rounded-xl border border-slate-600 px-6 py-3 text-base font-medium text-slate-200">Set Up Wallet</button>
+          <button data-action="${OPEN_WALLET_ACTION}" class="mr-3 rounded-xl border border-slate-600 px-6 py-3 text-base font-medium text-slate-200">Set Up Wallet</button>
         `
             : ""
         }

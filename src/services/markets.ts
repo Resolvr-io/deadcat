@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { tauriApi } from "../api/tauri.ts";
 import { setMarkets } from "../state.ts";
 import type {
   DiscoveredMarket,
@@ -50,7 +50,7 @@ export function discoveredToMarket(d: DiscoveredMarket): Market {
 
 export async function loadMarkets(): Promise<void> {
   try {
-    const stored = await invoke<DiscoveredMarket[]>("discover_contracts");
+    const stored = await tauriApi.discoverContracts();
     setMarkets(stored.map(discoveredToMarket));
   } catch (error) {
     console.warn("Failed to load markets:", error);
@@ -60,7 +60,7 @@ export async function loadMarkets(): Promise<void> {
 
 export async function refreshMarketsFromStore(): Promise<void> {
   try {
-    const stored = await invoke<DiscoveredMarket[]>("list_contracts");
+    const stored = await tauriApi.listContracts();
     setMarkets(stored.map(discoveredToMarket));
   } catch (error) {
     console.warn("Failed to refresh markets from store:", error);
@@ -87,19 +87,19 @@ export async function issueTokens(
   if (!market.creationTxid) {
     throw new Error("Market has no creation txid — cannot issue tokens");
   }
-  return invoke<IssuanceResult>("issue_tokens", {
-    contractParamsJson: marketToContractParamsJson(market),
-    creationTxid: market.creationTxid,
+  return tauriApi.issueTokens(
+    marketToContractParamsJson(market),
+    market.creationTxid,
     pairs,
-  });
+  );
 }
 
 export async function syncPool(poolId: string): Promise<void> {
-  await invoke("sync_pool", { poolId });
+  await tauriApi.syncPool(poolId);
 }
 
 export async function loadPriceHistory(
   marketId: string,
 ): Promise<PricePoint[]> {
-  return invoke<PricePoint[]>("get_pool_price_history", { marketId });
+  return tauriApi.getPoolPriceHistory(marketId);
 }

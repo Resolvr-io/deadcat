@@ -1,15 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
 import QRCode from "qrcode";
+import { tauriApi } from "../api/tauri.ts";
 import { markets, state } from "../state";
-import type {
-  ChainTipResponse,
-  PaymentSwap,
-  WalletNetwork,
-  WalletTransaction,
-} from "../types";
+import type { PaymentSwap, WalletNetwork, WalletTransaction } from "../types";
 import { hideOverlayLoader, showOverlayLoader } from "../ui/loader";
-
-type WalletBalanceResponse = { assets: Record<string, number> };
 
 export type WalletSnapshot = {
   balance: Record<string, number>;
@@ -39,10 +32,7 @@ export function formatCompactSats(sats: number): string {
 
 export async function fetchWalletStatus(): Promise<void> {
   try {
-    const appState = await invoke<{
-      walletStatus: "not_created" | "locked" | "unlocked";
-      networkStatus: { network: string; policyAssetId: string };
-    }>("get_app_state");
+    const appState = await tauriApi.getAppState();
     state.walletStatus = appState.walletStatus;
     state.walletNetwork = appState.networkStatus.network as
       | "mainnet"
@@ -59,11 +49,9 @@ export async function fetchWalletSnapshot(options?: {
 }): Promise<WalletSnapshot> {
   const includeSwaps = options?.includeSwaps ?? true;
   const [balance, transactions, swaps] = await Promise.all([
-    invoke<WalletBalanceResponse>("get_wallet_balance"),
-    invoke<WalletTransaction[]>("get_wallet_transactions"),
-    includeSwaps
-      ? invoke<PaymentSwap[]>("list_payment_swaps")
-      : Promise.resolve([]),
+    tauriApi.getWalletBalance(),
+    tauriApi.getWalletTransactions(),
+    includeSwaps ? tauriApi.listPaymentSwaps() : Promise.resolve([]),
   ]);
 
   return {
@@ -80,16 +68,13 @@ export async function restoreWalletAndSync(params: {
   setStep?: (message: string) => void;
 }): Promise<void> {
   const { mnemonic, password, unlock, setStep } = params;
-  await invoke("restore_wallet", {
-    mnemonic: mnemonic.trim(),
-    password,
-  });
+  await tauriApi.restoreWallet(mnemonic.trim(), password);
   if (unlock) {
     setStep?.("Unlocking wallet...");
-    await invoke("unlock_wallet", { password });
+    await tauriApi.unlockWallet(password);
   }
   setStep?.("Scanning blockchain...");
-  await invoke("sync_wallet");
+  await tauriApi.syncWallet();
 }
 
 export async function refreshWallet(render: () => void): Promise<void> {
@@ -98,9 +83,9 @@ export async function refreshWallet(render: () => void): Promise<void> {
   showOverlayLoader("Syncing wallet...");
   render();
   try {
-    await invoke("sync_wallet");
+    await tauriApi.syncWallet();
     // balance + transactions arrive via "wallet_snapshot" event listener
-    const swaps = await invoke<PaymentSwap[]>("list_payment_swaps");
+    const swaps = await tauriApi.listPaymentSwaps();
     if (state.walletData) state.walletData.swaps = swaps;
   } catch (e) {
     state.walletError = String(e);
@@ -195,7 +180,7 @@ export async function syncCurrentHeightFromLwk(
   updateEstClockLabels: () => void,
 ): Promise<void> {
   try {
-    const tip = await invoke<ChainTipResponse>("fetch_chain_tip", { network });
+    const tip = await tauriApi.fetchChainTip(network);
     if (!Number.isFinite(tip.height) || tip.height <= 0) return;
 
     let didChange = false;
