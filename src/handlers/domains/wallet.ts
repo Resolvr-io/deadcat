@@ -16,6 +16,7 @@ import {
   updateOverlayMessage,
 } from "../../ui/loader.ts";
 import { showToast } from "../../ui/toast.ts";
+import { runAsyncAction } from "./async-action.ts";
 import type { ClickDomainContext } from "./context.ts";
 
 export async function handleWalletDomain(
@@ -38,7 +39,7 @@ export async function handleWalletDomain(
       state.walletError = "";
       showOverlayLoader("Creating wallet...");
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const mnemonic = await tauriApi.createWallet(state.walletPassword);
           state.walletMnemonic = mnemonic;
@@ -53,7 +54,7 @@ export async function handleWalletDomain(
         state.walletLoading = false;
         hideOverlayLoader();
         render();
-      })();
+      });
       return;
     }
 
@@ -89,7 +90,7 @@ export async function handleWalletDomain(
       state.walletError = "";
       showOverlayLoader("Restoring wallet...");
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const pw = state.walletPassword;
           await restoreWalletAndSync({
@@ -122,7 +123,7 @@ export async function handleWalletDomain(
           hideOverlayLoader();
           render();
         }
-      })();
+      });
       return;
     }
 
@@ -136,7 +137,7 @@ export async function handleWalletDomain(
       state.walletError = "";
       showOverlayLoader("Unlocking wallet...");
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await tauriApi.unlockWallet(state.walletPassword);
           state.walletPassword = "";
@@ -175,12 +176,12 @@ export async function handleWalletDomain(
           hideOverlayLoader();
           render();
         }
-      })();
+      });
       return;
     }
 
     if (action === "lock-wallet") {
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await tauriApi.lockWallet();
           await fetchWalletStatus();
@@ -195,7 +196,7 @@ export async function handleWalletDomain(
           state.walletError = String(e);
           render();
         }
-      })();
+      });
       return;
     }
 
@@ -218,7 +219,7 @@ export async function handleWalletDomain(
 
     if (action === "wallet-delete-confirm") {
       if (state.walletDeleteConfirm.trim().toUpperCase() !== "DELETE") return;
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await tauriApi.deleteWallet();
           await fetchWalletStatus();
@@ -239,12 +240,12 @@ export async function handleWalletDomain(
           showToast(`Failed to remove wallet: ${String(e)}`, "error");
         }
         render();
-      })();
+      });
       return;
     }
 
     if (action === "forgot-password-delete") {
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await tauriApi.deleteWallet();
           await fetchWalletStatus();
@@ -266,7 +267,7 @@ export async function handleWalletDomain(
           showToast(`Failed to remove wallet: ${String(e)}`, "error");
         }
         render();
-      })();
+      });
       return;
     }
 
@@ -358,7 +359,7 @@ export async function handleWalletDomain(
       state.walletModalTab = "lightning";
       resetReceiveState();
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const pairs = await tauriApi.getChainSwapPairs();
           state.receiveBtcPairInfo = pairs.bitcoinToLiquid;
@@ -366,7 +367,7 @@ export async function handleWalletDomain(
           /* ignore */
         }
         render();
-      })();
+      });
       return;
     }
 
@@ -375,7 +376,7 @@ export async function handleWalletDomain(
       state.walletModalTab = "lightning";
       resetSendState();
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const pairs = await tauriApi.getChainSwapPairs();
           state.sendBtcPairInfo = pairs.liquidToBitcoin;
@@ -383,7 +384,7 @@ export async function handleWalletDomain(
           /* ignore */
         }
         render();
-      })();
+      });
       return;
     }
 
@@ -436,7 +437,7 @@ export async function handleWalletDomain(
       state.receiveCreating = true;
       state.receiveError = "";
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const swap = await tauriApi.createLightningReceive(amt);
           state.receiveLightningSwap = swap;
@@ -446,12 +447,12 @@ export async function handleWalletDomain(
         }
         state.receiveCreating = false;
         render();
-      })();
+      });
       return;
     }
 
     if (action === "generate-liquid-address") {
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const addr = await tauriApi.getWalletAddress(
             state.receiveLiquidAddressIndex,
@@ -463,7 +464,7 @@ export async function handleWalletDomain(
           state.receiveError = String(e);
         }
         render();
-      })();
+      });
       return;
     }
 
@@ -477,7 +478,7 @@ export async function handleWalletDomain(
       state.receiveCreating = true;
       state.receiveError = "";
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const swap = await tauriApi.createBitcoinReceive(amt);
           state.receiveBitcoinSwap = swap;
@@ -488,7 +489,7 @@ export async function handleWalletDomain(
         }
         state.receiveCreating = false;
         render();
-      })();
+      });
       return;
     }
 
@@ -502,7 +503,7 @@ export async function handleWalletDomain(
       state.sendCreating = true;
       state.sendError = "";
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const swap = await tauriApi.payLightningInvoice(invoice);
           state.sentLightningSwap = swap;
@@ -511,7 +512,7 @@ export async function handleWalletDomain(
         }
         state.sendCreating = false;
         render();
-      })();
+      });
       return;
     }
 
@@ -526,7 +527,7 @@ export async function handleWalletDomain(
       state.sendCreating = true;
       state.sendError = "";
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const result = await tauriApi.sendLbtc(address, amountSat);
           state.sentLiquidResult = { txid: result.txid, feeSat: result.feeSat };
@@ -535,7 +536,7 @@ export async function handleWalletDomain(
         }
         state.sendCreating = false;
         render();
-      })();
+      });
       return;
     }
 
@@ -549,7 +550,7 @@ export async function handleWalletDomain(
       state.sendCreating = true;
       state.sendError = "";
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const swap = await tauriApi.createBitcoinSend(amt);
           state.sentBitcoinSwap = swap;
@@ -560,7 +561,7 @@ export async function handleWalletDomain(
         }
         state.sendCreating = false;
         render();
-      })();
+      });
       return;
     }
 
@@ -573,7 +574,7 @@ export async function handleWalletDomain(
     if (action === "refresh-swap") {
       const swapId = actionEl?.getAttribute("data-swap-id") ?? "";
       if (!swapId) return;
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await tauriApi.refreshPaymentSwapStatus(swapId);
           const swaps = await tauriApi.listPaymentSwaps();
@@ -582,7 +583,7 @@ export async function handleWalletDomain(
           state.walletError = String(e);
         }
         render();
-      })();
+      });
       return;
     }
 
@@ -622,7 +623,7 @@ export async function handleWalletDomain(
       state.walletError = "";
       showOverlayLoader("Decrypting backup...");
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const password = state.walletData?.backupPassword ?? "";
           const count = await tauriApi.getMnemonicWordCount(password);
@@ -641,7 +642,7 @@ export async function handleWalletDomain(
         state.walletLoading = false;
         hideOverlayLoader();
         render();
-      })();
+      });
       return;
     }
 

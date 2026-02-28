@@ -15,6 +15,7 @@ import {
   showOverlayLoader,
 } from "../../ui/loader.ts";
 import { showToast } from "../../ui/toast.ts";
+import { runAsyncAction } from "./async-action.ts";
 import type { ClickDomainContext } from "./context.ts";
 
 export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
@@ -137,7 +138,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
     }
 
     if (action === "reveal-nostr-nsec") {
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const nsec = await tauriApi.exportNostrNsec();
           state.nostrNsecRevealed = nsec;
@@ -145,7 +146,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
         } catch (e) {
           showToast(`Failed to export nsec: ${String(e)}`, "error");
         }
-      })();
+      });
       return;
     }
 
@@ -179,7 +180,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
 
     if (action === "nostr-replace-confirm") {
       if (state.nostrReplaceConfirm.trim().toUpperCase() !== "DELETE") return;
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await tauriApi.deleteNostrIdentity();
           state.nostrPubkey = null;
@@ -192,7 +193,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
           showToast(`Failed to delete identity: ${String(e)}`, "error");
         }
         render();
-      })();
+      });
       return;
     }
 
@@ -211,7 +212,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       }
       state.nostrImporting = true;
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const identity = await tauriApi.importNostrNsec(nsecInput);
           state.nostrPubkey = identity.pubkey_hex;
@@ -226,12 +227,12 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
         }
         state.nostrImporting = false;
         render();
-      })();
+      });
       return;
     }
 
     if (action === "generate-new-nostr-key") {
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const identity = await tauriApi.generateNostrIdentity();
           state.nostrPubkey = identity.pubkey_hex;
@@ -244,7 +245,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
           showToast(`Failed: ${String(e)}`, "error");
         }
         render();
-      })();
+      });
       return;
     }
 
@@ -280,7 +281,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
 
     if (action === "dev-reset-confirm") {
       if (state.devResetConfirm.trim().toUpperCase() !== "RESET") return;
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await tauriApi.deleteNostrIdentity();
           try {
@@ -308,7 +309,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
         } catch (e) {
           showToast(`Reset failed: ${String(e)}`, "error");
         }
-      })();
+      });
       return;
     }
 
@@ -326,7 +327,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       }
       state.relayLoading = true;
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const list = await tauriApi.addRelay(url);
           state.relays = list.map((u) => ({ url: u, has_backup: false }));
@@ -346,7 +347,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
           state.relayLoading = false;
           render();
         }
-      })();
+      });
       return;
     }
 
@@ -355,7 +356,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       if (!url) return;
       state.relayLoading = true;
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const list = await tauriApi.removeRelay(url);
           state.relays = list.map((u) => ({ url: u, has_backup: false }));
@@ -374,14 +375,14 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
           state.relayLoading = false;
           render();
         }
-      })();
+      });
       return;
     }
 
     if (action === "reset-relays") {
       state.relayLoading = true;
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await tauriApi.setRelayList([
             "wss://relay.damus.io",
@@ -406,7 +407,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
           state.relayLoading = false;
           render();
         }
-      })();
+      });
       return;
     }
 
@@ -415,7 +416,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
     if (action === "nostr-backup-wallet") {
       state.nostrBackupLoading = true;
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await tauriApi.backupMnemonicToNostr("");
           await refreshRelayBackupStatus();
@@ -426,7 +427,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
           state.nostrBackupLoading = false;
           render();
         }
-      })();
+      });
       return;
     }
 
@@ -452,7 +453,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       }
       state.nostrBackupLoading = true;
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await tauriApi.backupMnemonicToNostr(password);
           await refreshRelayBackupStatus();
@@ -465,14 +466,14 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
           state.nostrBackupLoading = false;
           render();
         }
-      })();
+      });
       return;
     }
 
     if (action === "delete-nostr-backup") {
       state.nostrBackupLoading = true;
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await tauriApi.deleteNostrBackup();
           await refreshRelayBackupStatus();
@@ -498,13 +499,13 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
           state.nostrBackupLoading = false;
           render();
         }
-      })();
+      });
       return;
     }
 
     if (action === "nostr-restore-wallet") {
       showOverlayLoader("Fetching backup from relays...");
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const mnemonic = await tauriApi.restoreMnemonicFromNostr();
           hideOverlayLoader();
@@ -517,7 +518,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
           hideOverlayLoader();
           showToast(String(e), "error");
         }
-      })();
+      });
       return;
     }
 
@@ -536,7 +537,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
 
     if (action === "confirm-logout") {
       state.logoutOpen = false;
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await tauriApi.lockWallet();
           await fetchWalletStatus();
@@ -552,7 +553,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
           console.warn("Failed to lock wallet:", e);
         }
         render();
-      })();
+      });
       return;
     }
 

@@ -7,6 +7,7 @@ import {
   updateOverlayMessage,
 } from "../../ui/loader.ts";
 import { showToast } from "../../ui/toast.ts";
+import { runAsyncAction } from "./async-action.ts";
 import type { ClickDomainContext } from "./context.ts";
 
 export async function handleOnboardingDomain(
@@ -28,7 +29,7 @@ export async function handleOnboardingDomain(
       state.onboardingLoading = true;
       state.onboardingError = "";
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const identity = await tauriApi.generateNostrIdentity();
           state.nostrPubkey = identity.pubkey_hex;
@@ -41,7 +42,7 @@ export async function handleOnboardingDomain(
         }
         state.onboardingLoading = false;
         render();
-      })();
+      });
       return;
     }
 
@@ -55,7 +56,7 @@ export async function handleOnboardingDomain(
       state.onboardingLoading = true;
       state.onboardingError = "";
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const identity = await tauriApi.importNostrNsec(nsecInput);
           state.nostrPubkey = identity.pubkey_hex;
@@ -83,7 +84,7 @@ export async function handleOnboardingDomain(
         }
         state.onboardingLoading = false;
         render();
-      })();
+      });
       return;
     }
 
@@ -144,7 +145,7 @@ export async function handleOnboardingDomain(
       state.onboardingError = "";
       showOverlayLoader("Creating wallet...");
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const mnemonic = await tauriApi.createWallet(
             state.onboardingWalletPassword,
@@ -156,7 +157,7 @@ export async function handleOnboardingDomain(
         state.onboardingLoading = false;
         hideOverlayLoader();
         render();
-      })();
+      });
       return;
     }
 
@@ -170,10 +171,10 @@ export async function handleOnboardingDomain(
 
     if (action === "onboarding-wallet-done") {
       showOverlayLoader("Loading markets...");
-      (async () => {
+      runAsyncAction(async () => {
         await finishOnboarding();
         hideOverlayLoader();
-      })();
+      });
       return;
     }
 
@@ -197,7 +198,7 @@ export async function handleOnboardingDomain(
       state.onboardingError = "";
       showOverlayLoader("Restoring wallet...");
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           await restoreWalletAndSync({
             mnemonic: state.onboardingWalletMnemonic,
@@ -215,7 +216,7 @@ export async function handleOnboardingDomain(
           hideOverlayLoader();
           render();
         }
-      })();
+      });
       return;
     }
 
@@ -236,7 +237,7 @@ export async function handleOnboardingDomain(
       state.onboardingError = "";
       showOverlayLoader("Fetching backup from relays...");
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const mnemonic = await tauriApi.restoreMnemonicFromNostr();
           updateOverlayMessage("Restoring wallet...");
@@ -256,7 +257,7 @@ export async function handleOnboardingDomain(
           hideOverlayLoader();
           render();
         }
-      })();
+      });
       return;
     }
   }
