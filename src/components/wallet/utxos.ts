@@ -1,6 +1,7 @@
 import { formatLbtc } from "../../services/wallet.ts";
 import { state } from "../../state.ts";
 import type { WalletUtxo } from "../../types.ts";
+import { escapeAttr, escapeHtml } from "../../utils/html.ts";
 
 export type WalletAssetLabel = {
   side: string;
@@ -38,11 +39,11 @@ export function renderWalletUtxoSection(params: {
       '<div class="flex items-center gap-2 min-w-0">' +
       labelHtml +
       '<a href="' +
-      explorerBase +
+      escapeAttr(explorerBase) +
       "/tx/" +
-      u.txid +
+      escapeAttr(u.txid) +
       '" target="_blank" rel="noopener" class="mono text-slate-500 hover:text-slate-300 transition truncate">' +
-      shortOutpoint +
+      escapeHtml(shortOutpoint) +
       "</a>" +
       '<span class="text-slate-600">' +
       conf +
@@ -86,16 +87,16 @@ export function renderWalletUtxoSection(params: {
             info.side +
             "</span>" +
             '<button data-open-market="' +
-            info.marketId +
+            escapeAttr(info.marketId) +
             '" class="text-slate-400 hover:text-slate-200 transition cursor-pointer truncate text-left">' +
-            truncQ +
+            escapeHtml(truncQ) +
             "</button>",
         );
       }
       const shortAsset = `${u.assetId.slice(0, 8)}...${u.assetId.slice(-4)}`;
       return utxoRow(
         u,
-        `<span class="mono text-slate-500 shrink-0">${shortAsset}</span>`,
+        `<span class="mono text-slate-500 shrink-0">${escapeHtml(shortAsset)}</span>`,
       );
     })
     .join("");

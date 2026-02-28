@@ -1,6 +1,7 @@
 import { state } from "../state.ts";
 import type { RelayBackupResult } from "../types.ts";
 import { hexToNpub } from "../utils/crypto.ts";
+import { escapeAttr, escapeHtml } from "../utils/html.ts";
 
 export function renderMnemonicGrid(mnemonic: string): string {
   const words = mnemonic.split(" ");
@@ -18,7 +19,7 @@ export function renderMnemonicWordsGrid(words: string[]): string {
           (i + 1) +
           ".</span>" +
           '<span class="mono text-sm text-slate-100 whitespace-nowrap">' +
-          w +
+          escapeHtml(w) +
           "</span>" +
           "</div>",
       )
@@ -83,7 +84,7 @@ export function renderBackupModal(loading: boolean): string {
     body =
       '<p class="text-sm text-slate-400">Enter your wallet password to reveal your recovery phrase.</p>' +
       '<input id="wallet-backup-password" type="password" maxlength="32" value="' +
-      (state.walletData?.backupPassword ?? "") +
+      escapeAttr(state.walletData?.backupPassword ?? "") +
       '" placeholder="Wallet password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
       '<button data-action="export-backup" class="w-full rounded-xl bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300"' +
       (loading ? " disabled" : "") +
@@ -114,16 +115,16 @@ export function renderCopyable(
     '<div class="flex items-center gap-2">' +
     '<div class="flex-1 overflow-hidden rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">' +
     '<div class="text-xs text-slate-500">' +
-    label +
+    escapeHtml(label) +
     "</div>" +
     '<div class="mono text-xs text-slate-300 truncate">' +
-    value +
+    escapeHtml(value) +
     "</div>" +
     "</div>" +
     '<button data-action="' +
-    copyAction +
+    escapeAttr(copyAction) +
     '" data-copy-value="' +
-    value +
+    escapeAttr(value) +
     '" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800">Copy</button>' +
     "</div>"
   );
@@ -185,7 +186,7 @@ export function renderReceiveModal(): string {
         "</p>" +
         (state.modalQr
           ? '<div class="flex justify-center"><img src="' +
-            state.modalQr +
+            escapeAttr(state.modalQr) +
             '" alt="QR" class="w-56 h-56 rounded-lg" /></div>'
           : "") +
         renderCopyable(s.invoice, "BOLT11 Invoice", "copy-modal-value") +
@@ -201,7 +202,7 @@ export function renderReceiveModal(): string {
         "</div>" +
         '<div class="flex gap-2">' +
         '<input id="receive-amount" type="number" min="1" value="' +
-        state.receiveAmount +
+        escapeAttr(state.receiveAmount) +
         '" placeholder="Amount (sats)" class="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
         '<button data-action="create-lightning-receive" class="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-300"' +
         (creating ? " disabled" : "") +
@@ -218,7 +219,7 @@ export function renderReceiveModal(): string {
         '<p class="text-sm text-slate-400">Send L-BTC to this address to fund your wallet.</p>' +
         (state.modalQr
           ? '<div class="flex justify-center"><img src="' +
-            state.modalQr +
+            escapeAttr(state.modalQr) +
             '" alt="QR" class="w-56 h-56 rounded-lg" /></div>'
           : "") +
         renderCopyable(
@@ -254,7 +255,7 @@ export function renderReceiveModal(): string {
         "</p>" +
         (state.modalQr
           ? '<div class="flex justify-center"><img src="' +
-            state.modalQr +
+            escapeAttr(state.modalQr) +
             '" alt="QR" class="w-56 h-56 rounded-lg" /></div>'
           : "") +
         renderCopyable(
@@ -289,7 +290,7 @@ export function renderReceiveModal(): string {
         pairInfo +
         '<div class="flex gap-2">' +
         '<input id="receive-amount" type="number" min="1" value="' +
-        state.receiveAmount +
+        escapeAttr(state.receiveAmount) +
         '" placeholder="Amount (sats)" class="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
         '<button data-action="create-bitcoin-receive" class="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-300"' +
         (creating ? " disabled" : "") +
@@ -304,7 +305,7 @@ export function renderReceiveModal(): string {
   if (err) {
     content +=
       '<div class="rounded-lg border border-red-500/30 bg-red-900/20 px-4 py-3 text-sm text-red-300">' +
-      err +
+      escapeHtml(err) +
       "</div>";
   }
 
@@ -339,7 +340,7 @@ export function renderSendModal(): string {
         '<div class="space-y-3">' +
         '<p class="text-sm text-slate-400">Paste a BOLT11 Lightning invoice to pay via Boltz submarine swap.</p>' +
         '<input id="send-invoice" value="' +
-        state.sendInvoice +
+        escapeAttr(state.sendInvoice) +
         '" placeholder="BOLT11 invoice" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
         '<button data-action="pay-lightning-invoice" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300"' +
         (creating ? " disabled" : "") +
@@ -364,10 +365,10 @@ export function renderSendModal(): string {
         '<div class="space-y-3">' +
         '<p class="text-sm text-slate-400">Send L-BTC directly to a Liquid address.</p>' +
         '<input id="send-liquid-address" value="' +
-        state.sendLiquidAddress +
+        escapeAttr(state.sendLiquidAddress) +
         '" placeholder="Liquid address" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
         '<input id="send-liquid-amount" type="number" min="1" value="' +
-        state.sendLiquidAmount +
+        escapeAttr(state.sendLiquidAmount) +
         '" placeholder="Amount (sats)" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
         '<button data-action="send-liquid" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300"' +
         (creating ? " disabled" : "") +
@@ -393,7 +394,7 @@ export function renderSendModal(): string {
         "</p>" +
         (state.modalQr
           ? '<div class="flex justify-center"><img src="' +
-            state.modalQr +
+            escapeAttr(state.modalQr) +
             '" alt="QR" class="w-56 h-56 rounded-lg" /></div>'
           : "") +
         renderCopyable(
@@ -428,7 +429,7 @@ export function renderSendModal(): string {
         pairInfo +
         '<div class="flex gap-2">' +
         '<input id="send-btc-amount" type="number" min="1" value="' +
-        state.sendBtcAmount +
+        escapeAttr(state.sendBtcAmount) +
         '" placeholder="Amount (sats)" class="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
         '<button data-action="create-bitcoin-send" class="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-300"' +
         (creating ? " disabled" : "") +
@@ -443,7 +444,7 @@ export function renderSendModal(): string {
   if (err) {
     content +=
       '<div class="rounded-lg border border-red-500/30 bg-red-900/20 px-4 py-3 text-sm text-red-300">' +
-      err +
+      escapeHtml(err) +
       "</div>";
   }
 
@@ -500,17 +501,17 @@ export function renderNostrEventModal(): string {
       ? truncBech32(opts.displayValue)
       : copyable
         ? truncHex(value)
-        : esc(value);
+        : value;
     const copyVal = opts?.displayValue ?? value;
     return `<div class="min-w-0">
       <span class="mb-0.5 block text-xs text-slate-500">${label}</span>
       ${
         copyable
-          ? `<button data-action="copy-to-clipboard" data-copy-value="${esc(copyVal)}" class="flex w-full min-w-0 items-center gap-1.5 overflow-hidden font-mono text-xs text-slate-200 transition-colors hover:text-white">
-            <span class="truncate">${display}</span>
+          ? `<button data-action="copy-to-clipboard" data-copy-value="${escapeAttr(copyVal)}" class="flex w-full min-w-0 items-center gap-1.5 overflow-hidden font-mono text-xs text-slate-200 transition-colors hover:text-white">
+            <span class="truncate">${esc(display)}</span>
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-slate-500"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
           </button>`
-          : `<p class="truncate text-xs text-slate-200">${display}</p>`
+          : `<p class="truncate text-xs text-slate-200">${esc(display)}</p>`
       }
     </div>`;
   };
@@ -588,7 +589,7 @@ export function renderNostrEventModal(): string {
         <div class="flex items-center justify-end gap-2 border-t border-slate-800 px-6 py-4">
           ${
             state.nostrEventNevent
-              ? `<button data-action="copy-to-clipboard" data-copy-value="${state.nostrEventNevent}" class="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+              ? `<button data-action="copy-to-clipboard" data-copy-value="${escapeAttr(state.nostrEventNevent)}" class="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
             Copy Event ID
           </button>`

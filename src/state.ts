@@ -1,5 +1,6 @@
 import type {
   ActionTab,
+  AppNetwork,
   BaseCurrency,
   BoltzChainSwapCreated,
   BoltzChainSwapPairInfo,
@@ -125,7 +126,7 @@ export const state: {
   createSettlementViewYear: number;
   createSettlementViewMonth: number;
   walletStatus: "not_created" | "locked" | "unlocked";
-  walletNetwork: "mainnet" | "testnet" | "regtest";
+  walletNetwork: AppNetwork;
   walletData: WalletData | null;
   walletPolicyAssetId: string;
   walletMnemonic: string;

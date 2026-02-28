@@ -31,6 +31,7 @@ export type CollateralUtxo = {
 };
 
 export type WalletNetwork = "liquid" | "liquid-testnet" | "liquid-regtest";
+export type AppNetwork = "mainnet" | "testnet" | "regtest";
 
 export type ChainTipResponse = {
   height: number;

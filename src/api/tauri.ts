@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AppNetwork,
   AttestationResult,
   BoltzChainSwapCreated,
   BoltzChainSwapPairsInfo,
@@ -19,7 +20,7 @@ import type {
 
 type AppStateResponse = {
   walletStatus: "not_created" | "locked" | "unlocked";
-  networkStatus: { network: string; policyAssetId: string };
+  networkStatus: { network: AppNetwork; policyAssetId: string };
 };
 
 type WalletBalanceResponse = { assets: Record<string, number> };
@@ -164,7 +165,7 @@ export const tauriApi = {
     tauriInvoke<WalletAddressResponse>("get_wallet_address", { index }),
   listPaymentSwaps: () => tauriInvoke<PaymentSwap[]>("list_payment_swaps"),
   refreshPaymentSwapStatus: (swapId: string) =>
-    tauriInvoke<void>("refresh_payment_swap_status", { swapId }),
+    tauriInvoke<PaymentSwap>("refresh_payment_swap_status", { swapId }),
   getMnemonicWordCount: (password: string) =>
     tauriInvoke<number>("get_mnemonic_word_count", { password }),
   getMnemonicWord: (password: string, index: number) =>

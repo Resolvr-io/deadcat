@@ -1,4 +1,5 @@
 import { categories, state } from "../state.ts";
+import { escapeAttr, escapeHtml } from "../utils/html.ts";
 
 const chevronSvg =
   '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-slate-400"><polyline points="6 9 12 15 18 9"/></svg>';
@@ -28,14 +29,14 @@ function miniDropdown(
   const menuItems = items
     .map(
       (it) =>
-        `<button type="button" data-action="pick-settlement-option" data-dropdown="${name}" data-value="${it.value}" class="dc-dropdown-option ${it.selected ? "dc-dropdown-option-active" : ""}">${it.label}</button>`,
+        `<button type="button" data-action="pick-settlement-option" data-dropdown="${escapeAttr(name)}" data-value="${escapeAttr(it.value)}" class="dc-dropdown-option ${it.selected ? "dc-dropdown-option-active" : ""}">${escapeHtml(it.label)}</button>`,
     )
     .join("");
 
   return `
     <div class="relative">
-      <button type="button" data-action="toggle-settlement-dropdown" data-dropdown="${name}" class="dc-dropdown-trigger">
-        <span>${label}</span>
+      <button type="button" data-action="toggle-settlement-dropdown" data-dropdown="${escapeAttr(name)}" class="dc-dropdown-trigger">
+        <span>${escapeHtml(label)}</span>
         ${chevronSvg}
       </button>
       ${isOpen ? `<div class="dc-dropdown-menu">${menuItems}</div>` : ""}
@@ -206,12 +207,12 @@ export function renderCreateMarket(): string {
           <div class="space-y-4">
             <div>
               <label for="create-question" class="mb-1 block text-xs text-slate-400">Question</label>
-              <input id="create-question" value="${state.createQuestion}" maxlength="140" class="dc-input" placeholder="Will X happen by Y?" />
+              <input id="create-question" value="${escapeAttr(state.createQuestion)}" maxlength="140" class="dc-input" placeholder="Will X happen by Y?" />
             </div>
 
             <div>
               <label for="create-description" class="mb-1 block text-xs text-slate-400">Settlement rule</label>
-              <textarea id="create-description" rows="3" maxlength="280" class="dc-input h-auto" placeholder="Define exactly how YES/NO resolves.">${state.createDescription}</textarea>
+              <textarea id="create-description" rows="3" maxlength="280" class="dc-input h-auto" placeholder="Define exactly how YES/NO resolves.">${escapeHtml(state.createDescription)}</textarea>
             </div>
 
             <div class="grid gap-4 md:grid-cols-2">
@@ -219,13 +220,13 @@ export function renderCreateMarket(): string {
                 <label class="mb-1 block text-xs text-slate-400">Category</label>
                 <div class="relative" id="create-category-dropdown">
                   <button type="button" data-action="toggle-category-dropdown" class="dc-input flex items-center justify-between gap-2 cursor-pointer text-left">
-                    <span>${state.createCategory}</span>
+                    <span>${escapeHtml(state.createCategory)}</span>
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-slate-400 transition-transform ${state.createCategoryOpen ? "rotate-180" : ""}"><polyline points="6 9 12 15 18 9"/></svg>
                   </button>
                   ${
                     state.createCategoryOpen
                       ? `<div class="dc-dropdown-menu right-0">
-                    ${filteredCategories.map((item) => `<button type="button" data-action="select-create-category" data-value="${item}" class="dc-dropdown-option ${state.createCategory === item ? "dc-dropdown-option-active" : ""}">${item}</button>`).join("")}
+                    ${filteredCategories.map((item) => `<button type="button" data-action="select-create-category" data-value="${escapeAttr(item)}" class="dc-dropdown-option ${state.createCategory === item ? "dc-dropdown-option-active" : ""}">${escapeHtml(item)}</button>`).join("")}
                   </div>`
                       : ""
                   }
@@ -237,7 +238,7 @@ export function renderCreateMarket(): string {
                 <div class="relative" id="settlement-picker">
                   <button type="button" data-action="toggle-settlement-picker" class="dc-input flex items-center gap-2 cursor-pointer text-left">
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 text-slate-400"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                    <span class="${state.createSettlementInput ? "text-slate-100" : "text-slate-500"}">${settlementDisplay}</span>
+                    <span class="${state.createSettlementInput ? "text-slate-100" : "text-slate-500"}">${escapeHtml(settlementDisplay)}</span>
                   </button>
                   ${state.createSettlementPickerOpen ? renderCalendar() : ""}
                 </div>
@@ -246,7 +247,7 @@ export function renderCreateMarket(): string {
 
             <div>
               <label for="create-resolution-source" class="mb-1 block text-xs text-slate-400">Resolution source</label>
-              <input id="create-resolution-source" value="${state.createResolutionSource}" maxlength="120" class="dc-input" placeholder="Official source (e.g., NHC advisory, FEC filing, exchange index)" />
+              <input id="create-resolution-source" value="${escapeAttr(state.createResolutionSource)}" maxlength="120" class="dc-input" placeholder="Official source (e.g., NHC advisory, FEC filing, exchange index)" />
             </div>
 
           </div>
@@ -256,11 +257,11 @@ export function renderCreateMarket(): string {
           <p class="panel-subtitle">Preview</p>
           <h3 class="panel-title mb-3 text-lg">New Contract Ticket</h3>
           <div class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
-            <p class="text-sm text-slate-200">${state.createQuestion.trim() || "Your market question will appear here."}</p>
-            <p class="text-xs text-slate-400">${state.createDescription.trim() || "Settlement rule summary will appear here."}</p>
-            <p class="text-xs text-slate-400">Category: <span class="text-slate-200">${state.createCategory}</span></p>
-            <p class="text-xs text-slate-400">Settlement deadline: <span class="text-slate-200">${state.createSettlementInput ? settlementDisplay : "Not set"}</span></p>
-            <p class="text-xs text-slate-400">Resolution source: <span class="text-slate-200">${state.createResolutionSource.trim() || "Not set"}</span></p>
+            <p class="text-sm text-slate-200">${escapeHtml(state.createQuestion.trim() || "Your market question will appear here.")}</p>
+            <p class="text-xs text-slate-400">${escapeHtml(state.createDescription.trim() || "Settlement rule summary will appear here.")}</p>
+            <p class="text-xs text-slate-400">Category: <span class="text-slate-200">${escapeHtml(state.createCategory)}</span></p>
+            <p class="text-xs text-slate-400">Settlement deadline: <span class="text-slate-200">${escapeHtml(state.createSettlementInput ? settlementDisplay : "Not set")}</span></p>
+            <p class="text-xs text-slate-400">Resolution source: <span class="text-slate-200">${escapeHtml(state.createResolutionSource.trim() || "Not set")}</span></p>
           </div>
           <button data-action="submit-create-market" class="mt-4 w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50" ${state.marketCreating ? "disabled" : ""}>${state.marketCreating ? "Creating Market..." : "Create Market"}</button>
           <p class="mt-2 text-xs text-slate-500">${state.marketCreating ? "Building transaction, broadcasting, and announcing. This may take a moment." : "Creates the on-chain contract and announces the market. Your key is the oracle signing key."}</p>

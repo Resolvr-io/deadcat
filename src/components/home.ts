@@ -1,5 +1,5 @@
 import { OPEN_WALLET_ACTION } from "../actions.ts";
-import { chartSkeleton } from "../components/detail.ts";
+import { chartSkeleton } from "../components/market-chart.ts";
 import { markets, state } from "../state.ts";
 import type { CovenantState, Market, MarketCategory } from "../types.ts";
 import {
@@ -7,6 +7,7 @@ import {
   formatProbabilityWithPercent,
   formatVolumeBtc,
 } from "../utils/format.ts";
+import { escapeAttr, escapeHtml } from "../utils/html.ts";
 import {
   getFilteredMarkets,
   getTrendingMarkets,
@@ -63,7 +64,7 @@ export function renderHome(): string {
             : ""
         }
         <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950"><span class="mr-1">+</span> Create New Market</button>
-        ${state.nostrPubkey ? `<p class="mt-4 text-xs text-slate-500">Identity: ${state.nostrPubkey.slice(0, 8)}...${state.nostrPubkey.slice(-8)}</p>` : ""}
+        ${state.nostrPubkey ? `<p class="mt-4 text-xs text-slate-500">Identity: ${escapeHtml(state.nostrPubkey.slice(0, 8))}...${escapeHtml(state.nostrPubkey.slice(-8))}</p>` : ""}
       </div>
     `;
   }
@@ -81,7 +82,7 @@ export function renderHome(): string {
         <section class="space-y-[21px]">
           <div class="rounded-[21px] border border-slate-800 bg-slate-950/60 p-[21px] lg:p-[34px]">
             <div class="mb-5 flex items-start justify-between gap-3">
-              <h1 class="phi-title text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${featured.question}</h1>
+              <h1 class="phi-title text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${escapeHtml(featured.question)}</h1>
               <div class="flex items-center gap-2">
                 <button data-action="trending-prev" class="h-11 w-11 rounded-full border border-slate-700 text-xl text-slate-200">&#8249;</button>
                 <p class="w-20 text-center text-sm font-normal text-slate-300">${state.trendingIndex + 1} of ${trending.length}</p>
@@ -97,11 +98,11 @@ export function renderHome(): string {
                   <div class="rounded-lg bg-slate-900/60 p-2">Volume<br/><span class="text-slate-200">${formatVolumeBtc(featured.volumeBtc)}</span></div>
                 </div>
                 <div class="space-y-3 text-lg text-slate-200">
-                  <div class="flex items-center justify-between"><span>Yes contract</span><button data-open-market="${featured.id}" data-open-side="yes" data-open-intent="buy" class="rounded-full border border-emerald-600 px-4 py-1 text-emerald-300 transition hover:bg-emerald-500/10">${featured.yesPrice != null ? formatProbabilityWithPercent(featured.yesPrice) : "\u2014"}</button></div>
-                  <div class="flex items-center justify-between"><span>No contract</span><button data-open-market="${featured.id}" data-open-side="no" data-open-intent="buy" class="rounded-full border border-rose-600 px-4 py-1 text-rose-300 transition hover:bg-rose-500/10">${featuredNo != null ? formatProbabilityWithPercent(featuredNo) : "\u2014"}</button></div>
+                  <div class="flex items-center justify-between"><span>Yes contract</span><button data-open-market="${escapeAttr(featured.id)}" data-open-side="yes" data-open-intent="buy" class="rounded-full border border-emerald-600 px-4 py-1 text-emerald-300 transition hover:bg-emerald-500/10">${featured.yesPrice != null ? formatProbabilityWithPercent(featured.yesPrice) : "\u2014"}</button></div>
+                  <div class="flex items-center justify-between"><span>No contract</span><button data-open-market="${escapeAttr(featured.id)}" data-open-side="no" data-open-intent="buy" class="rounded-full border border-rose-600 px-4 py-1 text-rose-300 transition hover:bg-rose-500/10">${featuredNo != null ? formatProbabilityWithPercent(featuredNo) : "\u2014"}</button></div>
                 </div>
-                <p class="mt-3 text-[15px] text-slate-400">${featured.description}</p>
-                <button data-open-market="${featured.id}" class="mt-5 rounded-xl bg-emerald-300 px-5 py-2.5 text-base font-medium text-slate-950">Open contract</button>
+                <p class="mt-3 text-[15px] text-slate-400">${escapeHtml(featured.description)}</p>
+                <button data-open-market="${escapeAttr(featured.id)}" class="mt-5 rounded-xl bg-emerald-300 px-5 py-2.5 text-base font-medium text-slate-950">Open contract</button>
               </div>
               <div>${chartSkeleton(featured, "home")}</div>
             </div>
@@ -118,9 +119,9 @@ export function renderHome(): string {
                   const no =
                     market.yesPrice != null ? 1 - market.yesPrice : null;
                   return `
-                    <button data-open-market="${market.id}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
-                      <p class="mb-2 text-xs text-slate-500">${market.category} ${market.isLive ? "· LIVE" : ""}</p>
-                      <p class="mb-3 max-h-14 overflow-hidden text-base font-normal text-slate-200">${market.question}</p>
+                    <button data-open-market="${escapeAttr(market.id)}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
+                      <p class="mb-2 text-xs text-slate-500">${escapeHtml(market.category)} ${market.isLive ? "· LIVE" : ""}</p>
+                      <p class="mb-3 max-h-14 overflow-hidden text-base font-normal text-slate-200">${escapeHtml(market.question)}</p>
                       <div class="flex items-center justify-between text-xs sm:text-sm">
                         <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span>
                         <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no) : "\u2014"}</span>
@@ -142,13 +143,13 @@ export function renderHome(): string {
                 .slice(0, 3)
                 .map((market, idx) => {
                   return `
-                    <button data-open-market="${market.id}" class="w-full text-left">
+                    <button data-open-market="${escapeAttr(market.id)}" class="w-full text-left">
                       <div class="flex items-start justify-between gap-2">
-                        <p class="w-full text-sm font-normal text-slate-300">${idx + 1}. ${market.question}</p>
+                        <p class="w-full text-sm font-normal text-slate-300">${idx + 1}. ${escapeHtml(market.question)}</p>
                         <p class="text-sm font-normal text-slate-100">${market.yesPrice != null ? `${Math.round(market.yesPrice * 100)}%` : "\u2014"}</p>
                       </div>
                       <div class="mt-1 flex items-center justify-between">
-                        <p class="text-xs text-slate-500">${market.category}</p>
+                        <p class="text-xs text-slate-500">${escapeHtml(market.category)}</p>
                         <p class="text-xs">${trendIndicator(market.change24h)}</p>
                       </div>
                     </button>
@@ -164,12 +165,12 @@ export function renderHome(): string {
               ${topMovers
                 .map((market, idx) => {
                   return `
-                    <button data-open-market="${market.id}" class="w-full text-left">
+                    <button data-open-market="${escapeAttr(market.id)}" class="w-full text-left">
                       <div class="flex items-start justify-between gap-2">
-                        <p class="w-full text-sm font-normal text-slate-300">${idx + 1}. ${market.question}</p>
+                        <p class="w-full text-sm font-normal text-slate-300">${idx + 1}. ${escapeHtml(market.question)}</p>
                         <p class="text-sm font-normal">${trendIndicator(market.change24h)}</p>
                       </div>
-                      <p class="mt-1 text-xs text-slate-500">${market.category}</p>
+                      <p class="mt-1 text-xs text-slate-500">${escapeHtml(market.category)}</p>
                     </button>
                   `;
                 })
@@ -202,12 +203,12 @@ export function renderMyMarkets(): string {
   const renderMarketCard = (market: Market): string => {
     const no = market.yesPrice != null ? 1 - market.yesPrice : null;
     return `
-      <button data-open-market="${market.id}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
+      <button data-open-market="${escapeAttr(market.id)}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
         <div class="mb-2 flex items-center justify-between text-sm">
-          <span class="text-xs text-slate-500">${market.category}</span>
+          <span class="text-xs text-slate-500">${escapeHtml(market.category)}</span>
           <span>${stateBadge(market.state)}</span>
         </div>
-        <p class="mb-3 text-base font-normal text-slate-200">${market.question}</p>
+        <p class="mb-3 text-base font-normal text-slate-200">${escapeHtml(market.question)}</p>
         <div class="flex items-center justify-between text-sm">
           <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span>
           <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no) : "\u2014"}</span>
@@ -312,18 +313,18 @@ export function renderCategoryPage(): string {
               .map((market) => {
                 const no = market.yesPrice != null ? 1 - market.yesPrice : null;
                 return `
-                  <button data-open-market="${market.id}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
+                  <button data-open-market="${escapeAttr(market.id)}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
                     <div class="mb-2 flex items-center justify-between text-sm">
-                      <span class="text-xs text-slate-500">${market.category}</span>
+                      <span class="text-xs text-slate-500">${escapeHtml(market.category)}</span>
                       <span class="${market.isLive ? "text-rose-300" : "text-slate-500"}">${market.isLive ? "LIVE" : "SCHEDULED"}</span>
                     </div>
-                    <p class="mb-3 text-base font-normal text-slate-200">${market.question}</p>
+                    <p class="mb-3 text-base font-normal text-slate-200">${escapeHtml(market.question)}</p>
                     <div class="flex items-center justify-between text-sm">
                       <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span>
                       <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no) : "\u2014"}</span>
                       ${trendIndicator(market.change24h)}
                     </div>
-                    <p class="mt-2 text-xs text-slate-500">Volume ${formatVolumeBtc(market.volumeBtc)} · ${market.description}</p>
+                    <p class="mt-2 text-xs text-slate-500">Volume ${formatVolumeBtc(market.volumeBtc)} · ${escapeHtml(market.description)}</p>
                   </button>
                 `;
               })
@@ -339,8 +340,8 @@ export function renderCategoryPage(): string {
                   ? liveContracts
                       .map(
                         (market) => `
-                      <button data-open-market="${market.id}" class="w-full text-left">
-                        <p class="text-sm font-normal text-slate-300">${market.question}</p>
+                      <button data-open-market="${escapeAttr(market.id)}" class="w-full text-left">
+                        <p class="text-sm font-normal text-slate-300">${escapeHtml(market.question)}</p>
                         <p class="mt-1 text-xs text-slate-500">${market.yesPrice != null ? `Yes ${Math.round(market.yesPrice * 100)}% · ` : ""}${formatVolumeBtc(market.volumeBtc)} volume</p>
                       </button>`,
                       )
@@ -355,8 +356,8 @@ export function renderCategoryPage(): string {
               ${highestLiquidity
                 .map(
                   (market, idx) => `
-                <button data-open-market="${market.id}" class="flex w-full items-start justify-between gap-2 text-left">
-                  <p class="text-sm text-slate-300">${idx + 1}. ${market.question}</p>
+                <button data-open-market="${escapeAttr(market.id)}" class="flex w-full items-start justify-between gap-2 text-left">
+                  <p class="text-sm text-slate-300">${idx + 1}. ${escapeHtml(market.question)}</p>
                   <p class="text-sm font-normal text-emerald-300">${formatVolumeBtc(market.liquidityBtc)}</p>
                 </button>`,
                 )

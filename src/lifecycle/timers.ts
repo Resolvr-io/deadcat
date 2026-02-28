@@ -1,0 +1,21 @@
+import {
+  currentWalletNetwork,
+  syncCurrentHeightFromLwk,
+} from "../services/wallet.ts";
+import { state } from "../state.ts";
+
+export function startRecurringTimers(
+  render: () => void,
+  updateEstClockLabels: () => void,
+): void {
+  setInterval(updateEstClockLabels, 1_000);
+  setInterval(() => {
+    if (state.onboardingStep === null) {
+      void syncCurrentHeightFromLwk(
+        currentWalletNetwork(),
+        render,
+        updateEstClockLabels,
+      );
+    }
+  }, 60_000);
+}

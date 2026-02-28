@@ -1,4 +1,5 @@
 import { state } from "../../state.ts";
+import { escapeAttr } from "../../utils/html.ts";
 
 export function renderWalletLocked(params: {
   errorHtml: string;
@@ -14,7 +15,7 @@ export function renderWalletLocked(params: {
         <p class="text-sm text-slate-400">Wallet locked. Enter your password to unlock.</p>
         ${errorHtml}
         <div class="space-y-4 rounded-lg border border-slate-700 bg-slate-900/50 p-6">
-          <input id="wallet-password" type="password" maxlength="32" value="${state.walletPassword}" placeholder="Password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+          <input id="wallet-password" type="password" maxlength="32" value="${escapeAttr(state.walletPassword)}" placeholder="Password" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
           <button data-action="unlock-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Unlocking..." : "Unlock"}</button>
         </div>
         <details class="group">

@@ -1,7 +1,12 @@
 import QRCode from "qrcode";
 import { tauriApi } from "../api/tauri.ts";
 import { markets, state } from "../state";
-import type { PaymentSwap, WalletNetwork, WalletTransaction } from "../types";
+import type {
+  AppNetwork,
+  PaymentSwap,
+  WalletNetwork,
+  WalletTransaction,
+} from "../types";
 import { hideOverlayLoader, showOverlayLoader } from "../ui/loader";
 
 export type WalletSnapshot = {
@@ -30,14 +35,25 @@ export function formatCompactSats(sats: number): string {
   return sats.toLocaleString();
 }
 
+const APP_TO_WALLET_NETWORK: Record<AppNetwork, WalletNetwork> = {
+  mainnet: "liquid",
+  testnet: "liquid-testnet",
+  regtest: "liquid-regtest",
+};
+
+export function toWalletNetwork(network: AppNetwork): WalletNetwork {
+  return APP_TO_WALLET_NETWORK[network];
+}
+
+export function currentWalletNetwork(): WalletNetwork {
+  return toWalletNetwork(state.walletNetwork);
+}
+
 export async function fetchWalletStatus(): Promise<void> {
   try {
     const appState = await tauriApi.getAppState();
     state.walletStatus = appState.walletStatus;
-    state.walletNetwork = appState.networkStatus.network as
-      | "mainnet"
-      | "testnet"
-      | "regtest";
+    state.walletNetwork = appState.networkStatus.network;
     state.walletPolicyAssetId = appState.networkStatus.policyAssetId;
   } catch (e) {
     console.warn("Failed to fetch app state:", e);

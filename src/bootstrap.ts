@@ -2,6 +2,7 @@ import { tauriApi } from "./api/tauri.ts";
 import { loadMarkets } from "./services/markets.ts";
 import { refreshRelaysAndBackup } from "./services/nostr.ts";
 import {
+  currentWalletNetwork,
   fetchWalletStatus,
   refreshWallet,
   syncCurrentHeightFromLwk,
@@ -32,7 +33,11 @@ export async function finishOnboarding(
   await loadMarkets();
   state.marketsLoading = false;
   render();
-  void syncCurrentHeightFromLwk("liquid-testnet", render, updateEstClockLabels);
+  void syncCurrentHeightFromLwk(
+    currentWalletNetwork(),
+    render,
+    updateEstClockLabels,
+  );
 
   // Fetch relay list + backup status in background
   if (state.nostrNpub) {
@@ -138,5 +143,9 @@ export async function initApp(
   render();
   dismissSplash();
 
-  void syncCurrentHeightFromLwk("liquid-testnet", render, updateEstClockLabels);
+  void syncCurrentHeightFromLwk(
+    currentWalletNetwork(),
+    render,
+    updateEstClockLabels,
+  );
 }
