@@ -61,7 +61,9 @@ export async function fetchWalletSnapshot(options?: {
   const [balance, transactions, swaps] = await Promise.all([
     invoke<WalletBalanceResponse>("get_wallet_balance"),
     invoke<WalletTransaction[]>("get_wallet_transactions"),
-    includeSwaps ? invoke<PaymentSwap[]>("list_payment_swaps") : Promise.resolve([]),
+    includeSwaps
+      ? invoke<PaymentSwap[]>("list_payment_swaps")
+      : Promise.resolve([]),
   ]);
 
   return {

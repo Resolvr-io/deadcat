@@ -5,7 +5,6 @@ import {
   WIN_FEE_RATE,
 } from "../state.ts";
 import type { Market } from "../types.ts";
-import { buildChartSeriesData } from "./chart-series.ts";
 import { hexToNpub } from "../utils/crypto.ts";
 import {
   formatBlockHeight,
@@ -26,6 +25,7 @@ import {
   stateBadge,
   stateLabel,
 } from "../utils/market.ts";
+import { buildChartSeriesData } from "./chart-series.ts";
 
 export function chartSkeleton(
   market: Market,

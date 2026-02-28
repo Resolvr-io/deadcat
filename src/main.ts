@@ -211,7 +211,9 @@ async function finishOnboarding(): Promise<void> {
 
   // Fetch relay list + backup status in background
   if (state.nostrNpub) {
-    void refreshRelaysAndBackup().then(render).catch(() => {});
+    void refreshRelaysAndBackup()
+      .then(render)
+      .catch(() => {});
 
     invoke<NostrProfile | null>("fetch_nostr_profile")
       .then((profile) => {

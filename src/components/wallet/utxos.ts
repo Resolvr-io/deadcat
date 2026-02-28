@@ -15,8 +15,12 @@ export function renderWalletUtxoSection(params: {
   const { assetLabel, utxos } = params;
   if (state.walletBalanceHidden || utxos.length === 0) return "";
 
-  const lbtcUtxos = utxos.filter((u) => u.assetId === state.walletPolicyAssetId);
-  const tokenUtxos = utxos.filter((u) => u.assetId !== state.walletPolicyAssetId);
+  const lbtcUtxos = utxos.filter(
+    (u) => u.assetId === state.walletPolicyAssetId,
+  );
+  const tokenUtxos = utxos.filter(
+    (u) => u.assetId !== state.walletPolicyAssetId,
+  );
   const explorerBase =
     state.walletNetwork === "testnet"
       ? "https://blockstream.info/liquidtestnet"
@@ -64,8 +68,10 @@ export function renderWalletUtxoSection(params: {
     .map((u) => {
       const info = assetLabel.get(u.assetId);
       if (info) {
-        const sideColor = info.side === "YES" ? "text-emerald-300" : "text-red-300";
-        const sideBg = info.side === "YES" ? "bg-emerald-500/20" : "bg-red-500/20";
+        const sideColor =
+          info.side === "YES" ? "text-emerald-300" : "text-red-300";
+        const sideBg =
+          info.side === "YES" ? "bg-emerald-500/20" : "bg-red-500/20";
         const truncQ =
           info.question.length > 35
             ? `${info.question.slice(0, 35)}...`
@@ -89,7 +95,7 @@ export function renderWalletUtxoSection(params: {
       const shortAsset = `${u.assetId.slice(0, 8)}...${u.assetId.slice(-4)}`;
       return utxoRow(
         u,
-        '<span class="mono text-slate-500 shrink-0">' + shortAsset + "</span>",
+        `<span class="mono text-slate-500 shrink-0">${shortAsset}</span>`,
       );
     })
     .join("");

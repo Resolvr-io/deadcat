@@ -10,8 +10,9 @@ export function applyRelayBackupStatus(status: NostrBackupStatus): void {
   state.relays = state.relays.map((relay) => ({
     ...relay,
     has_backup:
-      status.relay_results.find((result: RelayBackupResult) => result.url === relay.url)
-        ?.has_backup ?? false,
+      status.relay_results.find(
+        (result: RelayBackupResult) => result.url === relay.url,
+      )?.has_backup ?? false,
   }));
 }
 

@@ -6,10 +6,7 @@ import {
   renderWalletSwapRows,
   renderWalletTransactionRows,
 } from "./activity.ts";
-import {
-  renderWalletUtxoSection,
-  type WalletAssetLabel,
-} from "./utxos.ts";
+import { renderWalletUtxoSection, type WalletAssetLabel } from "./utxos.ts";
 
 export function renderWalletUnlocked(params: {
   errorHtml: string;

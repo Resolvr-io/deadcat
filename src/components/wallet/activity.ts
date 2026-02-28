@@ -1,4 +1,8 @@
-import { flowLabel, formatLbtc, formatSwapStatus } from "../../services/wallet.ts";
+import {
+  flowLabel,
+  formatLbtc,
+  formatSwapStatus,
+} from "../../services/wallet.ts";
 import { state } from "../../state.ts";
 import type { WalletData } from "../../types.ts";
 import { satsToFiatStr } from "../../utils/format.ts";
