@@ -16,6 +16,7 @@ import { handleInput } from "./handlers/input.ts";
 import { handleKeydown } from "./handlers/keydown.ts";
 // Services
 import { loadMarkets, refreshMarketsFromStore } from "./services/markets.ts";
+import { refreshRelaysAndBackup } from "./services/nostr.ts";
 import {
   fetchWalletStatus,
   refreshWallet,
@@ -26,7 +27,6 @@ import type {
   IdentityResponse,
   NostrBackupStatus,
   NostrProfile,
-  RelayBackupResult,
   Side,
   TradeIntent,
   WalletTransaction,
@@ -44,6 +44,7 @@ import {
 // ── Core render ──────────────────────────────────────────────────────
 
 let chartAspectSyncRaf: number | null = null;
+let chartHoverRenderRaf: number | null = null;
 const CHART_ASPECT_MIN = 1.2;
 const CHART_ASPECT_MAX = 8;
 const CHART_ASPECT_EPSILON = 0.005;
@@ -104,6 +105,14 @@ function scheduleChartAspectSync(): void {
   chartAspectSyncRaf = requestAnimationFrame(() => {
     chartAspectSyncRaf = null;
     syncChartAspectFromLayout();
+  });
+}
+
+function scheduleChartHoverRender(): void {
+  if (chartHoverRenderRaf !== null) return;
+  chartHoverRenderRaf = requestAnimationFrame(() => {
+    chartHoverRenderRaf = null;
+    render();
   });
 }
 
@@ -202,25 +211,8 @@ async function finishOnboarding(): Promise<void> {
 
   // Fetch relay list + backup status in background
   if (state.nostrNpub) {
-    invoke<string[]>("fetch_nip65_relay_list")
-      .then((relays) => {
-        state.relays = relays.map((u) => ({ url: u, has_backup: false }));
-        invoke<NostrBackupStatus>("check_nostr_backup")
-          .then((status) => {
-            state.nostrBackupStatus = status;
-            if (status.relay_results) {
-              state.relays = state.relays.map((r) => ({
-                ...r,
-                has_backup:
-                  status.relay_results.find(
-                    (rr: RelayBackupResult) => rr.url === r.url,
-                  )?.has_backup ?? false,
-              }));
-            }
-            render();
-          })
-          .catch(() => {});
-      })
+    void refreshRelaysAndBackup()
+      .then(render)
       .catch(() => {});
 
     invoke<NostrProfile | null>("fetch_nostr_profile")
@@ -269,31 +261,9 @@ async function initApp(): Promise<void> {
 
   // 1b. If we have identity, fetch relay list and profile in background
   if (hasNostrIdentity) {
-    invoke<string[]>("fetch_nip65_relay_list")
-      .then((relays) => {
-        state.relays = relays.map((u) => ({ url: u, has_backup: false }));
-        invoke<NostrBackupStatus>("check_nostr_backup")
-          .then((status) => {
-            state.nostrBackupStatus = status;
-            if (status.relay_results) {
-              state.relays = state.relays.map((r) => ({
-                ...r,
-                has_backup:
-                  status.relay_results.find(
-                    (rr: RelayBackupResult) => rr.url === r.url,
-                  )?.has_backup ?? false,
-              }));
-            }
-            render();
-          })
-          .catch(() => {});
-      })
-      .catch(() => {
-        state.relays = [
-          { url: "wss://relay.damus.io", has_backup: false },
-          { url: "wss://relay.primal.net", has_backup: false },
-        ];
-      });
+    void refreshRelaysAndBackup({ fallbackToDefaults: true })
+      .then(render)
+      .catch(() => {});
 
     invoke<NostrProfile | null>("fetch_nostr_profile")
       .then((profile) => {
@@ -448,7 +418,7 @@ app.addEventListener("mousemove", (event) => {
     if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
       state.chartHoverMarketId = null;
       state.chartHoverX = null;
-      render();
+      scheduleChartHoverRender();
     }
     return;
   }
@@ -480,14 +450,14 @@ app.addEventListener("mousemove", (event) => {
 
   state.chartHoverMarketId = marketId;
   state.chartHoverX = hoverX;
-  render();
+  scheduleChartHoverRender();
 });
 
 app.addEventListener("mouseleave", () => {
   if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
     state.chartHoverMarketId = null;
     state.chartHoverX = null;
-    render();
+    scheduleChartHoverRender();
   }
 });
 
@@ -501,7 +471,7 @@ app.addEventListener("mouseout", (event) => {
   if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
     state.chartHoverMarketId = null;
     state.chartHoverX = null;
-    render();
+    scheduleChartHoverRender();
   }
 });
 

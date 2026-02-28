@@ -1,8 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import QRCode from "qrcode";
 import { markets, state } from "../state";
-import type { ChainTipResponse, PaymentSwap, WalletNetwork } from "../types";
+import type {
+  ChainTipResponse,
+  PaymentSwap,
+  WalletNetwork,
+  WalletTransaction,
+} from "../types";
 import { hideOverlayLoader, showOverlayLoader } from "../ui/loader";
+
+type WalletBalanceResponse = { assets: Record<string, number> };
+
+export type WalletSnapshot = {
+  balance: Record<string, number>;
+  transactions: WalletTransaction[];
+  swaps: PaymentSwap[];
+};
 
 export function formatLbtc(sats: number): string {
   if (state.walletUnit === "sats") {
@@ -39,6 +52,44 @@ export async function fetchWalletStatus(): Promise<void> {
   } catch (e) {
     console.warn("Failed to fetch app state:", e);
   }
+}
+
+export async function fetchWalletSnapshot(options?: {
+  includeSwaps?: boolean;
+}): Promise<WalletSnapshot> {
+  const includeSwaps = options?.includeSwaps ?? true;
+  const [balance, transactions, swaps] = await Promise.all([
+    invoke<WalletBalanceResponse>("get_wallet_balance"),
+    invoke<WalletTransaction[]>("get_wallet_transactions"),
+    includeSwaps
+      ? invoke<PaymentSwap[]>("list_payment_swaps")
+      : Promise.resolve([]),
+  ]);
+
+  return {
+    balance: balance.assets,
+    transactions,
+    swaps,
+  };
+}
+
+export async function restoreWalletAndSync(params: {
+  mnemonic: string;
+  password: string;
+  unlock: boolean;
+  setStep?: (message: string) => void;
+}): Promise<void> {
+  const { mnemonic, password, unlock, setStep } = params;
+  await invoke("restore_wallet", {
+    mnemonic: mnemonic.trim(),
+    password,
+  });
+  if (unlock) {
+    setStep?.("Unlocking wallet...");
+    await invoke("unlock_wallet", { password });
+  }
+  setStep?.("Scanning blockchain...");
+  await invoke("sync_wallet");
 }
 
 export async function refreshWallet(render: () => void): Promise<void> {

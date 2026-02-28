@@ -97,40 +97,19 @@ export function handleInput(e: Event, render: () => void): void {
 
   if (target.id === "nostr-replace-confirm") {
     state.nostrReplaceConfirm = target.value;
-    const confirmBtn = document.querySelector(
-      "[data-action='nostr-replace-confirm']",
-    ) as HTMLButtonElement | null;
-    if (confirmBtn) {
-      const enabled = target.value.trim().toUpperCase() === "DELETE";
-      confirmBtn.disabled = !enabled;
-      confirmBtn.className = `shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${enabled ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`;
-    }
+    render();
     return;
   }
 
   if (target.id === "wallet-delete-confirm") {
     state.walletDeleteConfirm = target.value;
-    const confirmBtn = document.querySelector(
-      "[data-action='wallet-delete-confirm']",
-    ) as HTMLButtonElement | null;
-    if (confirmBtn) {
-      const enabled = target.value.trim().toUpperCase() === "DELETE";
-      confirmBtn.disabled = !enabled;
-      confirmBtn.className = `shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${enabled ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`;
-    }
+    render();
     return;
   }
 
   if (target.id === "dev-reset-confirm") {
     state.devResetConfirm = target.value;
-    const confirmBtn = document.querySelector(
-      "[data-action='dev-reset-confirm']",
-    ) as HTMLButtonElement | null;
-    if (confirmBtn) {
-      const enabled = target.value.trim().toUpperCase() === "RESET";
-      confirmBtn.disabled = !enabled;
-      confirmBtn.className = `shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${enabled ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`;
-    }
+    render();
     return;
   }
 
