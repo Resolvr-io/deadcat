@@ -1,7 +1,6 @@
-import { tauriInvoke as invoke } from "../../api/tauri.ts";
+import { tauriApi } from "../../api/tauri.ts";
 import { restoreWalletAndSync } from "../../services/wallet.ts";
 import { state } from "../../state.ts";
-import type { IdentityResponse, NostrBackupStatus } from "../../types.ts";
 import {
   hideOverlayLoader,
   showOverlayLoader,
@@ -31,12 +30,10 @@ export async function handleOnboardingDomain(
       render();
       (async () => {
         try {
-          const identity = await invoke<IdentityResponse>(
-            "generate_nostr_identity",
-          );
+          const identity = await tauriApi.generateNostrIdentity();
           state.nostrPubkey = identity.pubkey_hex;
           state.nostrNpub = identity.npub;
-          const nsec = await invoke<string>("export_nostr_nsec");
+          const nsec = await tauriApi.exportNostrNsec();
           state.onboardingNostrGeneratedNsec = nsec;
           state.onboardingNostrDone = true;
         } catch (e) {
@@ -60,9 +57,7 @@ export async function handleOnboardingDomain(
       render();
       (async () => {
         try {
-          const identity = await invoke<IdentityResponse>("import_nostr_nsec", {
-            nsec: nsecInput,
-          });
+          const identity = await tauriApi.importNostrNsec(nsecInput);
           state.nostrPubkey = identity.pubkey_hex;
           state.nostrNpub = identity.npub;
           state.onboardingNostrDone = true;
@@ -72,8 +67,7 @@ export async function handleOnboardingDomain(
           state.onboardingLoading = false;
           render();
           try {
-            const status =
-              await invoke<NostrBackupStatus>("check_nostr_backup");
+            const status = await tauriApi.checkNostrBackup();
             if (status.has_backup) {
               state.onboardingBackupFound = true;
               state.onboardingWalletMode = "nostr-restore";
@@ -152,9 +146,9 @@ export async function handleOnboardingDomain(
       render();
       (async () => {
         try {
-          const mnemonic = await invoke<string>("create_wallet", {
-            password: state.onboardingWalletPassword,
-          });
+          const mnemonic = await tauriApi.createWallet(
+            state.onboardingWalletPassword,
+          );
           state.onboardingWalletMnemonic = mnemonic;
         } catch (e) {
           state.onboardingError = String(e);
@@ -244,7 +238,7 @@ export async function handleOnboardingDomain(
       render();
       (async () => {
         try {
-          const mnemonic = await invoke<string>("restore_mnemonic_from_nostr");
+          const mnemonic = await tauriApi.restoreMnemonicFromNostr();
           updateOverlayMessage("Restoring wallet...");
           await restoreWalletAndSync({
             mnemonic,

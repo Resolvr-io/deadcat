@@ -1,4 +1,4 @@
-import { tauriInvoke as invoke } from "../../api/tauri.ts";
+import { tauriApi } from "../../api/tauri.ts";
 import {
   discoveredToMarket,
   issueTokens,
@@ -13,9 +13,7 @@ import {
 } from "../../state.ts";
 import type {
   ActionTab,
-  AttestationResult,
   CovenantState,
-  DiscoveredMarket,
   Market,
   MarketCategory,
   Side,
@@ -200,10 +198,10 @@ export async function handleMarketDomain(
 
       (async () => {
         try {
-          const result = await invoke<AttestationResult>("oracle_attest", {
-            marketIdHex: market.marketId,
+          const result = await tauriApi.oracleAttest(
+            market.marketId,
             outcomeYes,
-          });
+          );
           // Save attestation for on-chain execution
           state.lastAttestationSig = result.signature_hex;
           state.lastAttestationOutcome = outcomeYes;
@@ -234,6 +232,7 @@ export async function handleMarketDomain(
         return;
       }
       const outcomeYes = state.lastAttestationOutcome;
+      const oracleSignatureHex = state.lastAttestationSig;
       const confirmed = window.confirm(
         `Execute on-chain resolution for "${market.question}"?\n\nOutcome: ${outcomeYes ? "YES" : "NO"}\nThis submits a Liquid transaction that transitions the covenant state.`,
       );
@@ -243,16 +242,11 @@ export async function handleMarketDomain(
       render();
       (async () => {
         try {
-          const result = await invoke<{
-            txid: string;
-            previous_state: number;
-            new_state: number;
-            outcome_yes: boolean;
-          }>("resolve_market", {
-            contractParamsJson: marketToContractParamsJson(market),
+          const result = await tauriApi.resolveMarket(
+            marketToContractParamsJson(market),
             outcomeYes,
-            oracleSignatureHex: state.lastAttestationSig,
-          });
+            oracleSignatureHex,
+          );
           market.state = result.outcome_yes ? 2 : 3;
           state.lastAttestationSig = null;
           state.lastAttestationOutcome = null;
@@ -281,9 +275,9 @@ export async function handleMarketDomain(
       showToast("Querying on-chain market state...", "info");
       (async () => {
         try {
-          const result = await invoke<{ state: number }>("get_market_state", {
-            contractParamsJson: marketToContractParamsJson(market),
-          });
+          const result = await tauriApi.getMarketState(
+            marketToContractParamsJson(market),
+          );
           market.state = result.state as CovenantState;
           showToast(`Market state: ${stateLabel(market.state)}`, "success");
           render();
@@ -540,19 +534,14 @@ export async function handleMarketDomain(
         render();
         (async () => {
           try {
-            const result = await invoke<DiscoveredMarket>(
-              "create_contract_onchain",
-              {
-                request: {
-                  question,
-                  description,
-                  category: state.createCategory,
-                  resolution_source: source,
-                  settlement_deadline_unix: deadlineUnix,
-                  collateral_per_token: 5000,
-                },
-              },
-            );
+            const result = await tauriApi.createContractOnchain({
+              question,
+              description,
+              category: state.createCategory,
+              resolution_source: source,
+              settlement_deadline_unix: deadlineUnix,
+              collateral_per_token: 5000,
+            });
             markets.push(discoveredToMarket(result));
             state.view = "home";
             state.createQuestion = "";
@@ -632,16 +621,10 @@ export async function handleMarketDomain(
           showToast(`Cancelling ${actualPairs} pair(s)...`, "info");
           (async () => {
             try {
-              const result = await invoke<{
-                txid: string;
-                previous_state: number;
-                new_state: number;
-                pairs_burned: number;
-                is_full_cancellation: boolean;
-              }>("cancel_tokens", {
-                contractParamsJson: marketToContractParamsJson(market),
-                pairs: actualPairs,
-              });
+              const result = await tauriApi.cancelTokens(
+                marketToContractParamsJson(market),
+                actualPairs,
+              );
               showToast(
                 `Pairs cancelled! txid: ${result.txid.slice(0, 16)}... (${result.is_full_cancellation ? "full" : "partial"})`,
                 "success",
@@ -690,16 +673,10 @@ export async function handleMarketDomain(
         );
         (async () => {
           try {
-            const result = await invoke<{
-              txid: string;
-              previous_state: number;
-              new_state: number;
-              pairs_burned: number;
-              is_full_cancellation: boolean;
-            }>("cancel_tokens", {
-              contractParamsJson: marketToContractParamsJson(market),
+            const result = await tauriApi.cancelTokens(
+              marketToContractParamsJson(market),
               pairs,
-            });
+            );
             showToast(
               `Tokens cancelled! txid: ${result.txid.slice(0, 16)}... (${result.is_full_cancellation ? "full" : "partial"})`,
               "success",
@@ -720,15 +697,10 @@ export async function handleMarketDomain(
           showToast(`Redeeming ${tokens} winning token(s)...`, "info");
           (async () => {
             try {
-              const result = await invoke<{
-                txid: string;
-                previous_state: number;
-                tokens_redeemed: number;
-                payout_sats: number;
-              }>("redeem_tokens", {
-                contractParamsJson: marketToContractParamsJson(market),
+              const result = await tauriApi.redeemTokens(
+                marketToContractParamsJson(market),
                 tokens,
-              });
+              );
               showToast(
                 `Redeemed! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}`,
                 "success",
@@ -749,16 +721,11 @@ export async function handleMarketDomain(
           showToast(`Redeeming ${tokens} expired token(s)...`, "info");
           (async () => {
             try {
-              const result = await invoke<{
-                txid: string;
-                previous_state: number;
-                tokens_redeemed: number;
-                payout_sats: number;
-              }>("redeem_expired", {
-                contractParamsJson: marketToContractParamsJson(market),
-                tokenAssetHex: tokenAssetHex,
+              const result = await tauriApi.redeemExpired(
+                marketToContractParamsJson(market),
+                tokenAssetHex,
                 tokens,
-              });
+              );
               showToast(
                 `Expired tokens redeemed! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}`,
                 "success",

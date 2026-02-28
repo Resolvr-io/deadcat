@@ -164,7 +164,7 @@ export const tauriApi = {
     tauriInvoke<WalletAddressResponse>("get_wallet_address", { index }),
   listPaymentSwaps: () => tauriInvoke<PaymentSwap[]>("list_payment_swaps"),
   refreshPaymentSwapStatus: (swapId: string) =>
-    tauriInvoke<void>("refresh_payment_swap_status", { swapId }),
+    tauriInvoke<PaymentSwap>("refresh_payment_swap_status", { swapId }),
   getMnemonicWordCount: (password: string) =>
     tauriInvoke<number>("get_mnemonic_word_count", { password }),
   getMnemonicWord: (password: string, index: number) =>

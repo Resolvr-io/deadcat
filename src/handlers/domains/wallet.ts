@@ -1,5 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { tauriInvoke as invoke } from "../../api/tauri.ts";
+import { tauriApi } from "../../api/tauri.ts";
 import {
   fetchWalletSnapshot,
   fetchWalletStatus,
@@ -10,13 +10,6 @@ import {
   restoreWalletAndSync,
 } from "../../services/wallet.ts";
 import { createWalletData, markets, state } from "../../state.ts";
-import type {
-  BoltzChainSwapCreated,
-  BoltzChainSwapPairsInfo,
-  BoltzLightningReceiveCreated,
-  BoltzSubmarineSwapCreated,
-  PaymentSwap,
-} from "../../types.ts";
 import {
   hideOverlayLoader,
   showOverlayLoader,
@@ -47,9 +40,7 @@ export async function handleWalletDomain(
       render();
       (async () => {
         try {
-          const mnemonic = await invoke<string>("create_wallet", {
-            password: state.walletPassword,
-          });
+          const mnemonic = await tauriApi.createWallet(state.walletPassword);
           state.walletMnemonic = mnemonic;
           state.walletPassword = "";
           state.walletPasswordConfirm = "";
@@ -147,7 +138,7 @@ export async function handleWalletDomain(
       render();
       (async () => {
         try {
-          await invoke("unlock_wallet", { password: state.walletPassword });
+          await tauriApi.unlockWallet(state.walletPassword);
           state.walletPassword = "";
           await fetchWalletStatus();
           // Load cached wallet data instantly (no Electrum sync)
@@ -162,7 +153,8 @@ export async function handleWalletDomain(
           hideOverlayLoader();
           render();
           // Background Electrum sync -- updates balances when done
-          invoke("sync_wallet")
+          tauriApi
+            .syncWallet()
             .then(async () => {
               const { balance: freshBalance, transactions: freshTransactions } =
                 await fetchWalletSnapshot({
@@ -190,7 +182,7 @@ export async function handleWalletDomain(
     if (action === "lock-wallet") {
       (async () => {
         try {
-          await invoke("lock_wallet");
+          await tauriApi.lockWallet();
           await fetchWalletStatus();
           state.walletData = null;
           state.walletPassword = "";
@@ -228,7 +220,7 @@ export async function handleWalletDomain(
       if (state.walletDeleteConfirm.trim().toUpperCase() !== "DELETE") return;
       (async () => {
         try {
-          await invoke("delete_wallet");
+          await tauriApi.deleteWallet();
           await fetchWalletStatus();
           state.walletData = null;
           state.walletPassword = "";
@@ -254,7 +246,7 @@ export async function handleWalletDomain(
     if (action === "forgot-password-delete") {
       (async () => {
         try {
-          await invoke("delete_wallet");
+          await tauriApi.deleteWallet();
           await fetchWalletStatus();
           state.walletData = null;
           state.walletPassword = "";
@@ -368,9 +360,7 @@ export async function handleWalletDomain(
       render();
       (async () => {
         try {
-          const pairs = await invoke<BoltzChainSwapPairsInfo>(
-            "get_chain_swap_pairs",
-          );
+          const pairs = await tauriApi.getChainSwapPairs();
           state.receiveBtcPairInfo = pairs.bitcoinToLiquid;
         } catch {
           /* ignore */
@@ -387,9 +377,7 @@ export async function handleWalletDomain(
       render();
       (async () => {
         try {
-          const pairs = await invoke<BoltzChainSwapPairsInfo>(
-            "get_chain_swap_pairs",
-          );
+          const pairs = await tauriApi.getChainSwapPairs();
           state.sendBtcPairInfo = pairs.liquidToBitcoin;
         } catch {
           /* ignore */
@@ -450,10 +438,7 @@ export async function handleWalletDomain(
       render();
       (async () => {
         try {
-          const swap = await invoke<BoltzLightningReceiveCreated>(
-            "create_lightning_receive",
-            { amountSat: amt },
-          );
+          const swap = await tauriApi.createLightningReceive(amt);
           state.receiveLightningSwap = swap;
           await generateQr(swap.invoice);
         } catch (e) {
@@ -468,9 +453,9 @@ export async function handleWalletDomain(
     if (action === "generate-liquid-address") {
       (async () => {
         try {
-          const addr = await invoke<{ address: string }>("get_wallet_address", {
-            index: state.receiveLiquidAddressIndex,
-          });
+          const addr = await tauriApi.getWalletAddress(
+            state.receiveLiquidAddressIndex,
+          );
           state.receiveLiquidAddress = addr.address;
           await generateQr(addr.address);
           state.receiveLiquidAddressIndex += 1;
@@ -494,10 +479,7 @@ export async function handleWalletDomain(
       render();
       (async () => {
         try {
-          const swap = await invoke<BoltzChainSwapCreated>(
-            "create_bitcoin_receive",
-            { amountSat: amt },
-          );
+          const swap = await tauriApi.createBitcoinReceive(amt);
           state.receiveBitcoinSwap = swap;
           const addr = swap.lockupAddress;
           await generateQr(swap.bip21 || addr);
@@ -522,10 +504,7 @@ export async function handleWalletDomain(
       render();
       (async () => {
         try {
-          const swap = await invoke<BoltzSubmarineSwapCreated>(
-            "pay_lightning_invoice",
-            { invoice },
-          );
+          const swap = await tauriApi.payLightningInvoice(invoice);
           state.sentLightningSwap = swap;
         } catch (e) {
           state.sendError = String(e);
@@ -549,14 +528,7 @@ export async function handleWalletDomain(
       render();
       (async () => {
         try {
-          const result = await invoke<{ txid: string; feeSat: number }>(
-            "send_lbtc",
-            {
-              address,
-              amountSat,
-              feeRate: null,
-            },
-          );
+          const result = await tauriApi.sendLbtc(address, amountSat);
           state.sentLiquidResult = { txid: result.txid, feeSat: result.feeSat };
         } catch (e) {
           state.sendError = String(e);
@@ -579,10 +551,7 @@ export async function handleWalletDomain(
       render();
       (async () => {
         try {
-          const swap = await invoke<BoltzChainSwapCreated>(
-            "create_bitcoin_send",
-            { amountSat: amt },
-          );
+          const swap = await tauriApi.createBitcoinSend(amt);
           state.sentBitcoinSwap = swap;
           const addr = swap.claimLockupAddress;
           await generateQr(swap.bip21 || addr);
@@ -606,8 +575,8 @@ export async function handleWalletDomain(
       if (!swapId) return;
       (async () => {
         try {
-          await invoke("refresh_payment_swap_status", { swapId });
-          const swaps = await invoke<PaymentSwap[]>("list_payment_swaps");
+          await tauriApi.refreshPaymentSwapStatus(swapId);
+          const swaps = await tauriApi.listPaymentSwaps();
           if (state.walletData) state.walletData.swaps = swaps;
         } catch (e) {
           state.walletError = String(e);
@@ -656,14 +625,10 @@ export async function handleWalletDomain(
       (async () => {
         try {
           const password = state.walletData?.backupPassword ?? "";
-          const count = await invoke<number>("get_mnemonic_word_count", {
-            password,
-          });
+          const count = await tauriApi.getMnemonicWordCount(password);
           const words: string[] = [];
           for (let i = 0; i < count; i++) {
-            words.push(
-              await invoke<string>("get_mnemonic_word", { password, index: i }),
-            );
+            words.push(await tauriApi.getMnemonicWord(password, i));
           }
           if (state.walletData) {
             state.walletData.backupWords = words;

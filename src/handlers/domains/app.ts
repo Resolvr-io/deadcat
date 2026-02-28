@@ -1,4 +1,4 @@
-import { tauriInvoke as invoke } from "../../api/tauri.ts";
+import { tauriApi } from "../../api/tauri.ts";
 import { refreshRelayBackupStatus } from "../../services/nostr.ts";
 import {
   fetchWalletSnapshot,
@@ -8,7 +8,7 @@ import {
   resetSendState,
 } from "../../services/wallet.ts";
 import { state } from "../../state.ts";
-import type { BaseCurrency, IdentityResponse } from "../../types.ts";
+import type { BaseCurrency } from "../../types.ts";
 import {
   hideOverlayLoader,
   loaderHtml,
@@ -139,7 +139,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
     if (action === "reveal-nostr-nsec") {
       (async () => {
         try {
-          const nsec = await invoke<string>("export_nostr_nsec");
+          const nsec = await tauriApi.exportNostrNsec();
           state.nostrNsecRevealed = nsec;
           render();
         } catch (e) {
@@ -181,7 +181,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       if (state.nostrReplaceConfirm.trim().toUpperCase() !== "DELETE") return;
       (async () => {
         try {
-          await invoke("delete_nostr_identity");
+          await tauriApi.deleteNostrIdentity();
           state.nostrPubkey = null;
           state.nostrNpub = null;
           state.nostrNsecRevealed = null;
@@ -213,10 +213,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       render();
       (async () => {
         try {
-          const identity = await invoke<{ pubkey_hex: string; npub: string }>(
-            "import_nostr_nsec",
-            { nsec: nsecInput },
-          );
+          const identity = await tauriApi.importNostrNsec(nsecInput);
           state.nostrPubkey = identity.pubkey_hex;
           state.nostrNpub = identity.npub;
           state.nostrImportNsec = "";
@@ -236,9 +233,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
     if (action === "generate-new-nostr-key") {
       (async () => {
         try {
-          const identity = await invoke<IdentityResponse>(
-            "generate_nostr_identity",
-          );
+          const identity = await tauriApi.generateNostrIdentity();
           state.nostrPubkey = identity.pubkey_hex;
           state.nostrNpub = identity.npub;
           state.nostrNsecRevealed = null;
@@ -287,9 +282,9 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       if (state.devResetConfirm.trim().toUpperCase() !== "RESET") return;
       (async () => {
         try {
-          await invoke("delete_nostr_identity");
+          await tauriApi.deleteNostrIdentity();
           try {
-            await invoke("delete_wallet");
+            await tauriApi.deleteWallet();
           } catch (_) {
             /* no wallet is fine */
           }
@@ -333,7 +328,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       render();
       (async () => {
         try {
-          const list = await invoke<string[]>("add_relay", { url });
+          const list = await tauriApi.addRelay(url);
           state.relays = list.map((u) => ({ url: u, has_backup: false }));
           try {
             await refreshRelayBackupStatus();
@@ -362,7 +357,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       render();
       (async () => {
         try {
-          const list = await invoke<string[]>("remove_relay", { url });
+          const list = await tauriApi.removeRelay(url);
           state.relays = list.map((u) => ({ url: u, has_backup: false }));
           try {
             await refreshRelayBackupStatus();
@@ -388,9 +383,10 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       render();
       (async () => {
         try {
-          await invoke("set_relay_list", {
-            relays: ["wss://relay.damus.io", "wss://relay.primal.net"],
-          });
+          await tauriApi.setRelayList([
+            "wss://relay.damus.io",
+            "wss://relay.primal.net",
+          ]);
           state.relays = [
             { url: "wss://relay.damus.io", has_backup: false },
             { url: "wss://relay.primal.net", has_backup: false },
@@ -421,7 +417,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       render();
       (async () => {
         try {
-          await invoke("backup_mnemonic_to_nostr", { password: "" });
+          await tauriApi.backupMnemonicToNostr("");
           await refreshRelayBackupStatus();
           showToast("Wallet backed up to Nostr relays", "success");
         } catch (e) {
@@ -458,7 +454,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       render();
       (async () => {
         try {
-          await invoke("backup_mnemonic_to_nostr", { password });
+          await tauriApi.backupMnemonicToNostr(password);
           await refreshRelayBackupStatus();
           state.nostrBackupPassword = "";
           state.nostrBackupPrompt = false;
@@ -478,7 +474,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       render();
       (async () => {
         try {
-          await invoke("delete_nostr_backup");
+          await tauriApi.deleteNostrBackup();
           await refreshRelayBackupStatus();
           const status = state.nostrBackupStatus;
           if (!status) {
@@ -510,7 +506,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       showOverlayLoader("Fetching backup from relays...");
       (async () => {
         try {
-          const mnemonic = await invoke<string>("restore_mnemonic_from_nostr");
+          const mnemonic = await tauriApi.restoreMnemonicFromNostr();
           hideOverlayLoader();
           // Pre-fill the mnemonic in the restore form
           state.walletShowRestore = true;
@@ -542,7 +538,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       state.logoutOpen = false;
       (async () => {
         try {
-          await invoke("lock_wallet");
+          await tauriApi.lockWallet();
           await fetchWalletStatus();
           state.walletData = null;
           state.walletPassword = "";
@@ -575,7 +571,8 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
       render();
       // If already unlocked with cached balance, just do a silent background sync
       if (state.walletStatus === "unlocked" && state.walletData) {
-        void invoke("sync_wallet")
+        void tauriApi
+          .syncWallet()
           .then(async () => {
             const { balance, transactions, swaps } =
               await fetchWalletSnapshot();
