@@ -161,6 +161,10 @@ async fn construct_and_store_node(
     app: &tauri::AppHandle,
     keys: nostr_sdk::Keys,
 ) -> Result<(), String> {
+    // Replacing identity should always tear down the previous chain watcher.
+    let node_state = app.state::<NodeState>();
+    node_state.shutdown_watcher().await;
+
     let (sdk_network, store_arc) = {
         let manager = app.state::<Mutex<AppStateManager>>();
         let mut mgr = manager
@@ -194,11 +198,9 @@ async fn construct_and_store_node(
     let mut snapshot_rx = node.subscribe_snapshot();
 
     // Cancel any previous periodic reconciliation task
-    let node_state = app.state::<NodeState>();
     if let Some(handle) = node_state.reconcile_task.lock().await.take() {
         handle.abort();
     }
-
     // Replace any existing node (drops old node if any)
     let mut guard = node_state.node.lock().await;
     *guard = Some(node);
@@ -420,9 +422,11 @@ pub async fn export_nostr_nsec(app: tauri::AppHandle) -> Result<String, String> 
 
 #[tauri::command]
 pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> {
+    let node_state = app.state::<NodeState>();
+    node_state.shutdown_watcher().await;
+
     // Lock wallet and drop node
     {
-        let node_state = app.state::<NodeState>();
         let mut guard = node_state.node.lock().await;
         if let Some(node) = guard.as_ref() {
             node.lock_wallet();
