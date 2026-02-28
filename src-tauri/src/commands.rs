@@ -87,6 +87,74 @@ async fn get_keys_and_client(app: &tauri::AppHandle) -> Result<(Keys, nostr_sdk:
     Ok((keys, client))
 }
 
+/// Subscribe a newly discovered market's scripts to the chain watcher.
+async fn subscribe_discovered_market_to_watcher(
+    app: &tauri::AppHandle,
+    market: &deadcat_sdk::DiscoveredMarket,
+) {
+    use deadcat_sdk::ScriptOwner;
+
+    let Ok(params) = deadcat_sdk::discovered_market_to_contract_params(market) else {
+        return;
+    };
+    let market_id = params.market_id();
+
+    let contract = match deadcat_sdk::CompiledPredictionMarket::new(params) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("subscribe_discovered_market: compile failed: {e}");
+            return;
+        }
+    };
+
+    let node_state = app.state::<NodeState>();
+    let handle = node_state.watcher_handle.lock().await;
+    let Some(ref watcher) = *handle else { return };
+
+    for state in [
+        deadcat_sdk::MarketState::Dormant,
+        deadcat_sdk::MarketState::Unresolved,
+        deadcat_sdk::MarketState::ResolvedYes,
+        deadcat_sdk::MarketState::ResolvedNo,
+    ] {
+        let spk = contract.script_pubkey(state);
+        watcher.subscribe(
+            spk.to_bytes(),
+            ScriptOwner::Market {
+                market_id: market_id.0,
+            },
+        );
+    }
+}
+
+/// Subscribe a newly discovered pool's script to the chain watcher.
+async fn subscribe_discovered_pool_to_watcher(
+    app: &tauri::AppHandle,
+    pool: &deadcat_sdk::DiscoveredPool,
+) {
+    use deadcat_sdk::ScriptOwner;
+
+    let Ok(params) = deadcat_sdk::discovered_pool_to_amm_params(pool) else {
+        return;
+    };
+    let pool_id = deadcat_sdk::PoolId::from_params(&params);
+
+    let contract = match deadcat_sdk::CompiledAmmPool::new(params) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("subscribe_discovered_pool: compile failed: {e}");
+            return;
+        }
+    };
+
+    let node_state = app.state::<NodeState>();
+    let handle = node_state.watcher_handle.lock().await;
+    let Some(ref watcher) = *handle else { return };
+
+    let spk = contract.script_pubkey(pool.issued_lp);
+    watcher.subscribe(spk.to_bytes(), ScriptOwner::Pool { pool_id });
+}
+
 /// Construct a DeadcatNode from loaded keys and store it in NodeState.
 /// Called whenever Nostr identity is loaded/generated/imported.
 async fn construct_and_store_node(
@@ -138,14 +206,15 @@ async fn construct_and_store_node(
     }
     drop(guard);
 
-    // Forward discovery events to the frontend
+    // Forward discovery events to the frontend + subscribe new contracts to chain watcher
     let app_handle = app.clone();
     tokio::spawn(async move {
         use deadcat_sdk::DiscoveryEvent;
         while let Ok(event) = rx.recv().await {
             match event {
-                DiscoveryEvent::MarketDiscovered(m) => {
-                    let _ = app_handle.emit("discovery:market", &m);
+                DiscoveryEvent::MarketDiscovered(ref m) => {
+                    let _ = app_handle.emit("discovery:market", m);
+                    subscribe_discovered_market_to_watcher(&app_handle, m).await;
                 }
                 DiscoveryEvent::OrderDiscovered(o) => {
                     let _ = app_handle.emit("discovery:order", &o);
@@ -153,8 +222,9 @@ async fn construct_and_store_node(
                 DiscoveryEvent::AttestationDiscovered(a) => {
                     let _ = app_handle.emit("discovery:attestation", &a);
                 }
-                DiscoveryEvent::PoolDiscovered(p) => {
-                    let _ = app_handle.emit("discovery:pool", &p);
+                DiscoveryEvent::PoolDiscovered(ref p) => {
+                    let _ = app_handle.emit("discovery:pool", p);
+                    subscribe_discovered_pool_to_watcher(&app_handle, p).await;
                 }
             }
         }

@@ -136,6 +136,16 @@ impl DiscoveryStore for NoopStore {
     ) -> Result<Vec<super::store_trait::PoolSnapshot>, String> {
         Ok(vec![])
     }
+
+    fn get_all_market_spks(&mut self) -> Result<Vec<([u8; 32], Vec<Vec<u8>>)>, String> {
+        Ok(vec![])
+    }
+
+    fn get_all_pool_watch_info(
+        &mut self,
+    ) -> Result<Vec<(crate::amm_pool::params::PoolId, Vec<u8>)>, String> {
+        Ok(vec![])
+    }
 }
 
 impl DiscoveryService<NoopStore> {
@@ -495,7 +505,7 @@ fn discovered_order_to_maker_params(
 }
 
 /// Convert a DiscoveredPool into AmmPoolParams for store ingestion.
-fn discovered_pool_to_amm_params(
+pub fn discovered_pool_to_amm_params(
     p: &DiscoveredPool,
 ) -> Result<crate::amm_pool::params::AmmPoolParams, String> {
     Ok(crate::amm_pool::params::AmmPoolParams {

@@ -97,6 +97,19 @@ pub trait DiscoveryStore: Send + 'static {
 
     /// All pool state snapshots in chronological order.
     fn get_pool_snapshot_history(&mut self, pool_id: &PoolId) -> Result<Vec<PoolSnapshot>, String>;
+
+    // ── Chain watcher bootstrap queries ──────────────────────────────
+
+    /// Return all markets with their 4 cached scriptPubKeys.
+    ///
+    /// Each entry is `(market_id, [dormant_spk, unresolved_spk, resolved_yes_spk, resolved_no_spk])`.
+    #[allow(clippy::type_complexity)]
+    fn get_all_market_spks(&mut self) -> Result<Vec<([u8; 32], Vec<Vec<u8>>)>, String>;
+
+    /// Return all pools with their current covenant scriptPubKey for subscription.
+    ///
+    /// Each entry is `(pool_id, current_covenant_spk)`.
+    fn get_all_pool_watch_info(&mut self) -> Result<Vec<(PoolId, Vec<u8>)>, String>;
 }
 
 /// Lightweight pool info returned by `DiscoveryStore::get_pool_info`.

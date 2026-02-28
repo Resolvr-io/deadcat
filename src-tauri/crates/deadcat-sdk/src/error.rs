@@ -147,6 +147,8 @@ pub enum NodeError {
     Discovery(String),
     /// A `spawn_blocking` task failed to join.
     Task(String),
+    /// The chain watcher encountered an error.
+    Watcher(String),
 }
 
 impl std::fmt::Display for NodeError {
@@ -158,6 +160,7 @@ impl std::fmt::Display for NodeError {
             NodeError::Sdk(e) => write!(f, "sdk error: {e}"),
             NodeError::Discovery(e) => write!(f, "discovery error: {e}"),
             NodeError::Task(e) => write!(f, "task join error: {e}"),
+            NodeError::Watcher(e) => write!(f, "chain watcher error: {e}"),
         }
     }
 }

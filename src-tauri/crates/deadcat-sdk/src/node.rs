@@ -1211,6 +1211,265 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             .await
     }
 
+    // ── Chain Watcher ─────────────────────────────────────────────────
+
+    /// Bootstrap the chain watcher by subscribing all known contracts from the store.
+    pub fn bootstrap_watcher(
+        &self,
+        handle: &crate::chain_watcher::ChainWatcherHandle,
+    ) -> Result<(), NodeError> {
+        use crate::chain_watcher::ScriptOwner;
+
+        let store = match self.store {
+            Some(ref s) => s,
+            None => return Ok(()), // no store → nothing to bootstrap
+        };
+
+        let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+
+        // Subscribe all market SPKs (4 per market)
+        match guard.get_all_market_spks() {
+            Ok(markets) => {
+                for (market_id, spks) in markets {
+                    for spk in spks {
+                        handle.subscribe(spk, ScriptOwner::Market { market_id });
+                    }
+                }
+            }
+            Err(e) => log::warn!("bootstrap_watcher: failed to load market SPKs: {e}"),
+        }
+
+        // Subscribe all pool SPKs (1 per pool, derived from current issued_lp)
+        match guard.get_all_pool_watch_info() {
+            Ok(pools) => {
+                for (pool_id, covenant_spk) in pools {
+                    handle.subscribe(covenant_spk, ScriptOwner::Pool { pool_id });
+                }
+            }
+            Err(e) => log::warn!("bootstrap_watcher: failed to load pool watch info: {e}"),
+        }
+
+        Ok(())
+    }
+
+    /// Prepare a future that processes a single [`ChainEvent`].
+    ///
+    /// The returned future is `'static` — it captures cloned `Arc` handles
+    /// and does **not** borrow `self`.  The caller should drop any outer
+    /// lock before `.await`-ing the future:
+    ///
+    /// ```ignore
+    /// let work = node.prepare_chain_event(event, &watcher_handle);
+    /// drop(node_guard);
+    /// work.await;
+    /// ```
+    pub fn prepare_chain_event(
+        &self,
+        event: crate::chain_watcher::ChainEvent,
+        watcher_handle: &crate::chain_watcher::ChainWatcherHandle,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        use crate::chain_watcher::ChainEvent;
+
+        // Clone Arc-based handles so the future is 'static
+        let sdk = self.sdk.clone();
+        let snapshot_tx = self.snapshot_tx.clone();
+        let store = self.store.clone();
+        let watcher_handle = watcher_handle.clone();
+
+        Box::pin(async move {
+            match event {
+                ChainEvent::NewBlock { height } => {
+                    log::debug!("chain_event: new block {height}");
+                    if let Err(e) = Self::sync_wallet_detached(sdk, snapshot_tx).await {
+                        log::warn!("chain_event: sync_wallet failed: {e}");
+                    }
+                }
+                ChainEvent::MarketActivity { market_id } => {
+                    log::debug!("chain_event: market activity on {}", hex::encode(market_id),);
+                    // TODO: re-scan market UTXOs for state updates once implemented.
+                    // For now, sync the wallet to pick up balance changes.
+                    if let Err(e) = Self::sync_wallet_detached(sdk, snapshot_tx).await {
+                        log::warn!("chain_event: sync_wallet on market activity failed: {e}");
+                    }
+                }
+                ChainEvent::OrderActivity { order_spk } => {
+                    log::debug!("chain_event: order activity on {}", hex::encode(&order_spk),);
+                    // TODO: re-scan order UTXOs for status updates once implemented.
+                }
+                ChainEvent::PoolActivity { pool_id } => {
+                    log::debug!("chain_event: pool activity on {pool_id}");
+                    Self::handle_pool_activity_detached(
+                        sdk,
+                        snapshot_tx,
+                        store,
+                        pool_id,
+                        watcher_handle,
+                    )
+                    .await;
+                }
+                ChainEvent::ConnectionLost => {
+                    log::warn!("chain_event: electrum connection lost");
+                }
+                ChainEvent::Reconnected => {
+                    log::info!("chain_event: electrum reconnected");
+                }
+            }
+        })
+    }
+
+    /// Wallet sync that works with cloned `Arc` handles (no `&self` borrow).
+    async fn sync_wallet_detached(
+        sdk: Arc<Mutex<Option<DeadcatSdk>>>,
+        snapshot_tx: tokio::sync::watch::Sender<Option<WalletSnapshot>>,
+    ) -> Result<(), NodeError> {
+        tokio::task::spawn_blocking(move || {
+            let mut guard = sdk.lock().map_err(|_| NodeError::MutexPoisoned)?;
+            let sdk = guard.as_mut().ok_or(NodeError::WalletLocked)?;
+            let result = sdk.sync();
+            let snapshot = WalletSnapshot {
+                balance: sdk.balance().unwrap_or_default(),
+                utxos: sdk.utxos().unwrap_or_default(),
+                transactions: sdk.transactions().unwrap_or_default(),
+            };
+            let _ = snapshot_tx.send(Some(snapshot));
+            result.map_err(NodeError::Sdk)
+        })
+        .await
+        .map_err(|e| NodeError::Task(e.to_string()))?
+    }
+
+    /// Pool activity handler that works with cloned handles (no `&self` borrow).
+    async fn handle_pool_activity_detached(
+        sdk: Arc<Mutex<Option<DeadcatSdk>>>,
+        snapshot_tx: tokio::sync::watch::Sender<Option<WalletSnapshot>>,
+        store: Option<Arc<Mutex<S>>>,
+        pool_id: crate::amm_pool::params::PoolId,
+        watcher_handle: crate::chain_watcher::ChainWatcherHandle,
+    ) {
+        use crate::amm_pool::chain_walk::walk_pool_chain;
+        use simplicityhl::elements::hashes::Hash;
+
+        let Some(store) = store else { return };
+
+        // Read pool info + current issued_lp from store
+        let (params, creation_txid_bytes, resume, old_issued_lp) = {
+            let mut guard = match store.lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    log::warn!("handle_pool_activity: store mutex poisoned");
+                    return;
+                }
+            };
+
+            let pool_info = match guard.get_pool_info(&pool_id) {
+                Ok(Some(info)) => info,
+                Ok(None) => {
+                    log::warn!("handle_pool_activity: pool not found in store");
+                    return;
+                }
+                Err(e) => {
+                    log::warn!("handle_pool_activity: store error: {e}");
+                    return;
+                }
+            };
+
+            let creation_txid = match pool_info.creation_txid {
+                Some(txid) => txid,
+                None => {
+                    log::warn!("handle_pool_activity: pool has no creation_txid");
+                    return;
+                }
+            };
+
+            let resume = guard
+                .get_latest_pool_snapshot_resume(&pool_id.0)
+                .ok()
+                .flatten();
+
+            let old_lp = resume.map(|(_, lp)| lp);
+
+            (pool_info.params, creation_txid, resume, old_lp)
+        };
+
+        // Run chain walk on a blocking thread
+        let creation_txid = Txid::from_byte_array(creation_txid_bytes);
+        let resume_arg = resume.map(|(txid_bytes, lp)| (Txid::from_byte_array(txid_bytes), lp));
+        let walk_result = tokio::task::spawn_blocking({
+            let sdk = sdk.clone();
+            let snapshot_tx = snapshot_tx.clone();
+            move || {
+                let mut guard = sdk.lock().map_err(|_| NodeError::MutexPoisoned)?;
+                let sdk = guard.as_mut().ok_or(NodeError::WalletLocked)?;
+                let result =
+                    walk_pool_chain(sdk.chain_backend(), &params, creation_txid, resume_arg);
+                let snapshot = WalletSnapshot {
+                    balance: sdk.balance().unwrap_or_default(),
+                    utxos: sdk.utxos().unwrap_or_default(),
+                    transactions: sdk.transactions().unwrap_or_default(),
+                };
+                let _ = snapshot_tx.send(Some(snapshot));
+                result.map_err(NodeError::Sdk)
+            }
+        })
+        .await;
+
+        let snapshots = match walk_result {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                log::warn!("handle_pool_activity: sync_pool_chain failed: {e}");
+                return;
+            }
+            Err(e) => {
+                log::warn!("handle_pool_activity: task join failed: {e}");
+                return;
+            }
+        };
+
+        // Persist snapshots and update pool state in store
+        if let Ok(mut guard) = store.lock() {
+            for snap in &snapshots {
+                let txid_bytes = snap.txid.to_byte_array();
+                if let Err(e) = guard.insert_pool_snapshot(
+                    &pool_id.0,
+                    &txid_bytes,
+                    snap.r_yes,
+                    snap.r_no,
+                    snap.r_lbtc,
+                    snap.issued_lp,
+                    snap.block_height,
+                ) {
+                    log::warn!("handle_pool_activity: insert_pool_snapshot failed: {e}");
+                }
+            }
+            if let Some(last) = snapshots.last()
+                && let Err(e) = guard.update_pool_state(&pool_id, &params, last.issued_lp)
+            {
+                log::warn!("handle_pool_activity: update_pool_state failed: {e}");
+            }
+        }
+
+        // Re-subscribe if issued_lp changed (deposit/withdraw moves the pool address)
+        let Some(last) = snapshots.last() else { return };
+        let new_issued_lp = last.issued_lp;
+        let Some(old_lp) = old_issued_lp.filter(|&old| old != new_issued_lp) else {
+            return;
+        };
+
+        let contract = match crate::amm_pool::contract::CompiledAmmPool::new(params) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("handle_pool_activity: compile failed: {e}");
+                return;
+            }
+        };
+
+        watcher_handle.unsubscribe(contract.script_pubkey(old_lp).to_bytes());
+        watcher_handle.subscribe(
+            contract.script_pubkey(new_issued_lp).to_bytes(),
+            crate::chain_watcher::ScriptOwner::Pool { pool_id },
+        );
+    }
+
     // ── Accessors ───────────────────────────────────────────────────────
 
     /// The Nostr identity keys.

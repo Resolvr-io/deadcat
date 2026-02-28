@@ -1021,6 +1021,42 @@ impl deadcat_sdk::DiscoveryStore for DeadcatStore {
             })
             .collect())
     }
+
+    #[allow(clippy::type_complexity)]
+    fn get_all_market_spks(&mut self) -> Result<Vec<([u8; 32], Vec<Vec<u8>>)>, String> {
+        let rows: Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = markets::table
+            .select((
+                markets::market_id,
+                markets::dormant_spk,
+                markets::unresolved_spk,
+                markets::resolved_yes_spk,
+                markets::resolved_no_spk,
+            ))
+            .load(&mut self.conn)
+            .map_err(|e| format!("get_all_market_spks: {e}"))?;
+
+        rows.into_iter()
+            .map(|(mid, d, u, ry, rn)| {
+                let market_id: [u8; 32] = mid
+                    .try_into()
+                    .map_err(|_| "market_id not 32 bytes".to_string())?;
+                Ok((market_id, vec![d, u, ry, rn]))
+            })
+            .collect()
+    }
+
+    fn get_all_pool_watch_info(&mut self) -> Result<Vec<(deadcat_sdk::PoolId, Vec<u8>)>, String> {
+        let rows: Vec<AmmPoolRow> = amm_pools::table
+            .load(&mut self.conn)
+            .map_err(|e| format!("get_all_pool_watch_info: {e}"))?;
+
+        rows.iter()
+            .map(|row| {
+                let info = AmmPoolInfo::try_from(row).map_err(|e| format!("{e}"))?;
+                Ok((info.pool_id, info.covenant_spk))
+            })
+            .collect()
+    }
 }
 
 // ==================== Sync internals (free functions taking &mut conn) ====================

@@ -387,6 +387,18 @@ impl DiscoveryStore for TestStore {
     ) -> std::result::Result<Vec<crate::discovery::store_trait::PoolSnapshot>, String> {
         Ok(vec![])
     }
+
+    fn get_all_market_spks(
+        &mut self,
+    ) -> std::result::Result<Vec<([u8; 32], Vec<Vec<u8>>)>, String> {
+        Ok(vec![])
+    }
+
+    fn get_all_pool_watch_info(
+        &mut self,
+    ) -> std::result::Result<Vec<(crate::amm_pool::params::PoolId, Vec<u8>)>, String> {
+        Ok(vec![])
+    }
 }
 
 // ---------------------------------------------------------------------------
