@@ -10,11 +10,8 @@ import type {
 } from "../types.ts";
 import {
   type ClickDomainContext,
-  handleAppDomain,
-  handleMarketDomain,
-  handleOnboardingDomain,
-  handleWalletDomain,
-} from "./click-domains.ts";
+  dispatchDomainAction,
+} from "./domains/index.ts";
 
 export type ClickDeps = {
   render: () => void;
@@ -180,14 +177,5 @@ export async function handleClick(
     finishOnboarding,
   };
 
-  await handleOnboardingDomain(context);
-  if (actionDomain === "onboarding") return;
-
-  await handleAppDomain(context);
-  if (actionDomain === "app") return;
-
-  await handleWalletDomain(context);
-  if (actionDomain === "wallet") return;
-
-  await handleMarketDomain(context);
+  await dispatchDomainAction(context);
 }
