@@ -1465,3 +1465,52 @@ pub async fn reconcile_nostr(
     };
     Ok(deadcat_sdk::send_reconciliation_events(&client, &events).await)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_request() -> CreateContractRequest {
+        CreateContractRequest {
+            question: "Will BTC close above $100k this year?".to_string(),
+            description: "Uses a predefined exchange basket at year-end close.".to_string(),
+            category: "Bitcoin".to_string(),
+            resolution_source: "Exchange basket".to_string(),
+            settlement_deadline_unix: 1_800_000_000,
+            collateral_per_token: 5_000,
+        }
+    }
+
+    #[test]
+    fn validate_request_accepts_valid_payload() {
+        let request = valid_request();
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
+    fn validate_request_rejects_empty_question() {
+        let mut request = valid_request();
+        request.question = "   ".to_string();
+        let error = validate_request(&request).expect_err("request should fail");
+        assert!(error.contains("question"));
+    }
+
+    #[test]
+    fn validate_request_rejects_zero_collateral() {
+        let mut request = valid_request();
+        request.collateral_per_token = 0;
+        let error = validate_request(&request).expect_err("request should fail");
+        assert!(error.contains("collateral_per_token"));
+    }
+
+    #[test]
+    fn parse_iso_datetime_to_unix_parses_valid_datetime() {
+        assert_eq!(parse_iso_datetime_to_unix("1970-01-01 00:00:00"), 0);
+        assert_eq!(parse_iso_datetime_to_unix("1970-01-01 00:00:01"), 1);
+    }
+
+    #[test]
+    fn parse_iso_datetime_to_unix_returns_zero_for_invalid_input() {
+        assert_eq!(parse_iso_datetime_to_unix("not-a-datetime"), 0);
+    }
+}
