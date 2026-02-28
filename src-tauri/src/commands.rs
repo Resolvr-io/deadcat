@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -11,6 +13,8 @@ use crate::discovery::{
 };
 use crate::state::AppStateManager;
 use crate::{NodeState, NostrAppState};
+
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -57,6 +61,34 @@ async fn bump_revision_and_emit(app: &tauri::AppHandle) -> Result<(), String> {
     .await
     .map_err(|e| format!("task join: {e}"))??;
     Ok(())
+}
+
+async fn run_node_mutation<T, F>(app: &tauri::AppHandle, op: F) -> Result<T, String>
+where
+    F: for<'a> FnOnce(
+        &'a deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>,
+    ) -> BoxFuture<'a, Result<T, String>>,
+{
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let result = op(node).await?;
+    drop(guard);
+
+    bump_revision_and_emit(app).await?;
+    Ok(result)
+}
+
+async fn run_node_query<T, F>(app: &tauri::AppHandle, op: F) -> Result<T, String>
+where
+    F: for<'a> FnOnce(
+        &'a deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>,
+    ) -> BoxFuture<'a, Result<T, String>>,
+{
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    op(node).await
 }
 
 /// Get Nostr keys and a connected client from the node.
@@ -1034,16 +1066,14 @@ pub async fn issue_tokens(
         .parse()
         .map_err(|e| format!("invalid txid: {e}"))?;
 
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let result = node
-        .issue_tokens(contract_params, txid, pairs, 500)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    drop(guard);
-
-    bump_revision_and_emit(&app).await?;
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.issue_tokens(contract_params, txid, pairs, 500)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
 
     Ok(IssuanceResultResponse {
         txid: result.txid.to_string(),
@@ -1073,16 +1103,14 @@ pub async fn cancel_tokens(
     pairs: u64,
     app: tauri::AppHandle,
 ) -> Result<CancellationResultResponse, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let result = node
-        .cancel_tokens(contract_params, pairs, 500)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    drop(guard);
-
-    bump_revision_and_emit(&app).await?;
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.cancel_tokens(contract_params, pairs, 500)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
 
     Ok(CancellationResultResponse {
         txid: result.txid.to_string(),
@@ -1118,16 +1146,14 @@ pub async fn resolve_market(
         .try_into()
         .map_err(|_| "oracle signature must be exactly 64 bytes".to_string())?;
 
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let result = node
-        .resolve_market(contract_params, outcome_yes, sig_bytes, 500)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    drop(guard);
-
-    bump_revision_and_emit(&app).await?;
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.resolve_market(contract_params, outcome_yes, sig_bytes, 500)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
 
     Ok(ResolutionResultResponse {
         txid: result.txid.to_string(),
@@ -1156,16 +1182,14 @@ pub async fn redeem_tokens(
     tokens: u64,
     app: tauri::AppHandle,
 ) -> Result<RedemptionResultResponse, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let result = node
-        .redeem_tokens(contract_params, tokens, 500)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    drop(guard);
-
-    bump_revision_and_emit(&app).await?;
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.redeem_tokens(contract_params, tokens, 500)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
 
     Ok(RedemptionResultResponse {
         txid: result.txid.to_string(),
@@ -1192,16 +1216,14 @@ pub async fn redeem_expired(
         .try_into()
         .map_err(|_| "token asset must be exactly 32 bytes".to_string())?;
 
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let result = node
-        .redeem_expired(contract_params, token_asset, tokens, 500)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    drop(guard);
-
-    bump_revision_and_emit(&app).await?;
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.redeem_expired(contract_params, token_asset, tokens, 500)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
 
     Ok(RedemptionResultResponse {
         txid: result.txid.to_string(),
@@ -1225,13 +1247,14 @@ pub async fn get_market_state(
     contract_params: deadcat_sdk::PredictionMarketParams,
     app: tauri::AppHandle,
 ) -> Result<MarketStateResponse, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let state = node
-        .market_state(contract_params)
-        .await
-        .map_err(|e| format!("{e}"))?;
+    let state = run_node_query(&app, |node| {
+        Box::pin(async move {
+            node.market_state(contract_params)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
 
     Ok(MarketStateResponse {
         state: market_state_to_u8(state),
