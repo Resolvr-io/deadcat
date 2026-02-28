@@ -6,6 +6,7 @@ import {
 import { state } from "../../state.ts";
 import type { WalletData } from "../../types.ts";
 import { satsToFiatStr } from "../../utils/format.ts";
+import { escapeAttr, escapeHtml } from "../../utils/html.ts";
 
 export function renderWalletTransactionRows(params: {
   creationTxToMarket: Map<string, string>;
@@ -36,7 +37,7 @@ export function renderWalletTransactionRows(params: {
       if (isCreation) {
         label =
           '<button data-open-market="' +
-          marketId +
+          escapeAttr(marketId) +
           '" class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 hover:bg-violet-500/30 transition cursor-pointer">Market Creation</button>';
       } else if (isIssuance) {
         label =
@@ -55,13 +56,13 @@ export function renderWalletTransactionRows(params: {
         icon +
         "</span>" +
         '<button data-action="open-explorer-tx" data-txid="' +
-        tx.txid +
+        escapeAttr(tx.txid) +
         '" class="mono text-slate-400 hover:text-slate-200 transition cursor-pointer">' +
-        shortTxid +
+        escapeHtml(shortTxid) +
         "</button>" +
         label +
         '<span class="text-slate-500">' +
-        date +
+        escapeHtml(date) +
         "</span>" +
         "</div>" +
         '<div class="text-right">' +
@@ -100,7 +101,7 @@ export function renderWalletSwapRows(params: {
         '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
         "<div>" +
         '<span class="text-slate-300">' +
-        flowLabel(sw.flow) +
+        escapeHtml(flowLabel(sw.flow)) +
         "</span>" +
         (state.walletBalanceHidden
           ? '<span class="ml-2 inline-flex gap-0.5 text-slate-500">' +
@@ -113,10 +114,10 @@ export function renderWalletSwapRows(params: {
         "</div>" +
         '<div class="flex items-center gap-2">' +
         '<span class="text-xs text-slate-500">' +
-        formatSwapStatus(sw.status) +
+        escapeHtml(formatSwapStatus(sw.status)) +
         "</span>" +
         '<button data-action="refresh-swap" data-swap-id="' +
-        sw.id +
+        escapeAttr(sw.id) +
         '" class="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800">Refresh</button>' +
         "</div>" +
         "</div>"

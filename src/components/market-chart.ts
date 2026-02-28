@@ -1,6 +1,7 @@
 import { SATS_PER_FULL_CONTRACT, state } from "../state.ts";
 import type { Market } from "../types.ts";
 import { formatEstTime } from "../utils/format.ts";
+import { escapeAttr } from "../utils/html.ts";
 import { buildChartSeriesData } from "./chart-series.ts";
 
 export function chartSkeleton(
@@ -396,7 +397,7 @@ export function chartSkeleton(
       <div
         class="absolute inset-x-3 top-10 bottom-8 z-10"
         data-chart-hover="1"
-        data-market-id="${market.id}"
+        data-market-id="${escapeAttr(market.id)}"
         data-chart-mode="${mode}"
         data-point-count="${pointCount}"
         data-plot-width="${chartWidth}"

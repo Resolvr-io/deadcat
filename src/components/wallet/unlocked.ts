@@ -2,6 +2,7 @@ import { formatLbtc } from "../../services/wallet.ts";
 import { markets, state } from "../../state.ts";
 import { reverseHex } from "../../utils/crypto.ts";
 import { satsToFiatStr } from "../../utils/format.ts";
+import { escapeAttr, escapeHtml } from "../../utils/html.ts";
 import {
   renderWalletSwapRows,
   renderWalletTransactionRows,
@@ -163,9 +164,9 @@ export function renderWalletUnlocked(params: {
                   tp.info.side +
                   "</span>" +
                   '<button data-open-market="' +
-                  tp.info.marketId +
+                  escapeAttr(tp.info.marketId) +
                   '" class="text-slate-300 hover:text-slate-100 transition cursor-pointer text-left">' +
-                  truncQ +
+                  escapeHtml(truncQ) +
                   "</button>" +
                   "</div>" +
                   (state.walletBalanceHidden
@@ -182,7 +183,7 @@ export function renderWalletUnlocked(params: {
               return (
                 '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
                 '<span class="mono text-slate-400">' +
-                shortAsset +
+                escapeHtml(shortAsset) +
                 "</span>" +
                 (state.walletBalanceHidden
                   ? '<span class="inline-flex gap-0.5 text-slate-500">' +

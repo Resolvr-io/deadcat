@@ -1,11 +1,12 @@
 import { state } from "../state.ts";
+import { escapeAttr, escapeHtml } from "../utils/html.ts";
 import { renderMnemonicGrid } from "./wallet-modals.ts";
 
 export function renderOnboarding(): string {
   const step = state.onboardingStep as "nostr" | "wallet";
   const loading = state.onboardingLoading;
   const errorHtml = state.onboardingError
-    ? `<p class="text-sm text-red-400">${state.onboardingError}</p>`
+    ? `<p class="text-sm text-red-400">${escapeHtml(state.onboardingError)}</p>`
     : "";
 
   const stepIndicator = `
@@ -31,7 +32,7 @@ export function renderOnboarding(): string {
               <div class="text-[10px] text-slate-500">nsec (secret)</div>
               ${
                 state.onboardingNsecRevealed
-                  ? `<div class="mono truncate text-xs text-rose-300">${state.onboardingNostrGeneratedNsec}</div>`
+                  ? `<div class="mono truncate text-xs text-rose-300">${escapeHtml(state.onboardingNostrGeneratedNsec)}</div>`
                   : `<div class="text-xs text-slate-500">Hidden</div>`
               }
             </div>
@@ -60,7 +61,7 @@ export function renderOnboarding(): string {
             <div class="flex items-center gap-2">
               <div class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
                 <div class="text-[10px] text-slate-500">npub (public)</div>
-                <div class="mono truncate text-xs text-slate-300">${state.nostrNpub}</div>
+                <div class="mono truncate text-xs text-slate-300">${escapeHtml(state.nostrNpub)}</div>
               </div>
               <button data-action="onboarding-copy-npub" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition">Copy</button>
             </div>
@@ -90,7 +91,7 @@ export function renderOnboarding(): string {
         `
             : `
           <div class="mt-5 space-y-3">
-            <input id="onboarding-nostr-nsec" type="password" value="${state.onboardingNostrNsec}" placeholder="nsec1..." class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 mono" />
+            <input id="onboarding-nostr-nsec" type="password" value="${escapeAttr(state.onboardingNostrNsec)}" placeholder="nsec1..." class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 mono" />
             <button data-action="onboarding-import-nostr" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300" ${loading ? "disabled" : ""}>${loading ? "Importing..." : "Import & Continue"}</button>
           </div>
         `
@@ -157,23 +158,23 @@ export function renderOnboarding(): string {
     formHtml = `
       <div class="mt-5 space-y-3">
         <p class="text-sm text-slate-400">Your encrypted wallet backup will be fetched from your Nostr relays and decrypted locally. Set a password to protect the wallet on this device.</p>
-        <input id="onboarding-wallet-password" type="password" maxlength="32" value="${state.onboardingWalletPassword}" placeholder="Set a password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
-        <input id="onboarding-wallet-password-confirm" type="password" maxlength="32" value="${state.onboardingWalletPasswordConfirm}" placeholder="Confirm password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border ${confirmBorder} bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+        <input id="onboarding-wallet-password" type="password" maxlength="32" value="${escapeAttr(state.onboardingWalletPassword)}" placeholder="Set a password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+        <input id="onboarding-wallet-password-confirm" type="password" maxlength="32" value="${escapeAttr(state.onboardingWalletPasswordConfirm)}" placeholder="Confirm password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border ${confirmBorder} bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
         <button data-action="onboarding-nostr-restore-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Restoring..." : "Restore from Nostr Backup"}</button>
       </div>`;
   } else if (modeCreate) {
     formHtml = `
       <div class="mt-5 space-y-3">
-        <input id="onboarding-wallet-password" type="password" maxlength="32" value="${state.onboardingWalletPassword}" placeholder="Set a password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
-        <input id="onboarding-wallet-password-confirm" type="password" maxlength="32" value="${state.onboardingWalletPasswordConfirm}" placeholder="Confirm password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border ${confirmBorder} bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+        <input id="onboarding-wallet-password" type="password" maxlength="32" value="${escapeAttr(state.onboardingWalletPassword)}" placeholder="Set a password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+        <input id="onboarding-wallet-password-confirm" type="password" maxlength="32" value="${escapeAttr(state.onboardingWalletPasswordConfirm)}" placeholder="Confirm password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border ${confirmBorder} bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
         <button data-action="onboarding-create-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Creating..." : "Create Wallet"}</button>
       </div>`;
   } else {
     formHtml = `
       <div class="mt-5 space-y-3">
-        <textarea id="onboarding-wallet-mnemonic" placeholder="Enter your 12-word recovery phrase" rows="3" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""}>${state.onboardingWalletMnemonic}</textarea>
-        <input id="onboarding-wallet-password" type="password" maxlength="32" value="${state.onboardingWalletPassword}" placeholder="Set a password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
-        <input id="onboarding-wallet-password-confirm" type="password" maxlength="32" value="${state.onboardingWalletPasswordConfirm}" placeholder="Confirm password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border ${confirmBorder} bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+        <textarea id="onboarding-wallet-mnemonic" placeholder="Enter your 12-word recovery phrase" rows="3" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""}>${escapeHtml(state.onboardingWalletMnemonic)}</textarea>
+        <input id="onboarding-wallet-password" type="password" maxlength="32" value="${escapeAttr(state.onboardingWalletPassword)}" placeholder="Set a password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+        <input id="onboarding-wallet-password-confirm" type="password" maxlength="32" value="${escapeAttr(state.onboardingWalletPasswordConfirm)}" placeholder="Confirm password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border ${confirmBorder} bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
         <button data-action="onboarding-restore-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Restoring..." : "Restore & Finish"}</button>
       </div>`;
   }

@@ -12,6 +12,7 @@ import {
   formatSats,
   formatSettlementDateTime,
 } from "../utils/format.ts";
+import { escapeAttr, escapeHtml } from "../utils/html.ts";
 import {
   clampContractPriceSats,
   getEstimatedSettlementDate,
@@ -125,12 +126,12 @@ export function renderActionTicket(market: Market): string {
       ${
         state.sizeMode === "sats"
           ? `
-      <input id="trade-size-sats" type="text" inputmode="numeric" value="${state.tradeSizeSatsDraft}" class="mb-2 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
+      <input id="trade-size-sats" type="text" inputmode="numeric" value="${escapeAttr(state.tradeSizeSatsDraft)}" class="mb-2 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
       `
           : `
       <div class="mb-3 grid grid-cols-[42px_1fr_42px] gap-2">
         <button data-action="step-trade-contracts" data-contracts-step-delta="-1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Decrease contracts">&minus;</button>
-        <input id="trade-size-contracts" type="text" inputmode="decimal" value="${state.tradeContractsDraft}" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2" />
+        <input id="trade-size-contracts" type="text" inputmode="decimal" value="${escapeAttr(state.tradeContractsDraft)}" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2" />
         <button data-action="step-trade-contracts" data-contracts-step-delta="1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Increase contracts">+</button>
       </div>
       ${
@@ -150,7 +151,7 @@ export function renderActionTicket(market: Market): string {
       <label for="limit-price" class="mb-1 block text-xs text-slate-400">Limit price (sats)</label>
       <div class="mb-3 grid grid-cols-[42px_1fr_42px] gap-2">
         <button data-action="step-limit-price" data-limit-price-delta="-1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Decrease limit price">&minus;</button>
-        <input id="limit-price" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="${state.limitPriceDraft}" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2" />
+        <input id="limit-price" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="${escapeAttr(state.limitPriceDraft)}" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2" />
         <button data-action="step-limit-price" data-limit-price-delta="1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Increase limit price">+</button>
       </div>
       <p class="mb-3 text-xs text-slate-500">May not fill immediately; unfilled size rests on book. ${fillabilityLabel}. Matchable now: ${formatSats(preview.executedSats)}.</p>
@@ -236,7 +237,7 @@ export function renderActionTicket(market: Market): string {
       <div class="mt-3">
         <p class="mb-2 text-sm text-slate-300">Path: ${paths.initialIssue ? "0 \u2192 1 Initial Issuance" : "1 \u2192 1 Subsequent Issuance"}</p>
         <label for="pairs-input" class="mb-1 block text-xs text-slate-400">Pairs to mint</label>
-        <input id="pairs-input" type="number" min="1" step="1" value="${state.pairsInput}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
+        <input id="pairs-input" type="number" min="1" step="1" value="${escapeAttr(state.pairsInput)}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
         <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
           <div class="flex items-center justify-between"><span>Required collateral</span><span>${formatSats(issueCollateral)}</span></div>
           <div class="mt-1 text-xs text-slate-400">Formula: pairs * 2 * CPT (${state.pairsInput} * 2 * ${market.cptSats})</div>
@@ -253,7 +254,7 @@ export function renderActionTicket(market: Market): string {
       <div class="mt-3">
         <p class="mb-2 text-sm text-slate-300">Path: ${paths.redeem ? "Post-resolution redemption" : paths.expiryRedeem ? "Expiry redemption" : "Unavailable"}</p>
         <label for="tokens-input" class="mb-1 block text-xs text-slate-400">Tokens to burn</label>
-        <input id="tokens-input" type="number" min="1" step="1" value="${state.tokensInput}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
+        <input id="tokens-input" type="number" min="1" step="1" value="${escapeAttr(state.tokensInput)}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
         <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
           <div class="flex items-center justify-between"><span>Collateral withdrawn</span><span>${formatSats(redeemCollateral)}</span></div>
           <div class="mt-1 text-xs text-slate-400">Formula: tokens * ${paths.redeem ? "2*CPT" : paths.expiryRedeem ? "CPT" : "N/A"}</div>
@@ -270,7 +271,7 @@ export function renderActionTicket(market: Market): string {
       <div class="mt-3">
         <p class="mb-2 text-sm text-slate-300">Path: 1 \u2192 1 Cancellation</p>
         <label for="pairs-input" class="mb-1 block text-xs text-slate-400">Matched YES/NO pairs to burn</label>
-        <input id="pairs-input" type="number" min="1" step="1" value="${state.pairsInput}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
+        <input id="pairs-input" type="number" min="1" step="1" value="${escapeAttr(state.pairsInput)}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
         <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
           <div class="flex items-center justify-between"><span>Collateral refund</span><span>${formatSats(cancelCollateral)}</span></div>
           <div class="mt-1 text-xs text-slate-400">Formula: pairs * 2 * CPT</div>
@@ -313,15 +314,15 @@ export function renderDetail(): string {
               Markets
             </button>
             <div class="mb-3 flex flex-wrap items-center gap-2">
-              <span class="rounded-full bg-slate-800 px-2.5 py-0.5 text-xs text-slate-300">${market.category}</span>
+              <span class="rounded-full bg-slate-800 px-2.5 py-0.5 text-xs text-slate-300">${escapeHtml(market.category)}</span>
               ${stateBadge(market.state)}
               ${market.creationTxid ? `<button data-action="refresh-market-state" class="rounded p-0.5 text-slate-500 transition hover:text-slate-300" title="Refresh state"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>` : ""}
               <span class="h-3.5 w-px bg-slate-700"></span>
-              <button data-action="open-nostr-event" data-market-id="${market.id}" data-nevent="${market.nevent}" class="text-xs text-slate-400 transition hover:text-slate-200">Nostr Event</button>
-              ${market.creationTxid ? `<button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-xs text-slate-400 transition hover:text-slate-200">Creation TX</button>` : ""}
+              <button data-action="open-nostr-event" data-market-id="${escapeAttr(market.id)}" data-nevent="${escapeAttr(market.nevent)}" class="text-xs text-slate-400 transition hover:text-slate-200">Nostr Event</button>
+              ${market.creationTxid ? `<button data-action="open-explorer-tx" data-txid="${escapeAttr(market.creationTxid)}" class="text-xs text-slate-400 transition hover:text-slate-200">Creation TX</button>` : ""}
             </div>
-            <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${market.question}</h1>
-            <p class="mb-3 text-base text-slate-400">${market.description}</p>
+            <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${escapeHtml(market.question)}</h1>
+            <p class="mb-3 text-base text-slate-400">${escapeHtml(market.description)}</p>
 
             <div class="mb-4 grid gap-3 sm:grid-cols-3">
               <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Yes price<br/><span class="text-lg font-medium text-emerald-400">${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span></div>
@@ -357,17 +358,17 @@ export function renderDetail(): string {
               <p class="panel-subtitle">Oracle</p>
               <h3 class="panel-title mb-2 text-lg">Oracle Attestation</h3>
               <div class="space-y-1 text-xs text-slate-300">
-                <div class="kv-row"><span class="shrink-0">Oracle</span><button data-action="copy-to-clipboard" data-copy-value="${hexToNpub(market.oraclePubkey)}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${hexToNpub(market.oraclePubkey)}">${(() => {
+                <div class="kv-row"><span class="shrink-0">Oracle</span><button data-action="copy-to-clipboard" data-copy-value="${escapeAttr(hexToNpub(market.oraclePubkey))}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${escapeAttr(hexToNpub(market.oraclePubkey))}">${(() => {
                   const n = hexToNpub(market.oraclePubkey);
                   return `${n.slice(0, 10)}...${n.slice(-6)}`;
                 })()}</button></div>
-                <div class="kv-row"><span class="shrink-0">Market ID</span><button data-action="copy-to-clipboard" data-copy-value="${market.marketId}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.marketId}">${market.marketId.slice(0, 8)}...${market.marketId.slice(-8)}</button></div>
+                <div class="kv-row"><span class="shrink-0">Market ID</span><button data-action="copy-to-clipboard" data-copy-value="${escapeAttr(market.marketId)}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${escapeAttr(market.marketId)}">${escapeHtml(market.marketId.slice(0, 8))}...${escapeHtml(market.marketId.slice(-8))}</button></div>
                 <div class="kv-row"><span class="shrink-0">Block target</span><span class="mono">${formatBlockHeight(market.expiryHeight)}</span></div>
                 <div class="kv-row"><span class="shrink-0">Current height</span><span class="mono">${formatBlockHeight(market.currentHeight)}</span></div>
                 <div class="kv-row"><span class="shrink-0">Message domain</span><span class="mono text-right">SHA256(ID || outcome)</span></div>
                 <div class="kv-row"><span class="shrink-0">Outcome bytes</span><span class="mono">YES=0x01, NO=0x00</span></div>
                 <div class="kv-row"><span class="shrink-0">Resolve status</span><span class="${market.resolveTx?.sigVerified ? "text-emerald-300" : "text-slate-400"}">${market.resolveTx ? `Attested ${market.resolveTx.outcome.toUpperCase()} @ ${market.resolveTx.height}` : "Unresolved"}</span></div>
-                ${market.resolveTx ? `<div class="kv-row"><span class="shrink-0">Sig hash</span><button data-action="copy-to-clipboard" data-copy-value="${market.resolveTx.signatureHash}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.resolveTx.signatureHash}">${market.resolveTx.signatureHash.slice(0, 8)}...${market.resolveTx.signatureHash.slice(-8)}</button></div><div class="kv-row"><span class="shrink-0">Resolve tx</span><button data-action="copy-to-clipboard" data-copy-value="${market.resolveTx.txid}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.resolveTx.txid}">${market.resolveTx.txid.slice(0, 8)}...${market.resolveTx.txid.slice(-8)}</button></div>` : ""}
+                ${market.resolveTx ? `<div class="kv-row"><span class="shrink-0">Sig hash</span><button data-action="copy-to-clipboard" data-copy-value="${escapeAttr(market.resolveTx.signatureHash)}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${escapeAttr(market.resolveTx.signatureHash)}">${escapeHtml(market.resolveTx.signatureHash.slice(0, 8))}...${escapeHtml(market.resolveTx.signatureHash.slice(-8))}</button></div><div class="kv-row"><span class="shrink-0">Resolve tx</span><button data-action="copy-to-clipboard" data-copy-value="${escapeAttr(market.resolveTx.txid)}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${escapeAttr(market.resolveTx.txid)}">${escapeHtml(market.resolveTx.txid.slice(0, 8))}...${escapeHtml(market.resolveTx.txid.slice(-8))}</button></div>` : ""}
               </div>
               ${
                 state.nostrPubkey &&
@@ -406,7 +407,7 @@ export function renderDetail(): string {
                 ${market.collateralUtxos
                   .map(
                     (utxo) =>
-                      `<div class="kv-row"><button data-action="copy-to-clipboard" data-copy-value="${utxo.txid}:${utxo.vout}" class="mono truncate hover:text-slate-100 transition cursor-pointer" title="${utxo.txid}:${utxo.vout}">${utxo.txid.slice(0, 8)}...${utxo.txid.slice(-8)}:${utxo.vout}</button><span class="mono shrink-0">${formatSats(utxo.amountSats)}</span></div>`,
+                      `<div class="kv-row"><button data-action="copy-to-clipboard" data-copy-value="${escapeAttr(`${utxo.txid}:${utxo.vout}`)}" class="mono truncate hover:text-slate-100 transition cursor-pointer" title="${escapeAttr(`${utxo.txid}:${utxo.vout}`)}">${escapeHtml(utxo.txid.slice(0, 8))}...${escapeHtml(utxo.txid.slice(-8))}:${utxo.vout}</button><span class="mono shrink-0">${formatSats(utxo.amountSats)}</span></div>`,
                   )
                   .join("")}
               </div>
