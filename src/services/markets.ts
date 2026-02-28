@@ -1,6 +1,7 @@
 import { tauriApi } from "../api/tauri.ts";
 import { setMarkets } from "../state.ts";
 import type {
+  ContractParamsPayload,
   DiscoveredMarket,
   IssuanceResult,
   Market,
@@ -67,8 +68,8 @@ export async function refreshMarketsFromStore(): Promise<void> {
   }
 }
 
-export function marketToContractParamsJson(market: Market): string {
-  return JSON.stringify({
+export function marketToContractParams(market: Market): ContractParamsPayload {
+  return {
     oracle_public_key: hexToBytes(market.oraclePubkey),
     collateral_asset_id: hexToBytes(market.collateralAssetId),
     yes_token_asset: hexToBytes(market.yesAssetId),
@@ -77,7 +78,7 @@ export function marketToContractParamsJson(market: Market): string {
     no_reissuance_token: hexToBytes(market.noReissuanceToken),
     collateral_per_token: market.cptSats,
     expiry_time: market.expiryHeight,
-  });
+  };
 }
 
 export async function issueTokens(
@@ -88,7 +89,7 @@ export async function issueTokens(
     throw new Error("Market has no creation txid — cannot issue tokens");
   }
   return tauriApi.issueTokens(
-    marketToContractParamsJson(market),
+    marketToContractParams(market),
     market.creationTxid,
     pairs,
   );

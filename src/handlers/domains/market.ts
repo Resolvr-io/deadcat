@@ -2,7 +2,7 @@ import { tauriApi } from "../../api/tauri.ts";
 import {
   discoveredToMarket,
   issueTokens,
-  marketToContractParamsJson,
+  marketToContractParams,
 } from "../../services/markets.ts";
 import { refreshWallet } from "../../services/wallet.ts";
 import {
@@ -244,7 +244,7 @@ export async function handleMarketDomain(
       runAsyncAction(async () => {
         try {
           const result = await tauriApi.resolveMarket(
-            marketToContractParamsJson(market),
+            marketToContractParams(market),
             outcomeYes,
             oracleSignatureHex,
           );
@@ -277,7 +277,7 @@ export async function handleMarketDomain(
       runAsyncAction(async () => {
         try {
           const result = await tauriApi.getMarketState(
-            marketToContractParamsJson(market),
+            marketToContractParams(market),
           );
           market.state = result.state as CovenantState;
           showToast(`Market state: ${stateLabel(market.state)}`, "success");
@@ -623,7 +623,7 @@ export async function handleMarketDomain(
           runAsyncAction(async () => {
             try {
               const result = await tauriApi.cancelTokens(
-                marketToContractParamsJson(market),
+                marketToContractParams(market),
                 actualPairs,
               );
               showToast(
@@ -675,7 +675,7 @@ export async function handleMarketDomain(
         runAsyncAction(async () => {
           try {
             const result = await tauriApi.cancelTokens(
-              marketToContractParamsJson(market),
+              marketToContractParams(market),
               pairs,
             );
             showToast(
@@ -699,7 +699,7 @@ export async function handleMarketDomain(
           runAsyncAction(async () => {
             try {
               const result = await tauriApi.redeemTokens(
-                marketToContractParamsJson(market),
+                marketToContractParams(market),
                 tokens,
               );
               showToast(
@@ -723,7 +723,7 @@ export async function handleMarketDomain(
           runAsyncAction(async () => {
             try {
               const result = await tauriApi.redeemExpired(
-                marketToContractParamsJson(market),
+                marketToContractParams(market),
                 tokenAssetHex,
                 tokens,
               );

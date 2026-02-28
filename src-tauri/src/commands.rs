@@ -1025,15 +1025,11 @@ pub struct IssuanceResultResponse {
 /// Issue new YES+NO token pairs by locking collateral.
 #[tauri::command]
 pub async fn issue_tokens(
-    contract_params_json: String,
+    contract_params: deadcat_sdk::PredictionMarketParams,
     creation_txid: String,
     pairs: u64,
     app: tauri::AppHandle,
 ) -> Result<IssuanceResultResponse, String> {
-    let params: deadcat_sdk::PredictionMarketParams =
-        serde_json::from_str(&contract_params_json)
-            .map_err(|e| format!("invalid contract params: {e}"))?;
-
     let txid: lwk_wollet::elements::Txid = creation_txid
         .parse()
         .map_err(|e| format!("invalid txid: {e}"))?;
@@ -1042,7 +1038,7 @@ pub async fn issue_tokens(
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let result = node
-        .issue_tokens(params, txid, pairs, 500)
+        .issue_tokens(contract_params, txid, pairs, 500)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -1073,19 +1069,15 @@ pub struct CancellationResultResponse {
 /// Cancel paired YES+NO tokens back into collateral.
 #[tauri::command]
 pub async fn cancel_tokens(
-    contract_params_json: String,
+    contract_params: deadcat_sdk::PredictionMarketParams,
     pairs: u64,
     app: tauri::AppHandle,
 ) -> Result<CancellationResultResponse, String> {
-    let params: deadcat_sdk::PredictionMarketParams =
-        serde_json::from_str(&contract_params_json)
-            .map_err(|e| format!("invalid contract params: {e}"))?;
-
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let result = node
-        .cancel_tokens(params, pairs, 500)
+        .cancel_tokens(contract_params, pairs, 500)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -1116,15 +1108,11 @@ pub struct ResolutionResultResponse {
 /// Resolve a market with an oracle signature.
 #[tauri::command]
 pub async fn resolve_market(
-    contract_params_json: String,
+    contract_params: deadcat_sdk::PredictionMarketParams,
     outcome_yes: bool,
     oracle_signature_hex: String,
     app: tauri::AppHandle,
 ) -> Result<ResolutionResultResponse, String> {
-    let params: deadcat_sdk::PredictionMarketParams =
-        serde_json::from_str(&contract_params_json)
-            .map_err(|e| format!("invalid contract params: {e}"))?;
-
     let sig_bytes: [u8; 64] = hex::decode(&oracle_signature_hex)
         .map_err(|e| format!("invalid signature hex: {e}"))?
         .try_into()
@@ -1134,7 +1122,7 @@ pub async fn resolve_market(
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let result = node
-        .resolve_market(params, outcome_yes, sig_bytes, 500)
+        .resolve_market(contract_params, outcome_yes, sig_bytes, 500)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -1164,19 +1152,15 @@ pub struct RedemptionResultResponse {
 /// Redeem winning tokens after market resolution.
 #[tauri::command]
 pub async fn redeem_tokens(
-    contract_params_json: String,
+    contract_params: deadcat_sdk::PredictionMarketParams,
     tokens: u64,
     app: tauri::AppHandle,
 ) -> Result<RedemptionResultResponse, String> {
-    let params: deadcat_sdk::PredictionMarketParams =
-        serde_json::from_str(&contract_params_json)
-            .map_err(|e| format!("invalid contract params: {e}"))?;
-
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let result = node
-        .redeem_tokens(params, tokens, 500)
+        .redeem_tokens(contract_params, tokens, 500)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -1198,15 +1182,11 @@ pub async fn redeem_tokens(
 /// Redeem tokens via the expiry path after the locktime has passed.
 #[tauri::command]
 pub async fn redeem_expired(
-    contract_params_json: String,
+    contract_params: deadcat_sdk::PredictionMarketParams,
     token_asset_hex: String,
     tokens: u64,
     app: tauri::AppHandle,
 ) -> Result<RedemptionResultResponse, String> {
-    let params: deadcat_sdk::PredictionMarketParams =
-        serde_json::from_str(&contract_params_json)
-            .map_err(|e| format!("invalid contract params: {e}"))?;
-
     let token_asset: [u8; 32] = hex::decode(&token_asset_hex)
         .map_err(|e| format!("invalid token asset hex: {e}"))?
         .try_into()
@@ -1216,7 +1196,7 @@ pub async fn redeem_expired(
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let result = node
-        .redeem_expired(params, token_asset, tokens, 500)
+        .redeem_expired(contract_params, token_asset, tokens, 500)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -1242,18 +1222,14 @@ pub struct MarketStateResponse {
 
 #[tauri::command]
 pub async fn get_market_state(
-    contract_params_json: String,
+    contract_params: deadcat_sdk::PredictionMarketParams,
     app: tauri::AppHandle,
 ) -> Result<MarketStateResponse, String> {
-    let params: deadcat_sdk::PredictionMarketParams =
-        serde_json::from_str(&contract_params_json)
-            .map_err(|e| format!("invalid contract params: {e}"))?;
-
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let state = node
-        .market_state(params)
+        .market_state(contract_params)
         .await
         .map_err(|e| format!("{e}"))?;
 
