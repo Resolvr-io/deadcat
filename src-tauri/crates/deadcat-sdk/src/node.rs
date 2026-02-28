@@ -20,7 +20,9 @@ use crate::discovery::config::DiscoveryConfig;
 use crate::discovery::events::DiscoveryEvent;
 use crate::discovery::market::DiscoveredMarket;
 use crate::discovery::pool::{DiscoveredPool, PoolAnnouncement};
-use crate::discovery::service::{DiscoveryService, NoopStore, persist_market_to_store};
+use crate::discovery::service::{
+    DiscoveryService, NoopStore, ReconciliationStats, persist_market_to_store,
+};
 use crate::discovery::store_trait::DiscoveryStore;
 use crate::discovery::{
     AttestationContent, AttestationResult, DEFAULT_RELAYS, DiscoveredOrder, OrderAnnouncement,
@@ -1043,6 +1045,32 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Get an additional broadcast receiver for discovery events.
     pub fn subscribe(&self) -> broadcast::Receiver<DiscoveryEvent> {
         self.discovery.subscribe()
+    }
+
+    /// Reconcile stored discovery events with Nostr relays.
+    ///
+    /// Re-sends all persisted Nostr events to connected relays to ensure
+    /// they remain available. Idempotent thanks to NIP-33 replaceable events.
+    pub async fn reconcile_discovery(&self) -> Result<ReconciliationStats, NodeError> {
+        self.discovery
+            .reconcile()
+            .await
+            .map_err(NodeError::Discovery)
+    }
+
+    /// Prepare data needed for reconciliation without performing network I/O.
+    ///
+    /// Returns a cloned Nostr client handle and all stored event JSON strings.
+    /// Callers can drop their borrow on the node before calling
+    /// [`send_reconciliation_events`](crate::send_reconciliation_events) with
+    /// the returned data, avoiding holding a lock across async I/O.
+    pub fn prepare_reconciliation(&self) -> Result<(nostr_sdk::Client, Vec<String>), NodeError> {
+        let client = self.discovery.client().clone();
+        let events = self
+            .discovery
+            .load_all_nostr_events()
+            .map_err(NodeError::Discovery)?;
+        Ok((client, events))
     }
 
     // ── Wallet queries (via spawn_blocking) ─────────────────────────────

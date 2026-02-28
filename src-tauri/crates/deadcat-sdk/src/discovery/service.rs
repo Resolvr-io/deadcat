@@ -33,6 +33,24 @@ fn hex_to_bytes32(hex_str: &str, field: &str) -> Result<[u8; 32], String> {
         .map_err(|_| format!("{field}: expected 32 bytes"))
 }
 
+/// Stats returned by `DiscoveryService::reconcile()`.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ReconciliationStats {
+    pub events_sent: usize,
+    pub events_failed: usize,
+    pub events_skipped: usize,
+}
+
+impl std::fmt::Display for ReconciliationStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "sent={}, failed={}, skipped={}",
+            self.events_sent, self.events_failed, self.events_skipped
+        )
+    }
+}
+
 /// Unified Nostr discovery service for markets, orders, and attestations.
 ///
 /// Subscribes to Nostr relays, pushes real-time `DiscoveryEvent` notifications
@@ -144,6 +162,10 @@ impl DiscoveryStore for NoopStore {
     fn get_all_pool_watch_info(
         &mut self,
     ) -> Result<Vec<(crate::amm_pool::params::PoolId, Vec<u8>)>, String> {
+        Ok(vec![])
+    }
+
+    fn get_all_nostr_events(&mut self) -> Result<Vec<String>, String> {
         Ok(vec![])
     }
 }
@@ -420,6 +442,33 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
         Ok(pools)
     }
 
+    /// Load all stored Nostr event JSON strings for reconciliation.
+    ///
+    /// Returns an empty vec if no store is configured.
+    pub fn load_all_nostr_events(&self) -> Result<Vec<String>, String> {
+        match self.store {
+            Some(ref store) => {
+                let mut s = store
+                    .lock()
+                    .map_err(|_| "store lock poisoned".to_string())?;
+                s.get_all_nostr_events()
+            }
+            None => Ok(vec![]),
+        }
+    }
+
+    /// Reconcile stored discovery events with relays.
+    ///
+    /// Reads all persisted Nostr event JSON from the store, deserializes each
+    /// into a signed `Event`, and re-sends it to connected relays. NIP-33
+    /// replaceable events make this idempotent — relays deduplicate by
+    /// (pubkey, kind, d-tag).
+    pub async fn reconcile(&self) -> Result<ReconciliationStats, String> {
+        self.ensure_connected().await?;
+        let event_jsons = self.load_all_nostr_events()?;
+        Ok(send_reconciliation_events(&self.client, &event_jsons).await)
+    }
+
     /// Get a reference to the underlying Nostr client.
     pub fn client(&self) -> &Client {
         &self.client
@@ -458,6 +507,37 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
     fn persist_pool(&self, pool: &DiscoveredPool) {
         persist_pool_to_store(&self.store, pool);
     }
+}
+
+/// Send pre-loaded Nostr event JSON strings to relays.
+///
+/// Each JSON string is deserialized into a signed `Event` and sent.
+/// Malformed JSON is skipped (counted in `events_skipped`).
+/// This is a standalone function so callers can drop borrows (e.g. a node
+/// mutex guard) before performing network I/O.
+pub async fn send_reconciliation_events(
+    client: &Client,
+    event_jsons: &[String],
+) -> ReconciliationStats {
+    let mut stats = ReconciliationStats::default();
+    for json in event_jsons {
+        let event: Event = match serde_json::from_str(json) {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!("reconcile: skipping unparseable event: {e}");
+                stats.events_skipped += 1;
+                continue;
+            }
+        };
+        match client.send_event(event).await {
+            Ok(_) => stats.events_sent += 1,
+            Err(e) => {
+                log::warn!("reconcile: failed to send event: {e}");
+                stats.events_failed += 1;
+            }
+        }
+    }
+    stats
 }
 
 /// Convert a DiscoveredMarket into ContractParams for store ingestion.
@@ -663,5 +743,87 @@ fn persist_order_to_store<S: DiscoveryStore>(
             Some(&order.id),
             order.nostr_event_json.as_deref(),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconciliation_stats_default_is_all_zero() {
+        let stats = ReconciliationStats::default();
+        assert_eq!(stats.events_sent, 0);
+        assert_eq!(stats.events_failed, 0);
+        assert_eq!(stats.events_skipped, 0);
+    }
+
+    #[test]
+    fn reconciliation_stats_display() {
+        let stats = ReconciliationStats {
+            events_sent: 5,
+            events_failed: 1,
+            events_skipped: 2,
+        };
+        assert_eq!(stats.to_string(), "sent=5, failed=1, skipped=2");
+    }
+
+    #[test]
+    fn reconciliation_stats_serde_roundtrip() {
+        let stats = ReconciliationStats {
+            events_sent: 3,
+            events_failed: 0,
+            events_skipped: 1,
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["events_sent"], 3);
+        assert_eq!(parsed["events_failed"], 0);
+        assert_eq!(parsed["events_skipped"], 1);
+    }
+
+    #[test]
+    fn noop_store_load_all_nostr_events_returns_empty() {
+        let keys = Keys::generate();
+        let config = DiscoveryConfig::default();
+        let (service, _rx) = DiscoveryService::new(keys, config);
+        let events = service.load_all_nostr_events().unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconcile_with_noop_store_returns_default_stats() {
+        let keys = Keys::generate();
+        let config = DiscoveryConfig {
+            relays: vec![], // no relays — ensure_connected is a no-op
+            ..Default::default()
+        };
+        let (service, _rx) = DiscoveryService::new(keys, config);
+        let stats = service.reconcile().await.unwrap();
+        assert_eq!(stats.events_sent, 0);
+        assert_eq!(stats.events_failed, 0);
+        assert_eq!(stats.events_skipped, 0);
+    }
+
+    #[tokio::test]
+    async fn send_reconciliation_events_skips_bad_json() {
+        let client = Client::default();
+        let events = vec![
+            "not valid json".to_string(),
+            "{\"also\": \"not a nostr event\"}".to_string(),
+        ];
+        let stats = send_reconciliation_events(&client, &events).await;
+        assert_eq!(stats.events_skipped, 2);
+        assert_eq!(stats.events_sent, 0);
+        assert_eq!(stats.events_failed, 0);
+    }
+
+    #[tokio::test]
+    async fn send_reconciliation_events_empty_is_noop() {
+        let client = Client::default();
+        let stats = send_reconciliation_events(&client, &[]).await;
+        assert_eq!(stats.events_sent, 0);
+        assert_eq!(stats.events_failed, 0);
+        assert_eq!(stats.events_skipped, 0);
     }
 }

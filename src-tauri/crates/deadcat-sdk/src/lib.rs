@@ -86,6 +86,7 @@ pub use discovery::{
     PoolAnnouncement,
     PoolInfo,
     PoolSnapshot,
+    ReconciliationStats,
     // Functions
     build_announcement_event,
     build_attestation_event,
@@ -97,6 +98,7 @@ pub use discovery::{
     fetch_announcements,
     parse_announcement_event,
     publish_event,
+    send_reconciliation_events,
     sign_attestation,
 };
 

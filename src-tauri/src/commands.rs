@@ -193,8 +193,13 @@ async fn construct_and_store_node(
     let (node, mut rx) = deadcat_sdk::DeadcatNode::with_store(keys, sdk_network, store_arc, config);
     let mut snapshot_rx = node.subscribe_snapshot();
 
-    // Replace any existing node (drops old node if any)
+    // Cancel any previous periodic reconciliation task
     let node_state = app.state::<NodeState>();
+    if let Some(handle) = node_state.reconcile_task.lock().await.take() {
+        handle.abort();
+    }
+
+    // Replace any existing node (drops old node if any)
     let mut guard = node_state.node.lock().await;
     *guard = Some(node);
 
@@ -205,6 +210,47 @@ async fn construct_and_store_node(
         }
     }
     drop(guard);
+
+    // Background reconciliation: re-send stored Nostr events to relays.
+    // A single task handles both the initial reconciliation (after a short
+    // delay) and periodic re-sends every 30 minutes. One handle in
+    // `reconcile_task` means identity-switch aborts everything cleanly.
+    let app_reconcile = app.clone();
+    let reconcile_handle = tokio::spawn(async move {
+        // Small delay to let the subscription loop settle
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let node_state = app_reconcile.state::<NodeState>();
+
+        // Startup reconciliation
+        let prepared = {
+            let guard = node_state.node.lock().await;
+            guard.as_ref().and_then(|n| n.prepare_reconciliation().ok())
+        };
+        if let Some((client, events)) = prepared {
+            let stats = deadcat_sdk::send_reconciliation_events(&client, &events).await;
+            log::info!("startup reconciliation complete: {stats}");
+        }
+
+        // Then every 30 minutes
+        let mut interval = tokio::time::interval(Duration::from_secs(30 * 60));
+        loop {
+            interval.tick().await;
+            let prepared = {
+                let guard = node_state.node.lock().await;
+                guard.as_ref().and_then(|n| n.prepare_reconciliation().ok())
+            };
+            match prepared {
+                Some((client, events)) => {
+                    let stats = deadcat_sdk::send_reconciliation_events(&client, &events).await;
+                    log::info!("periodic reconciliation: {stats}");
+                }
+                None => break, // Node was destroyed — stop the timer
+            }
+        }
+    });
+
+    *node_state.reconcile_task.lock().await = Some(reconcile_handle);
 
     // Forward discovery events to the frontend + subscribe new contracts to chain watcher
     let app_handle = app.clone();
@@ -1398,4 +1444,21 @@ pub async fn get_pool_price_history(
             r_lbtc: p.reserves.r_lbtc,
         })
         .collect())
+}
+
+/// Manually trigger Nostr discovery reconciliation.
+///
+/// Re-sends all stored Nostr events to connected relays, ensuring relay
+/// availability. Idempotent thanks to NIP-33 replaceable events.
+#[tauri::command]
+pub async fn reconcile_nostr(
+    app: tauri::AppHandle,
+) -> Result<deadcat_sdk::ReconciliationStats, String> {
+    let node_state = app.state::<NodeState>();
+    let (client, events) = {
+        let guard = node_state.node.lock().await;
+        let node = guard.as_ref().ok_or("Node not initialized")?;
+        node.prepare_reconciliation().map_err(|e| format!("{e}"))?
+    };
+    Ok(deadcat_sdk::send_reconciliation_events(&client, &events).await)
 }

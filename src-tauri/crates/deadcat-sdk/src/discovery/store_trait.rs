@@ -110,6 +110,10 @@ pub trait DiscoveryStore: Send + 'static {
     ///
     /// Each entry is `(pool_id, current_covenant_spk)`.
     fn get_all_pool_watch_info(&mut self) -> Result<Vec<(PoolId, Vec<u8>)>, String>;
+
+    /// Return all stored Nostr event JSON strings for relay reconciliation.
+    /// Includes markets, orders, and pools (excludes attestations, which are not persisted).
+    fn get_all_nostr_events(&mut self) -> Result<Vec<String>, String>;
 }
 
 /// Lightweight pool info returned by `DiscoveryStore::get_pool_info`.
