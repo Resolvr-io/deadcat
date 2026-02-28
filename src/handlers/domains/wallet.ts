@@ -7,6 +7,8 @@ import {
   refreshWallet,
   resetReceiveState,
   resetSendState,
+  resetWalletSessionState,
+  resetWalletStoredState,
   restoreWalletAndSync,
 } from "../../services/wallet.ts";
 import { createWalletData, markets, state } from "../../state.ts";
@@ -185,12 +187,7 @@ export async function handleWalletDomain(
         try {
           await tauriApi.lockWallet();
           await fetchWalletStatus();
-          state.walletData = null;
-          state.walletPassword = "";
-          state.walletPasswordConfirm = "";
-          state.walletModal = "none";
-          resetReceiveState();
-          resetSendState();
+          resetWalletSessionState();
           render();
         } catch (e) {
           state.walletError = String(e);
@@ -223,16 +220,7 @@ export async function handleWalletDomain(
         try {
           await tauriApi.deleteWallet();
           await fetchWalletStatus();
-          state.walletData = null;
-          state.walletPassword = "";
-          state.walletPasswordConfirm = "";
-          state.walletMnemonic = "";
-          state.walletRestoreMnemonic = "";
-          state.walletError = "";
-          state.walletModal = "none";
-          state.walletShowRestore = false;
-          resetReceiveState();
-          resetSendState();
+          resetWalletStoredState();
           state.walletDeletePrompt = false;
           state.walletDeleteConfirm = "";
           showToast("Wallet removed", "success");
@@ -249,16 +237,7 @@ export async function handleWalletDomain(
         try {
           await tauriApi.deleteWallet();
           await fetchWalletStatus();
-          state.walletData = null;
-          state.walletPassword = "";
-          state.walletPasswordConfirm = "";
-          state.walletMnemonic = "";
-          state.walletRestoreMnemonic = "";
-          state.walletError = "";
-          state.walletModal = "none";
-          state.walletShowRestore = false;
-          resetReceiveState();
-          resetSendState();
+          resetWalletStoredState();
           showToast(
             "Wallet removed — restore from backup or recovery phrase",
             "info",

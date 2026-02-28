@@ -4,8 +4,8 @@ import {
   fetchWalletSnapshot,
   fetchWalletStatus,
   refreshWallet,
-  resetReceiveState,
-  resetSendState,
+  resetWalletSessionState,
+  resetWalletStoredState,
 } from "../../services/wallet.ts";
 import { state } from "../../state.ts";
 import type { BaseCurrency } from "../../types.ts";
@@ -292,11 +292,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
           state.nostrPubkey = null;
           state.nostrNpub = null;
           state.nostrNsecRevealed = null;
-          state.walletData = null;
-          state.walletPassword = "";
-          state.walletPasswordConfirm = "";
-          state.walletMnemonic = "";
-          state.walletError = "";
+          resetWalletStoredState();
           state.walletStatus = "not_created";
           state.onboardingError = "";
           state.settingsOpen = false;
@@ -541,13 +537,7 @@ export async function handleAppDomain(ctx: ClickDomainContext): Promise<void> {
         try {
           await tauriApi.lockWallet();
           await fetchWalletStatus();
-          state.walletData = null;
-          state.walletPassword = "";
-          state.walletPasswordConfirm = "";
-          state.walletError = "";
-          state.walletModal = "none";
-          resetReceiveState();
-          resetSendState();
+          resetWalletSessionState();
           state.view = "home";
         } catch (e) {
           console.warn("Failed to lock wallet:", e);

@@ -171,6 +171,23 @@ export function resetSendState(): void {
   state.modalQr = "";
 }
 
+export function resetWalletSessionState(): void {
+  state.walletData = null;
+  state.walletPassword = "";
+  state.walletPasswordConfirm = "";
+  state.walletError = "";
+  state.walletModal = "none";
+  resetReceiveState();
+  resetSendState();
+}
+
+export function resetWalletStoredState(): void {
+  resetWalletSessionState();
+  state.walletMnemonic = "";
+  state.walletRestoreMnemonic = "";
+  state.walletShowRestore = false;
+}
+
 export function flowLabel(flow: string): string {
   switch (flow) {
     case "liquid_to_lightning":
