@@ -1,6 +1,4 @@
 import "./style.css";
-import { listen } from "@tauri-apps/api/event";
-import { tauriApi } from "./api/tauri.ts";
 import { finishOnboarding, initApp } from "./bootstrap.ts";
 import { renderCreateMarket } from "./components/create.ts";
 import { renderDetail } from "./components/detail.ts";
@@ -15,19 +13,12 @@ import { handleClick } from "./handlers/click.ts";
 import { handleFocusout } from "./handlers/focusout.ts";
 import { handleInput } from "./handlers/input.ts";
 import { handleKeydown } from "./handlers/keydown.ts";
-// Services
-import { refreshMarketsFromStore } from "./services/markets.ts";
-import {
-  currentWalletNetwork,
-  syncCurrentHeightFromLwk,
-} from "./services/wallet.ts";
-import { app, createWalletData, state } from "./state.ts";
-import type {
-  Side,
-  TradeIntent,
-  WalletTransaction,
-  WalletUtxo,
-} from "./types.ts";
+import { setupActivityTracking } from "./lifecycle/activity.ts";
+import { setupChartHoverListeners } from "./lifecycle/chart-hover.ts";
+import { setupTauriSubscriptions } from "./lifecycle/subscriptions.ts";
+import { startRecurringTimers } from "./lifecycle/timers.ts";
+import { app, state } from "./state.ts";
+import type { Side, TradeIntent } from "./types.ts";
 import { formatEstTime, formatSatsInput } from "./utils/format.ts";
 // Utils
 import {
@@ -193,70 +184,8 @@ function dismissSplash(): void {
 
 // ── Boot ─────────────────────────────────────────────────────────────
 
-// ── Backend state listener (auto-lock, etc.) ────────────────────────
-
-void listen<{
-  walletStatus: "not_created" | "locked" | "unlocked";
-}>("app_state_updated", (event) => {
-  const payload = event.payload;
-  if (payload.walletStatus === "locked" && state.walletStatus === "unlocked") {
-    state.walletStatus = "locked";
-    state.walletData = null;
-    state.walletMnemonic = "";
-    state.walletModal = "none";
-    render();
-  }
-});
-
-// Push wallet balance + transactions from backend whenever the snapshot changes
-void listen<{
-  balance: { assets: Record<string, number> };
-  transactions: WalletTransaction[];
-  utxos: WalletUtxo[];
-} | null>("wallet_snapshot", (event) => {
-  const payload = event.payload;
-  if (payload) {
-    if (!state.walletData) state.walletData = createWalletData();
-    state.walletData.balance = payload.balance.assets;
-    state.walletData.transactions = payload.transactions;
-    state.walletData.utxos = payload.utxos;
-  } else {
-    // A null snapshot means the wallet was locked
-    state.walletStatus = "locked";
-    state.walletData = null;
-  }
-  render();
-});
-
-// ── Discovery event listeners ────────────────────────────────────────
-
-void listen("discovery:market", () => {
-  void refreshMarketsFromStore().then(render);
-});
-
-void listen("discovery:attestation", () => {
-  void refreshMarketsFromStore().then(render);
-});
-
-void listen("discovery:pool", () => {
-  void refreshMarketsFromStore().then(render);
-});
-
-// ── Auto-lock activity tracking ──────────────────────────────────────
-
-let activityTimer: ReturnType<typeof setTimeout> | null = null;
-
-function reportActivity(): void {
-  if (activityTimer) return; // throttle: at most once per 30s
-  activityTimer = setTimeout(() => {
-    activityTimer = null;
-  }, 30_000);
-  void tauriApi.recordActivity();
-}
-
-for (const evt of ["click", "keydown", "mousemove", "scroll"] as const) {
-  window.addEventListener(evt, reportActivity, { passive: true });
-}
+setupTauriSubscriptions(render);
+setupActivityTracking();
 
 // ── Event listeners ──────────────────────────────────────────────────
 
@@ -285,85 +214,13 @@ app.addEventListener("focusout", (e) => {
   handleFocusout(e as FocusEvent, render);
 });
 
-app.addEventListener("mousemove", (event) => {
-  const target = event.target as HTMLElement;
-  const probe = target.closest("[data-chart-hover='1']") as HTMLElement | null;
-
-  if (!probe) {
-    if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
-      state.chartHoverMarketId = null;
-      state.chartHoverX = null;
-      scheduleChartHoverRender();
-    }
-    return;
-  }
-
-  const marketId = probe.dataset.marketId ?? null;
-  if (!marketId) return;
-  const plotWidth = Number.parseFloat(probe.dataset.plotWidth ?? "100");
-  const plotLeft = Number.parseFloat(probe.dataset.plotLeft ?? "0");
-  const plotRight = Number.parseFloat(probe.dataset.plotRight ?? "100");
-  const widthMax = Number.isFinite(plotWidth) ? plotWidth : 100;
-  const xMin = Number.isFinite(plotLeft) ? plotLeft : 0;
-  const xMax = Number.isFinite(plotRight) ? plotRight : widthMax;
-
-  const rect = probe.getBoundingClientRect();
-  if (rect.width <= 0) return;
-  const relativeX = Math.max(
-    0,
-    Math.min(widthMax, ((event.clientX - rect.left) / rect.width) * widthMax),
-  );
-  const hoverX = Math.max(xMin, Math.min(xMax, relativeX));
-
-  if (
-    state.chartHoverMarketId === marketId &&
-    state.chartHoverX !== null &&
-    Math.abs(state.chartHoverX - hoverX) < 0.06
-  ) {
-    return;
-  }
-
-  state.chartHoverMarketId = marketId;
-  state.chartHoverX = hoverX;
-  scheduleChartHoverRender();
-});
-
-app.addEventListener("mouseleave", () => {
-  if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
-    state.chartHoverMarketId = null;
-    state.chartHoverX = null;
-    scheduleChartHoverRender();
-  }
-});
-
-app.addEventListener("mouseout", (event) => {
-  const from = (event.target as HTMLElement).closest(
-    "[data-chart-hover='1']",
-  ) as HTMLElement | null;
-  if (!from) return;
-  const related = event.relatedTarget as HTMLElement | null;
-  if (related?.closest("[data-chart-hover='1']")) return;
-  if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
-    state.chartHoverMarketId = null;
-    state.chartHoverX = null;
-    scheduleChartHoverRender();
-  }
-});
-
-window.addEventListener("resize", () => {
-  scheduleChartAspectSync();
+setupChartHoverListeners({
+  app,
+  scheduleChartHoverRender,
+  scheduleChartAspectSync,
 });
 
 // ── Timers ───────────────────────────────────────────────────────────
 
 void initApp(render, dismissSplash, updateEstClockLabels);
-setInterval(updateEstClockLabels, 1_000);
-setInterval(() => {
-  if (state.onboardingStep === null) {
-    void syncCurrentHeightFromLwk(
-      currentWalletNetwork(),
-      render,
-      updateEstClockLabels,
-    );
-  }
-}, 60_000);
+startRecurringTimers(render, updateEstClockLabels);
