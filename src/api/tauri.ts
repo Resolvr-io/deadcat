@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AppNetwork,
   AttestationResult,
   BoltzChainSwapCreated,
   BoltzChainSwapPairsInfo,
@@ -19,7 +20,7 @@ import type {
 
 type AppStateResponse = {
   walletStatus: "not_created" | "locked" | "unlocked";
-  networkStatus: { network: string; policyAssetId: string };
+  networkStatus: { network: AppNetwork; policyAssetId: string };
 };
 
 type WalletBalanceResponse = { assets: Record<string, number> };

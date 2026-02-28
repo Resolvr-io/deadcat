@@ -17,7 +17,10 @@ import { handleInput } from "./handlers/input.ts";
 import { handleKeydown } from "./handlers/keydown.ts";
 // Services
 import { refreshMarketsFromStore } from "./services/markets.ts";
-import { syncCurrentHeightFromLwk } from "./services/wallet.ts";
+import {
+  currentWalletNetwork,
+  syncCurrentHeightFromLwk,
+} from "./services/wallet.ts";
 import { app, createWalletData, state } from "./state.ts";
 import type {
   Side,
@@ -358,7 +361,7 @@ setInterval(updateEstClockLabels, 1_000);
 setInterval(() => {
   if (state.onboardingStep === null) {
     void syncCurrentHeightFromLwk(
-      "liquid-testnet",
+      currentWalletNetwork(),
       render,
       updateEstClockLabels,
     );
