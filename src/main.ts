@@ -107,6 +107,11 @@ function scheduleChartAspectSync(): void {
   });
 }
 
+let _savedScrollY = 0;
+document.addEventListener("scroll", () => {
+  _savedScrollY = window.scrollY;
+});
+
 function render(): void {
   if (state.onboardingStep !== null) {
     app.innerHTML = `<div class="min-h-screen text-slate-100 flex items-center justify-center">${renderOnboarding()}</div>`;
@@ -120,7 +125,11 @@ function render(): void {
     </div>
     ${renderNostrEventModal()}
   `;
+  const prevHeight = app.scrollHeight;
+  app.style.minHeight = `${prevHeight}px`;
   app.innerHTML = html;
+  window.scrollTo(0, _savedScrollY);
+  app.style.minHeight = "";
   scheduleChartAspectSync();
 }
 

@@ -124,7 +124,8 @@ export function renderWallet(): string {
                 <label for="wallet-password" class="text-xs font-medium text-slate-400">Encryption Password</label>
                 <p class="mt-0.5 text-[11px] text-slate-500">Used to encrypt your wallet on this device.</p>
               </div>
-              <input id="wallet-password" type="password" maxlength="32" value="${state.walletPassword}" placeholder="Enter a password" onpaste="return false" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+              <input id="wallet-password" type="password" maxlength="32" value="${state.walletPassword}" placeholder="Enter a password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+              <input id="wallet-password-confirm" type="password" maxlength="32" value="${state.walletPasswordConfirm}" placeholder="Confirm password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border ${state.walletPasswordConfirm && state.walletPassword !== state.walletPasswordConfirm ? "border-red-500/50" : "border-slate-700"} bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
               <button data-action="create-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Creating..." : "Create Wallet"}</button>
             </div>
           `
@@ -139,7 +140,8 @@ export function renderWallet(): string {
                 <label for="wallet-password" class="text-xs font-medium text-slate-400">Encryption Password</label>
                 <p class="mt-0.5 text-[11px] text-slate-500">Set a password to encrypt the restored wallet.</p>
               </div>
-              <input id="wallet-password" type="password" maxlength="32" value="${state.walletPassword}" placeholder="Enter a password" onpaste="return false" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+              <input id="wallet-password" type="password" maxlength="32" value="${state.walletPassword}" placeholder="Enter a password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
+              <input id="wallet-password-confirm" type="password" maxlength="32" value="${state.walletPasswordConfirm}" placeholder="Confirm password" autocomplete="new-password" onpaste="return false" class="h-11 w-full rounded-lg border ${state.walletPasswordConfirm && state.walletPassword !== state.walletPasswordConfirm ? "border-red-500/50" : "border-slate-700"} bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50" ${loading ? "disabled" : ""} />
               <button data-action="restore-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed" ${loading ? "disabled" : ""}>${loading ? "Restoring..." : "Restore Wallet"}</button>
             </div>
           `

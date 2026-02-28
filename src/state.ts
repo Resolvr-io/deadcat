@@ -133,6 +133,7 @@ export const state: {
   walletError: string;
   walletLoading: boolean;
   walletPassword: string;
+  walletPasswordConfirm: string;
   walletRestoreMnemonic: string;
   walletShowRestore: boolean;
   walletModal: "none" | "receive" | "send";
@@ -195,6 +196,7 @@ export const state: {
   onboardingNostrDone: boolean;
   onboardingWalletMode: "create" | "restore" | "nostr-restore";
   onboardingWalletPassword: string;
+  onboardingWalletPasswordConfirm: string;
   onboardingWalletMnemonic: string;
   onboardingError: string;
   onboardingLoading: boolean;
@@ -260,6 +262,7 @@ export const state: {
   walletError: "",
   walletLoading: false,
   walletPassword: "",
+  walletPasswordConfirm: "",
   walletRestoreMnemonic: "",
   walletShowRestore: false,
   walletModal: "none",
@@ -328,6 +331,7 @@ export const state: {
   onboardingNostrDone: false,
   onboardingWalletMode: "create",
   onboardingWalletPassword: "",
+  onboardingWalletPasswordConfirm: "",
   onboardingWalletMnemonic: "",
   onboardingError: "",
   onboardingLoading: false,
