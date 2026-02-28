@@ -1,5 +1,5 @@
 import { OPEN_WALLET_ACTION } from "../actions.ts";
-import { chartSkeleton } from "../components/detail.ts";
+import { chartSkeleton } from "../components/market-chart.ts";
 import { markets, state } from "../state.ts";
 import type { CovenantState, Market, MarketCategory } from "../types.ts";
 import {
