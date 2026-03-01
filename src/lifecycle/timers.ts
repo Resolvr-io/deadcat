@@ -7,9 +7,9 @@ import { state } from "../state.ts";
 export function startRecurringTimers(
   render: () => void,
   updateEstClockLabels: () => void,
-): void {
-  setInterval(updateEstClockLabels, 1_000);
-  setInterval(() => {
+): () => void {
+  const estClockInterval = setInterval(updateEstClockLabels, 1_000);
+  const heightSyncInterval = setInterval(() => {
     if (state.onboardingStep === null) {
       void syncCurrentHeightFromLwk(
         currentWalletNetwork(),
@@ -18,4 +18,9 @@ export function startRecurringTimers(
       );
     }
   }, 60_000);
+
+  return () => {
+    clearInterval(estClockInterval);
+    clearInterval(heightSyncInterval);
+  };
 }
