@@ -35,6 +35,17 @@ let chartHoverRenderRaf: number | null = null;
 const CHART_ASPECT_MIN = 1.2;
 const CHART_ASPECT_MAX = 8;
 const CHART_ASPECT_EPSILON = 0.005;
+type HmrData = {
+  mounted?: boolean;
+  savedScrollY?: number;
+};
+type HotModule = {
+  data: HmrData;
+  accept: () => void;
+  dispose: (cb: (data: HmrData) => void) => void;
+};
+const hotModule = (import.meta as ImportMeta & { hot?: HotModule }).hot;
+const hmrData = (hotModule?.data ?? {}) as HmrData;
 
 function syncChartAspectFromLayout(): void {
   const probes = Array.from(
@@ -103,10 +114,7 @@ function scheduleChartHoverRender(): void {
   });
 }
 
-let _savedScrollY = 0;
-document.addEventListener("scroll", () => {
-  _savedScrollY = window.scrollY;
-});
+let _savedScrollY = hmrData.savedScrollY ?? 0;
 
 function render(): void {
   if (state.onboardingStep !== null) {
@@ -183,41 +191,105 @@ function dismissSplash(): void {
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────
+const cleanups: Array<() => void> = [];
 
-setupTauriSubscriptions(render);
-setupActivityTracking();
+function registerCleanup(cleanup: () => void): void {
+  cleanups.push(cleanup);
+}
 
-// ── Event listeners ──────────────────────────────────────────────────
+function runCleanup(): void {
+  while (cleanups.length > 0) {
+    const cleanup = cleanups.pop();
+    cleanup?.();
+  }
+  if (chartAspectSyncRaf !== null) {
+    cancelAnimationFrame(chartAspectSyncRaf);
+    chartAspectSyncRaf = null;
+  }
+  if (chartHoverRenderRaf !== null) {
+    cancelAnimationFrame(chartHoverRenderRaf);
+    chartHoverRenderRaf = null;
+  }
+}
 
-const clickDeps = {
-  render,
-  openMarket,
-  finishOnboarding: () => finishOnboarding(render, updateEstClockLabels),
-};
+function mountApp(): void {
+  registerCleanup(setupTauriSubscriptions(render));
+  registerCleanup(setupActivityTracking());
 
-app.addEventListener("click", (event) => {
-  void handleClick(event as MouseEvent, clickDeps);
-});
+  // ── Event listeners ──────────────────────────────────────────────────
+  const clickDeps = {
+    render,
+    openMarket,
+    finishOnboarding: () => finishOnboarding(render, updateEstClockLabels),
+  };
 
-app.addEventListener("input", (e) => {
-  handleInput(e, render);
-});
+  const onScroll = (): void => {
+    _savedScrollY = window.scrollY;
+  };
+  document.addEventListener("scroll", onScroll);
+  registerCleanup(() => {
+    document.removeEventListener("scroll", onScroll);
+  });
 
-app.addEventListener("keydown", (e) => {
-  handleKeydown(e as KeyboardEvent, { render });
-});
+  const onClick = (event: Event): void => {
+    void handleClick(event as MouseEvent, clickDeps);
+  };
+  app.addEventListener("click", onClick);
+  registerCleanup(() => {
+    app.removeEventListener("click", onClick);
+  });
 
-app.addEventListener("focusout", (e) => {
-  handleFocusout(e as FocusEvent, render);
-});
+  const onInput = (event: Event): void => {
+    handleInput(event, render);
+  };
+  app.addEventListener("input", onInput);
+  registerCleanup(() => {
+    app.removeEventListener("input", onInput);
+  });
 
-setupChartHoverListeners({
-  app,
-  scheduleChartHoverRender,
-  scheduleChartAspectSync,
-});
+  const onKeydown = (event: Event): void => {
+    handleKeydown(event as KeyboardEvent, { render });
+  };
+  app.addEventListener("keydown", onKeydown);
+  registerCleanup(() => {
+    app.removeEventListener("keydown", onKeydown);
+  });
 
-// ── Timers ───────────────────────────────────────────────────────────
+  const onFocusout = (event: Event): void => {
+    handleFocusout(event as FocusEvent, render);
+  };
+  app.addEventListener("focusout", onFocusout);
+  registerCleanup(() => {
+    app.removeEventListener("focusout", onFocusout);
+  });
 
-void initApp(render, dismissSplash, updateEstClockLabels);
-startRecurringTimers(render, updateEstClockLabels);
+  registerCleanup(
+    setupChartHoverListeners({
+      app,
+      scheduleChartHoverRender,
+      scheduleChartAspectSync,
+    }),
+  );
+
+  // ── Timers ───────────────────────────────────────────────────────────
+  registerCleanup(startRecurringTimers(render, updateEstClockLabels));
+}
+
+mountApp();
+if (hmrData.mounted) {
+  updateEstClockLabels();
+  render();
+  dismissSplash();
+} else {
+  hmrData.mounted = true;
+  void initApp(render, dismissSplash, updateEstClockLabels);
+}
+
+if (hotModule) {
+  hotModule.accept();
+  hotModule.dispose((data: HmrData) => {
+    data.mounted = true;
+    data.savedScrollY = _savedScrollY;
+    runCleanup();
+  });
+}
