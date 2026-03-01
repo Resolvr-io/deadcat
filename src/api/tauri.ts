@@ -7,6 +7,7 @@ import type {
   BoltzLightningReceiveCreated,
   BoltzSubmarineSwapCreated,
   ChainTipResponse,
+  ContractParamsPayload,
   DiscoveredMarket,
   IdentityResponse,
   IssuanceResult,
@@ -95,47 +96,47 @@ export const tauriApi = {
     collateral_per_token: number;
   }) => tauriInvoke<DiscoveredMarket>("create_contract_onchain", { request }),
   issueTokens: (
-    contractParamsJson: string,
+    contractParams: ContractParamsPayload,
     creationTxid: string,
     pairs: number,
   ) =>
     tauriInvoke<IssuanceResult>("issue_tokens", {
-      contractParamsJson,
+      contractParams,
       creationTxid,
       pairs,
     }),
-  cancelTokens: (contractParamsJson: string, pairs: number) =>
+  cancelTokens: (contractParams: ContractParamsPayload, pairs: number) =>
     tauriInvoke<CancelTokensResult>("cancel_tokens", {
-      contractParamsJson,
+      contractParams,
       pairs,
     }),
   resolveMarket: (
-    contractParamsJson: string,
+    contractParams: ContractParamsPayload,
     outcomeYes: boolean,
     oracleSignatureHex: string,
   ) =>
     tauriInvoke<ResolveMarketResult>("resolve_market", {
-      contractParamsJson,
+      contractParams,
       outcomeYes,
       oracleSignatureHex,
     }),
-  redeemTokens: (contractParamsJson: string, tokens: number) =>
+  redeemTokens: (contractParams: ContractParamsPayload, tokens: number) =>
     tauriInvoke<RedeemTokensResult>("redeem_tokens", {
-      contractParamsJson,
+      contractParams,
       tokens,
     }),
   redeemExpired: (
-    contractParamsJson: string,
+    contractParams: ContractParamsPayload,
     tokenAssetHex: string,
     tokens: number,
   ) =>
     tauriInvoke<RedeemTokensResult>("redeem_expired", {
-      contractParamsJson,
+      contractParams,
       tokenAssetHex,
       tokens,
     }),
-  getMarketState: (contractParamsJson: string) =>
-    tauriInvoke<MarketStateResult>("get_market_state", { contractParamsJson }),
+  getMarketState: (contractParams: ContractParamsPayload) =>
+    tauriInvoke<MarketStateResult>("get_market_state", { contractParams }),
   oracleAttest: (marketIdHex: string, outcomeYes: boolean) =>
     tauriInvoke<AttestationResult>("oracle_attest", {
       marketIdHex,

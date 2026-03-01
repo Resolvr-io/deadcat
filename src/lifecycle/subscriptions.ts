@@ -4,6 +4,27 @@ import { createWalletData, state } from "../state.ts";
 import type { WalletTransaction, WalletUtxo } from "../types.ts";
 
 export function setupTauriSubscriptions(render: () => void): void {
+  let marketRefreshInFlight = false;
+  let marketRefreshQueued = false;
+
+  const scheduleMarketRefresh = (): void => {
+    if (marketRefreshInFlight) {
+      marketRefreshQueued = true;
+      return;
+    }
+
+    marketRefreshInFlight = true;
+    void refreshMarketsFromStore()
+      .then(render)
+      .finally(() => {
+        marketRefreshInFlight = false;
+        if (marketRefreshQueued) {
+          marketRefreshQueued = false;
+          scheduleMarketRefresh();
+        }
+      });
+  };
+
   void listen<{
     walletStatus: "not_created" | "locked" | "unlocked";
   }>("app_state_updated", (event) => {
@@ -39,15 +60,11 @@ export function setupTauriSubscriptions(render: () => void): void {
     render();
   });
 
-  void listen("discovery:market", () => {
-    void refreshMarketsFromStore().then(render);
-  });
-
-  void listen("discovery:attestation", () => {
-    void refreshMarketsFromStore().then(render);
-  });
-
-  void listen("discovery:pool", () => {
-    void refreshMarketsFromStore().then(render);
-  });
+  for (const eventName of [
+    "discovery:market",
+    "discovery:attestation",
+    "discovery:pool",
+  ]) {
+    void listen(eventName, scheduleMarketRefresh);
+  }
 }

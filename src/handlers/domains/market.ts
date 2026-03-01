@@ -2,7 +2,7 @@ import { tauriApi } from "../../api/tauri.ts";
 import {
   discoveredToMarket,
   issueTokens,
-  marketToContractParamsJson,
+  marketToContractParams,
 } from "../../services/markets.ts";
 import { refreshWallet } from "../../services/wallet.ts";
 import {
@@ -35,6 +35,7 @@ import {
   setLimitPriceSats,
   stateLabel,
 } from "../../utils/market.ts";
+import { runAsyncAction } from "./async-action.ts";
 import type { ClickDomainContext } from "./context.ts";
 
 function ticketActionAllowed(market: Market, tab: ActionTab): boolean {
@@ -196,7 +197,7 @@ export async function handleMarketDomain(
       );
       if (!confirmed) return;
 
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const result = await tauriApi.oracleAttest(
             market.marketId,
@@ -221,7 +222,7 @@ export async function handleMarketDomain(
         } catch (error) {
           window.alert(`Failed to attest: ${error}`);
         }
-      })();
+      });
       return;
     }
 
@@ -240,10 +241,10 @@ export async function handleMarketDomain(
 
       state.resolutionExecuting = true;
       render();
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const result = await tauriApi.resolveMarket(
-            marketToContractParamsJson(market),
+            marketToContractParams(market),
             outcomeYes,
             oracleSignatureHex,
           );
@@ -262,7 +263,7 @@ export async function handleMarketDomain(
           state.resolutionExecuting = false;
           render();
         }
-      })();
+      });
       return;
     }
 
@@ -273,10 +274,10 @@ export async function handleMarketDomain(
         return;
       }
       showToast("Querying on-chain market state...", "info");
-      (async () => {
+      runAsyncAction(async () => {
         try {
           const result = await tauriApi.getMarketState(
-            marketToContractParamsJson(market),
+            marketToContractParams(market),
           );
           market.state = result.state as CovenantState;
           showToast(`Market state: ${stateLabel(market.state)}`, "success");
@@ -284,7 +285,7 @@ export async function handleMarketDomain(
         } catch (error) {
           showToast(`State query failed: ${error}`, "error");
         }
-      })();
+      });
       return;
     }
 
@@ -532,7 +533,7 @@ export async function handleMarketDomain(
 
         state.marketCreating = true;
         render();
-        (async () => {
+        runAsyncAction(async () => {
           try {
             const result = await tauriApi.createContractOnchain({
               question,
@@ -558,7 +559,7 @@ export async function handleMarketDomain(
             state.marketCreating = false;
             render();
           }
-        })();
+        });
         return;
       }
 
@@ -588,7 +589,7 @@ export async function handleMarketDomain(
           if (!confirmed) return;
 
           showToast(`Issuing ${pairs} pair(s)...`, "info");
-          (async () => {
+          runAsyncAction(async () => {
             try {
               const result = await issueTokens(market, pairs);
               showToast(
@@ -599,7 +600,7 @@ export async function handleMarketDomain(
             } catch (error) {
               showToast(`Issuance failed: ${error}`, "error");
             }
-          })();
+          });
         } else {
           // Sell = Cancel pairs (burn equal YES+NO -> reclaim collateral)
           const position = getPositionContracts(market);
@@ -619,10 +620,10 @@ export async function handleMarketDomain(
           if (!confirmed) return;
 
           showToast(`Cancelling ${actualPairs} pair(s)...`, "info");
-          (async () => {
+          runAsyncAction(async () => {
             try {
               const result = await tauriApi.cancelTokens(
-                marketToContractParamsJson(market),
+                marketToContractParams(market),
                 actualPairs,
               );
               showToast(
@@ -633,7 +634,7 @@ export async function handleMarketDomain(
             } catch (error) {
               showToast(`Cancellation failed: ${error}`, "error");
             }
-          })();
+          });
         }
         return;
       }
@@ -651,7 +652,7 @@ export async function handleMarketDomain(
           `Issuing ${pairs} pair(s) for ${market.question.slice(0, 40)}...`,
           "info",
         );
-        (async () => {
+        runAsyncAction(async () => {
           try {
             const result = await issueTokens(market, pairs);
             showToast(
@@ -661,7 +662,7 @@ export async function handleMarketDomain(
           } catch (error) {
             showToast(`Issuance failed: ${error}`, "error");
           }
-        })();
+        });
         return;
       }
 
@@ -671,10 +672,10 @@ export async function handleMarketDomain(
           `Cancelling ${pairs} pair(s) for ${market.question.slice(0, 40)}...`,
           "info",
         );
-        (async () => {
+        runAsyncAction(async () => {
           try {
             const result = await tauriApi.cancelTokens(
-              marketToContractParamsJson(market),
+              marketToContractParams(market),
               pairs,
             );
             showToast(
@@ -685,7 +686,7 @@ export async function handleMarketDomain(
           } catch (error) {
             showToast(`Cancellation failed: ${error}`, "error");
           }
-        })();
+        });
         return;
       }
 
@@ -695,10 +696,10 @@ export async function handleMarketDomain(
 
         if (paths.redeem) {
           showToast(`Redeeming ${tokens} winning token(s)...`, "info");
-          (async () => {
+          runAsyncAction(async () => {
             try {
               const result = await tauriApi.redeemTokens(
-                marketToContractParamsJson(market),
+                marketToContractParams(market),
                 tokens,
               );
               showToast(
@@ -709,7 +710,7 @@ export async function handleMarketDomain(
             } catch (error) {
               showToast(`Redemption failed: ${error}`, "error");
             }
-          })();
+          });
         } else if (paths.expiryRedeem) {
           // For expiry redemption, determine which token side the user holds
           const yesBalance =
@@ -719,10 +720,10 @@ export async function handleMarketDomain(
             yesBalance > 0 ? market.yesAssetId : market.noAssetId;
 
           showToast(`Redeeming ${tokens} expired token(s)...`, "info");
-          (async () => {
+          runAsyncAction(async () => {
             try {
               const result = await tauriApi.redeemExpired(
-                marketToContractParamsJson(market),
+                marketToContractParams(market),
                 tokenAssetHex,
                 tokens,
               );
@@ -734,7 +735,7 @@ export async function handleMarketDomain(
             } catch (error) {
               showToast(`Expiry redemption failed: ${error}`, "error");
             }
-          })();
+          });
         } else {
           showToast("No redemption path available for this market", "error");
         }

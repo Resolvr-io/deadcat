@@ -136,6 +136,17 @@ export type PricePoint = {
   r_lbtc: number;
 };
 
+export type ContractParamsPayload = {
+  oracle_public_key: number[];
+  collateral_asset_id: number[];
+  yes_token_asset: number[];
+  no_token_asset: number[];
+  yes_reissuance_token: number[];
+  no_reissuance_token: number[];
+  collateral_per_token: number;
+  expiry_time: number;
+};
+
 export type IssuanceResult = {
   txid: string;
   previous_state: number;

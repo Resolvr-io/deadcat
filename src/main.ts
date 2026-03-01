@@ -204,10 +204,7 @@ app.addEventListener("input", (e) => {
 });
 
 app.addEventListener("keydown", (e) => {
-  handleKeydown(e as KeyboardEvent, {
-    render,
-    openMarket: (id: string) => openMarket(id),
-  });
+  handleKeydown(e as KeyboardEvent, { render });
 });
 
 app.addEventListener("focusout", (e) => {

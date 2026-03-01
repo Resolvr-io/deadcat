@@ -289,6 +289,7 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
 
     // 2. Unlock the wallet via the node (needs node lock)
     let node_state = app_handle.state::<NodeState>();
+    node_state.shutdown_watcher().await;
     let guard = node_state.node.lock().await;
     let node = guard
         .as_ref()

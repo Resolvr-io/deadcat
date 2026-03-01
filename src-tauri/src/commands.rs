@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -11,6 +13,8 @@ use crate::discovery::{
 };
 use crate::state::AppStateManager;
 use crate::{NodeState, NostrAppState};
+
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -57,6 +61,34 @@ async fn bump_revision_and_emit(app: &tauri::AppHandle) -> Result<(), String> {
     .await
     .map_err(|e| format!("task join: {e}"))??;
     Ok(())
+}
+
+async fn run_node_mutation<T, F>(app: &tauri::AppHandle, op: F) -> Result<T, String>
+where
+    F: for<'a> FnOnce(
+        &'a deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>,
+    ) -> BoxFuture<'a, Result<T, String>>,
+{
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let result = op(node).await?;
+    drop(guard);
+
+    bump_revision_and_emit(app).await?;
+    Ok(result)
+}
+
+async fn run_node_query<T, F>(app: &tauri::AppHandle, op: F) -> Result<T, String>
+where
+    F: for<'a> FnOnce(
+        &'a deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>,
+    ) -> BoxFuture<'a, Result<T, String>>,
+{
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    op(node).await
 }
 
 /// Get Nostr keys and a connected client from the node.
@@ -161,6 +193,10 @@ async fn construct_and_store_node(
     app: &tauri::AppHandle,
     keys: nostr_sdk::Keys,
 ) -> Result<(), String> {
+    // Replacing identity should always tear down the previous chain watcher.
+    let node_state = app.state::<NodeState>();
+    node_state.shutdown_watcher().await;
+
     let (sdk_network, store_arc) = {
         let manager = app.state::<Mutex<AppStateManager>>();
         let mut mgr = manager
@@ -194,11 +230,9 @@ async fn construct_and_store_node(
     let mut snapshot_rx = node.subscribe_snapshot();
 
     // Cancel any previous periodic reconciliation task
-    let node_state = app.state::<NodeState>();
     if let Some(handle) = node_state.reconcile_task.lock().await.take() {
         handle.abort();
     }
-
     // Replace any existing node (drops old node if any)
     let mut guard = node_state.node.lock().await;
     *guard = Some(node);
@@ -420,9 +454,11 @@ pub async fn export_nostr_nsec(app: tauri::AppHandle) -> Result<String, String> 
 
 #[tauri::command]
 pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> {
+    let node_state = app.state::<NodeState>();
+    node_state.shutdown_watcher().await;
+
     // Lock wallet and drop node
     {
-        let node_state = app.state::<NodeState>();
         let mut guard = node_state.node.lock().await;
         if let Some(node) = guard.as_ref() {
             node.lock_wallet();
@@ -1021,29 +1057,23 @@ pub struct IssuanceResultResponse {
 /// Issue new YES+NO token pairs by locking collateral.
 #[tauri::command]
 pub async fn issue_tokens(
-    contract_params_json: String,
+    contract_params: deadcat_sdk::PredictionMarketParams,
     creation_txid: String,
     pairs: u64,
     app: tauri::AppHandle,
 ) -> Result<IssuanceResultResponse, String> {
-    let params: deadcat_sdk::PredictionMarketParams =
-        serde_json::from_str(&contract_params_json)
-            .map_err(|e| format!("invalid contract params: {e}"))?;
-
     let txid: lwk_wollet::elements::Txid = creation_txid
         .parse()
         .map_err(|e| format!("invalid txid: {e}"))?;
 
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let result = node
-        .issue_tokens(params, txid, pairs, 500)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    drop(guard);
-
-    bump_revision_and_emit(&app).await?;
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.issue_tokens(contract_params, txid, pairs, 500)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
 
     Ok(IssuanceResultResponse {
         txid: result.txid.to_string(),
@@ -1069,24 +1099,18 @@ pub struct CancellationResultResponse {
 /// Cancel paired YES+NO tokens back into collateral.
 #[tauri::command]
 pub async fn cancel_tokens(
-    contract_params_json: String,
+    contract_params: deadcat_sdk::PredictionMarketParams,
     pairs: u64,
     app: tauri::AppHandle,
 ) -> Result<CancellationResultResponse, String> {
-    let params: deadcat_sdk::PredictionMarketParams =
-        serde_json::from_str(&contract_params_json)
-            .map_err(|e| format!("invalid contract params: {e}"))?;
-
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let result = node
-        .cancel_tokens(params, pairs, 500)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    drop(guard);
-
-    bump_revision_and_emit(&app).await?;
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.cancel_tokens(contract_params, pairs, 500)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
 
     Ok(CancellationResultResponse {
         txid: result.txid.to_string(),
@@ -1112,30 +1136,24 @@ pub struct ResolutionResultResponse {
 /// Resolve a market with an oracle signature.
 #[tauri::command]
 pub async fn resolve_market(
-    contract_params_json: String,
+    contract_params: deadcat_sdk::PredictionMarketParams,
     outcome_yes: bool,
     oracle_signature_hex: String,
     app: tauri::AppHandle,
 ) -> Result<ResolutionResultResponse, String> {
-    let params: deadcat_sdk::PredictionMarketParams =
-        serde_json::from_str(&contract_params_json)
-            .map_err(|e| format!("invalid contract params: {e}"))?;
-
     let sig_bytes: [u8; 64] = hex::decode(&oracle_signature_hex)
         .map_err(|e| format!("invalid signature hex: {e}"))?
         .try_into()
         .map_err(|_| "oracle signature must be exactly 64 bytes".to_string())?;
 
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let result = node
-        .resolve_market(params, outcome_yes, sig_bytes, 500)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    drop(guard);
-
-    bump_revision_and_emit(&app).await?;
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.resolve_market(contract_params, outcome_yes, sig_bytes, 500)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
 
     Ok(ResolutionResultResponse {
         txid: result.txid.to_string(),
@@ -1160,24 +1178,18 @@ pub struct RedemptionResultResponse {
 /// Redeem winning tokens after market resolution.
 #[tauri::command]
 pub async fn redeem_tokens(
-    contract_params_json: String,
+    contract_params: deadcat_sdk::PredictionMarketParams,
     tokens: u64,
     app: tauri::AppHandle,
 ) -> Result<RedemptionResultResponse, String> {
-    let params: deadcat_sdk::PredictionMarketParams =
-        serde_json::from_str(&contract_params_json)
-            .map_err(|e| format!("invalid contract params: {e}"))?;
-
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let result = node
-        .redeem_tokens(params, tokens, 500)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    drop(guard);
-
-    bump_revision_and_emit(&app).await?;
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.redeem_tokens(contract_params, tokens, 500)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
 
     Ok(RedemptionResultResponse {
         txid: result.txid.to_string(),
@@ -1194,30 +1206,24 @@ pub async fn redeem_tokens(
 /// Redeem tokens via the expiry path after the locktime has passed.
 #[tauri::command]
 pub async fn redeem_expired(
-    contract_params_json: String,
+    contract_params: deadcat_sdk::PredictionMarketParams,
     token_asset_hex: String,
     tokens: u64,
     app: tauri::AppHandle,
 ) -> Result<RedemptionResultResponse, String> {
-    let params: deadcat_sdk::PredictionMarketParams =
-        serde_json::from_str(&contract_params_json)
-            .map_err(|e| format!("invalid contract params: {e}"))?;
-
     let token_asset: [u8; 32] = hex::decode(&token_asset_hex)
         .map_err(|e| format!("invalid token asset hex: {e}"))?
         .try_into()
         .map_err(|_| "token asset must be exactly 32 bytes".to_string())?;
 
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let result = node
-        .redeem_expired(params, token_asset, tokens, 500)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    drop(guard);
-
-    bump_revision_and_emit(&app).await?;
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.redeem_expired(contract_params, token_asset, tokens, 500)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
 
     Ok(RedemptionResultResponse {
         txid: result.txid.to_string(),
@@ -1238,20 +1244,17 @@ pub struct MarketStateResponse {
 
 #[tauri::command]
 pub async fn get_market_state(
-    contract_params_json: String,
+    contract_params: deadcat_sdk::PredictionMarketParams,
     app: tauri::AppHandle,
 ) -> Result<MarketStateResponse, String> {
-    let params: deadcat_sdk::PredictionMarketParams =
-        serde_json::from_str(&contract_params_json)
-            .map_err(|e| format!("invalid contract params: {e}"))?;
-
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let state = node
-        .market_state(params)
-        .await
-        .map_err(|e| format!("{e}"))?;
+    let state = run_node_query(&app, |node| {
+        Box::pin(async move {
+            node.market_state(contract_params)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
 
     Ok(MarketStateResponse {
         state: market_state_to_u8(state),
@@ -1461,4 +1464,53 @@ pub async fn reconcile_nostr(
         node.prepare_reconciliation().map_err(|e| format!("{e}"))?
     };
     Ok(deadcat_sdk::send_reconciliation_events(&client, &events).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_request() -> CreateContractRequest {
+        CreateContractRequest {
+            question: "Will BTC close above $100k this year?".to_string(),
+            description: "Uses a predefined exchange basket at year-end close.".to_string(),
+            category: "Bitcoin".to_string(),
+            resolution_source: "Exchange basket".to_string(),
+            settlement_deadline_unix: 1_800_000_000,
+            collateral_per_token: 5_000,
+        }
+    }
+
+    #[test]
+    fn validate_request_accepts_valid_payload() {
+        let request = valid_request();
+        assert!(validate_request(&request).is_ok());
+    }
+
+    #[test]
+    fn validate_request_rejects_empty_question() {
+        let mut request = valid_request();
+        request.question = "   ".to_string();
+        let error = validate_request(&request).expect_err("request should fail");
+        assert!(error.contains("question"));
+    }
+
+    #[test]
+    fn validate_request_rejects_zero_collateral() {
+        let mut request = valid_request();
+        request.collateral_per_token = 0;
+        let error = validate_request(&request).expect_err("request should fail");
+        assert!(error.contains("collateral_per_token"));
+    }
+
+    #[test]
+    fn parse_iso_datetime_to_unix_parses_valid_datetime() {
+        assert_eq!(parse_iso_datetime_to_unix("1970-01-01 00:00:00"), 0);
+        assert_eq!(parse_iso_datetime_to_unix("1970-01-01 00:00:01"), 1);
+    }
+
+    #[test]
+    fn parse_iso_datetime_to_unix_returns_zero_for_invalid_input() {
+        assert_eq!(parse_iso_datetime_to_unix("not-a-datetime"), 0);
+    }
 }
