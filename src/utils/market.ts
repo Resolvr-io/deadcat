@@ -7,6 +7,7 @@ import {
 } from "../state.ts";
 import type {
   CovenantState,
+  DiscoveredOrder,
   FillEstimate,
   Market,
   OrderbookLevel,
@@ -101,11 +102,65 @@ export function getPositionContracts(market: Market): {
   };
 }
 
+function isMarketOrderForSide(
+  market: Market,
+  side: Side,
+  order: DiscoveredOrder,
+): boolean {
+  const sideAssetId = side === "yes" ? market.yesAssetId : market.noAssetId;
+  return (
+    order.base_asset_id.toLowerCase() === sideAssetId.toLowerCase() &&
+    order.quote_asset_id.toLowerCase() ===
+      market.collateralAssetId.toLowerCase()
+  );
+}
+
+export function getLimitOrdersForSide(
+  market: Market,
+  side: Side,
+): DiscoveredOrder[] {
+  return market.limitOrders
+    .filter((order) => isMarketOrderForSide(market, side, order))
+    .sort((a, b) => b.created_at - a.created_at);
+}
+
+export function getAvailableOrderContracts(order: DiscoveredOrder): number {
+  if (order.price <= 0) return 0;
+  if (order.direction === "sell-base") {
+    return Math.max(0, Math.floor(order.offered_amount));
+  }
+  return Math.max(0, Math.floor(order.offered_amount / order.price));
+}
+
 export function getOrderbookLevels(
   market: Market,
   side: Side,
   intent: TradeIntent,
 ): OrderbookLevel[] {
+  const targetDirection = intent === "open" ? "sell-base" : "sell-quote";
+  const grouped = new Map<number, number>();
+
+  for (const order of getLimitOrdersForSide(market, side)) {
+    if (order.source === "recovered-local") continue;
+    if (order.direction !== targetDirection) continue;
+    if (!Number.isFinite(order.price) || order.price <= 0) continue;
+    const contracts = getAvailableOrderContracts(order);
+    if (contracts <= 0) continue;
+    const priceSats = clampContractPriceSats(order.price);
+    grouped.set(priceSats, (grouped.get(priceSats) ?? 0) + contracts);
+  }
+
+  if (grouped.size > 0) {
+    const sorted = Array.from(grouped.entries())
+      .map(([priceSats, contracts]) => ({ priceSats, contracts }))
+      .sort((a, b) =>
+        intent === "open"
+          ? a.priceSats - b.priceSats
+          : b.priceSats - a.priceSats,
+      );
+    return sorted.slice(0, 8);
+  }
+
   const seed = getMarketSeed(market);
   const base = getBasePriceSats(market, side);
   return Array.from({ length: 8 }).map((_, idx) => {

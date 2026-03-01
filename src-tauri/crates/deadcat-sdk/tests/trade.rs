@@ -306,18 +306,17 @@ async fn trade_buy_yes_via_limit_order() {
     let balance_before = f.node.balance().unwrap();
     assert_eq!(*balance_before.get(&yes_asset).unwrap_or(&0), 10);
 
-    // Create a SellBase limit order: sell 5 YES tokens at 1000 sats/token
+    // Create a SellBase limit order: sell 5 YES tokens at 10 sats/token
     let (_create_result, _event_id) = f
         .node
         .create_limit_order(
             params.yes_token_asset,
             lbtc_bytes,
-            1_000, // price: sats per token
-            5,     // order_amount: 5 YES tokens
+            10, // price: sats per token
+            5,  // order_amount: 5 YES tokens
             OrderDirection::SellBase,
             1,   // min_fill_lots
             1,   // min_remainder_lots
-            0,   // order_index
             500, // fee_amount
             market_id.clone(),
             "sell-yes".to_string(),
@@ -329,7 +328,7 @@ async fn trade_buy_yes_via_limit_order() {
     // Give mock relay time to index the event
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Quote: buy YES tokens with 3000 sats (should get 3 tokens at 1000 sats/token)
+    // Quote: buy YES tokens with 30 sats (should get 3 tokens at 10 sats/token)
     let quote = f
         .node
         .quote_trade(
@@ -337,7 +336,7 @@ async fn trade_buy_yes_via_limit_order() {
             &market_id,
             TradeSide::Yes,
             TradeDirection::Buy,
-            TradeAmount::ExactInput(3_000),
+            TradeAmount::ExactInput(30),
         )
         .await
         .unwrap();
@@ -347,8 +346,8 @@ async fn trade_buy_yes_via_limit_order() {
         &quote.legs[0].source,
         LiquiditySource::LimitOrder { .. }
     ));
-    assert_eq!(quote.total_input, 3_000);
-    assert_eq!(quote.total_output, 3); // 3000 / 1000 = 3 tokens
+    assert_eq!(quote.total_input, 30);
+    assert_eq!(quote.total_output, 3); // 30 / 10 = 3 tokens
 
     // Execute
     let result = f.node.execute_trade(quote, 500, &market_id).await.unwrap();
@@ -375,18 +374,17 @@ async fn trade_stale_quote_fails_on_execute() {
     let lbtc = f.node.policy_asset().await.unwrap();
     let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
 
-    // Create a SellBase limit order: sell 5 YES tokens at 1000 sats/token
+    // Create a SellBase limit order: sell 5 YES tokens at 10 sats/token
     let (_create_result, _event_id) = f
         .node
         .create_limit_order(
             params.yes_token_asset,
             lbtc_bytes,
-            1_000, // price
-            5,     // order_amount
+            10, // price
+            5,  // order_amount
             OrderDirection::SellBase,
             1,
             1,
-            0,
             500,
             market_id.clone(),
             "sell-yes".to_string(),
@@ -409,7 +407,7 @@ async fn trade_stale_quote_fails_on_execute() {
             &market_id,
             TradeSide::Yes,
             TradeDirection::Buy,
-            TradeAmount::ExactInput(3_000),
+            TradeAmount::ExactInput(30),
         )
         .await
         .unwrap();
@@ -421,7 +419,7 @@ async fn trade_stale_quote_fails_on_execute() {
             &market_id,
             TradeSide::Yes,
             TradeDirection::Buy,
-            TradeAmount::ExactInput(3_000),
+            TradeAmount::ExactInput(30),
         )
         .await
         .unwrap();
@@ -515,12 +513,11 @@ async fn trade_buy_yes_combined_pool_and_order() {
         .create_limit_order(
             params.yes_token_asset,
             lbtc_bytes,
-            5_000,
+            50,
             3,
             OrderDirection::SellBase,
             1,
             1,
-            0,
             500,
             market_id.clone(),
             "sell-yes".to_string(),
@@ -593,19 +590,18 @@ async fn trade_sell_yes_via_limit_order() {
     let yes_before = *balance_before.get(&yes_asset).unwrap_or(&0);
     assert_eq!(yes_before, 10);
 
-    // Create a SellQuote limit order: maker offers 5000 sats at 1000 sats/token
+    // Create a SellQuote limit order: maker offers 50 sats at 10 sats/token
     // (maker is buying up to 5 YES tokens)
     let (_create_result, _event_id) = f
         .node
         .create_limit_order(
             params.yes_token_asset,
             lbtc_bytes,
-            1_000, // price: sats per token
-            5_000, // order_amount: 5000 sats locked (buys up to 5 tokens)
+            10, // price: sats per token
+            50, // order_amount: 50 sats locked (buys up to 5 tokens)
             OrderDirection::SellQuote,
             1,   // min_fill_lots
             1,   // min_remainder_lots
-            0,   // order_index
             500, // fee_amount
             market_id.clone(),
             "buy-yes".to_string(),
@@ -616,7 +612,7 @@ async fn trade_sell_yes_via_limit_order() {
     f.mine_and_sync().await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Quote: sell 3 YES tokens → should receive 3000 sats
+    // Quote: sell 3 YES tokens -> should receive 30 sats.
     let quote = f
         .node
         .quote_trade(
@@ -635,7 +631,7 @@ async fn trade_sell_yes_via_limit_order() {
         LiquiditySource::LimitOrder { .. }
     ));
     assert_eq!(quote.total_input, 3); // 3 tokens sent
-    assert_eq!(quote.total_output, 3_000); // 3 * 1000 = 3000 sats received
+    assert_eq!(quote.total_output, 30); // 3 * 10 = 30 sats received
 
     let result = f.node.execute_trade(quote, 500, &market_id).await.unwrap();
 

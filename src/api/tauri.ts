@@ -6,15 +6,23 @@ import type {
   BoltzChainSwapPairsInfo,
   BoltzLightningReceiveCreated,
   BoltzSubmarineSwapCreated,
+  CancelLimitOrderRequestPayload,
+  CancelLimitOrderResult,
   ChainTipResponse,
   ContractParamsPayload,
+  CreateLimitOrderRequestPayload,
+  CreateLimitOrderResult,
   DiscoveredMarket,
+  DiscoveredOrder,
+  FillLimitOrderRequestPayload,
+  FillLimitOrderResult,
   IdentityResponse,
   IssuanceResult,
   NostrBackupStatus,
   NostrProfile,
   PaymentSwap,
   PricePoint,
+  RecoveredOwnLimitOrder,
   WalletNetwork,
   WalletTransaction,
 } from "../types.ts";
@@ -86,6 +94,14 @@ export const tauriApi = {
 
   discoverContracts: () =>
     tauriInvoke<DiscoveredMarket[]>("discover_contracts"),
+  discoverLimitOrders: (marketId?: string) =>
+    tauriInvoke<DiscoveredOrder[]>("discover_limit_orders", {
+      marketId: marketId ?? null,
+    }),
+  recoverOwnLimitOrders: (marketId?: string) =>
+    tauriInvoke<RecoveredOwnLimitOrder[]>("recover_own_limit_orders", {
+      marketId: marketId ?? null,
+    }),
   listContracts: () => tauriInvoke<DiscoveredMarket[]>("list_contracts"),
   createContractOnchain: (request: {
     question: string;
@@ -105,6 +121,12 @@ export const tauriApi = {
       creationTxid,
       pairs,
     }),
+  createLimitOrder: (request: CreateLimitOrderRequestPayload) =>
+    tauriInvoke<CreateLimitOrderResult>("create_limit_order", { request }),
+  cancelLimitOrder: (request: CancelLimitOrderRequestPayload) =>
+    tauriInvoke<CancelLimitOrderResult>("cancel_limit_order", { request }),
+  fillLimitOrder: (request: FillLimitOrderRequestPayload) =>
+    tauriInvoke<FillLimitOrderResult>("fill_limit_order", { request }),
   cancelTokens: (contractParams: ContractParamsPayload, pairs: number) =>
     tauriInvoke<CancelTokensResult>("cancel_tokens", {
       contractParams,

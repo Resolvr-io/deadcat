@@ -22,6 +22,9 @@ biome-fix:
 tsc:
 	pnpm tsc
 
+unit-test:
+	pnpm test:unit
+
 screenshots-install:
 	@if [ -n "${PUPPETEER_EXECUTABLE_PATH-}" ] && [ -x "${PUPPETEER_EXECUTABLE_PATH-}" ]; then :; else pnpm exec puppeteer browsers install chrome; fi
 

@@ -538,6 +538,7 @@ mod tests {
         ScannedOrder {
             discovered: DiscoveredOrder {
                 id: "order-1".to_string(),
+                order_uid: "uid-order-1".to_string(),
                 market_id: "market-1".to_string(),
                 base_asset_id: hex::encode(yes_asset()),
                 quote_asset_id: hex::encode(lbtc_asset()),
@@ -739,6 +740,7 @@ mod tests {
         ScannedOrder {
             discovered: DiscoveredOrder {
                 id: "order-sell-1".to_string(),
+                order_uid: "uid-order-sell-1".to_string(),
                 market_id: "market-1".to_string(),
                 base_asset_id: hex::encode(yes_asset()),
                 quote_asset_id: hex::encode(lbtc_asset()),

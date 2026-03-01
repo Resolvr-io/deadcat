@@ -3,12 +3,15 @@ import { setMarkets } from "../state.ts";
 import type {
   ContractParamsPayload,
   DiscoveredMarket,
+  DiscoveredOrder,
   IssuanceResult,
   Market,
   MarketCategory,
   PricePoint,
+  RecoveredOwnLimitOrder,
 } from "../types.ts";
 import { hexToBytes } from "../utils/crypto.ts";
+import { attachOrdersToMarkets } from "./market-order-merge.ts";
 
 export function discoveredToMarket(d: DiscoveredMarket): Market {
   return {
@@ -46,13 +49,52 @@ export function discoveredToMarket(d: DiscoveredMarket): Market {
     change24h: 0,
     volumeBtc: 0,
     liquidityBtc: 0,
+    limitOrders: [],
   };
+}
+
+async function loadOrdersAndRecovery(mode: "load" | "refresh"): Promise<{
+  orders: DiscoveredOrder[];
+  recoveredOwnOrders: RecoveredOwnLimitOrder[];
+}> {
+  const ordersError =
+    mode === "load"
+      ? "Failed to load limit orders:"
+      : "Failed to refresh limit orders:";
+
+  let orders: DiscoveredOrder[] = [];
+  let recoveredOwnOrders: RecoveredOwnLimitOrder[] = [];
+  try {
+    orders = await tauriApi.discoverLimitOrders();
+  } catch (error) {
+    console.warn(ordersError, error);
+  }
+  try {
+    recoveredOwnOrders = await tauriApi.recoverOwnLimitOrders();
+  } catch (error) {
+    console.warn("Failed to recover own limit orders:", error);
+  }
+  return { orders, recoveredOwnOrders };
+}
+
+async function refreshMarkets(
+  fetchMarkets: () => Promise<DiscoveredMarket[]>,
+  mode: "load" | "refresh",
+): Promise<void> {
+  const stored = await fetchMarkets();
+  const { orders, recoveredOwnOrders } = await loadOrdersAndRecovery(mode);
+  setMarkets(
+    attachOrdersToMarkets(
+      stored.map(discoveredToMarket),
+      orders,
+      recoveredOwnOrders,
+    ),
+  );
 }
 
 export async function loadMarkets(): Promise<void> {
   try {
-    const stored = await tauriApi.discoverContracts();
-    setMarkets(stored.map(discoveredToMarket));
+    await refreshMarkets(() => tauriApi.discoverContracts(), "load");
   } catch (error) {
     console.warn("Failed to load markets:", error);
     setMarkets([]);
@@ -61,8 +103,7 @@ export async function loadMarkets(): Promise<void> {
 
 export async function refreshMarketsFromStore(): Promise<void> {
   try {
-    const stored = await tauriApi.listContracts();
-    setMarkets(stored.map(discoveredToMarket));
+    await refreshMarkets(() => tauriApi.listContracts(), "refresh");
   } catch (error) {
     console.warn("Failed to refresh markets from store:", error);
   }

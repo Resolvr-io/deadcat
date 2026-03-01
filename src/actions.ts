@@ -125,6 +125,8 @@ export const MARKET_ACTION_LIST = [
   "trending-next",
   "step-limit-price",
   "step-trade-contracts",
+  "fill-limit-order",
+  "cancel-limit-order",
   "submit-trade",
   "submit-issue",
   "submit-redeem",

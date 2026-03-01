@@ -40,6 +40,10 @@ The app will open a native desktop window with the frontend dev server on `http:
 - Lightning, Liquid, and Bitcoin payment flows via Boltz swaps
 - Async Tauri commands to prevent UI freezes during wallet sync
 
+## Known Limitations
+
+- Mnemonic-only own-order recovery uses a bounded deterministic scan and can be slower when many candidate assets/markets are present.
+
 ## Nostr Protocol Usage
 
 | NIP | Kind | Purpose |
@@ -94,4 +98,3 @@ just screenshots-update   # Update baseline screenshots
 ```
 
 The Nix dev shell provides Chromium and sets `PUPPETEER_EXECUTABLE_PATH` automatically.
-

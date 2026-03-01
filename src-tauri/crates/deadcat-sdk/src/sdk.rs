@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use hmac::{Hmac, Mac};
 use lwk_common::Signer;
 use lwk_signer::SwSigner;
 use lwk_wollet::elements::confidential::Asset;
@@ -11,8 +12,8 @@ use lwk_wollet::elements::{AssetId, OutPoint, Script, Transaction, TxOut, Txid};
 use lwk_wollet::{
     ElectrumClient, ElectrumUrl, TxBuilder, WalletTx, WalletTxOut, Wollet, WolletDescriptor,
 };
-use rand::RngCore;
 use rand::thread_rng;
+use sha2::{Digest, Sha256};
 
 use crate::assembly::{pset_to_pruning_transaction, txout_secrets_from_unblinded};
 use crate::chain::{ChainBackend, ElectrumBackend};
@@ -43,6 +44,9 @@ use crate::prediction_market::pset::post_resolution_redemption::PostResolutionRe
 use crate::prediction_market::state::MarketState;
 use crate::pset::UnblindedUtxo;
 use crate::taproot::NUMS_KEY_BYTES;
+
+mod recovery;
+pub use recovery::{LimitOrderRecoveryConfig, RecoveredOwnOrder, RecoveredOwnOrderStatus};
 
 /// Result of a successful token issuance.
 #[derive(Debug, Clone)]
@@ -84,6 +88,7 @@ pub struct RedemptionResult {
 /// Result of a successful limit order creation.
 #[derive(Debug, Clone)]
 pub struct CreateOrderResult {
+    pub order_index: u32,
     pub txid: Txid,
     pub order_params: MakerOrderParams,
     pub maker_base_pubkey: [u8; 32],
@@ -91,6 +96,14 @@ pub struct CreateOrderResult {
     pub covenant_address: String,
     pub order_amount: u64,
 }
+
+/// v2 limit-order protocol constants used by deterministic mnemonic recovery.
+pub const LIMIT_ORDER_PRICE_MIN: u64 = 1;
+pub const LIMIT_ORDER_PRICE_MAX: u64 = 99;
+pub const LIMIT_ORDER_MIN_FILL_LOTS_V2: u64 = 1;
+pub const LIMIT_ORDER_MIN_REMAINDER_LOTS_V2: u64 = 1;
+pub const ORDER_INDEX_GAP_LIMIT_DEFAULT: u32 = 256;
+pub const ORDER_RECOVERY_MAX_CANDIDATE_OUTPUTS_DEFAULT: usize = 1_024;
 
 /// Result of a successful limit order fill.
 #[derive(Debug, Clone)]
@@ -1034,6 +1047,66 @@ impl DeadcatSdk {
         Ok(Keypair::from_secret_key(&secp, &secret))
     }
 
+    fn direction_tag(direction: OrderDirection) -> u8 {
+        match direction {
+            OrderDirection::SellBase => 1,
+            OrderDirection::SellQuote => 0,
+        }
+    }
+
+    fn derive_order_nonce_seed(&self) -> Result<[u8; 32]> {
+        let network_path = if self.network.is_mainnet() { 1776 } else { 1 };
+        let path_str = format!("m/86'/{network_path}'/1'");
+        let path: lwk_wollet::bitcoin::bip32::DerivationPath = path_str
+            .parse()
+            .map_err(|e| Error::Signer(format!("invalid nonce seed path: {e}")))?;
+        let derived = self
+            .signer
+            .derive_xprv(&path)
+            .map_err(|e| Error::Signer(format!("derive nonce seed xprv failed: {e:?}")))?;
+        Ok(derived.private_key.secret_bytes())
+    }
+
+    fn canonical_order_params_hash_v2(
+        base_asset_id: &[u8; 32],
+        quote_asset_id: &[u8; 32],
+        price: u64,
+        direction: OrderDirection,
+    ) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"deadcat/order_params/v2");
+        hasher.update(base_asset_id);
+        hasher.update(quote_asset_id);
+        hasher.update(price.to_be_bytes());
+        hasher.update([Self::direction_tag(direction)]);
+        hasher.update(LIMIT_ORDER_MIN_FILL_LOTS_V2.to_be_bytes());
+        hasher.update(LIMIT_ORDER_MIN_REMAINDER_LOTS_V2.to_be_bytes());
+        hasher.update(NUMS_KEY_BYTES);
+        hasher.finalize().into()
+    }
+
+    fn derive_order_nonce_v2(
+        order_nonce_seed: &[u8; 32],
+        order_index: u32,
+        base_asset_id: &[u8; 32],
+        quote_asset_id: &[u8; 32],
+        price: u64,
+        direction: OrderDirection,
+    ) -> [u8; 32] {
+        type HmacSha256 = Hmac<Sha256>;
+        let params_hash =
+            Self::canonical_order_params_hash_v2(base_asset_id, quote_asset_id, price, direction);
+        let mut mac =
+            HmacSha256::new_from_slice(order_nonce_seed).expect("HMAC accepts any key length");
+        mac.update(b"deadcat/order_nonce/v2");
+        mac.update(&order_index.to_be_bytes());
+        mac.update(&params_hash);
+        let bytes = mac.finalize().into_bytes();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&bytes);
+        out
+    }
+
     /// Select a wallet UTXO for a specific asset with enough value, excluding certain outpoints.
     fn select_funding_utxo(
         &self,
@@ -1214,6 +1287,12 @@ impl DeadcatSdk {
     // ── Limit order methods ─────────────────────────────────────────────
 
     /// Create a limit order by locking the offered asset in a maker order covenant.
+    ///
+    /// v2 constraints:
+    /// - quote asset must be policy asset (L-BTC)
+    /// - min_fill_lots = 1
+    /// - min_remainder_lots = 1
+    /// - price in [`LIMIT_ORDER_PRICE_MIN`, `LIMIT_ORDER_PRICE_MAX`]
     #[allow(clippy::too_many_arguments)]
     pub fn create_limit_order(
         &mut self,
@@ -1224,19 +1303,63 @@ impl DeadcatSdk {
         direction: OrderDirection,
         min_fill_lots: u64,
         min_remainder_lots: u64,
-        order_index: u32,
         fee_amount: u64,
     ) -> Result<CreateOrderResult> {
         self.sync()?;
 
-        // 1. Derive maker keypair
+        let policy_bytes = self.policy_asset().into_inner().to_byte_array();
+        if quote_asset_id != policy_bytes {
+            return Err(Error::MakerOrder(
+                "v2 requires quote_asset_id to be policy asset (L-BTC)".to_string(),
+            ));
+        }
+        if min_fill_lots != LIMIT_ORDER_MIN_FILL_LOTS_V2 {
+            return Err(Error::MakerOrder(
+                "v2 requires min_fill_lots = 1".to_string(),
+            ));
+        }
+        if min_remainder_lots != LIMIT_ORDER_MIN_REMAINDER_LOTS_V2 {
+            return Err(Error::MakerOrder(
+                "v2 requires min_remainder_lots = 1".to_string(),
+            ));
+        }
+        if !(LIMIT_ORDER_PRICE_MIN..=LIMIT_ORDER_PRICE_MAX).contains(&price) {
+            return Err(Error::MakerOrder(format!(
+                "v2 price must be in range {}..={}",
+                LIMIT_ORDER_PRICE_MIN, LIMIT_ORDER_PRICE_MAX
+            )));
+        }
+        if order_amount == 0 {
+            return Err(Error::ZeroOrderAmount);
+        }
+
+        // 1. Derive next maker keypair index from recovered v2 orders.
+        let candidate_outputs =
+            self.extract_wallet_candidate_outputs(ORDER_RECOVERY_MAX_CANDIDATE_OUTPUTS_DEFAULT)?;
+        let mut candidate_base_assets = HashSet::<[u8; 32]>::new();
+        candidate_base_assets.insert(base_asset_id);
+        for candidate in &candidate_outputs {
+            if candidate.asset_id != policy_bytes {
+                candidate_base_assets.insert(candidate.asset_id);
+            }
+        }
+        let candidate_base_assets: Vec<[u8; 32]> = candidate_base_assets.into_iter().collect();
+        let order_index = self
+            .next_maker_order_index_with_candidates(&candidate_base_assets, &candidate_outputs)?;
         let maker_keypair = self.derive_maker_keypair(order_index)?;
         let (maker_xonly, _parity) = maker_keypair.x_only_public_key();
         let maker_base_pubkey: [u8; 32] = maker_xonly.serialize();
 
-        // 2. Generate random order nonce
-        let mut order_nonce = [0u8; 32];
-        thread_rng().fill_bytes(&mut order_nonce);
+        // 2. Derive deterministic order nonce from mnemonic seed + params + index.
+        let order_nonce_seed = self.derive_order_nonce_seed()?;
+        let order_nonce = Self::derive_order_nonce_v2(
+            &order_nonce_seed,
+            order_index,
+            &base_asset_id,
+            &quote_asset_id,
+            price,
+            direction,
+        );
 
         // 3. Build MakerOrderParams
         let (params, _p_order) = MakerOrderParams::new(
@@ -1266,7 +1389,6 @@ impl DeadcatSdk {
         let (fee_utxo, change_addr) =
             self.select_fee_utxo_excluding(fee_amount, &[funding_utxo.outpoint])?;
         let change_spk = change_addr.script_pubkey();
-        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
 
         // 7. Build PSET
         let input_utxos = [funding_utxo.clone(), fee_utxo.clone()];
@@ -1284,9 +1406,8 @@ impl DeadcatSdk {
 
         let mut pset = build_create_order_pset(&contract, &create_params)?;
 
-        // 7b. Blind change outputs (inputs are confidential wallet UTXOs).
-        // Output 0 = covenant (explicit), Output 1 = fee (skip).
-        // Outputs 2+ are optional funding/fee change — blind all of them.
+        // 7b. Blind wallet change outputs only.
+        // Output 0 = covenant (explicit), Output 1 = fee (skip), remaining outputs are wallet.
         let num_outputs = pset.n_outputs();
         let blind_indices: Vec<usize> = (2..num_outputs).collect();
         self.blind_order_pset(&mut pset, &input_utxos, &blind_indices, &change_addr)?;
@@ -1300,6 +1421,7 @@ impl DeadcatSdk {
             .to_string();
 
         Ok(CreateOrderResult {
+            order_index,
             txid,
             order_params: params,
             maker_base_pubkey,
@@ -1313,24 +1435,29 @@ impl DeadcatSdk {
     ///
     /// Uses the Simplicity cancel path (Right branch) with a BIP-340 signature
     /// over SHA256(prev_outpoint) to authorize reclaiming funds.
+    /// The required maker key index is resolved deterministically from mnemonic
+    /// key derivation plus order params/outpoint state.
     pub fn cancel_limit_order(
         &mut self,
         params: &MakerOrderParams,
         maker_base_pubkey: [u8; 32],
-        order_index: u32,
+        order_nonce: [u8; 32],
         fee_amount: u64,
     ) -> Result<CancelOrderResult> {
         self.sync()?;
 
-        // 1. Derive maker keypair
-        let maker_keypair = self.derive_maker_keypair(order_index)?;
+        if params.min_fill_lots != LIMIT_ORDER_MIN_FILL_LOTS_V2
+            || params.min_remainder_lots != LIMIT_ORDER_MIN_REMAINDER_LOTS_V2
+        {
+            return Err(Error::MakerOrder(
+                "cancel_limit_order only supports v2 fixed minimums".to_string(),
+            ));
+        }
 
-        // 2. Compile the contract
+        // 1. Compile the contract and scan for order UTXO.
         let contract = CompiledMakerOrder::new(*params)?;
         let cmr = *contract.cmr();
         let cb_bytes = contract.control_block(&maker_base_pubkey);
-
-        // 3. Compute covenant SPK and scan for order UTXO
         let covenant_spk = contract.script_pubkey(&maker_base_pubkey);
         let covenant_utxos = self.scan_covenant_utxos(&covenant_spk)?;
         let (order_outpoint, order_txout) = covenant_utxos
@@ -1338,8 +1465,30 @@ impl DeadcatSdk {
             .next()
             .ok_or_else(|| Error::MakerOrder("no UTXO found at order covenant address".into()))?;
 
-        // 4. Convert to UnblindedUtxo (explicit asset, zeroed blinding factors)
+        // 2. Resolve maker key index and verify deterministic nonce.
         let order_value = order_txout.value.explicit().unwrap_or(0);
+        let order_index = self
+            .resolve_order_index(params, maker_base_pubkey, order_value, Some(order_outpoint))?
+            .ok_or_else(|| {
+                Error::MakerOrder("could not resolve maker order index for cancel".to_string())
+            })?;
+        let order_nonce_seed = self.derive_order_nonce_seed()?;
+        let expected_order_nonce = Self::derive_order_nonce_v2(
+            &order_nonce_seed,
+            order_index,
+            &params.base_asset_id,
+            &params.quote_asset_id,
+            params.price,
+            params.direction,
+        );
+        if expected_order_nonce != order_nonce {
+            return Err(Error::MakerOrder(
+                "order nonce does not match deterministic v2 derivation".to_string(),
+            ));
+        }
+        let maker_keypair = self.derive_maker_keypair(order_index)?;
+
+        // 3. Convert to UnblindedUtxo (explicit asset, zeroed blinding factors)
         let order_asset = match params.direction {
             OrderDirection::SellBase => params.base_asset_id,
             OrderDirection::SellQuote => params.quote_asset_id,
@@ -1353,13 +1502,13 @@ impl DeadcatSdk {
             value_blinding_factor: [0u8; 32],
         };
 
-        // 5. Select fee UTXO
+        // 4. Select fee UTXO
         let (fee_utxo, change_addr) =
             self.select_fee_utxo_excluding(fee_amount, &[order_outpoint])?;
         let change_spk = change_addr.script_pubkey();
         let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
 
-        // 6. Build cancel PSET
+        // 5. Build cancel PSET
         let input_utxos = [order_utxo.clone(), fee_utxo.clone()];
 
         let cancel_params = CancelOrderParams {
@@ -1374,7 +1523,7 @@ impl DeadcatSdk {
 
         let mut pset = build_cancel_order_pset(&cancel_params)?;
 
-        // 6b. Blind wallet-destination outputs.
+        // 5b. Blind wallet-destination outputs.
         // Output 0 = refund (blind), Output 1 = fee (skip), Output 2 = fee change (blind).
         let mut blind_indices = vec![0usize]; // refund
         let num_outputs = pset.n_outputs();
@@ -1383,10 +1532,9 @@ impl DeadcatSdk {
         }
         self.blind_order_pset(&mut pset, &input_utxos, &blind_indices, &change_addr)?;
 
-        // 7. Compute maker cancel signature: SHA256(txid || vout) of the order outpoint
+        // 6. Compute maker cancel signature: SHA256(txid || vout) of the order outpoint
         let secp = secp256k1_zkp::Secp256k1::new();
         let sighash = {
-            use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(order_outpoint.txid.to_byte_array());
             hasher.update(order_outpoint.vout.to_be_bytes());
@@ -1397,7 +1545,7 @@ impl DeadcatSdk {
         let sig = secp.sign_schnorr_no_aux_rand(&msg, &maker_keypair);
         let sig_bytes: [u8; 64] = sig.serialize();
 
-        // 8. Attach Simplicity cancel witness to covenant input (input 0)
+        // 7. Attach Simplicity cancel witness to covenant input (input 0)
         {
             use simplicityhl::elements::taproot::ControlBlock;
             use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
@@ -1443,7 +1591,7 @@ impl DeadcatSdk {
                 Some(vec![witness_bytes, program_bytes, cmr_bytes, cb_bytes]);
         }
 
-        // 9. Sign fee input via normal signer
+        // 8. Sign fee input via normal signer
         self.wollet
             .add_details(&mut pset)
             .map_err(|e| Error::Signer(format!("add_details: {}", e)))?;

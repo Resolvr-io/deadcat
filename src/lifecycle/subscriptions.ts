@@ -62,6 +62,7 @@ export function setupTauriSubscriptions(render: () => void): void {
 
   for (const eventName of [
     "discovery:market",
+    "discovery:order",
     "discovery:attestation",
     "discovery:pool",
   ]) {

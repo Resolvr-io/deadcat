@@ -146,6 +146,7 @@ mod tests {
     fn sample_order() -> DiscoveredOrder {
         DiscoveredOrder {
             id: "ord1".into(),
+            order_uid: "uid-ord1".into(),
             market_id: "mkt1".into(),
             base_asset_id: hex32(0x01),
             quote_asset_id: hex32(0x02),

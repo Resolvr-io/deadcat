@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
 
@@ -88,6 +89,7 @@ pub use store_trait::{DiscoveredMarketMetadata, DiscoveryStore, PoolInfo, PoolSn
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderAnnouncement {
     pub version: u8,
+    pub order_uid: String,
     pub params: MakerOrderParams,
     pub market_id: String,
     pub maker_base_pubkey: String,
@@ -101,6 +103,7 @@ pub struct OrderAnnouncement {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredOrder {
     pub id: String,
+    pub order_uid: String,
     pub market_id: String,
     pub base_asset_id: String,
     pub quote_asset_id: String,
@@ -129,9 +132,22 @@ pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     hex::encode(bytes)
 }
 
+/// Deterministically derive a unique order UID for NIP-33 replaceable events.
+pub fn derive_order_uid(market_id: &str, maker_base_pubkey: &str, order_nonce: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"deadcat/order_uid/v1");
+    hasher.update([0x1f]);
+    hasher.update(market_id.as_bytes());
+    hasher.update([0x1f]);
+    hasher.update(maker_base_pubkey.as_bytes());
+    hasher.update([0x1f]);
+    hasher.update(order_nonce.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
 /// Build a Nostr event for a limit order announcement.
 pub fn build_order_event(keys: &Keys, announcement: &OrderAnnouncement) -> Result<Event, String> {
-    let order_uid_hex = &announcement.market_id;
+    let order_uid_hex = &announcement.order_uid;
 
     let content =
         serde_json::to_string(announcement).map_err(|e| format!("failed to serialize: {e}"))?;
@@ -172,10 +188,33 @@ pub fn build_order_filter(market_id_hex: Option<&str>) -> Filter {
     filter
 }
 
+fn event_identifier_tag(event: &Event) -> Option<String> {
+    event.tags.iter().find_map(|tag| {
+        let parts = tag.as_slice();
+        let kind = parts.first()?;
+        if kind != "d" {
+            return None;
+        }
+        parts.get(1).cloned()
+    })
+}
+
 /// Parse a Nostr event into a DiscoveredOrder.
 pub fn parse_order_event(event: &Event) -> Result<DiscoveredOrder, String> {
     let announcement: OrderAnnouncement = serde_json::from_str(&event.content)
         .map_err(|e| format!("failed to parse order announcement: {e}"))?;
+    let expected_order_uid = derive_order_uid(
+        &announcement.market_id,
+        &announcement.maker_base_pubkey,
+        &announcement.order_nonce,
+    );
+    if announcement.order_uid != expected_order_uid {
+        return Err("order_uid does not match deterministic derivation".to_string());
+    }
+    let identifier = event_identifier_tag(event).ok_or("missing NIP-33 identifier tag")?;
+    if identifier != expected_order_uid {
+        return Err("NIP-33 identifier tag does not match derived order_uid".to_string());
+    }
 
     let direction_str = match announcement.params.direction {
         OrderDirection::SellBase => "sell-base",
@@ -184,6 +223,7 @@ pub fn parse_order_event(event: &Event) -> Result<DiscoveredOrder, String> {
 
     Ok(DiscoveredOrder {
         id: event.id.to_hex(),
+        order_uid: announcement.order_uid,
         market_id: announcement.market_id,
         base_asset_id: bytes_to_hex(&announcement.params.base_asset_id),
         quote_asset_id: bytes_to_hex(&announcement.params.quote_asset_id),
@@ -293,6 +333,8 @@ mod tests {
     use crate::taproot::NUMS_KEY_BYTES;
 
     fn test_announcement() -> OrderAnnouncement {
+        let maker_base_pubkey = hex::encode([0xaa; 32]);
+        let order_nonce = hex::encode([0x11; 32]);
         let (params, _) = MakerOrderParams::new(
             [0x01; 32],
             [0xbb; 32],
@@ -306,10 +348,11 @@ mod tests {
         );
         OrderAnnouncement {
             version: 1,
+            order_uid: derive_order_uid("abcd1234", &maker_base_pubkey, &order_nonce),
             params,
             market_id: "abcd1234".to_string(),
-            maker_base_pubkey: hex::encode([0xaa; 32]),
-            order_nonce: hex::encode([0x11; 32]),
+            maker_base_pubkey,
+            order_nonce,
             covenant_address: "tex1qtest".to_string(),
             offered_amount: 100,
             direction_label: "sell-yes".to_string(),
@@ -340,6 +383,35 @@ mod tests {
         assert_eq!(discovered.direction_label, "sell-yes");
         assert_eq!(discovered.offered_amount, 100);
         assert_eq!(discovered.creator_pubkey, keys.public_key().to_hex());
+    }
+
+    #[test]
+    fn parse_rejects_order_uid_mismatch() {
+        let keys = Keys::generate();
+        let mut announcement = test_announcement();
+        announcement.order_uid = "00".repeat(32);
+        let event = build_order_event(&keys, &announcement).unwrap();
+        let err = parse_order_event(&event).unwrap_err();
+        assert!(err.contains("order_uid"));
+    }
+
+    #[test]
+    fn parse_rejects_identifier_mismatch() {
+        let keys = Keys::generate();
+        let announcement = test_announcement();
+        let content = serde_json::to_string(&announcement).unwrap();
+        let event = EventBuilder::new(APP_EVENT_KIND, &content)
+            .tags(vec![
+                Tag::identifier("bad-identifier"),
+                Tag::hashtag(ORDER_TAG),
+                Tag::hashtag(&announcement.market_id),
+                Tag::custom(TagKind::custom("network"), vec![NETWORK_TAG.to_string()]),
+            ])
+            .sign_with_keys(&keys)
+            .unwrap();
+
+        let err = parse_order_event(&event).unwrap_err();
+        assert!(err.contains("identifier"));
     }
 
     #[test]

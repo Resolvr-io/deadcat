@@ -36,7 +36,8 @@ use crate::prediction_market::params::{MarketId, PredictionMarketParams};
 use crate::prediction_market::state::MarketState;
 use crate::sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, DeadcatSdk, FillOrderResult,
-    IssuanceResult, RedemptionResult, ResolutionResult,
+    IssuanceResult, LimitOrderRecoveryConfig, RecoveredOwnOrder, RedemptionResult,
+    ResolutionResult,
 };
 use crate::trade::types::{TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide};
 
@@ -461,7 +462,6 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         direction: OrderDirection,
         min_fill_lots: u64,
         min_remainder_lots: u64,
-        order_index: u32,
         fee_amount: u64,
         market_id: String,
         direction_label: String,
@@ -477,15 +477,20 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                     direction,
                     min_fill_lots,
                     min_remainder_lots,
-                    order_index,
                     fee_amount,
                 )
             })
             .await?;
 
         // 2. Nostr announcement
+        let order_uid = crate::discovery::derive_order_uid(
+            &market_id,
+            &hex::encode(result.maker_base_pubkey),
+            &hex::encode(result.order_nonce),
+        );
         let announcement = OrderAnnouncement {
             version: 1,
+            order_uid,
             params: result.order_params,
             market_id,
             maker_base_pubkey: hex::encode(result.maker_base_pubkey),
@@ -509,11 +514,25 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         &self,
         params: MakerOrderParams,
         maker_pubkey: [u8; 32],
-        order_index: u32,
+        order_nonce: [u8; 32],
         fee_amount: u64,
     ) -> Result<CancelOrderResult, NodeError> {
         self.with_sdk(move |sdk| {
-            sdk.cancel_limit_order(&params, maker_pubkey, order_index, fee_amount)
+            sdk.cancel_limit_order(&params, maker_pubkey, order_nonce, fee_amount)
+        })
+        .await
+    }
+
+    /// Recover own limit orders from deterministic wallet+chain scan (v2).
+    pub async fn recover_own_limit_orders(
+        &self,
+        candidate_base_assets: Vec<[u8; 32]>,
+    ) -> Result<Vec<RecoveredOwnOrder>, NodeError> {
+        self.with_sdk(move |sdk| {
+            sdk.recover_own_limit_orders(
+                &candidate_base_assets,
+                LimitOrderRecoveryConfig::default(),
+            )
         })
         .await
     }

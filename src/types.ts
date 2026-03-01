@@ -127,6 +127,52 @@ export type DiscoveredMarket = {
   no_price_bps?: number | null;
 };
 
+export type DiscoveredOrder = {
+  id: string;
+  order_uid: string;
+  market_id: string;
+  base_asset_id: string;
+  quote_asset_id: string;
+  price: number;
+  min_fill_lots: number;
+  min_remainder_lots: number;
+  direction: OrderDirection;
+  direction_label: string;
+  maker_base_pubkey: string;
+  order_nonce: string;
+  covenant_address: string;
+  offered_amount: number;
+  cosigner_pubkey: string;
+  maker_receive_spk_hash: string;
+  creator_pubkey: string;
+  created_at: number;
+  nostr_event_json?: string | null;
+  source?: "nostr" | "recovered-local";
+  is_recoverable_by_current_wallet?: boolean;
+  own_order_recovery_status?: OwnOrderRecoveryStatus | null;
+};
+
+export type OwnOrderRecoveryStatus =
+  | "active_confirmed"
+  | "active_mempool"
+  | "spent_or_filled"
+  | "ambiguous";
+
+export type RecoveredOwnLimitOrder = {
+  txid: string;
+  vout: number;
+  outpoint: string;
+  offered_asset_id_hex: string;
+  offered_amount: number;
+  order_index: number | null;
+  maker_base_pubkey_hex: string | null;
+  order_nonce_hex: string | null;
+  order_params: MakerOrderParamsPayload | null;
+  status: OwnOrderRecoveryStatus;
+  ambiguity_count: number;
+  is_cancelable: boolean;
+};
+
 export type PricePoint = {
   block_height: number | null;
   yes_price_bps: number;
@@ -152,6 +198,67 @@ export type IssuanceResult = {
   previous_state: number;
   new_state: number;
   pairs_issued: number;
+};
+
+export type OrderDirection = "sell-base" | "sell-quote";
+
+export type MakerOrderParamsPayload = {
+  base_asset_id_hex: string;
+  quote_asset_id_hex: string;
+  price: number;
+  min_fill_lots: number;
+  min_remainder_lots: number;
+  direction: OrderDirection;
+  maker_receive_spk_hash_hex: string;
+  cosigner_pubkey_hex: string;
+  maker_pubkey_hex: string;
+};
+
+export type CreateLimitOrderRequestPayload = {
+  base_asset_id_hex: string;
+  quote_asset_id_hex: string;
+  price: number;
+  order_amount: number;
+  direction: OrderDirection;
+  min_fill_lots: number;
+  min_remainder_lots: number;
+  market_id: string;
+  direction_label: string;
+};
+
+export type CreateLimitOrderResult = {
+  txid: string;
+  order_event_id: string;
+  order_uid: string;
+  order_params: MakerOrderParamsPayload;
+  maker_base_pubkey_hex: string;
+  order_nonce_hex: string;
+  covenant_address: string;
+  order_amount: number;
+};
+
+export type CancelLimitOrderRequestPayload = {
+  order_params: MakerOrderParamsPayload;
+  maker_base_pubkey_hex: string;
+  order_nonce_hex: string;
+};
+
+export type CancelLimitOrderResult = {
+  txid: string;
+  refunded_amount: number;
+};
+
+export type FillLimitOrderRequestPayload = {
+  order_params: MakerOrderParamsPayload;
+  maker_base_pubkey_hex: string;
+  order_nonce_hex: string;
+  lots_to_fill: number;
+};
+
+export type FillLimitOrderResult = {
+  txid: string;
+  lots_filled: number;
+  is_partial: boolean;
 };
 
 export type IdentityResponse = { pubkey_hex: string; npub: string };
@@ -202,6 +309,7 @@ export type Market = {
   change24h: number;
   volumeBtc: number;
   liquidityBtc: number;
+  limitOrders: DiscoveredOrder[];
 };
 
 export type PathAvailability = {

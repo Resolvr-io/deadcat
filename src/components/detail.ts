@@ -1,3 +1,4 @@
+import { canRenderFillButton } from "../handlers/domains/limit-order-guards.ts";
 import {
   EXECUTION_FEE_RATE,
   SATS_PER_FULL_CONTRACT,
@@ -15,7 +16,9 @@ import {
 import { escapeAttr, escapeHtml } from "../utils/html.ts";
 import {
   clampContractPriceSats,
+  getAvailableOrderContracts,
   getEstimatedSettlementDate,
+  getLimitOrdersForSide,
   getOrderbookLevels,
   getPathAvailability,
   getPositionContracts,
@@ -66,6 +69,7 @@ export function renderActionTicket(market: Market): string {
       : preview.fill.isPartial
         ? "May partially fill"
         : "Expected to fill now";
+  const sideOrders = getLimitOrdersForSide(market, state.selectedSide);
 
   const issueCollateral = state.pairsInput * 2 * market.cptSats;
   const cancelCollateral = state.pairsInput * 2 * market.cptSats;
@@ -217,6 +221,56 @@ export function renderActionTicket(market: Market): string {
       </div>`
           : ""
       }
+      <section class="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+        <div class="mb-2 flex items-center justify-between">
+          <p class="text-xs text-slate-500">Live limit orders · ${state.selectedSide.toUpperCase()}</p>
+          <span class="text-xs text-slate-400">${sideOrders.length}</span>
+        </div>
+        ${
+          sideOrders.length === 0
+            ? `<p class="text-xs text-slate-500">No discovered orders for this side yet.</p>`
+            : `<div class="space-y-1 text-xs">
+          ${sideOrders
+            .slice(0, 12)
+            .map((order) => {
+              const availableContracts = getAvailableOrderContracts(order);
+              const levelLabel =
+                order.direction === "sell-base" ? "Ask" : "Bid";
+              const isLocalOnly = order.source === "recovered-local";
+              const canCancel = order.is_recoverable_by_current_wallet === true;
+              const canFill = canRenderFillButton(order);
+              return `<div class="rounded border border-slate-800 bg-slate-900/50 px-2 py-1.5">
+                <div class="flex items-center justify-between">
+                  <span class="text-slate-300">${levelLabel}${isLocalOnly ? ' <span class="rounded border border-amber-700/60 px-1 py-0.5 text-[10px] text-amber-300">Local only</span>' : ""}</span>
+                  <div class="flex items-center gap-2">
+                    <span class="text-slate-200">${order.price.toLocaleString()} sats</span>
+                    ${
+                      canFill
+                        ? `<button data-action="fill-limit-order" data-order-id="${escapeAttr(order.id)}" class="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 transition hover:border-slate-500 hover:text-slate-100">Fill</button>`
+                        : ""
+                    }
+                    ${
+                      canCancel
+                        ? `<button data-action="cancel-limit-order" data-order-id="${escapeAttr(order.id)}" class="rounded border border-rose-700 px-1.5 py-0.5 text-[10px] text-rose-300 transition hover:border-rose-500 hover:text-rose-200">Cancel</button>`
+                        : ""
+                    }
+                  </div>
+                </div>
+                <div class="mt-0.5 flex items-center justify-between text-[10px] text-slate-500">
+                  <span>${availableContracts.toLocaleString()} contracts</span>
+                  <span class="mono">${escapeHtml(order.maker_base_pubkey.slice(0, 8))}...${escapeHtml(order.maker_base_pubkey.slice(-6))}</span>
+                </div>
+              </div>`;
+            })
+            .join("")}
+          ${
+            sideOrders.length > 12
+              ? `<p class="pt-1 text-[10px] text-slate-500">+${sideOrders.length - 12} more orders</p>`
+              : ""
+          }
+        </div>`
+        }
+      </section>
       <section class="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
         <div class="flex items-center justify-between">
           <p class="text-xs text-slate-500">Advanced actions</p>

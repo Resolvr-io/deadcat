@@ -3,6 +3,7 @@ import {
   discoveredToMarket,
   issueTokens,
   marketToContractParams,
+  refreshMarketsFromStore,
 } from "../../services/markets.ts";
 import { refreshWallet } from "../../services/wallet.ts";
 import {
@@ -14,6 +15,7 @@ import {
 import type {
   ActionTab,
   CovenantState,
+  DiscoveredOrder,
   Market,
   MarketCategory,
   Side,
@@ -26,6 +28,7 @@ import {
   clampContractPriceSats,
   commitLimitPriceDraft,
   commitTradeContractsDraft,
+  getAvailableOrderContracts,
   getBasePriceSats,
   getPathAvailability,
   getPositionContracts,
@@ -37,6 +40,7 @@ import {
 } from "../../utils/market.ts";
 import { runAsyncAction } from "./async-action.ts";
 import type { ClickDomainContext } from "./context.ts";
+import { getFillBlockedReason } from "./limit-order-guards.ts";
 
 function ticketActionAllowed(market: Market, tab: ActionTab): boolean {
   const paths = getPathAvailability(market);
@@ -44,6 +48,20 @@ function ticketActionAllowed(market: Market, tab: ActionTab): boolean {
   if (tab === "issue") return paths.initialIssue || paths.issue;
   if (tab === "redeem") return paths.redeem || paths.expiryRedeem;
   return paths.cancel;
+}
+
+function toMakerOrderPayload(order: DiscoveredOrder) {
+  return {
+    base_asset_id_hex: order.base_asset_id,
+    quote_asset_id_hex: order.quote_asset_id,
+    price: order.price,
+    min_fill_lots: order.min_fill_lots,
+    min_remainder_lots: order.min_remainder_lots,
+    direction: order.direction,
+    maker_receive_spk_hash_hex: order.maker_receive_spk_hash,
+    cosigner_pubkey_hex: order.cosigner_pubkey,
+    maker_pubkey_hex: order.maker_base_pubkey,
+  };
 }
 
 export async function handleMarketDomain(
@@ -510,6 +528,8 @@ export async function handleMarketDomain(
       action === "submit-issue" ||
       action === "submit-redeem" ||
       action === "submit-cancel" ||
+      action === "cancel-limit-order" ||
+      action === "fill-limit-order" ||
       action === "submit-create-market"
     ) {
       if (action === "submit-create-market") {
@@ -564,9 +584,185 @@ export async function handleMarketDomain(
       }
 
       const market = getSelectedMarket();
+      if (action === "cancel-limit-order") {
+        const orderId = actionEl?.dataset.orderId;
+        if (!orderId) {
+          showToast("Missing order id", "error");
+          return;
+        }
+        const order = market.limitOrders.find((item) => item.id === orderId);
+        if (!order) {
+          showToast("Order is no longer available", "error");
+          return;
+        }
+        if (order.is_recoverable_by_current_wallet !== true) {
+          showToast(
+            "This order is not recoverable by the current wallet and cannot be cancelled",
+            "error",
+          );
+          return;
+        }
+
+        const confirmed = window.confirm(
+          `Cancel this order at ${order.price.toLocaleString()} sats?\n\nAny unfilled locked funds will be refunded to your wallet.\n\nProceed?`,
+        );
+        if (!confirmed) return;
+
+        showToast("Cancelling limit order...", "info");
+        runAsyncAction(async () => {
+          try {
+            const result = await tauriApi.cancelLimitOrder({
+              order_params: toMakerOrderPayload(order),
+              maker_base_pubkey_hex: order.maker_base_pubkey,
+              order_nonce_hex: order.order_nonce,
+            });
+            showToast(
+              `Order cancelled! txid: ${result.txid.slice(0, 16)}...`,
+              "success",
+            );
+            await refreshWallet(render);
+            await refreshMarketsFromStore();
+            render();
+          } catch (error) {
+            showToast(`Cancel failed: ${error}`, "error");
+          }
+        });
+        return;
+      }
+
+      if (action === "fill-limit-order") {
+        const orderId = actionEl?.dataset.orderId;
+        if (!orderId) {
+          showToast("Missing order id", "error");
+          return;
+        }
+        const order = market.limitOrders.find((item) => item.id === orderId);
+        if (!order) {
+          showToast("Order is no longer available", "error");
+          return;
+        }
+        const fillBlockedReason = getFillBlockedReason(order);
+        if (fillBlockedReason) {
+          showToast(fillBlockedReason, "error");
+          return;
+        }
+
+        const availableContracts = getAvailableOrderContracts(order);
+        if (availableContracts <= 0) {
+          showToast("Order has no fillable quantity", "error");
+          return;
+        }
+
+        const requestedLots = Math.max(
+          1,
+          Math.floor(getTradePreview(market).requestedContracts),
+        );
+        const lotsToFill = Math.min(requestedLots, availableContracts);
+        const actionLabel =
+          order.direction === "sell-base"
+            ? `buy ${lotsToFill.toLocaleString()} token(s)`
+            : `sell ${lotsToFill.toLocaleString()} token(s)`;
+        const confirmed = window.confirm(
+          `Fill order at ${order.price.toLocaleString()} sats?\n\nThis will ${actionLabel} on ${state.selectedSide.toUpperCase()}.\nLots to fill: ${lotsToFill.toLocaleString()}\n\nProceed?`,
+        );
+        if (!confirmed) return;
+
+        showToast("Filling limit order...", "info");
+        runAsyncAction(async () => {
+          try {
+            const result = await tauriApi.fillLimitOrder({
+              order_params: toMakerOrderPayload(order),
+              maker_base_pubkey_hex: order.maker_base_pubkey,
+              order_nonce_hex: order.order_nonce,
+              lots_to_fill: lotsToFill,
+            });
+            showToast(
+              `Order filled! txid: ${result.txid.slice(0, 16)}...`,
+              "success",
+            );
+            await refreshWallet(render);
+            await refreshMarketsFromStore();
+            render();
+          } catch (error) {
+            showToast(`Fill failed: ${error}`, "error");
+          }
+        });
+        return;
+      }
+
       if (action === "submit-trade") {
         const preview = getTradePreview(market);
         const pairs = Math.max(1, Math.floor(preview.requestedContracts));
+        const paths = getPathAvailability(market);
+
+        if (state.orderType === "limit") {
+          if (!paths.issue) {
+            showToast(
+              "Market is not in a tradeable state for limit orders",
+              "error",
+            );
+            return;
+          }
+
+          const sideAssetId =
+            state.selectedSide === "yes" ? market.yesAssetId : market.noAssetId;
+          const direction =
+            state.tradeIntent === "open" ? "sell-quote" : "sell-base";
+          const orderAmount =
+            direction === "sell-quote" ? pairs * preview.limitPriceSats : pairs;
+          const directionLabel = `${state.tradeIntent === "open" ? "buy" : "sell"}-${state.selectedSide}`;
+
+          if (!Number.isSafeInteger(orderAmount) || orderAmount <= 0) {
+            showToast("Computed order amount is invalid", "error");
+            return;
+          }
+
+          if (state.tradeIntent === "close") {
+            const position = getPositionContracts(market);
+            const available =
+              state.selectedSide === "yes" ? position.yes : position.no;
+            if (pairs > available + 0.0001) {
+              showToast(
+                `Insufficient ${state.selectedSide.toUpperCase()} tokens for this limit order`,
+                "error",
+              );
+              return;
+            }
+          }
+
+          const confirmation =
+            state.tradeIntent === "open"
+              ? `Place limit buy for ${pairs} ${state.selectedSide.toUpperCase()} token(s) at ${preview.limitPriceSats} sats each?\n\nThis posts a resting order and locks ${formatSats(orderAmount)} of quote collateral until filled/cancelled.`
+              : `Place limit sell for ${pairs} ${state.selectedSide.toUpperCase()} token(s) at ${preview.limitPriceSats} sats each?\n\nThis posts a resting order and locks ${pairs.toLocaleString()} token(s) until filled/cancelled.`;
+          if (!window.confirm(confirmation)) return;
+
+          showToast("Placing limit order...", "info");
+          runAsyncAction(async () => {
+            try {
+              const result = await tauriApi.createLimitOrder({
+                base_asset_id_hex: sideAssetId,
+                quote_asset_id_hex: market.collateralAssetId,
+                price: preview.limitPriceSats,
+                order_amount: orderAmount,
+                direction,
+                min_fill_lots: 1,
+                min_remainder_lots: 1,
+                market_id: market.marketId,
+                direction_label: directionLabel,
+              });
+              showToast(
+                `Limit order posted! txid: ${result.txid.slice(0, 16)}...`,
+                "success",
+              );
+              await refreshWallet(render);
+              await refreshMarketsFromStore();
+              render();
+            } catch (error) {
+              showToast(`Limit order failed: ${error}`, "error");
+            }
+          });
+          return;
+        }
 
         if (state.tradeIntent === "open") {
           // Buy = Issue pairs (mint YES+NO tokens, user keeps the side they want)
