@@ -4,10 +4,10 @@ export function setupChartHoverListeners(params: {
   app: HTMLDivElement;
   scheduleChartHoverRender: () => void;
   scheduleChartAspectSync: () => void;
-}): void {
+}): () => void {
   const { app, scheduleChartHoverRender, scheduleChartAspectSync } = params;
 
-  app.addEventListener("mousemove", (event) => {
+  const onMouseMove = (event: MouseEvent): void => {
     const target = event.target as HTMLElement;
     const probe = target.closest(
       "[data-chart-hover='1']",
@@ -50,17 +50,17 @@ export function setupChartHoverListeners(params: {
     state.chartHoverMarketId = marketId;
     state.chartHoverX = hoverX;
     scheduleChartHoverRender();
-  });
+  };
 
-  app.addEventListener("mouseleave", () => {
+  const onMouseLeave = (): void => {
     if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
       state.chartHoverMarketId = null;
       state.chartHoverX = null;
       scheduleChartHoverRender();
     }
-  });
+  };
 
-  app.addEventListener("mouseout", (event) => {
+  const onMouseOut = (event: MouseEvent): void => {
     const from = (event.target as HTMLElement).closest(
       "[data-chart-hover='1']",
     ) as HTMLElement | null;
@@ -72,9 +72,21 @@ export function setupChartHoverListeners(params: {
       state.chartHoverX = null;
       scheduleChartHoverRender();
     }
-  });
+  };
 
-  window.addEventListener("resize", () => {
+  const onResize = (): void => {
     scheduleChartAspectSync();
-  });
+  };
+
+  app.addEventListener("mousemove", onMouseMove);
+  app.addEventListener("mouseleave", onMouseLeave);
+  app.addEventListener("mouseout", onMouseOut);
+  window.addEventListener("resize", onResize);
+
+  return () => {
+    app.removeEventListener("mousemove", onMouseMove);
+    app.removeEventListener("mouseleave", onMouseLeave);
+    app.removeEventListener("mouseout", onMouseOut);
+    window.removeEventListener("resize", onResize);
+  };
 }
