@@ -36,7 +36,9 @@ pub use prediction_market::state::MarketState;
 pub use pset::UnblindedUtxo;
 pub use sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, FillOrderResult, IssuanceResult,
-    PoolCreationResult, PoolLpResult, PoolSwapResult, RedemptionResult, ResolutionResult,
+    LIMIT_ORDER_MIN_FILL_LOTS_V2, LIMIT_ORDER_MIN_REMAINDER_LOTS_V2, LIMIT_ORDER_PRICE_MAX,
+    LIMIT_ORDER_PRICE_MIN, LimitOrderRecoveryConfig, PoolCreationResult, PoolLpResult,
+    PoolSwapResult, RecoveredOwnOrder, RecoveredOwnOrderStatus, RedemptionResult, ResolutionResult,
 };
 
 // Re-export LWK for app-layer use
@@ -93,6 +95,7 @@ pub use discovery::{
     build_attestation_filter,
     build_contract_filter,
     connect_client,
+    derive_order_uid,
     discovered_market_to_contract_params,
     discovered_pool_to_amm_params,
     fetch_announcements,

@@ -460,6 +460,8 @@ pub fn oracle_pubkey_from_keys(keys: &Keys) -> [u8; 32] {
 
 /// Build a test order announcement for a given market ID.
 pub fn test_order_announcement(market_id: &str) -> OrderAnnouncement {
+    let maker_base_pubkey = hex::encode([0xaa; 32]);
+    let order_nonce = hex::encode([0x11; 32]);
     let (params, _) = MakerOrderParams::new(
         [0x01; 32],
         [0xbb; 32],
@@ -473,10 +475,11 @@ pub fn test_order_announcement(market_id: &str) -> OrderAnnouncement {
     );
     OrderAnnouncement {
         version: 1,
+        order_uid: crate::discovery::derive_order_uid(market_id, &maker_base_pubkey, &order_nonce),
         params,
         market_id: market_id.to_string(),
-        maker_base_pubkey: hex::encode([0xaa; 32]),
-        order_nonce: hex::encode([0x11; 32]),
+        maker_base_pubkey,
+        order_nonce,
         covenant_address: "tex1qtest".to_string(),
         offered_amount: 100,
         direction_label: "sell-yes".to_string(),

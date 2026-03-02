@@ -450,6 +450,8 @@ When Nostr discovers a new market or pool, the app-layer event loop:
 
 **Greedy order routing without optimization.** The router fills the cheapest orders first, then routes the remainder to the pool. It doesn't solve for the globally optimal split between orders and pool. This is simpler, predictable, and good enough — the AMM acts as a price floor/ceiling, and orders that beat it are strictly better.
 
+**Mnemonic recovery uses bounded cartesian scanning.** Own-order recovery currently builds a cartesian scan set (`order_index × candidate_base_assets × price_ticks × direction`) before evaluating script matches. This is intentionally bounded in v2 (`ORDER_INDEX_GAP_LIMIT_DEFAULT`, `LIMIT_ORDER_PRICE_MIN/MAX`, `ORDER_RECOVERY_MAX_CANDIDATE_OUTPUTS_DEFAULT`) to keep runtime predictable without protocol metadata. Trade-off: recovery can still be slower for wallets with many candidate assets/markets. Future optimization is streaming/chunked task generation instead of full materialization.
+
 **Single oracle key = Nostr identity key.** The oracle signs attestations with the same key used for Nostr event publishing. This simplifies key management but means the oracle's Nostr identity is its signing identity. FROST aggregate keys are supported for threshold signing.
 
 **512-bit wide arithmetic for LP invariant.** The cubic invariant `(lp + mint)^3 * old_product <= lp^3 * new_product` can overflow u128 for large reserves. Rather than using a bignum library, the SDK implements custom U256 and 512-bit arithmetic. This avoids a dependency and keeps the code self-contained, at the cost of ~100 lines of manual arithmetic.

@@ -1,6 +1,7 @@
 use simplicityhl::elements::{Address, AddressParams, Script};
 use simplicityhl::simplicity::Cmr;
 use simplicityhl::{CompiledProgram, TemplateProgram};
+use std::sync::OnceLock;
 
 use crate::error::{Error, Result};
 
@@ -8,6 +9,17 @@ use super::params::MakerOrderParams;
 use super::taproot;
 
 const CONTRACT_SOURCE: &str = include_str!("../../contract/maker_order.simf");
+
+fn maker_order_template() -> Result<&'static TemplateProgram> {
+    static TEMPLATE: OnceLock<std::result::Result<TemplateProgram, String>> = OnceLock::new();
+    let template = TEMPLATE.get_or_init(|| {
+        TemplateProgram::new(CONTRACT_SOURCE)
+            .map_err(|e| format!("maker order template parse error: {e}"))
+    });
+    template
+        .as_ref()
+        .map_err(|msg| Error::Compilation(msg.clone()))
+}
 
 /// A compiled maker order covenant, ready for address derivation and spending.
 pub struct CompiledMakerOrder {
@@ -19,8 +31,7 @@ pub struct CompiledMakerOrder {
 impl CompiledMakerOrder {
     /// Compile the maker order contract with the given parameters.
     pub fn new(params: MakerOrderParams) -> Result<Self> {
-        let template = TemplateProgram::new(CONTRACT_SOURCE)
-            .map_err(|e| Error::Compilation(format!("maker order template parse error: {e}")))?;
+        let template = maker_order_template()?;
 
         let program = template
             .instantiate(params.build_arguments(), false)

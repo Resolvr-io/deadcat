@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -32,6 +33,21 @@ fn validate_request(request: &CreateContractRequest) -> Result<(), String> {
         return Err("collateral_per_token must be > 0".to_string());
     }
     Ok(())
+}
+
+fn decode_hex32(value: &str, field: &str) -> Result<[u8; 32], String> {
+    hex::decode(value)
+        .map_err(|e| format!("invalid {field}: {e}"))?
+        .try_into()
+        .map_err(|_| format!("{field} must be exactly 32 bytes"))
+}
+
+fn parse_order_direction(direction: &str) -> Result<deadcat_sdk::OrderDirection, String> {
+    match direction {
+        "sell-base" => Ok(deadcat_sdk::OrderDirection::SellBase),
+        "sell-quote" => Ok(deadcat_sdk::OrderDirection::SellQuote),
+        _ => Err("direction must be 'sell-base' or 'sell-quote'".to_string()),
+    }
 }
 
 async fn compute_tip_and_now(
@@ -336,6 +352,55 @@ fn market_state_to_u8(state: deadcat_sdk::MarketState) -> u8 {
         deadcat_sdk::MarketState::Unresolved => 1,
         deadcat_sdk::MarketState::ResolvedYes => 2,
         deadcat_sdk::MarketState::ResolvedNo => 3,
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct MakerOrderParamsPayload {
+    pub base_asset_id_hex: String,
+    pub quote_asset_id_hex: String,
+    pub price: u64,
+    pub min_fill_lots: u64,
+    pub min_remainder_lots: u64,
+    pub direction: String,
+    pub maker_receive_spk_hash_hex: String,
+    pub cosigner_pubkey_hex: String,
+    pub maker_pubkey_hex: String,
+}
+
+impl MakerOrderParamsPayload {
+    fn from_params(params: deadcat_sdk::MakerOrderParams) -> Self {
+        Self {
+            base_asset_id_hex: hex::encode(params.base_asset_id),
+            quote_asset_id_hex: hex::encode(params.quote_asset_id),
+            price: params.price,
+            min_fill_lots: params.min_fill_lots,
+            min_remainder_lots: params.min_remainder_lots,
+            direction: match params.direction {
+                deadcat_sdk::OrderDirection::SellBase => "sell-base".to_string(),
+                deadcat_sdk::OrderDirection::SellQuote => "sell-quote".to_string(),
+            },
+            maker_receive_spk_hash_hex: hex::encode(params.maker_receive_spk_hash),
+            cosigner_pubkey_hex: hex::encode(params.cosigner_pubkey),
+            maker_pubkey_hex: hex::encode(params.maker_pubkey),
+        }
+    }
+
+    fn try_into_params(self) -> Result<deadcat_sdk::MakerOrderParams, String> {
+        Ok(deadcat_sdk::MakerOrderParams {
+            base_asset_id: decode_hex32(&self.base_asset_id_hex, "base_asset_id_hex")?,
+            quote_asset_id: decode_hex32(&self.quote_asset_id_hex, "quote_asset_id_hex")?,
+            price: self.price,
+            min_fill_lots: self.min_fill_lots,
+            min_remainder_lots: self.min_remainder_lots,
+            direction: parse_order_direction(&self.direction)?,
+            maker_receive_spk_hash: decode_hex32(
+                &self.maker_receive_spk_hash_hex,
+                "maker_receive_spk_hash_hex",
+            )?,
+            cosigner_pubkey: decode_hex32(&self.cosigner_pubkey_hex, "cosigner_pubkey_hex")?,
+            maker_pubkey: decode_hex32(&self.maker_pubkey_hex, "maker_pubkey_hex")?,
+        })
     }
 }
 
@@ -820,6 +885,121 @@ pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredM
     list_contracts(app)
 }
 
+#[tauri::command]
+pub async fn discover_limit_orders(
+    market_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<deadcat_sdk::DiscoveredOrder>, String> {
+    run_node_query(&app, |node| {
+        Box::pin(async move {
+            node.fetch_orders(market_id.as_deref())
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RecoveredOwnLimitOrderResponse {
+    pub txid: String,
+    pub vout: u32,
+    pub outpoint: String,
+    pub offered_asset_id_hex: String,
+    pub offered_amount: u64,
+    pub order_index: Option<u32>,
+    pub maker_base_pubkey_hex: Option<String>,
+    pub order_nonce_hex: Option<String>,
+    pub order_params: Option<MakerOrderParamsPayload>,
+    pub status: String,
+    pub ambiguity_count: u32,
+    pub is_cancelable: bool,
+}
+
+fn collect_candidate_base_assets(
+    app: &tauri::AppHandle,
+    market_id: Option<[u8; 32]>,
+) -> Result<Vec<[u8; 32]>, String> {
+    let store_arc = {
+        let state_handle = app.state::<Mutex<AppStateManager>>();
+        let mgr = state_handle
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.store()
+            .cloned()
+            .ok_or_else(|| "Store not initialized".to_string())?
+    };
+
+    let mut store = store_arc
+        .lock()
+        .map_err(|_| "store lock failed".to_string())?;
+    let infos = store
+        .list_markets(&MarketFilter::default())
+        .map_err(|e| format!("list markets: {e}"))?;
+
+    let mut set = HashSet::<[u8; 32]>::new();
+    for info in infos {
+        if let Some(mid) = market_id {
+            if *info.market_id.as_bytes() != mid {
+                continue;
+            }
+        }
+        set.insert(info.params.yes_token_asset);
+        set.insert(info.params.no_token_asset);
+    }
+
+    Ok(set.into_iter().collect())
+}
+
+fn map_recovered_order_status(status: deadcat_sdk::RecoveredOwnOrderStatus) -> String {
+    match status {
+        deadcat_sdk::RecoveredOwnOrderStatus::ActiveConfirmed => "active_confirmed",
+        deadcat_sdk::RecoveredOwnOrderStatus::ActiveMempool => "active_mempool",
+        deadcat_sdk::RecoveredOwnOrderStatus::SpentOrFilled => "spent_or_filled",
+        deadcat_sdk::RecoveredOwnOrderStatus::Ambiguous => "ambiguous",
+    }
+    .to_string()
+}
+
+#[tauri::command]
+pub async fn recover_own_limit_orders(
+    market_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<RecoveredOwnLimitOrderResponse>, String> {
+    let market_id_bytes = match market_id {
+        Some(mid) => Some(decode_hex32(&mid, "market_id")?),
+        None => None,
+    };
+    let candidate_base_assets = collect_candidate_base_assets(&app, market_id_bytes)?;
+
+    let recovered = run_node_query(&app, |node| {
+        Box::pin(async move {
+            node.recover_own_limit_orders(candidate_base_assets)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
+
+    Ok(recovered
+        .into_iter()
+        .map(|o| RecoveredOwnLimitOrderResponse {
+            txid: o.txid.to_string(),
+            vout: o.vout,
+            outpoint: format!("{}:{}", o.outpoint.txid, o.outpoint.vout),
+            offered_asset_id_hex: hex::encode(o.offered_asset_id),
+            offered_amount: o.offered_amount,
+            order_index: o.order_index,
+            maker_base_pubkey_hex: o.maker_base_pubkey.map(hex::encode),
+            order_nonce_hex: o.order_nonce.map(hex::encode),
+            order_params: o.params.map(MakerOrderParamsPayload::from_params),
+            status: map_recovered_order_status(o.status),
+            ambiguity_count: o.ambiguity_count,
+            is_cancelable: o.is_cancelable(),
+        })
+        .collect())
+}
+
 /// Publish a contract to Nostr (Nostr-only mode — no on-chain tx).
 #[tauri::command]
 pub async fn publish_contract(
@@ -1080,6 +1260,212 @@ pub async fn issue_tokens(
         previous_state: result.previous_state as u8,
         new_state: result.new_state as u8,
         pairs_issued: result.pairs_issued,
+    })
+}
+
+// =========================================================================
+// Limit order commands
+// =========================================================================
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CreateLimitOrderRequest {
+    pub base_asset_id_hex: String,
+    pub quote_asset_id_hex: String,
+    pub price: u64,
+    pub order_amount: u64,
+    pub direction: String,
+    pub min_fill_lots: u64,
+    pub min_remainder_lots: u64,
+    pub market_id: String,
+    pub direction_label: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CreateLimitOrderResponse {
+    pub txid: String,
+    pub order_event_id: String,
+    pub order_uid: String,
+    pub order_params: MakerOrderParamsPayload,
+    pub maker_base_pubkey_hex: String,
+    pub order_nonce_hex: String,
+    pub covenant_address: String,
+    pub order_amount: u64,
+}
+
+#[tauri::command]
+pub async fn create_limit_order(
+    request: CreateLimitOrderRequest,
+    app: tauri::AppHandle,
+) -> Result<CreateLimitOrderResponse, String> {
+    if !(deadcat_sdk::LIMIT_ORDER_PRICE_MIN..=deadcat_sdk::LIMIT_ORDER_PRICE_MAX)
+        .contains(&request.price)
+    {
+        return Err(format!(
+            "price must be in range {}..={}",
+            deadcat_sdk::LIMIT_ORDER_PRICE_MIN,
+            deadcat_sdk::LIMIT_ORDER_PRICE_MAX
+        ));
+    }
+    if request.order_amount == 0 {
+        return Err("order_amount must be > 0".to_string());
+    }
+    if request.min_fill_lots != deadcat_sdk::LIMIT_ORDER_MIN_FILL_LOTS_V2 {
+        return Err("v2 requires min_fill_lots = 1".to_string());
+    }
+    if request.min_remainder_lots != deadcat_sdk::LIMIT_ORDER_MIN_REMAINDER_LOTS_V2 {
+        return Err("v2 requires min_remainder_lots = 1".to_string());
+    }
+
+    let base_asset_id = decode_hex32(&request.base_asset_id_hex, "base_asset_id_hex")?;
+    let quote_asset_id = decode_hex32(&request.quote_asset_id_hex, "quote_asset_id_hex")?;
+    let policy_asset = {
+        let state_handle = app.state::<Mutex<AppStateManager>>();
+        let mgr = state_handle
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        let network = mgr
+            .network()
+            .ok_or_else(|| "network not configured".to_string())?;
+        crate::state::to_sdk_network(network)
+            .into_lwk()
+            .policy_asset()
+            .into_inner()
+            .to_byte_array()
+    };
+    if quote_asset_id != policy_asset {
+        return Err("v2 requires quote_asset_id_hex to be policy asset (L-BTC)".to_string());
+    }
+    let direction = parse_order_direction(&request.direction)?;
+
+    let market_id = request.market_id;
+    let market_id_for_uid = market_id.clone();
+    let direction_label = request.direction_label;
+    let order_amount = request.order_amount;
+    let min_fill_lots = request.min_fill_lots;
+    let min_remainder_lots = request.min_remainder_lots;
+    let price = request.price;
+
+    let (result, event_id) = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.create_limit_order(
+                base_asset_id,
+                quote_asset_id,
+                price,
+                order_amount,
+                direction,
+                min_fill_lots,
+                min_remainder_lots,
+                500,
+                market_id,
+                direction_label,
+            )
+            .await
+            .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
+
+    let maker_base_pubkey_hex = hex::encode(result.maker_base_pubkey);
+    let order_nonce_hex = hex::encode(result.order_nonce);
+    let order_uid =
+        deadcat_sdk::derive_order_uid(&market_id_for_uid, &maker_base_pubkey_hex, &order_nonce_hex);
+
+    Ok(CreateLimitOrderResponse {
+        txid: result.txid.to_string(),
+        order_event_id: event_id.to_hex(),
+        order_uid,
+        order_params: MakerOrderParamsPayload::from_params(result.order_params),
+        maker_base_pubkey_hex,
+        order_nonce_hex,
+        covenant_address: result.covenant_address,
+        order_amount: result.order_amount,
+    })
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CancelLimitOrderRequest {
+    pub order_params: MakerOrderParamsPayload,
+    pub maker_base_pubkey_hex: String,
+    pub order_nonce_hex: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CancelLimitOrderResponse {
+    pub txid: String,
+    pub refunded_amount: u64,
+}
+
+#[tauri::command]
+pub async fn cancel_limit_order(
+    request: CancelLimitOrderRequest,
+    app: tauri::AppHandle,
+) -> Result<CancelLimitOrderResponse, String> {
+    let maker_base_pubkey = decode_hex32(&request.maker_base_pubkey_hex, "maker_base_pubkey_hex")?;
+    let order_nonce = decode_hex32(&request.order_nonce_hex, "order_nonce_hex")?;
+    let order_params = request.order_params.try_into_params()?;
+
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.cancel_limit_order(order_params, maker_base_pubkey, order_nonce, 500)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
+
+    Ok(CancelLimitOrderResponse {
+        txid: result.txid.to_string(),
+        refunded_amount: result.refunded_amount,
+    })
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct FillLimitOrderRequest {
+    pub order_params: MakerOrderParamsPayload,
+    pub maker_base_pubkey_hex: String,
+    pub order_nonce_hex: String,
+    pub lots_to_fill: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FillLimitOrderResponse {
+    pub txid: String,
+    pub lots_filled: u64,
+    pub is_partial: bool,
+}
+
+#[tauri::command]
+pub async fn fill_limit_order(
+    request: FillLimitOrderRequest,
+    app: tauri::AppHandle,
+) -> Result<FillLimitOrderResponse, String> {
+    if request.lots_to_fill == 0 {
+        return Err("lots_to_fill must be > 0".to_string());
+    }
+
+    let maker_base_pubkey = decode_hex32(&request.maker_base_pubkey_hex, "maker_base_pubkey_hex")?;
+    let order_nonce = decode_hex32(&request.order_nonce_hex, "order_nonce_hex")?;
+    let order_params = request.order_params.try_into_params()?;
+
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.fill_limit_order(
+                order_params,
+                maker_base_pubkey,
+                order_nonce,
+                request.lots_to_fill,
+                500,
+            )
+            .await
+            .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
+
+    Ok(FillLimitOrderResponse {
+        txid: result.txid.to_string(),
+        lots_filled: result.lots_filled,
+        is_partial: result.is_partial,
     })
 }
 
@@ -1481,6 +1867,22 @@ mod tests {
         }
     }
 
+    fn sample_order_params(
+        direction: deadcat_sdk::OrderDirection,
+    ) -> deadcat_sdk::MakerOrderParams {
+        deadcat_sdk::MakerOrderParams {
+            base_asset_id: [0x11; 32],
+            quote_asset_id: [0x22; 32],
+            price: 42,
+            min_fill_lots: 1,
+            min_remainder_lots: 1,
+            direction,
+            maker_receive_spk_hash: [0x33; 32],
+            cosigner_pubkey: [0x44; 32],
+            maker_pubkey: [0x55; 32],
+        }
+    }
+
     #[test]
     fn validate_request_accepts_valid_payload() {
         let request = valid_request();
@@ -1501,6 +1903,99 @@ mod tests {
         request.collateral_per_token = 0;
         let error = validate_request(&request).expect_err("request should fail");
         assert!(error.contains("collateral_per_token"));
+    }
+
+    #[test]
+    fn decode_hex32_accepts_valid_input() {
+        let value = "aa".repeat(32);
+        let decoded = decode_hex32(&value, "test_field").expect("valid hex32 should parse");
+        assert_eq!(decoded, [0xaa; 32]);
+    }
+
+    #[test]
+    fn decode_hex32_rejects_invalid_hex() {
+        let err = decode_hex32("zz", "test_field").expect_err("invalid hex should fail");
+        assert!(err.contains("invalid test_field"));
+    }
+
+    #[test]
+    fn decode_hex32_rejects_wrong_length() {
+        let err = decode_hex32("aa", "test_field").expect_err("short input should fail");
+        assert!(err.contains("test_field must be exactly 32 bytes"));
+    }
+
+    #[test]
+    fn parse_order_direction_accepts_known_values() {
+        assert_eq!(
+            parse_order_direction("sell-base").expect("sell-base should parse"),
+            deadcat_sdk::OrderDirection::SellBase
+        );
+        assert_eq!(
+            parse_order_direction("sell-quote").expect("sell-quote should parse"),
+            deadcat_sdk::OrderDirection::SellQuote
+        );
+    }
+
+    #[test]
+    fn parse_order_direction_rejects_unknown_value() {
+        let err = parse_order_direction("buy-base").expect_err("unknown direction should fail");
+        assert!(err.contains("direction must be 'sell-base' or 'sell-quote'"));
+    }
+
+    #[test]
+    fn maker_order_params_payload_roundtrip_sell_base() {
+        let expected = sample_order_params(deadcat_sdk::OrderDirection::SellBase);
+        let payload = MakerOrderParamsPayload::from_params(sample_order_params(
+            deadcat_sdk::OrderDirection::SellBase,
+        ));
+        let parsed = payload
+            .try_into_params()
+            .expect("payload should roundtrip to params");
+        assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn maker_order_params_payload_roundtrip_sell_quote() {
+        let expected = sample_order_params(deadcat_sdk::OrderDirection::SellQuote);
+        let payload = MakerOrderParamsPayload::from_params(sample_order_params(
+            deadcat_sdk::OrderDirection::SellQuote,
+        ));
+        let parsed = payload
+            .try_into_params()
+            .expect("payload should roundtrip to params");
+        assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn maker_order_params_payload_rejects_malformed_field() {
+        let mut payload = MakerOrderParamsPayload::from_params(sample_order_params(
+            deadcat_sdk::OrderDirection::SellBase,
+        ));
+        payload.base_asset_id_hex = "abcd".to_string();
+        let err = payload
+            .try_into_params()
+            .expect_err("malformed base_asset_id_hex should fail");
+        assert!(err.contains("base_asset_id_hex must be exactly 32 bytes"));
+    }
+
+    #[test]
+    fn map_recovered_order_status_maps_all_variants() {
+        assert_eq!(
+            map_recovered_order_status(deadcat_sdk::RecoveredOwnOrderStatus::ActiveConfirmed),
+            "active_confirmed"
+        );
+        assert_eq!(
+            map_recovered_order_status(deadcat_sdk::RecoveredOwnOrderStatus::ActiveMempool),
+            "active_mempool"
+        );
+        assert_eq!(
+            map_recovered_order_status(deadcat_sdk::RecoveredOwnOrderStatus::SpentOrFilled),
+            "spent_or_filled"
+        );
+        assert_eq!(
+            map_recovered_order_status(deadcat_sdk::RecoveredOwnOrderStatus::Ambiguous),
+            "ambiguous"
+        );
     }
 
     #[test]
