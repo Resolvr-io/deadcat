@@ -38,7 +38,7 @@ async fn market_announce_discover_roundtrip() {
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
     let params = test_market_params(oracle_pubkey);
     let announcement = ContractAnnouncement {
-        version: 1,
+        version: 2,
         contract_params: params,
         metadata: test_metadata(),
         creation_txid: Some("abc123def456".to_string()),
@@ -125,7 +125,7 @@ async fn subscription_delivers_market_events() {
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
     let params = test_market_params(oracle_pubkey);
     let announcement = ContractAnnouncement {
-        version: 1,
+        version: 2,
         contract_params: params,
         metadata: test_metadata(),
         creation_txid: None,
@@ -198,7 +198,7 @@ async fn store_persistence_on_discovery() {
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
     let params = test_market_params(oracle_pubkey);
     let announcement = ContractAnnouncement {
-        version: 1,
+        version: 2,
         contract_params: params,
         metadata: test_metadata(),
         creation_txid: None,
@@ -238,7 +238,7 @@ async fn attestation_roundtrip() {
 
     // First publish the announcement
     let announcement = ContractAnnouncement {
-        version: 1,
+        version: 2,
         contract_params: params,
         metadata: test_metadata(),
         creation_txid: None,
@@ -292,7 +292,7 @@ async fn duplicate_markets_are_idempotent() {
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
     let params = test_market_params(oracle_pubkey);
     let announcement = ContractAnnouncement {
-        version: 1,
+        version: 2,
         contract_params: params,
         metadata: test_metadata(),
         creation_txid: None,

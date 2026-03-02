@@ -30,14 +30,15 @@ use crate::maker_order::pset::fill_order::{
 use crate::maker_order::witness::serialize_satisfied as serialize_maker_order_satisfied;
 use crate::network::Network;
 use crate::prediction_market::assembly::{
-    CollateralSource, IssuanceAssemblyInputs, assemble_cancellation, assemble_expiry_redemption,
-    assemble_issuance, assemble_oracle_resolve, assemble_post_resolution_redemption,
-    compute_issuance_entropy,
+    CollateralSource, IssuanceAssemblyInputs, assemble_cancellation, assemble_expire_transition,
+    assemble_expiry_redemption, assemble_issuance, assemble_oracle_resolve,
+    assemble_post_resolution_redemption, compute_issuance_entropy,
 };
 use crate::prediction_market::contract::CompiledPredictionMarket;
 use crate::prediction_market::params::PredictionMarketParams;
 use crate::prediction_market::pset::cancellation::CancellationParams;
 use crate::prediction_market::pset::creation::{CreationParams, build_creation_pset};
+use crate::prediction_market::pset::expire_transition::ExpireTransitionParams;
 use crate::prediction_market::pset::expiry_redemption::ExpiryRedemptionParams;
 use crate::prediction_market::pset::oracle_resolve::OracleResolveParams;
 use crate::prediction_market::pset::post_resolution_redemption::PostResolutionRedemptionParams;
@@ -567,11 +568,13 @@ impl DeadcatSdk {
         let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
         let resolved_yes_spk = contract.script_pubkey(MarketState::ResolvedYes);
         let resolved_no_spk = contract.script_pubkey(MarketState::ResolvedNo);
+        let expired_spk = contract.script_pubkey(MarketState::Expired);
 
         let dormant_utxos = self.scan_covenant_utxos(&dormant_spk)?;
         let unresolved_utxos = self.scan_covenant_utxos(&unresolved_spk)?;
         let resolved_yes_utxos = self.scan_covenant_utxos(&resolved_yes_spk)?;
         let resolved_no_utxos = self.scan_covenant_utxos(&resolved_no_spk)?;
+        let expired_utxos = self.scan_covenant_utxos(&expired_spk)?;
 
         if !dormant_utxos.is_empty() {
             Ok((MarketState::Dormant, dormant_utxos))
@@ -581,6 +584,8 @@ impl DeadcatSdk {
             Ok((MarketState::ResolvedYes, resolved_yes_utxos))
         } else if !resolved_no_utxos.is_empty() {
             Ok((MarketState::ResolvedNo, resolved_no_utxos))
+        } else if !expired_utxos.is_empty() {
+            Ok((MarketState::Expired, expired_utxos))
         } else {
             Err(Error::CovenantScan(
                 "no UTXOs found at any covenant addresses — \
@@ -965,10 +970,61 @@ impl DeadcatSdk {
 
     // ── Expiry redemption ────────────────────────────────────────────────
 
+    /// Permissionlessly finalize an unresolved market into the explicit Expired state.
+    fn expire_market(&mut self, params: &PredictionMarketParams, fee_amount: u64) -> Result<Txid> {
+        self.sync()?;
+        let contract = CompiledPredictionMarket::new(*params)?;
+
+        let (current_state, covenant_utxos) = self.scan_market_state(&contract)?;
+        if current_state != MarketState::Unresolved {
+            return Err(Error::NotRedeemable(current_state));
+        }
+
+        let (yes_rt, no_rt, collateral_covenant_utxo) =
+            self.classify_covenant_utxos(&covenant_utxos, params)?;
+
+        let collateral = collateral_covenant_utxo
+            .ok_or_else(|| Error::CovenantScan("collateral UTXO not found at covenant".into()))?;
+
+        let (fee_unblinded, change_addr) = self.select_fee_utxo(fee_amount)?;
+        let change_spk = change_addr.script_pubkey();
+
+        let expire_params = ExpireTransitionParams {
+            yes_reissuance_utxo: yes_rt.clone(),
+            no_reissuance_utxo: no_rt.clone(),
+            collateral_utxo: collateral,
+            fee_amount: fee_unblinded.value,
+            fee_utxo: fee_unblinded,
+            lock_time: params.expiry_time,
+        };
+
+        let blinding_pk = change_addr
+            .blinding_pubkey
+            .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
+
+        let master_blinding_key = self
+            .signer
+            .slip77_master_blinding_key()
+            .map_err(|e| Error::Blinding(format!("slip77 key: {e}")))?;
+
+        let assembled = assemble_expire_transition(
+            &contract,
+            &expire_params,
+            &master_blinding_key,
+            blinding_pk,
+            &change_spk,
+            &yes_rt,
+            &no_rt,
+        )?;
+
+        let tx = self.sign_pset(assembled)?;
+        self.broadcast_and_sync(&tx)
+    }
+
     /// Redeem tokens after market expiry (no oracle resolution).
     ///
-    /// Burns tokens and reclaims 1x collateral_per_token per token.
-    /// Requires the market to still be Unresolved and block height past expiry.
+    /// Burns tokens and reclaims 1x collateral_per_token per token. If the market
+    /// is still Unresolved, this auto-finalizes Unresolved -> Expired first.
     pub fn redeem_expired(
         &mut self,
         params: &PredictionMarketParams,
@@ -979,51 +1035,78 @@ impl DeadcatSdk {
         self.sync()?;
         let contract = CompiledPredictionMarket::new(*params)?;
 
-        let (current_state, covenant_utxos) = self.scan_market_state(&contract)?;
-        if current_state != MarketState::Unresolved {
+        let (mut current_state, mut covenant_utxos) = self.scan_market_state(&contract)?;
+        let mut finalize_txid: Option<Txid> = None;
+
+        if current_state == MarketState::Unresolved {
+            let txid = self.expire_market(params, fee_amount)?;
+            finalize_txid = Some(txid);
+            self.sync()?;
+            let (rescanned_state, rescanned_utxos) = self.scan_market_state(&contract)?;
+            current_state = rescanned_state;
+            covenant_utxos = rescanned_utxos;
+        }
+
+        if current_state != MarketState::Expired {
             return Err(Error::NotRedeemable(current_state));
         }
 
-        let collateral = Self::find_collateral_utxo(&covenant_utxos, params)?;
+        let redemption = (|| -> Result<RedemptionResult> {
+            let collateral = Self::find_collateral_utxo(&covenant_utxos, params)?;
 
-        let cpt = params.collateral_per_token;
-        let payout = tokens_to_burn
-            .checked_mul(cpt)
-            .ok_or(Error::CollateralOverflow)?;
+            let cpt = params.collateral_per_token;
+            let payout = tokens_to_burn
+                .checked_mul(cpt)
+                .ok_or(Error::CollateralOverflow)?;
 
-        let token_utxos = self.find_single_token_utxos(&token_asset, tokens_to_burn)?;
+            let token_utxos = self.find_single_token_utxos(&token_asset, tokens_to_burn)?;
 
-        let (fee_unblinded, change_addr) = self.select_fee_utxo(fee_amount)?;
-        let change_spk = change_addr.script_pubkey();
+            let (fee_unblinded, change_addr) = self.select_fee_utxo(fee_amount)?;
+            let change_spk = change_addr.script_pubkey();
 
-        let expiry_params = ExpiryRedemptionParams {
-            collateral_utxo: collateral,
-            token_utxos,
-            fee_utxo: fee_unblinded,
-            tokens_burned: tokens_to_burn,
-            burn_token_asset: token_asset,
-            fee_amount,
-            payout_destination: change_spk.clone(),
-            fee_change_destination: Some(change_spk.clone()),
-            token_change_destination: Some(change_spk),
-            lock_time: params.expiry_time,
-        };
+            let expiry_params = ExpiryRedemptionParams {
+                collateral_utxo: collateral,
+                token_utxos,
+                fee_utxo: fee_unblinded,
+                tokens_burned: tokens_to_burn,
+                burn_token_asset: token_asset,
+                fee_amount,
+                payout_destination: change_spk.clone(),
+                fee_change_destination: Some(change_spk.clone()),
+                token_change_destination: Some(change_spk),
+                lock_time: params.expiry_time,
+            };
 
-        let blinding_pk = change_addr
-            .blinding_pubkey
-            .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
+            let blinding_pk = change_addr
+                .blinding_pubkey
+                .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
 
-        let assembled = assemble_expiry_redemption(&contract, &expiry_params, blinding_pk)?;
+            let assembled = assemble_expiry_redemption(&contract, &expiry_params, blinding_pk)?;
 
-        let tx = self.sign_pset(assembled)?;
-        let txid = self.broadcast_and_sync(&tx)?;
+            let tx = self.sign_pset(assembled)?;
+            let txid = self.broadcast_and_sync(&tx)?;
 
-        Ok(RedemptionResult {
-            txid,
-            previous_state: current_state,
-            tokens_redeemed: tokens_to_burn,
-            payout_sats: payout,
-        })
+            Ok(RedemptionResult {
+                txid,
+                previous_state: current_state,
+                tokens_redeemed: tokens_to_burn,
+                payout_sats: payout,
+            })
+        })();
+
+        match redemption {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                if let Some(finalized) = finalize_txid {
+                    Err(Error::ExpiryFinalizeThenRedeemFailed {
+                        finalize_txid: finalized.to_string(),
+                        reason: e.to_string(),
+                    })
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     // ── Maker order key derivation ─────────────────────────────────────

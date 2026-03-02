@@ -45,6 +45,9 @@ pub enum PredictionMarketSpendingPath {
     PostResolutionRedemption {
         tokens_burned: u64,
     },
+    ExpireTransition {
+        blinding: AllBlindingFactors,
+    },
     ExpiryRedemption {
         tokens_burned: u64,
         burn_token_asset: [u8; 32],
@@ -62,12 +65,12 @@ fn unit_ty() -> ResolvedType {
     ResolvedType::unit()
 }
 
-/// Build the nested Either PATH value for the 7-path dispatch tree.
+/// Build the nested Either PATH value for the 8-path dispatch tree.
 ///
 /// Tree structure (type):
 ///   Either<
 ///     Either<Either<(),()>, Either<(),()>>,   -- Left side (paths 1-4)
-///     Either<Either<(),()>, ()>                -- Right side (paths 5-7)
+///     Either<Either<(),()>, Either<(),()>>    -- Right side (paths 5-8)
 ///   >
 ///
 /// Values:
@@ -75,59 +78,66 @@ fn unit_ty() -> ResolvedType {
 ///   Left(Left(Right(unit)))      = Path 2: Subsequent Issuance
 ///   Left(Right(Left(unit)))      = Path 3: Oracle Resolve
 ///   Left(Right(Right(unit)))     = Path 4: Post-Resolution Redemption
-///   Right(Left(Left(unit)))      = Path 5: Expiry Redemption
-///   Right(Left(Right(unit)))     = Path 6: Cancellation
-///   Right(Right(unit))           = Path 7: Secondary Covenant Input
+///   Right(Left(Left(unit)))      = Path 5: Expire Transition
+///   Right(Left(Right(unit)))     = Path 6: Expiry Redemption
+///   Right(Right(Left(unit)))     = Path 7: Cancellation
+///   Right(Right(Right(unit)))    = Path 8: Secondary Covenant Input
 fn build_path_value(path: &PredictionMarketSpendingPath) -> Value {
     let u = || Value::unit();
     let ut = unit_ty;
 
     // Type building helpers for the tree structure
     let pair_ty = || ResolvedType::either(ut(), ut()); // Either<(), ()>
-    let left_ty = || ResolvedType::either(pair_ty(), pair_ty()); // Either<Either<(),()>, Either<(),()>>
-    let right_ty = || ResolvedType::either(pair_ty(), ut()); // Either<Either<(),()>, ()>
+    let half_ty = || ResolvedType::either(pair_ty(), pair_ty()); // Either<Either<(),()>, Either<(),()>>
 
     match path {
         PredictionMarketSpendingPath::InitialIssuance { .. } => {
             // Left(Left(Left(unit)))
             let inner = Value::left(u(), ut());
             let inner = Value::left(inner, pair_ty());
-            Value::left(inner, right_ty())
+            Value::left(inner, half_ty())
         }
         PredictionMarketSpendingPath::SubsequentIssuance { .. } => {
             // Left(Left(Right(unit)))
             let inner = Value::right(ut(), u());
             let inner = Value::left(inner, pair_ty());
-            Value::left(inner, right_ty())
+            Value::left(inner, half_ty())
         }
         PredictionMarketSpendingPath::OracleResolve { .. } => {
             // Left(Right(Left(unit)))
             let inner = Value::left(u(), ut());
             let inner = Value::right(pair_ty(), inner);
-            Value::left(inner, right_ty())
+            Value::left(inner, half_ty())
         }
         PredictionMarketSpendingPath::PostResolutionRedemption { .. } => {
             // Left(Right(Right(unit)))
             let inner = Value::right(ut(), u());
             let inner = Value::right(pair_ty(), inner);
-            Value::left(inner, right_ty())
+            Value::left(inner, half_ty())
         }
-        PredictionMarketSpendingPath::ExpiryRedemption { .. } => {
+        PredictionMarketSpendingPath::ExpireTransition { .. } => {
             // Right(Left(Left(unit)))
             let inner = Value::left(u(), ut());
-            let inner = Value::left(inner, ut());
-            Value::right(left_ty(), inner)
+            let inner = Value::left(inner, pair_ty());
+            Value::right(half_ty(), inner)
         }
-        PredictionMarketSpendingPath::Cancellation { .. } => {
+        PredictionMarketSpendingPath::ExpiryRedemption { .. } => {
             // Right(Left(Right(unit)))
             let inner = Value::right(ut(), u());
-            let inner = Value::left(inner, ut());
-            Value::right(left_ty(), inner)
+            let inner = Value::left(inner, pair_ty());
+            Value::right(half_ty(), inner)
+        }
+        PredictionMarketSpendingPath::Cancellation { .. } => {
+            // Right(Right(Left(unit)))
+            let inner = Value::left(u(), ut());
+            let inner = Value::right(pair_ty(), inner);
+            Value::right(half_ty(), inner)
         }
         PredictionMarketSpendingPath::SecondaryCovenantInput => {
-            // Right(Right(unit))
-            let inner = Value::right(pair_ty(), u());
-            Value::right(left_ty(), inner)
+            // Right(Right(Right(unit)))
+            let inner = Value::right(ut(), u());
+            let inner = Value::right(pair_ty(), inner);
+            Value::right(half_ty(), inner)
         }
     }
 }
@@ -154,7 +164,7 @@ fn build_witness_values(path: &PredictionMarketSpendingPath, state: MarketState)
 
     let zero = [0u8; 32];
 
-    // Budget padding witnesses (must match the .simf contract's BUDGET_PAD_A/B/C/D).
+    // Budget padding witnesses (must match the .simf contract's BUDGET_PAD_A..J).
     map.insert(
         WitnessName::from_str_unchecked("BUDGET_PAD_A"),
         u256_val(&zero),
@@ -169,6 +179,30 @@ fn build_witness_values(path: &PredictionMarketSpendingPath, state: MarketState)
     );
     map.insert(
         WitnessName::from_str_unchecked("BUDGET_PAD_D"),
+        u256_val(&zero),
+    );
+    map.insert(
+        WitnessName::from_str_unchecked("BUDGET_PAD_E"),
+        u256_val(&zero),
+    );
+    map.insert(
+        WitnessName::from_str_unchecked("BUDGET_PAD_F"),
+        u256_val(&zero),
+    );
+    map.insert(
+        WitnessName::from_str_unchecked("BUDGET_PAD_G"),
+        u256_val(&zero),
+    );
+    map.insert(
+        WitnessName::from_str_unchecked("BUDGET_PAD_H"),
+        u256_val(&zero),
+    );
+    map.insert(
+        WitnessName::from_str_unchecked("BUDGET_PAD_I"),
+        u256_val(&zero),
+    );
+    map.insert(
+        WitnessName::from_str_unchecked("BUDGET_PAD_J"),
         u256_val(&zero),
     );
 
@@ -214,6 +248,11 @@ fn build_witness_values(path: &PredictionMarketSpendingPath, state: MarketState)
                 WitnessName::from_str_unchecked("PAIRS_BURNED"),
                 Value::u64(0),
             );
+        }
+        PredictionMarketSpendingPath::ExpireTransition { blinding } => {
+            set_blinding_map(&mut map, blinding);
+            set_zero_oracle_map(&mut map);
+            set_zero_redemption_map(&mut map);
         }
         PredictionMarketSpendingPath::ExpiryRedemption {
             tokens_burned,

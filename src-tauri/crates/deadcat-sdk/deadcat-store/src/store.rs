@@ -206,7 +206,7 @@ impl DeadcatStore {
     // ==================== Ingest ====================
 
     /// Ingest a market from its contract parameters. Compiles the contract to derive
-    /// the CMR and 4 state scriptPubKeys. Returns the MarketId.
+    /// the CMR and 5 state scriptPubKeys. Returns the MarketId.
     /// If the market already exists, this is a no-op returning the existing ID.
     pub fn ingest_market(
         &mut self,
@@ -538,25 +538,28 @@ impl DeadcatStore {
 
     // ==================== Chain Sync ====================
 
-    /// Collect all watched scriptPubKeys: 4 per market, 1 per maker order with known pubkey.
+    /// Collect all watched scriptPubKeys: up to 5 per market (empty SPKs skipped),
+    /// and 1 per maker order with known pubkey.
     pub fn watched_script_pubkeys(&mut self) -> crate::Result<Vec<Vec<u8>>> {
         let mut spks = Vec::new();
 
         #[allow(clippy::type_complexity)]
-        let market_rows: Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = markets::table
+        let market_rows: Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = markets::table
             .select((
                 markets::dormant_spk,
                 markets::unresolved_spk,
                 markets::resolved_yes_spk,
                 markets::resolved_no_spk,
+                markets::expired_spk,
             ))
             .load(&mut self.conn)?;
 
-        for (d, u, ry, rn) in market_rows {
-            spks.push(d);
-            spks.push(u);
-            spks.push(ry);
-            spks.push(rn);
+        for (d, u, ry, rn, e) in market_rows {
+            for spk in [d, u, ry, rn, e] {
+                if !spk.is_empty() {
+                    spks.push(spk);
+                }
+            }
         }
 
         let order_spks: Vec<Vec<u8>> = maker_orders::table
@@ -856,6 +859,11 @@ impl DeadcatStore {
                     .set(markets::resolved_no_txid.eq(Some(txid)))
                     .execute(&mut self.conn)?;
             }
+            MarketState::Expired => {
+                diesel::update(markets::table.filter(markets::market_id.eq(&mid_bytes)))
+                    .set(markets::expired_txid.eq(Some(txid)))
+                    .execute(&mut self.conn)?;
+            }
         }
         Ok(())
     }
@@ -1024,23 +1032,28 @@ impl deadcat_sdk::DiscoveryStore for DeadcatStore {
 
     #[allow(clippy::type_complexity)]
     fn get_all_market_spks(&mut self) -> Result<Vec<([u8; 32], Vec<Vec<u8>>)>, String> {
-        let rows: Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = markets::table
+        let rows: Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = markets::table
             .select((
                 markets::market_id,
                 markets::dormant_spk,
                 markets::unresolved_spk,
                 markets::resolved_yes_spk,
                 markets::resolved_no_spk,
+                markets::expired_spk,
             ))
             .load(&mut self.conn)
             .map_err(|e| format!("get_all_market_spks: {e}"))?;
 
         rows.into_iter()
-            .map(|(mid, d, u, ry, rn)| {
+            .map(|(mid, d, u, ry, rn, e)| {
                 let market_id: [u8; 32] = mid
                     .try_into()
                     .map_err(|_| "market_id not 32 bytes".to_string())?;
-                Ok((market_id, vec![d, u, ry, rn]))
+                let spks = [d, u, ry, rn, e]
+                    .into_iter()
+                    .filter(|spk| !spk.is_empty())
+                    .collect::<Vec<_>>();
+                Ok((market_id, spks))
             })
             .collect()
     }
@@ -1099,6 +1112,7 @@ fn sync_market_utxos<C: ChainSource>(
         Vec<u8>,
         Vec<u8>,
         Vec<u8>,
+        Vec<u8>,
         Option<Vec<u8>>,
     )> = markets::table
         .select((
@@ -1107,6 +1121,7 @@ fn sync_market_utxos<C: ChainSource>(
             markets::unresolved_spk,
             markets::resolved_yes_spk,
             markets::resolved_no_spk,
+            markets::expired_spk,
             markets::yes_reissuance_token,
             markets::no_reissuance_token,
             markets::yes_issuance_entropy,
@@ -1119,6 +1134,7 @@ fn sync_market_utxos<C: ChainSource>(
         unresolved,
         resolved_yes,
         resolved_no,
+        expired,
         yes_reissuance_token,
         no_reissuance_token,
         yes_entropy_existing,
@@ -1129,11 +1145,15 @@ fn sync_market_utxos<C: ChainSource>(
             (unresolved, MarketState::Unresolved),
             (resolved_yes, MarketState::ResolvedYes),
             (resolved_no, MarketState::ResolvedNo),
+            (expired, MarketState::Expired),
         ];
 
         let mut needs_entropy = yes_entropy_existing.is_none();
 
         for (spk, state) in &spks_with_state {
+            if spk.is_empty() {
+                continue;
+            }
             let chain_utxos = chain
                 .list_unspent(spk)
                 .map_err(|e| StoreError::Sync(e.to_string()))?;

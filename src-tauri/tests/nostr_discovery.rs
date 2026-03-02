@@ -48,7 +48,7 @@ async fn publish_discover_roundtrip() {
     // Build announcement
     let params = test_params(oracle_pubkey);
     let announcement = ContractAnnouncement {
-        version: 1,
+        version: 2,
         contract_params: params,
         metadata: test_metadata(),
         creation_txid: Some("abc123def456".to_string()),
@@ -113,7 +113,7 @@ async fn oracle_attestation_roundtrip() {
 
     // First publish the announcement
     let announcement = ContractAnnouncement {
-        version: 1,
+        version: 2,
         contract_params: params,
         metadata: test_metadata(),
         creation_txid: None,

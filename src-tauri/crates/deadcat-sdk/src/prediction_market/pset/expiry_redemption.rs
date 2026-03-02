@@ -25,8 +25,8 @@ pub struct ExpiryRedemptionParams {
     pub lock_time: u32,
 }
 
-/// Build the expiry redemption PSET (state 1, post-expiry).
-/// Burns tokens from the Unresolved state after expiry block height.
+/// Build the expiry redemption PSET (state 4, post-expiry).
+/// Burns tokens from the Expired state after expiry block height.
 pub fn build_expiry_redemption_pset(
     contract: &CompiledPredictionMarket,
     params: &ExpiryRedemptionParams,
@@ -42,7 +42,7 @@ pub fn build_expiry_redemption_pset(
     }
 
     let remaining = params.collateral_utxo.value - payout;
-    let state1_spk = covenant_spk(contract, MarketState::Unresolved);
+    let expired_spk = covenant_spk(contract, MarketState::Expired);
 
     let mut pset = new_pset();
 
@@ -58,7 +58,7 @@ pub fn build_expiry_redemption_pset(
             explicit_txout(
                 &contract.params().collateral_asset_id,
                 remaining,
-                &state1_spk,
+                &expired_spk,
             ),
         );
     }

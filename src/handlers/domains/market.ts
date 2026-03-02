@@ -40,6 +40,7 @@ import {
   getSelectedMarket,
   getTradePreview,
   getTrendingMarkets,
+  isExpired,
   resetLimitSellWarningState,
   setLimitPriceSats,
   stateLabel,
@@ -396,8 +397,11 @@ export async function handleMarketDomain(
       const market = getSelectedMarket();
       const outcomeYes = action === "oracle-attest-yes";
       const outcomeLabel = outcomeYes ? "YES" : "NO";
+      const postExpiryWarning = isExpired(market)
+        ? "\n\nWarning: market is past expiry height. Oracle actions are still allowed, but this may conflict with pending/possible expiry finalization."
+        : "";
       const confirmed = window.confirm(
-        `Resolve "${market.question}" as ${outcomeLabel}?\n\nThis publishes a Schnorr signature to Nostr that permanently attests the outcome. This cannot be undone.`,
+        `Resolve "${market.question}" as ${outcomeLabel}?\n\nThis publishes a Schnorr signature to Nostr that permanently attests the outcome. This cannot be undone.${postExpiryWarning}`,
       );
       if (!confirmed) return;
 
@@ -438,8 +442,11 @@ export async function handleMarketDomain(
       }
       const outcomeYes = state.lastAttestationOutcome;
       const oracleSignatureHex = state.lastAttestationSig;
+      const postExpiryWarning = isExpired(market)
+        ? "\n\nWarning: market is past expiry height. Resolution remains permitted, but expiry finalization may race if not yet finalized."
+        : "";
       const confirmed = window.confirm(
-        `Execute on-chain resolution for "${market.question}"?\n\nOutcome: ${outcomeYes ? "YES" : "NO"}\nThis submits a Liquid transaction that transitions the covenant state.`,
+        `Execute on-chain resolution for "${market.question}"?\n\nOutcome: ${outcomeYes ? "YES" : "NO"}\nThis submits a Liquid transaction that transitions the covenant state.${postExpiryWarning}`,
       );
       if (!confirmed) return;
 
@@ -1212,7 +1219,13 @@ export async function handleMarketDomain(
           const tokenAssetHex =
             yesBalance > 0 ? market.yesAssetId : market.noAssetId;
 
-          showToast(`Redeeming ${tokens} expired token(s)...`, "info");
+          const autoFinalize = market.state === 1 && isExpired(market);
+          showToast(
+            autoFinalize
+              ? `Finalizing expiry and redeeming ${tokens} token(s)...`
+              : `Redeeming ${tokens} expired token(s)...`,
+            "info",
+          );
           runAsyncAction(async () => {
             try {
               const result = await tauriApi.redeemExpired(
@@ -1221,7 +1234,7 @@ export async function handleMarketDomain(
                 tokens,
               );
               showToast(
-                `Expired tokens redeemed! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}`,
+                `${autoFinalize ? "Finalize + redeem complete!" : "Expired tokens redeemed!"} txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}`,
                 "success",
               );
               await refreshWallet(render);

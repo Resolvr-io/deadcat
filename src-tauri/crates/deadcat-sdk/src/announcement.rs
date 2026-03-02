@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::prediction_market::params::PredictionMarketParams;
 
+pub const CONTRACT_ANNOUNCEMENT_VERSION: u8 = 2;
+
 /// Off-chain, human-readable fields from the UI create form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContractMetadata {

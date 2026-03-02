@@ -10,13 +10,14 @@ use crate::taproot;
 
 const CONTRACT_SOURCE: &str = include_str!("../../contract/prediction_market.simf");
 
-/// All four covenant addresses for a market.
+/// All five covenant addresses for a market.
 #[derive(Debug, Clone)]
 pub struct MarketAddresses {
     pub dormant: Address,
     pub unresolved: Address,
     pub resolved_yes: Address,
     pub resolved_no: Address,
+    pub expired: Address,
 }
 
 /// A compiled prediction market contract, ready for address derivation and spending.
@@ -125,13 +126,14 @@ impl CompiledPredictionMarket {
         taproot::simplicity_control_block(&self.cmr, state.as_u64())
     }
 
-    /// Compute all four covenant addresses for this market.
+    /// Compute all five covenant addresses for this market.
     pub fn addresses(&self, network: &'static AddressParams) -> MarketAddresses {
         MarketAddresses {
             dormant: self.address(MarketState::Dormant, network),
             unresolved: self.address(MarketState::Unresolved, network),
             resolved_yes: self.address(MarketState::ResolvedYes, network),
             resolved_no: self.address(MarketState::ResolvedNo, network),
+            expired: self.address(MarketState::Expired, network),
         }
     }
 }

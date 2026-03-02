@@ -680,7 +680,7 @@ fn test_expiry_redemption() {
         .redeem_expired(&params, params.yes_token_asset, 5, 500)
         .unwrap();
 
-    assert_eq!(redeem.previous_state, MarketState::Unresolved);
+    assert_eq!(redeem.previous_state, MarketState::Expired);
     assert_eq!(redeem.tokens_redeemed, 5);
     // Expiry gives 1x payout: 5 * 10_000 = 50_000
     assert_eq!(redeem.payout_sats, 50_000);

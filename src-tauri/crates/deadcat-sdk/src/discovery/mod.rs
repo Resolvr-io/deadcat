@@ -290,7 +290,11 @@ pub async fn fetch_announcements(client: &Client) -> Result<Vec<DiscoveredMarket
         match parse_announcement_event(event) {
             Ok(market) => markets.push(market),
             Err(e) => {
-                log::warn!("skipping unparseable announcement {}: {e}", event.id);
+                if e.contains("unsupported contract announcement version") {
+                    log::warn!("skipping market announcement {}: {e}", event.id);
+                } else {
+                    log::warn!("skipping unparseable announcement {}: {e}", event.id);
+                }
             }
         }
     }

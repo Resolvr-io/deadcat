@@ -266,7 +266,11 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
                     markets.push(market);
                 }
                 Err(e) => {
-                    log::warn!("skipping unparseable announcement {}: {e}", event.id);
+                    if e.contains("unsupported contract announcement version") {
+                        log::warn!("skipping market announcement {}: {e}", event.id);
+                    } else {
+                        log::warn!("skipping unparseable announcement {}: {e}", event.id);
+                    }
                 }
             }
         }
@@ -643,10 +647,22 @@ async fn run_subscription_loop<S: DiscoveryStore>(
                 .collect();
 
             if hashtags.iter().any(|t| t == CONTRACT_TAG) {
-                if let Ok(mut market) = parse_announcement_event(&event) {
-                    market.nostr_event_json = serde_json::to_string(&*event).ok();
-                    persist_market_to_store(&store, &market);
-                    let _ = tx.send(DiscoveryEvent::MarketDiscovered(market));
+                match parse_announcement_event(&event) {
+                    Ok(mut market) => {
+                        market.nostr_event_json = serde_json::to_string(&*event).ok();
+                        persist_market_to_store(&store, &market);
+                        let _ = tx.send(DiscoveryEvent::MarketDiscovered(market));
+                    }
+                    Err(e) => {
+                        if e.contains("unsupported contract announcement version") {
+                            log::warn!("skipping market announcement {}: {e}", event.id);
+                        } else {
+                            log::warn!(
+                                "skipping unparseable market announcement {}: {e}",
+                                event.id
+                            );
+                        }
+                    }
                 }
             } else if hashtags.iter().any(|t| t == ORDER_TAG) {
                 if let Ok(mut order) = parse_order_event(&event) {

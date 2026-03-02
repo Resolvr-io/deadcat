@@ -15,7 +15,7 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
 use crate::amm_pool::math::{PoolReserves, implied_probability_bps};
-use crate::announcement::{ContractAnnouncement, ContractMetadata};
+use crate::announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement, ContractMetadata};
 use crate::discovery::config::DiscoveryConfig;
 use crate::discovery::events::DiscoveryEvent;
 use crate::discovery::market::DiscoveredMarket;
@@ -369,7 +369,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
         // 2. Build and publish Nostr announcement
         let announcement = ContractAnnouncement {
-            version: 1,
+            version: CONTRACT_ANNOUNCEMENT_VERSION,
             contract_params: params,
             metadata,
             creation_txid: Some(txid.to_string()),
@@ -1274,7 +1274,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
         let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
 
-        // Subscribe all market SPKs (4 per market)
+        // Subscribe all market SPKs (up to 5 per market; empty entries skipped by store).
         match guard.get_all_market_spks() {
             Ok(markets) => {
                 for (market_id, spks) in markets {

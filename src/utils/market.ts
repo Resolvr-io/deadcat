@@ -26,7 +26,8 @@ export function stateLabel(value: CovenantState): string {
   if (value === 0) return "DORMANT";
   if (value === 1) return "UNRESOLVED";
   if (value === 2) return "RESOLVED YES";
-  return "RESOLVED NO";
+  if (value === 3) return "RESOLVED NO";
+  return "EXPIRED";
 }
 
 export function stateBadge(value: CovenantState): string {
@@ -38,7 +39,9 @@ export function stateBadge(value: CovenantState): string {
         ? "bg-emerald-500/20 text-emerald-300"
         : value === 2
           ? "bg-emerald-500/30 text-emerald-200"
-          : "bg-rose-500/30 text-rose-200";
+          : value === 3
+            ? "bg-rose-500/30 text-rose-200"
+            : "bg-amber-500/25 text-amber-200";
   return `<span class="rounded-full px-2.5 py-0.5 text-xs font-medium ${colors}">${label}</span>`;
 }
 
@@ -56,10 +59,10 @@ export function getPathAvailability(market: Market): PathAvailability {
   const expired = isExpired(market);
   return {
     initialIssue: market.state === 0,
-    issue: market.state === 1 && !expired,
-    resolve: market.state === 1 && !expired,
+    issue: market.state === 1,
+    resolve: market.state === 1,
     redeem: market.state === 2 || market.state === 3,
-    expiryRedeem: market.state === 1 && expired,
+    expiryRedeem: market.state === 4 || (market.state === 1 && expired),
     cancel: market.state === 1,
   };
 }

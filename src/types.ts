@@ -12,7 +12,7 @@ export type ViewMode = "home" | "detail" | "create" | "wallet";
 export type Side = "yes" | "no";
 export type OrderType = "market" | "limit";
 export type ActionTab = "trade" | "issue" | "redeem" | "cancel";
-export type CovenantState = 0 | 1 | 2 | 3;
+export type CovenantState = 0 | 1 | 2 | 3 | 4;
 export type TradeIntent = "open" | "close";
 export type SizeMode = "sats" | "contracts";
 

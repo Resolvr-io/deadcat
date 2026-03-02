@@ -199,6 +199,7 @@ export function renderMyMarkets(): string {
   const dormant = myMarkets.filter((m) => m.state === 0);
   const active = myMarkets.filter((m) => m.state === 1);
   const resolved = myMarkets.filter((m) => m.state === 2 || m.state === 3);
+  const expiredMarkets = myMarkets.filter((m) => m.state === 4);
 
   const renderMarketCard = (market: Market): string => {
     const no = market.yesPrice != null ? 1 - market.yesPrice : null;
@@ -249,6 +250,7 @@ export function renderMyMarkets(): string {
       </div>
       ${renderSection("Dormant — needs initial issuance", dormant)}
       ${renderSection("Active", active)}
+      ${renderSection("Expired", expiredMarkets)}
       ${renderSection("Resolved", resolved)}
     </div>
   `;
@@ -268,7 +270,7 @@ export function renderCategoryPage(): string {
       acc[market.state] += 1;
       return acc;
     },
-    { 0: 0, 1: 0, 2: 0, 3: 0 } as Record<CovenantState, number>,
+    { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 } as Record<CovenantState, number>,
   );
 
   return `
@@ -371,6 +373,7 @@ export function renderCategoryPage(): string {
               <p class="flex items-center justify-between"><span>State 1 · Unresolved</span><span>${stateMix[1]}</span></p>
               <p class="flex items-center justify-between"><span>State 2 · Resolved YES</span><span>${stateMix[2]}</span></p>
               <p class="flex items-center justify-between"><span>State 3 · Resolved NO</span><span>${stateMix[3]}</span></p>
+              <p class="flex items-center justify-between"><span>State 4 · Expired</span><span>${stateMix[4]}</span></p>
             </div>
           </section>
         </aside>

@@ -1,7 +1,7 @@
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::announcement::ContractAnnouncement;
+use crate::announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement};
 
 use super::{APP_EVENT_KIND, CONTRACT_TAG, DEFAULT_RELAYS, NETWORK_TAG, bytes_to_hex};
 
@@ -73,6 +73,12 @@ pub fn build_contract_filter() -> Filter {
 pub fn parse_announcement_event(event: &Event) -> Result<DiscoveredMarket, String> {
     let announcement: ContractAnnouncement = serde_json::from_str(&event.content)
         .map_err(|e| format!("failed to parse announcement: {e}"))?;
+    if announcement.version != CONTRACT_ANNOUNCEMENT_VERSION {
+        return Err(format!(
+            "unsupported contract announcement version {} (expected {})",
+            announcement.version, CONTRACT_ANNOUNCEMENT_VERSION
+        ));
+    }
 
     let params = &announcement.contract_params;
     let market_id = params.market_id();
@@ -138,7 +144,7 @@ mod tests {
     #[test]
     fn contract_announcement_serde_roundtrip() {
         let announcement = ContractAnnouncement {
-            version: 1,
+            version: CONTRACT_ANNOUNCEMENT_VERSION,
             contract_params: test_params(),
             metadata: test_metadata(),
             creation_txid: Some("abc123".to_string()),
@@ -147,7 +153,7 @@ mod tests {
         let json = serde_json::to_string(&announcement).unwrap();
         let parsed: ContractAnnouncement = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.version, CONTRACT_ANNOUNCEMENT_VERSION);
         assert_eq!(parsed.contract_params, announcement.contract_params);
         assert_eq!(parsed.metadata.question, "Will BTC hit 100k?");
         assert_eq!(parsed.creation_txid, Some("abc123".to_string()));
@@ -163,7 +169,7 @@ mod tests {
     fn build_and_parse_announcement_event() {
         let keys = Keys::generate();
         let announcement = ContractAnnouncement {
-            version: 1,
+            version: CONTRACT_ANNOUNCEMENT_VERSION,
             contract_params: test_params(),
             metadata: test_metadata(),
             creation_txid: None,

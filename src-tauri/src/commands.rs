@@ -218,6 +218,7 @@ async fn subscribe_discovered_market_to_watcher(
         deadcat_sdk::MarketState::Unresolved,
         deadcat_sdk::MarketState::ResolvedYes,
         deadcat_sdk::MarketState::ResolvedNo,
+        deadcat_sdk::MarketState::Expired,
     ] {
         let spk = contract.script_pubkey(state);
         watcher.subscribe(
@@ -407,6 +408,7 @@ fn market_state_to_u8(state: deadcat_sdk::MarketState) -> u8 {
         deadcat_sdk::MarketState::Unresolved => 1,
         deadcat_sdk::MarketState::ResolvedYes => 2,
         deadcat_sdk::MarketState::ResolvedNo => 3,
+        deadcat_sdk::MarketState::Expired => 4,
     }
 }
 
@@ -1117,7 +1119,7 @@ pub async fn publish_contract(
     };
 
     let announcement = deadcat_sdk::ContractAnnouncement {
-        version: 1,
+        version: 2,
         contract_params,
         metadata: metadata.clone(),
         creation_txid: None,
