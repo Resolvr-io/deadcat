@@ -1,5 +1,6 @@
 import "./style.css";
-import { finishOnboarding, initApp } from "./bootstrap.ts";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { renderCreateMarket } from "./components/create.ts";
 import { renderDetail } from "./components/detail.ts";
 import { renderHome } from "./components/home.ts";
@@ -13,41 +14,39 @@ import { handleClick } from "./handlers/click.ts";
 import { handleFocusout } from "./handlers/focusout.ts";
 import { handleInput } from "./handlers/input.ts";
 import { handleKeydown } from "./handlers/keydown.ts";
-import { setupActivityTracking } from "./lifecycle/activity.ts";
-import { setupChartHoverListeners } from "./lifecycle/chart-hover.ts";
-import { setupTauriSubscriptions } from "./lifecycle/subscriptions.ts";
-import { startRecurringTimers } from "./lifecycle/timers.ts";
-import { app, state } from "./state.ts";
-import type { Side, TradeIntent } from "./types.ts";
+// Services
+import { loadMarkets, refreshMarketsFromStore } from "./services/markets.ts";
+import {
+  fetchWalletStatus,
+  refreshWallet,
+  syncCurrentHeightFromLwk,
+} from "./services/wallet.ts";
+import { app, createWalletData, state } from "./state.ts";
+import type {
+  IdentityResponse,
+  NostrBackupStatus,
+  NostrProfile,
+  RelayBackupResult,
+  Side,
+  TradeIntent,
+  WalletTransaction,
+  WalletUtxo,
+} from "./types.ts";
 import { formatEstTime, formatSatsInput } from "./utils/format.ts";
 // Utils
 import {
   getBasePriceSats,
   getMarketById,
   getPositionContracts,
-  resetLimitSellWarningState,
   setLimitPriceSats,
 } from "./utils/market.ts";
 
 // ── Core render ──────────────────────────────────────────────────────
 
 let chartAspectSyncRaf: number | null = null;
-let chartHoverRenderRaf: number | null = null;
-let tradeQuoteCountdownInterval: number | null = null;
 const CHART_ASPECT_MIN = 1.2;
 const CHART_ASPECT_MAX = 8;
 const CHART_ASPECT_EPSILON = 0.005;
-type HmrData = {
-  mounted?: boolean;
-  savedScrollY?: number;
-};
-type HotModule = {
-  data: HmrData;
-  accept: () => void;
-  dispose: (cb: (data: HmrData) => void) => void;
-};
-const hotModule = (import.meta as ImportMeta & { hot?: HotModule }).hot;
-const hmrData = (hotModule?.data ?? {}) as HmrData;
 
 function syncChartAspectFromLayout(): void {
   const probes = Array.from(
@@ -108,46 +107,10 @@ function scheduleChartAspectSync(): void {
   });
 }
 
-function scheduleChartHoverRender(): void {
-  if (chartHoverRenderRaf !== null) return;
-  chartHoverRenderRaf = requestAnimationFrame(() => {
-    chartHoverRenderRaf = null;
-    render();
-  });
-}
-
-function stopTradeQuoteCountdown(): void {
-  if (tradeQuoteCountdownInterval !== null) {
-    window.clearInterval(tradeQuoteCountdownInterval);
-    tradeQuoteCountdownInterval = null;
-  }
-}
-
-function syncTradeQuoteCountdown(): void {
-  const shouldTick = state.tradeQuoteModalOpen && state.tradeQuoteData !== null;
-  if (!shouldTick) {
-    stopTradeQuoteCountdown();
-    return;
-  }
-  state.tradeQuoteNowUnix = Math.floor(Date.now() / 1000);
-  if (tradeQuoteCountdownInterval !== null) return;
-  tradeQuoteCountdownInterval = window.setInterval(() => {
-    if (!state.tradeQuoteModalOpen || state.tradeQuoteData === null) {
-      stopTradeQuoteCountdown();
-      return;
-    }
-    state.tradeQuoteNowUnix = Math.floor(Date.now() / 1000);
-    render();
-  }, 1000);
-}
-
-let _savedScrollY = hmrData.savedScrollY ?? 0;
-
 function render(): void {
   if (state.onboardingStep !== null) {
     app.innerHTML = `<div class="min-h-screen text-slate-100 flex items-center justify-center">${renderOnboarding()}</div>`;
     scheduleChartAspectSync();
-    syncTradeQuoteCountdown();
     return;
   }
   const html = `
@@ -157,13 +120,8 @@ function render(): void {
     </div>
     ${renderNostrEventModal()}
   `;
-  const prevHeight = app.scrollHeight;
-  app.style.minHeight = `${prevHeight}px`;
   app.innerHTML = html;
-  window.scrollTo(0, _savedScrollY);
-  app.style.minHeight = "";
   scheduleChartAspectSync();
-  syncTradeQuoteCountdown();
 }
 
 function updateEstClockLabels(): void {
@@ -197,28 +155,78 @@ function openMarket(
   state.showAdvancedActions = false;
   state.showOrderbook = false;
   state.showFeeDetails = false;
-  state.buyLimitComposerOpen = false;
-  resetLimitSellWarningState();
-  state.tradeQuoteModalOpen = false;
   state.tradeQuoteLoading = false;
-  state.tradeQuoteExecuting = false;
-  state.tradeQuoteData = null;
-  state.tradeQuoteError = "";
-  state.tradeQuoteNowUnix = Math.floor(Date.now() / 1000);
+  state.tradeExecuteLoading = false;
+  state.tradeQuoteSnapshot = null;
+  state.tradeError = null;
   state.tradeSizeSats = 10000;
   state.tradeSizeSatsDraft = formatSatsInput(10000);
-  const selectedPositionLots = Math.max(0, Math.floor(selectedPosition));
   state.tradeContracts =
     nextIntent === "close"
-      ? selectedPositionLots > 0
-        ? Math.max(1, Math.floor(selectedPositionLots / 2))
-        : 0
+      ? Math.max(0.01, Math.min(selectedPosition, selectedPosition / 2))
       : 10;
-  state.tradeContractsDraft = String(state.tradeContracts);
+  state.tradeContractsDraft = state.tradeContracts.toFixed(2);
   state.chartHoverMarketId = null;
   state.chartHoverX = null;
   setLimitPriceSats(getBasePriceSats(market, nextSide));
   render();
+}
+
+async function finishOnboarding(): Promise<void> {
+  state.onboardingStep = null;
+  state.onboardingWalletPassword = "";
+  state.onboardingWalletMnemonic = "";
+  state.onboardingNostrNsec = "";
+  state.onboardingNostrGeneratedNsec = "";
+  state.onboardingNsecRevealed = false;
+  state.onboardingNostrDone = false;
+  state.onboardingError = "";
+  state.onboardingBackupFound = false;
+  state.onboardingBackupScanning = false;
+
+  await fetchWalletStatus();
+  render();
+
+  if (state.walletStatus === "unlocked") {
+    void refreshWallet(render);
+  }
+  await loadMarkets();
+  state.marketsLoading = false;
+  render();
+  void syncCurrentHeightFromLwk("liquid-testnet", render, updateEstClockLabels);
+
+  // Fetch relay list + backup status in background
+  if (state.nostrNpub) {
+    invoke<string[]>("fetch_nip65_relay_list")
+      .then((relays) => {
+        state.relays = relays.map((u) => ({ url: u, has_backup: false }));
+        invoke<NostrBackupStatus>("check_nostr_backup")
+          .then((status) => {
+            state.nostrBackupStatus = status;
+            if (status.relay_results) {
+              state.relays = state.relays.map((r) => ({
+                ...r,
+                has_backup:
+                  status.relay_results.find(
+                    (rr: RelayBackupResult) => rr.url === r.url,
+                  )?.has_backup ?? false,
+              }));
+            }
+            render();
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+
+    invoke<NostrProfile | null>("fetch_nostr_profile")
+      .then((profile) => {
+        if (profile) {
+          state.nostrProfile = profile;
+          render();
+        }
+      })
+      .catch(() => {});
+  }
 }
 
 function dismissSplash(): void {
@@ -231,105 +239,278 @@ function dismissSplash(): void {
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────
-const cleanups: Array<() => void> = [];
 
-function registerCleanup(cleanup: () => void): void {
-  cleanups.push(cleanup);
-}
-
-function runCleanup(): void {
-  while (cleanups.length > 0) {
-    const cleanup = cleanups.pop();
-    cleanup?.();
-  }
-  if (chartAspectSyncRaf !== null) {
-    cancelAnimationFrame(chartAspectSyncRaf);
-    chartAspectSyncRaf = null;
-  }
-  if (chartHoverRenderRaf !== null) {
-    cancelAnimationFrame(chartHoverRenderRaf);
-    chartHoverRenderRaf = null;
-  }
-}
-
-function mountApp(): void {
-  registerCleanup(setupTauriSubscriptions(render));
-  registerCleanup(setupActivityTracking());
-
-  // ── Event listeners ──────────────────────────────────────────────────
-  const clickDeps = {
-    render,
-    openMarket,
-    finishOnboarding: () => finishOnboarding(render, updateEstClockLabels),
-  };
-
-  const onScroll = (): void => {
-    _savedScrollY = window.scrollY;
-  };
-  document.addEventListener("scroll", onScroll);
-  registerCleanup(() => {
-    document.removeEventListener("scroll", onScroll);
-  });
-
-  const onClick = (event: Event): void => {
-    void handleClick(event as MouseEvent, clickDeps);
-  };
-  app.addEventListener("click", onClick);
-  registerCleanup(() => {
-    app.removeEventListener("click", onClick);
-  });
-
-  const onInput = (event: Event): void => {
-    handleInput(event, render);
-  };
-  app.addEventListener("input", onInput);
-  registerCleanup(() => {
-    app.removeEventListener("input", onInput);
-  });
-
-  const onKeydown = (event: Event): void => {
-    handleKeydown(event as KeyboardEvent, { render });
-  };
-  app.addEventListener("keydown", onKeydown);
-  registerCleanup(() => {
-    app.removeEventListener("keydown", onKeydown);
-  });
-
-  const onFocusout = (event: Event): void => {
-    handleFocusout(event as FocusEvent, render);
-  };
-  app.addEventListener("focusout", onFocusout);
-  registerCleanup(() => {
-    app.removeEventListener("focusout", onFocusout);
-  });
-
-  registerCleanup(
-    setupChartHoverListeners({
-      app,
-      scheduleChartHoverRender,
-      scheduleChartAspectSync,
-    }),
-  );
-
-  // ── Timers ───────────────────────────────────────────────────────────
-  registerCleanup(startRecurringTimers(render, updateEstClockLabels));
-}
-
-mountApp();
-if (hmrData.mounted) {
+async function initApp(): Promise<void> {
+  render();
   updateEstClockLabels();
+
+  // Track when the minimum loader animation time has elapsed (2 full cycles = 4.8s)
+  const splashReady = new Promise<void>((r) => setTimeout(r, 4800));
+
+  // 1. Try to load existing Nostr identity (no auto-generation)
+  let hasNostrIdentity = false;
+  try {
+    const identity = await invoke<IdentityResponse | null>(
+      "init_nostr_identity",
+    );
+    if (identity) {
+      state.nostrPubkey = identity.pubkey_hex;
+      state.nostrNpub = identity.npub;
+      hasNostrIdentity = true;
+    }
+  } catch (error) {
+    console.warn("Failed to load nostr identity:", error);
+  }
+
+  // 1b. If we have identity, fetch relay list and profile in background
+  if (hasNostrIdentity) {
+    invoke<string[]>("fetch_nip65_relay_list")
+      .then((relays) => {
+        state.relays = relays.map((u) => ({ url: u, has_backup: false }));
+        invoke<NostrBackupStatus>("check_nostr_backup")
+          .then((status) => {
+            state.nostrBackupStatus = status;
+            if (status.relay_results) {
+              state.relays = state.relays.map((r) => ({
+                ...r,
+                has_backup:
+                  status.relay_results.find(
+                    (rr: RelayBackupResult) => rr.url === r.url,
+                  )?.has_backup ?? false,
+              }));
+            }
+            render();
+          })
+          .catch(() => {});
+      })
+      .catch(() => {
+        state.relays = [
+          { url: "wss://relay.damus.io", has_backup: false },
+          { url: "wss://relay.primal.net", has_backup: false },
+        ];
+      });
+
+    invoke<NostrProfile | null>("fetch_nostr_profile")
+      .then((profile) => {
+        if (profile) {
+          state.nostrProfile = profile;
+          render();
+        }
+      })
+      .catch(() => {});
+  }
+
+  // 2. Fetch wallet status
+  await fetchWalletStatus();
+
+  // 3. Determine onboarding state
+  const needsNostr = !hasNostrIdentity;
+  const needsWallet = state.walletStatus === "not_created";
+
+  if (needsNostr || needsWallet) {
+    state.onboardingStep = needsNostr ? "nostr" : "wallet";
+    if (!needsNostr) {
+      state.onboardingNostrDone = true;
+    }
+    render();
+    await splashReady;
+    dismissSplash();
+    if (!needsNostr && needsWallet) {
+      state.onboardingBackupScanning = true;
+      render();
+      invoke<NostrBackupStatus>("check_nostr_backup")
+        .then((status) => {
+          if (status.has_backup) {
+            state.onboardingBackupFound = true;
+            state.onboardingWalletMode = "nostr-restore";
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          state.onboardingBackupScanning = false;
+          render();
+        });
+    }
+    return;
+  }
+
+  // 4. Normal boot — both identity and wallet exist
+  if (state.walletStatus === "unlocked") {
+    void refreshWallet(render);
+  }
+
+  await Promise.all([loadMarkets(), splashReady]);
+  state.marketsLoading = false;
   render();
   dismissSplash();
-} else {
-  hmrData.mounted = true;
-  void initApp(render, dismissSplash, updateEstClockLabels);
+
+  void syncCurrentHeightFromLwk("liquid-testnet", render, updateEstClockLabels);
 }
 
-if (hotModule) {
-  hotModule.accept();
-  hotModule.dispose((data: HmrData) => {
-    data.mounted = true;
-    data.savedScrollY = _savedScrollY;
-    runCleanup();
-  });
+// ── Backend state listener (auto-lock, etc.) ────────────────────────
+
+void listen<{
+  walletStatus: "not_created" | "locked" | "unlocked";
+}>("app_state_updated", (event) => {
+  const payload = event.payload;
+  if (payload.walletStatus === "locked" && state.walletStatus === "unlocked") {
+    state.walletStatus = "locked";
+    state.walletData = null;
+    state.walletMnemonic = "";
+    state.walletModal = "none";
+    render();
+  }
+});
+
+// Push wallet balance + transactions from backend whenever the snapshot changes
+void listen<{
+  balance: { assets: Record<string, number> };
+  transactions: WalletTransaction[];
+  utxos: WalletUtxo[];
+} | null>("wallet_snapshot", (event) => {
+  const payload = event.payload;
+  if (payload) {
+    if (!state.walletData) state.walletData = createWalletData();
+    state.walletData.balance = payload.balance.assets;
+    state.walletData.transactions = payload.transactions;
+    state.walletData.utxos = payload.utxos;
+  } else {
+    // A null snapshot means the wallet was locked
+    state.walletStatus = "locked";
+    state.walletData = null;
+  }
+  render();
+});
+
+// ── Discovery event listeners ────────────────────────────────────────
+
+void listen("discovery:market", () => {
+  void refreshMarketsFromStore().then(render);
+});
+
+void listen("discovery:attestation", () => {
+  void refreshMarketsFromStore().then(render);
+});
+
+void listen("discovery:pool", () => {
+  void refreshMarketsFromStore().then(render);
+});
+
+// ── Auto-lock activity tracking ──────────────────────────────────────
+
+let activityTimer: ReturnType<typeof setTimeout> | null = null;
+
+function reportActivity(): void {
+  if (activityTimer) return; // throttle: at most once per 30s
+  activityTimer = setTimeout(() => {
+    activityTimer = null;
+  }, 30_000);
+  void invoke("record_activity");
 }
+
+for (const evt of ["click", "keydown", "mousemove", "scroll"] as const) {
+  window.addEventListener(evt, reportActivity, { passive: true });
+}
+
+// ── Event listeners ──────────────────────────────────────────────────
+
+const clickDeps = { render, openMarket, finishOnboarding };
+
+app.addEventListener("click", (event) => {
+  void handleClick(event as MouseEvent, clickDeps);
+});
+
+app.addEventListener("input", (e) => {
+  handleInput(e, render);
+});
+
+app.addEventListener("keydown", (e) => {
+  handleKeydown(e as KeyboardEvent, { render });
+});
+
+app.addEventListener("focusout", (e) => {
+  handleFocusout(e as FocusEvent, render);
+});
+
+app.addEventListener("mousemove", (event) => {
+  const target = event.target as HTMLElement;
+  const probe = target.closest("[data-chart-hover='1']") as HTMLElement | null;
+
+  if (!probe) {
+    if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
+      state.chartHoverMarketId = null;
+      state.chartHoverX = null;
+      render();
+    }
+    return;
+  }
+
+  const marketId = probe.dataset.marketId ?? null;
+  if (!marketId) return;
+  const plotWidth = Number.parseFloat(probe.dataset.plotWidth ?? "100");
+  const plotLeft = Number.parseFloat(probe.dataset.plotLeft ?? "0");
+  const plotRight = Number.parseFloat(probe.dataset.plotRight ?? "100");
+  const widthMax = Number.isFinite(plotWidth) ? plotWidth : 100;
+  const xMin = Number.isFinite(plotLeft) ? plotLeft : 0;
+  const xMax = Number.isFinite(plotRight) ? plotRight : widthMax;
+
+  const rect = probe.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const relativeX = Math.max(
+    0,
+    Math.min(widthMax, ((event.clientX - rect.left) / rect.width) * widthMax),
+  );
+  const hoverX = Math.max(xMin, Math.min(xMax, relativeX));
+
+  if (
+    state.chartHoverMarketId === marketId &&
+    state.chartHoverX !== null &&
+    Math.abs(state.chartHoverX - hoverX) < 0.06
+  ) {
+    return;
+  }
+
+  state.chartHoverMarketId = marketId;
+  state.chartHoverX = hoverX;
+  render();
+});
+
+app.addEventListener("mouseleave", () => {
+  if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
+    state.chartHoverMarketId = null;
+    state.chartHoverX = null;
+    render();
+  }
+});
+
+app.addEventListener("mouseout", (event) => {
+  const from = (event.target as HTMLElement).closest(
+    "[data-chart-hover='1']",
+  ) as HTMLElement | null;
+  if (!from) return;
+  const related = event.relatedTarget as HTMLElement | null;
+  if (related?.closest("[data-chart-hover='1']")) return;
+  if (state.chartHoverMarketId !== null || state.chartHoverX !== null) {
+    state.chartHoverMarketId = null;
+    state.chartHoverX = null;
+    render();
+  }
+});
+
+window.addEventListener("resize", () => {
+  scheduleChartAspectSync();
+});
+
+// ── Timers ───────────────────────────────────────────────────────────
+
+initApp();
+setInterval(updateEstClockLabels, 1_000);
+setInterval(() => {
+  if (state.onboardingStep === null) {
+    void syncCurrentHeightFromLwk(
+      "liquid-testnet",
+      render,
+      updateEstClockLabels,
+    );
+  }
+}, 60_000);

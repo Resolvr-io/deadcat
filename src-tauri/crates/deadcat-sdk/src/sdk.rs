@@ -1,7 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
-use hmac::{Hmac, Mac};
 use lwk_common::Signer;
 use lwk_signer::SwSigner;
 use lwk_wollet::elements::confidential::Asset;
@@ -12,12 +11,17 @@ use lwk_wollet::elements::{AssetId, OutPoint, Script, Transaction, TxOut, Txid};
 use lwk_wollet::{
     ElectrumClient, ElectrumUrl, TxBuilder, WalletTx, WalletTxOut, Wollet, WolletDescriptor,
 };
+use rand::RngCore;
 use rand::thread_rng;
-use sha2::{Digest, Sha256};
 
 use crate::assembly::{pset_to_pruning_transaction, txout_secrets_from_unblinded};
 use crate::chain::{ChainBackend, ElectrumBackend};
 use crate::error::{Error, Result};
+use crate::lmsr_pool::chain_walk::{
+    decode_primary_witness_payload_from_spend_tx, extract_reserve_window,
+};
+use crate::lmsr_pool::contract::CompiledLmsrPool;
+use crate::lmsr_pool::params::{LmsrInitialOutpoint, LmsrPoolParams};
 use crate::maker_order::contract::CompiledMakerOrder;
 use crate::maker_order::params::{
     MakerOrderParams, OrderDirection, derive_maker_receive, maker_receive_script_pubkey,
@@ -29,6 +33,7 @@ use crate::maker_order::pset::fill_order::{
 };
 use crate::maker_order::witness::serialize_satisfied as serialize_maker_order_satisfied;
 use crate::network::Network;
+use crate::pool::PoolReserves;
 use crate::prediction_market::assembly::{
     CollateralSource, IssuanceAssemblyInputs, assemble_cancellation, assemble_expire_transition,
     assemble_expiry_redemption, assemble_issuance, assemble_oracle_resolve,
@@ -45,9 +50,6 @@ use crate::prediction_market::pset::post_resolution_redemption::PostResolutionRe
 use crate::prediction_market::state::MarketState;
 use crate::pset::UnblindedUtxo;
 use crate::taproot::NUMS_KEY_BYTES;
-
-mod recovery;
-pub use recovery::{LimitOrderRecoveryConfig, RecoveredOwnOrder, RecoveredOwnOrderStatus};
 
 /// Result of a successful token issuance.
 #[derive(Debug, Clone)]
@@ -89,7 +91,6 @@ pub struct RedemptionResult {
 /// Result of a successful limit order creation.
 #[derive(Debug, Clone)]
 pub struct CreateOrderResult {
-    pub order_index: u32,
     pub txid: Txid,
     pub order_params: MakerOrderParams,
     pub maker_base_pubkey: [u8; 32],
@@ -97,14 +98,6 @@ pub struct CreateOrderResult {
     pub covenant_address: String,
     pub order_amount: u64,
 }
-
-/// v2 limit-order protocol constants used by deterministic mnemonic recovery.
-pub const LIMIT_ORDER_PRICE_MIN: u64 = 1;
-pub const LIMIT_ORDER_PRICE_MAX: u64 = 99;
-pub const LIMIT_ORDER_MIN_FILL_LOTS_V2: u64 = 1;
-pub const LIMIT_ORDER_MIN_REMAINDER_LOTS_V2: u64 = 1;
-pub const ORDER_INDEX_GAP_LIMIT_DEFAULT: u32 = 256;
-pub const ORDER_RECOVERY_MAX_CANDIDATE_OUTPUTS_DEFAULT: usize = 1_024;
 
 /// Result of a successful limit order fill.
 #[derive(Debug, Clone)]
@@ -121,32 +114,11 @@ pub struct CancelOrderResult {
     pub refunded_amount: u64,
 }
 
-/// Result of a successful AMM pool creation.
 #[derive(Debug, Clone)]
-pub struct PoolCreationResult {
-    pub txid: Txid,
-    pub pool_params: crate::amm_pool::params::AmmPoolParams,
-    pub issued_lp: u64,
-    pub covenant_address: String,
-}
-
-/// Result of a successful AMM pool swap.
-#[derive(Debug, Clone)]
-pub struct PoolSwapResult {
-    pub txid: Txid,
-    pub delta_in: u64,
-    pub delta_out: u64,
-    /// New reserves after the swap (as computed by the SDK from on-chain state).
-    pub new_reserves: crate::amm_pool::math::PoolReserves,
-}
-
-/// Result of a successful AMM pool LP deposit or withdraw.
-#[derive(Debug, Clone)]
-pub struct PoolLpResult {
-    pub txid: Txid,
-    pub new_issued_lp: u64,
-    /// New reserves after the LP operation (as computed by the SDK from on-chain state).
-    pub new_reserves: crate::amm_pool::math::PoolReserves,
+pub(crate) struct LmsrPoolScanResult {
+    pub current_s_index: u64,
+    pub pool_utxos: crate::trade::types::LmsrPoolUtxos,
+    pub reserves: PoolReserves,
 }
 
 pub struct DeadcatSdk {
@@ -157,10 +129,6 @@ pub struct DeadcatSdk {
 }
 
 impl DeadcatSdk {
-    /// Create an SDK instance backed by a persistent Liquid wallet.
-    ///
-    /// Derives a SLIP-77 blinding key and `elwpkh` descriptor from the
-    /// mnemonic and stores wallet state under `datadir/<network>/wallet_db`.
     pub fn new(
         mnemonic: &str,
         network: Network,
@@ -199,7 +167,6 @@ impl DeadcatSdk {
 
     // ── Wallet queries ───────────────────────────────────────────────────
 
-    /// Full-scan the wallet against the Electrum server.
     pub fn sync(&mut self) -> Result<()> {
         let url: ElectrumUrl = self
             .chain
@@ -212,7 +179,6 @@ impl DeadcatSdk {
         Ok(())
     }
 
-    /// Return the wallet's balance per asset.
     pub fn balance(&self) -> Result<HashMap<AssetId, u64>> {
         let balance = self
             .wollet
@@ -237,7 +203,6 @@ impl DeadcatSdk {
             .map_err(|e| Error::Query(e.to_string()))
     }
 
-    /// Sign, finalize, and extract a transaction from a PSET.
     pub fn sign_pset(&self, mut pset: PartiallySignedTransaction) -> Result<Transaction> {
         self.wollet
             .add_details(&mut pset)
@@ -250,7 +215,6 @@ impl DeadcatSdk {
             .map_err(|e| Error::Finalize(e.to_string()))
     }
 
-    /// Build, sign, and broadcast a simple L-BTC send. Returns `(txid, fee_sat)`.
     pub fn send_lbtc(
         &mut self,
         address_str: &str,
@@ -301,17 +265,13 @@ impl DeadcatSdk {
         self.chain.fetch_transaction(txid)
     }
 
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg_attr(not(any(test, feature = "testing")), allow(dead_code))]
     pub fn network(&self) -> Network {
         self.network
     }
 
     pub fn electrum_url(&self) -> &str {
         self.chain.electrum_url()
-    }
-
-    pub(crate) fn chain_backend(&self) -> &ElectrumBackend {
-        &self.chain
     }
 
     pub fn policy_asset(&self) -> AssetId {
@@ -481,7 +441,7 @@ impl DeadcatSdk {
 
         // B. Classify and unblind covenant UTXOs
         let (yes_rt, no_rt, collateral_covenant_utxo) =
-            self.classify_covenant_utxos(&covenant_utxos, params)?;
+            self.classify_covenant_utxos(&covenant_utxos, params, current_state)?;
 
         // C. Compute issuance entropy
         let creation_tx = self.fetch_transaction(creation_txid)?;
@@ -600,6 +560,7 @@ impl DeadcatSdk {
         &self,
         covenant_utxos: &[(OutPoint, TxOut)],
         params: &PredictionMarketParams,
+        _current_state: MarketState,
     ) -> Result<(UnblindedUtxo, UnblindedUtxo, Option<UnblindedUtxo>)> {
         let yes_rt_id = AssetId::from_slice(&params.yes_reissuance_token)
             .map_err(|e| Error::Unblind(format!("bad YES reissuance asset: {e}")))?;
@@ -752,7 +713,7 @@ impl DeadcatSdk {
         }
 
         let (yes_rt, no_rt, collateral_covenant_utxo) =
-            self.classify_covenant_utxos(&covenant_utxos, params)?;
+            self.classify_covenant_utxos(&covenant_utxos, params, current_state)?;
 
         let collateral = collateral_covenant_utxo
             .ok_or_else(|| Error::CovenantScan("collateral UTXO not found at covenant".into()))?;
@@ -846,7 +807,7 @@ impl DeadcatSdk {
         }
 
         let (yes_rt, no_rt, collateral_covenant_utxo) =
-            self.classify_covenant_utxos(&covenant_utxos, params)?;
+            self.classify_covenant_utxos(&covenant_utxos, params, current_state)?;
 
         let collateral = collateral_covenant_utxo
             .ok_or_else(|| Error::CovenantScan("collateral UTXO not found at covenant".into()))?;
@@ -981,7 +942,7 @@ impl DeadcatSdk {
         }
 
         let (yes_rt, no_rt, collateral_covenant_utxo) =
-            self.classify_covenant_utxos(&covenant_utxos, params)?;
+            self.classify_covenant_utxos(&covenant_utxos, params, current_state)?;
 
         let collateral = collateral_covenant_utxo
             .ok_or_else(|| Error::CovenantScan("collateral UTXO not found at covenant".into()))?;
@@ -1130,66 +1091,6 @@ impl DeadcatSdk {
         Ok(Keypair::from_secret_key(&secp, &secret))
     }
 
-    fn direction_tag(direction: OrderDirection) -> u8 {
-        match direction {
-            OrderDirection::SellBase => 1,
-            OrderDirection::SellQuote => 0,
-        }
-    }
-
-    fn derive_order_nonce_seed(&self) -> Result<[u8; 32]> {
-        let network_path = if self.network.is_mainnet() { 1776 } else { 1 };
-        let path_str = format!("m/86'/{network_path}'/1'");
-        let path: lwk_wollet::bitcoin::bip32::DerivationPath = path_str
-            .parse()
-            .map_err(|e| Error::Signer(format!("invalid nonce seed path: {e}")))?;
-        let derived = self
-            .signer
-            .derive_xprv(&path)
-            .map_err(|e| Error::Signer(format!("derive nonce seed xprv failed: {e:?}")))?;
-        Ok(derived.private_key.secret_bytes())
-    }
-
-    fn canonical_order_params_hash_v2(
-        base_asset_id: &[u8; 32],
-        quote_asset_id: &[u8; 32],
-        price: u64,
-        direction: OrderDirection,
-    ) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(b"deadcat/order_params/v2");
-        hasher.update(base_asset_id);
-        hasher.update(quote_asset_id);
-        hasher.update(price.to_be_bytes());
-        hasher.update([Self::direction_tag(direction)]);
-        hasher.update(LIMIT_ORDER_MIN_FILL_LOTS_V2.to_be_bytes());
-        hasher.update(LIMIT_ORDER_MIN_REMAINDER_LOTS_V2.to_be_bytes());
-        hasher.update(NUMS_KEY_BYTES);
-        hasher.finalize().into()
-    }
-
-    fn derive_order_nonce_v2(
-        order_nonce_seed: &[u8; 32],
-        order_index: u32,
-        base_asset_id: &[u8; 32],
-        quote_asset_id: &[u8; 32],
-        price: u64,
-        direction: OrderDirection,
-    ) -> [u8; 32] {
-        type HmacSha256 = Hmac<Sha256>;
-        let params_hash =
-            Self::canonical_order_params_hash_v2(base_asset_id, quote_asset_id, price, direction);
-        let mut mac =
-            HmacSha256::new_from_slice(order_nonce_seed).expect("HMAC accepts any key length");
-        mac.update(b"deadcat/order_nonce/v2");
-        mac.update(&order_index.to_be_bytes());
-        mac.update(&params_hash);
-        let bytes = mac.finalize().into_bytes();
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&bytes);
-        out
-    }
-
     /// Select a wallet UTXO for a specific asset with enough value, excluding certain outpoints.
     fn select_funding_utxo(
         &self,
@@ -1281,8 +1182,8 @@ impl DeadcatSdk {
     /// Blind wallet-destination outputs in a maker order PSET.
     ///
     /// `wallet_inputs`: the wallet UTXOs used as PSET inputs (in order).
-    /// `blind_output_indices`: PSET output indices to blind.
-    /// `change_addr`: confidential address whose blinding key is applied.
+    /// `first_wallet_output`: index of the first output to blind (all subsequent
+    ///   non-fee outputs are also blinded).
     fn blind_order_pset(
         &self,
         pset: &mut PartiallySignedTransaction,
@@ -1322,60 +1223,9 @@ impl DeadcatSdk {
         Ok(())
     }
 
-    // ── AMM pool blinding helper ─────────────────────────────────────────
-
-    /// Blind selected outputs in an AMM pool PSET that has mixed covenant
-    /// (explicit) and wallet (confidential) inputs.
-    ///
-    /// `wallet_inputs_with_indices`: pairs of (pset_input_index, UnblindedUtxo)
-    ///   for the wallet inputs. Required for surjection proofs.
-    /// `blind_output_indices`: PSET output indices to blind (RT + wallet outputs).
-    /// `change_addr`: confidential address whose blinding key is applied.
-    fn blind_pool_pset(
-        &self,
-        pset: &mut PartiallySignedTransaction,
-        wallet_inputs_with_indices: &[(usize, &UnblindedUtxo)],
-        blind_output_indices: &[usize],
-        change_addr: &lwk_wollet::elements::Address,
-    ) -> Result<()> {
-        let blinding_pk = change_addr
-            .blinding_pubkey
-            .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
-        let pset_blinding_key = lwk_wollet::elements::bitcoin::PublicKey {
-            inner: blinding_pk,
-            compressed: true,
-        };
-
-        let outputs = pset.outputs_mut();
-        for &idx in blind_output_indices {
-            outputs[idx].blinding_key = Some(pset_blinding_key);
-            outputs[idx].blinder_index = Some(0);
-        }
-
-        let mut inp_txout_sec = HashMap::new();
-        for &(idx, utxo) in wallet_inputs_with_indices {
-            let asset_id = AssetId::from_slice(&utxo.asset_id)
-                .map_err(|e| Error::Blinding(format!("input {idx} asset: {e}")))?;
-            inp_txout_sec.insert(idx, txout_secrets_from_unblinded(utxo, asset_id)?);
-        }
-
-        let secp = secp256k1_zkp::Secp256k1::new();
-        let mut rng = thread_rng();
-        pset.blind_last(&mut rng, &secp, &inp_txout_sec)
-            .map_err(|e| Error::Blinding(format!("{e:?}")))?;
-
-        Ok(())
-    }
-
     // ── Limit order methods ─────────────────────────────────────────────
 
     /// Create a limit order by locking the offered asset in a maker order covenant.
-    ///
-    /// v2 constraints:
-    /// - quote asset must be policy asset (L-BTC)
-    /// - min_fill_lots = 1
-    /// - min_remainder_lots = 1
-    /// - price in [`LIMIT_ORDER_PRICE_MIN`, `LIMIT_ORDER_PRICE_MAX`]
     #[allow(clippy::too_many_arguments)]
     pub fn create_limit_order(
         &mut self,
@@ -1386,63 +1236,19 @@ impl DeadcatSdk {
         direction: OrderDirection,
         min_fill_lots: u64,
         min_remainder_lots: u64,
+        order_index: u32,
         fee_amount: u64,
     ) -> Result<CreateOrderResult> {
         self.sync()?;
 
-        let policy_bytes = self.policy_asset().into_inner().to_byte_array();
-        if quote_asset_id != policy_bytes {
-            return Err(Error::MakerOrder(
-                "v2 requires quote_asset_id to be policy asset (L-BTC)".to_string(),
-            ));
-        }
-        if min_fill_lots != LIMIT_ORDER_MIN_FILL_LOTS_V2 {
-            return Err(Error::MakerOrder(
-                "v2 requires min_fill_lots = 1".to_string(),
-            ));
-        }
-        if min_remainder_lots != LIMIT_ORDER_MIN_REMAINDER_LOTS_V2 {
-            return Err(Error::MakerOrder(
-                "v2 requires min_remainder_lots = 1".to_string(),
-            ));
-        }
-        if !(LIMIT_ORDER_PRICE_MIN..=LIMIT_ORDER_PRICE_MAX).contains(&price) {
-            return Err(Error::MakerOrder(format!(
-                "v2 price must be in range {}..={}",
-                LIMIT_ORDER_PRICE_MIN, LIMIT_ORDER_PRICE_MAX
-            )));
-        }
-        if order_amount == 0 {
-            return Err(Error::ZeroOrderAmount);
-        }
-
-        // 1. Derive next maker keypair index from recovered v2 orders.
-        let candidate_outputs =
-            self.extract_wallet_candidate_outputs(ORDER_RECOVERY_MAX_CANDIDATE_OUTPUTS_DEFAULT)?;
-        let mut candidate_base_assets = HashSet::<[u8; 32]>::new();
-        candidate_base_assets.insert(base_asset_id);
-        for candidate in &candidate_outputs {
-            if candidate.asset_id != policy_bytes {
-                candidate_base_assets.insert(candidate.asset_id);
-            }
-        }
-        let candidate_base_assets: Vec<[u8; 32]> = candidate_base_assets.into_iter().collect();
-        let order_index = self
-            .next_maker_order_index_with_candidates(&candidate_base_assets, &candidate_outputs)?;
+        // 1. Derive maker keypair
         let maker_keypair = self.derive_maker_keypair(order_index)?;
         let (maker_xonly, _parity) = maker_keypair.x_only_public_key();
         let maker_base_pubkey: [u8; 32] = maker_xonly.serialize();
 
-        // 2. Derive deterministic order nonce from mnemonic seed + params + index.
-        let order_nonce_seed = self.derive_order_nonce_seed()?;
-        let order_nonce = Self::derive_order_nonce_v2(
-            &order_nonce_seed,
-            order_index,
-            &base_asset_id,
-            &quote_asset_id,
-            price,
-            direction,
-        );
+        // 2. Generate random order nonce
+        let mut order_nonce = [0u8; 32];
+        thread_rng().fill_bytes(&mut order_nonce);
 
         // 3. Build MakerOrderParams
         let (params, _p_order) = MakerOrderParams::new(
@@ -1472,6 +1278,7 @@ impl DeadcatSdk {
         let (fee_utxo, change_addr) =
             self.select_fee_utxo_excluding(fee_amount, &[funding_utxo.outpoint])?;
         let change_spk = change_addr.script_pubkey();
+        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
 
         // 7. Build PSET
         let input_utxos = [funding_utxo.clone(), fee_utxo.clone()];
@@ -1489,8 +1296,9 @@ impl DeadcatSdk {
 
         let mut pset = build_create_order_pset(&contract, &create_params)?;
 
-        // 7b. Blind wallet change outputs only.
-        // Output 0 = covenant (explicit), Output 1 = fee (skip), remaining outputs are wallet.
+        // 7b. Blind change outputs (inputs are confidential wallet UTXOs).
+        // Output 0 = covenant (explicit), Output 1 = fee (skip).
+        // Outputs 2+ are optional funding/fee change — blind all of them.
         let num_outputs = pset.n_outputs();
         let blind_indices: Vec<usize> = (2..num_outputs).collect();
         self.blind_order_pset(&mut pset, &input_utxos, &blind_indices, &change_addr)?;
@@ -1504,7 +1312,6 @@ impl DeadcatSdk {
             .to_string();
 
         Ok(CreateOrderResult {
-            order_index,
             txid,
             order_params: params,
             maker_base_pubkey,
@@ -1518,29 +1325,24 @@ impl DeadcatSdk {
     ///
     /// Uses the Simplicity cancel path (Right branch) with a BIP-340 signature
     /// over SHA256(prev_outpoint) to authorize reclaiming funds.
-    /// The required maker key index is resolved deterministically from mnemonic
-    /// key derivation plus order params/outpoint state.
     pub fn cancel_limit_order(
         &mut self,
         params: &MakerOrderParams,
         maker_base_pubkey: [u8; 32],
-        order_nonce: [u8; 32],
+        order_index: u32,
         fee_amount: u64,
     ) -> Result<CancelOrderResult> {
         self.sync()?;
 
-        if params.min_fill_lots != LIMIT_ORDER_MIN_FILL_LOTS_V2
-            || params.min_remainder_lots != LIMIT_ORDER_MIN_REMAINDER_LOTS_V2
-        {
-            return Err(Error::MakerOrder(
-                "cancel_limit_order only supports v2 fixed minimums".to_string(),
-            ));
-        }
+        // 1. Derive maker keypair
+        let maker_keypair = self.derive_maker_keypair(order_index)?;
 
-        // 1. Compile the contract and scan for order UTXO.
+        // 2. Compile the contract
         let contract = CompiledMakerOrder::new(*params)?;
         let cmr = *contract.cmr();
         let cb_bytes = contract.control_block(&maker_base_pubkey);
+
+        // 3. Compute covenant SPK and scan for order UTXO
         let covenant_spk = contract.script_pubkey(&maker_base_pubkey);
         let covenant_utxos = self.scan_covenant_utxos(&covenant_spk)?;
         let (order_outpoint, order_txout) = covenant_utxos
@@ -1548,30 +1350,8 @@ impl DeadcatSdk {
             .next()
             .ok_or_else(|| Error::MakerOrder("no UTXO found at order covenant address".into()))?;
 
-        // 2. Resolve maker key index and verify deterministic nonce.
+        // 4. Convert to UnblindedUtxo (explicit asset, zeroed blinding factors)
         let order_value = order_txout.value.explicit().unwrap_or(0);
-        let order_index = self
-            .resolve_order_index(params, maker_base_pubkey, order_value, Some(order_outpoint))?
-            .ok_or_else(|| {
-                Error::MakerOrder("could not resolve maker order index for cancel".to_string())
-            })?;
-        let order_nonce_seed = self.derive_order_nonce_seed()?;
-        let expected_order_nonce = Self::derive_order_nonce_v2(
-            &order_nonce_seed,
-            order_index,
-            &params.base_asset_id,
-            &params.quote_asset_id,
-            params.price,
-            params.direction,
-        );
-        if expected_order_nonce != order_nonce {
-            return Err(Error::MakerOrder(
-                "order nonce does not match deterministic v2 derivation".to_string(),
-            ));
-        }
-        let maker_keypair = self.derive_maker_keypair(order_index)?;
-
-        // 3. Convert to UnblindedUtxo (explicit asset, zeroed blinding factors)
         let order_asset = match params.direction {
             OrderDirection::SellBase => params.base_asset_id,
             OrderDirection::SellQuote => params.quote_asset_id,
@@ -1585,13 +1365,13 @@ impl DeadcatSdk {
             value_blinding_factor: [0u8; 32],
         };
 
-        // 4. Select fee UTXO
+        // 5. Select fee UTXO
         let (fee_utxo, change_addr) =
             self.select_fee_utxo_excluding(fee_amount, &[order_outpoint])?;
         let change_spk = change_addr.script_pubkey();
         let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
 
-        // 5. Build cancel PSET
+        // 6. Build cancel PSET
         let input_utxos = [order_utxo.clone(), fee_utxo.clone()];
 
         let cancel_params = CancelOrderParams {
@@ -1606,7 +1386,7 @@ impl DeadcatSdk {
 
         let mut pset = build_cancel_order_pset(&cancel_params)?;
 
-        // 5b. Blind wallet-destination outputs.
+        // 6b. Blind wallet-destination outputs.
         // Output 0 = refund (blind), Output 1 = fee (skip), Output 2 = fee change (blind).
         let mut blind_indices = vec![0usize]; // refund
         let num_outputs = pset.n_outputs();
@@ -1615,9 +1395,10 @@ impl DeadcatSdk {
         }
         self.blind_order_pset(&mut pset, &input_utxos, &blind_indices, &change_addr)?;
 
-        // 6. Compute maker cancel signature: SHA256(txid || vout) of the order outpoint
+        // 7. Compute maker cancel signature: SHA256(txid || vout) of the order outpoint
         let secp = secp256k1_zkp::Secp256k1::new();
         let sighash = {
+            use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(order_outpoint.txid.to_byte_array());
             hasher.update(order_outpoint.vout.to_be_bytes());
@@ -1628,7 +1409,7 @@ impl DeadcatSdk {
         let sig = secp.sign_schnorr_no_aux_rand(&msg, &maker_keypair);
         let sig_bytes: [u8; 64] = sig.serialize();
 
-        // 7. Attach Simplicity cancel witness to covenant input (input 0)
+        // 8. Attach Simplicity cancel witness to covenant input (input 0)
         {
             use simplicityhl::elements::taproot::ControlBlock;
             use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
@@ -1674,7 +1455,7 @@ impl DeadcatSdk {
                 Some(vec![witness_bytes, program_bytes, cmr_bytes, cb_bytes]);
         }
 
-        // 8. Sign fee input via normal signer
+        // 9. Sign fee input via normal signer
         self.wollet
             .add_details(&mut pset)
             .map_err(|e| Error::Signer(format!("add_details: {}", e)))?;
@@ -1939,713 +1720,7 @@ impl DeadcatSdk {
         })
     }
 
-    // ── AMM pool methods ──────────────────────────────────────────────────
-
-    /// Scan the 4 pool UTXOs (YES, NO, LBTC, LP_RT) at a given covenant address.
-    pub(crate) fn scan_pool_utxos(
-        &self,
-        contract: &crate::amm_pool::contract::CompiledAmmPool,
-        issued_lp: u64,
-    ) -> Result<(UnblindedUtxo, UnblindedUtxo, UnblindedUtxo, UnblindedUtxo)> {
-        let covenant_spk = contract.script_pubkey(issued_lp);
-        let utxos = self.scan_covenant_utxos(&covenant_spk)?;
-
-        let params = contract.params();
-        let mut yes_utxo: Option<UnblindedUtxo> = None;
-        let mut no_utxo: Option<UnblindedUtxo> = None;
-        let mut lbtc_utxo: Option<UnblindedUtxo> = None;
-        let mut rt_utxo: Option<UnblindedUtxo> = None;
-
-        for (outpoint, txout) in &utxos {
-            if let Some(asset) = txout.asset.explicit() {
-                let asset_bytes: [u8; 32] = asset.into_inner().to_byte_array();
-                let value = txout.value.explicit().unwrap_or(0);
-                let u = UnblindedUtxo {
-                    outpoint: *outpoint,
-                    txout: txout.clone(),
-                    asset_id: asset_bytes,
-                    value,
-                    asset_blinding_factor: [0u8; 32],
-                    value_blinding_factor: [0u8; 32],
-                };
-                if asset_bytes == params.yes_asset_id && yes_utxo.is_none() {
-                    yes_utxo = Some(u);
-                } else if asset_bytes == params.no_asset_id && no_utxo.is_none() {
-                    no_utxo = Some(u);
-                } else if asset_bytes == params.lbtc_asset_id && lbtc_utxo.is_none() {
-                    lbtc_utxo = Some(u);
-                } else if asset_bytes == params.lp_reissuance_token_id && rt_utxo.is_none() {
-                    // RT may be confidential; try unblinding
-                    rt_utxo = Some(u);
-                }
-            } else {
-                // Confidential output — try to unblind (for RT)
-                if let Ok((asset, value, abf, vbf)) = self.unblind_covenant_utxo(txout) {
-                    let asset_bytes: [u8; 32] = asset.into_inner().to_byte_array();
-                    if asset_bytes == params.lp_reissuance_token_id && rt_utxo.is_none() {
-                        rt_utxo = Some(UnblindedUtxo {
-                            outpoint: *outpoint,
-                            txout: txout.clone(),
-                            asset_id: asset_bytes,
-                            value,
-                            asset_blinding_factor: abf,
-                            value_blinding_factor: vbf,
-                        });
-                    }
-                }
-            }
-        }
-
-        let yes = yes_utxo.ok_or_else(|| {
-            Error::CovenantScan("YES reserve UTXO not found at pool address".into())
-        })?;
-        let no = no_utxo.ok_or_else(|| {
-            Error::CovenantScan("NO reserve UTXO not found at pool address".into())
-        })?;
-        let lbtc = lbtc_utxo.ok_or_else(|| {
-            Error::CovenantScan("LBTC reserve UTXO not found at pool address".into())
-        })?;
-        let rt = rt_utxo.ok_or_else(|| {
-            Error::CovenantScan("LP reissuance token UTXO not found at pool address".into())
-        })?;
-
-        Ok((yes, no, lbtc, rt))
-    }
-
-    /// Create a new AMM pool on-chain.
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_amm_pool(
-        &mut self,
-        pool_params: &crate::amm_pool::params::AmmPoolParams,
-        initial_r_yes: u64,
-        initial_r_no: u64,
-        initial_r_lbtc: u64,
-        initial_issued_lp: u64,
-        fee_amount: u64,
-        lp_creation_txid: &Txid,
-    ) -> Result<PoolCreationResult> {
-        self.sync()?;
-
-        let contract = crate::amm_pool::contract::CompiledAmmPool::new(*pool_params)?;
-
-        // Select funding UTXOs for each asset
-        let yes_funding =
-            self.select_funding_utxo(&pool_params.yes_asset_id, initial_r_yes, &[])?;
-        let no_funding = self.select_funding_utxo(
-            &pool_params.no_asset_id,
-            initial_r_no,
-            &[yes_funding.outpoint],
-        )?;
-        let lbtc_funding = self.select_funding_utxo(
-            &pool_params.lbtc_asset_id,
-            initial_r_lbtc,
-            &[yes_funding.outpoint, no_funding.outpoint],
-        )?;
-        let rt_funding = self.select_funding_utxo(
-            &pool_params.lp_reissuance_token_id,
-            1,
-            &[
-                yes_funding.outpoint,
-                no_funding.outpoint,
-                lbtc_funding.outpoint,
-            ],
-        )?;
-
-        // Compute LP issuance entropy from the original LP creation transaction
-        let lp_creation_tx = self.fetch_transaction(lp_creation_txid)?;
-        let lp_entropy = crate::assembly::compute_lp_issuance_entropy(
-            &lp_creation_tx,
-            &rt_funding.asset_blinding_factor,
-        )?;
-
-        let (fee_utxo, change_addr) = self.select_fee_utxo_excluding(
-            fee_amount,
-            &[
-                yes_funding.outpoint,
-                no_funding.outpoint,
-                lbtc_funding.outpoint,
-                rt_funding.outpoint,
-            ],
-        )?;
-        let change_spk = change_addr.script_pubkey();
-        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
-
-        // Collect wallet inputs in PSET order for blinding (all inputs are from wallet)
-        let wallet_inputs: Vec<UnblindedUtxo> = vec![
-            yes_funding.clone(),
-            no_funding.clone(),
-            lbtc_funding.clone(),
-            rt_funding.clone(),
-            fee_utxo.clone(),
-        ];
-
-        let creation_params = crate::amm_pool::pset::creation::PoolCreationParams {
-            yes_utxos: vec![yes_funding],
-            no_utxos: vec![no_funding],
-            lbtc_utxos: vec![lbtc_funding],
-            lp_rt_utxo: rt_funding,
-            initial_r_yes,
-            initial_r_no,
-            initial_r_lbtc,
-            initial_issued_lp,
-            lp_token_destination: change_spk.clone(),
-            change_destination: Some(change_spk),
-            fee_utxo,
-            fee_amount,
-            fee_asset_id: policy_bytes,
-            lp_issuance_blinding_nonce: lp_entropy.blinding_nonce,
-            lp_issuance_asset_entropy: lp_entropy.entropy,
-        };
-
-        let mut pset =
-            crate::amm_pool::pset::creation::build_pool_creation_pset(&contract, &creation_params)?;
-
-        // Blind the pool creation PSET.
-        //
-        // IMPORTANT: blind_last() does NOT blind issuance amounts — they stay
-        // explicit (`Value::Explicit`) in the finalized transaction.  When
-        // elementsd validates a reissuance it checks:
-        //     fConfidential = nAmount.IsCommitment()
-        //     expected_token = CalculateReissuanceToken(entropy, fConfidential)
-        // Because the amount is explicit, fConfidential = false, so the
-        // original LP issuance MUST also have used blind=false for the
-        // reissuance token IDs to match.
-        //
-        // Steps:
-        // 1. Fill in the Null RT output (output 3) metadata
-        // 2. Set blinding keys on outputs 3+ (RT, LP tokens, change)
-        //    but NOT reserves (0-2) or fee (last)
-        // 3. Set blinded_issuance=0x00 on the RT input (required by
-        //    blind_last to not error; does NOT actually blind the issuance)
-        // 4. Provide inp_txout_sec for ALL inputs
-        // 5. Call blind_last()
-        {
-            let lp_rt_id = AssetId::from_slice(&pool_params.lp_reissuance_token_id)
-                .map_err(|e| Error::Blinding(format!("bad LP RT asset: {e}")))?;
-
-            // Get blinding pubkey from change address
-            let blinding_pk = change_addr
-                .blinding_pubkey
-                .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
-            let pset_blinding_key = lwk_wollet::elements::bitcoin::PublicKey {
-                inner: blinding_pk,
-                compressed: true,
-            };
-
-            let n_outputs = pset.n_outputs();
-
-            // Fill the Null RT output (output 3) — matches working pattern lines 215-218
-            // Then set blinding keys on outputs 3+ (RT, LP tokens, change).
-            // Don't blind reserves (0-2) or fee (last).
-            let outputs = pset.outputs_mut();
-            outputs[3].amount = Some(1);
-            outputs[3].asset = Some(lp_rt_id);
-            for output in outputs.iter_mut().take(n_outputs - 1).skip(3) {
-                output.blinding_key = Some(pset_blinding_key);
-                output.blinder_index = Some(0);
-            }
-
-            // Set blinded_issuance on the RT input right before blind_last
-            pset.inputs_mut()[3].blinded_issuance = Some(0x00);
-
-            // Provide input txout secrets for ALL inputs
-            let mut inp_txout_sec = HashMap::new();
-            for (idx, utxo) in wallet_inputs.iter().enumerate() {
-                let asset_id = AssetId::from_slice(&utxo.asset_id)
-                    .map_err(|e| Error::Blinding(format!("input {idx} asset: {e}")))?;
-                inp_txout_sec.insert(idx, txout_secrets_from_unblinded(utxo, asset_id)?);
-            }
-
-            let secp = secp256k1_zkp::Secp256k1::new();
-            let mut rng = thread_rng();
-            pset.blind_last(&mut rng, &secp, &inp_txout_sec)
-                .map_err(|e| Error::Blinding(format!("{e:?}")))?;
-        }
-
-        let tx = self.sign_pset(pset)?;
-        let txid = self.broadcast_and_sync(&tx)?;
-
-        let covenant_address = contract
-            .address(initial_issued_lp, self.network.address_params())
-            .to_string();
-
-        Ok(PoolCreationResult {
-            txid,
-            pool_params: *pool_params,
-            issued_lp: initial_issued_lp,
-            covenant_address,
-        })
-    }
-
-    /// Execute a swap against an AMM pool.
-    pub fn pool_swap(
-        &mut self,
-        pool_params: &crate::amm_pool::params::AmmPoolParams,
-        issued_lp: u64,
-        swap_pair: crate::amm_pool::math::SwapPair,
-        delta_in: u64,
-        direction: crate::amm_pool::math::SwapDirection,
-        fee_amount: u64,
-    ) -> Result<PoolSwapResult> {
-        use crate::amm_pool::math::{PoolReserves, compute_swap_exact_input};
-
-        self.sync()?;
-        let contract = crate::amm_pool::contract::CompiledAmmPool::new(*pool_params)?;
-
-        let (pool_yes, pool_no, pool_lbtc, pool_rt) = self.scan_pool_utxos(&contract, issued_lp)?;
-
-        let reserves = PoolReserves {
-            r_yes: pool_yes.value,
-            r_no: pool_no.value,
-            r_lbtc: pool_lbtc.value,
-        };
-
-        let swap_result = compute_swap_exact_input(
-            &reserves,
-            swap_pair,
-            delta_in,
-            pool_params.fee_bps,
-            direction,
-        )?;
-
-        // Determine which asset the trader sends in and receives out based on
-        // the pair and direction.
-        let (trader_send_asset, trader_receive_asset) = match direction {
-            crate::amm_pool::math::SwapDirection::SellA => {
-                // Sell A (first-named), receive B (second-named)
-                match swap_pair {
-                    crate::amm_pool::math::SwapPair::YesNo => {
-                        (pool_params.yes_asset_id, pool_params.no_asset_id)
-                    }
-                    crate::amm_pool::math::SwapPair::YesLbtc => {
-                        (pool_params.yes_asset_id, pool_params.lbtc_asset_id)
-                    }
-                    crate::amm_pool::math::SwapPair::NoLbtc => {
-                        (pool_params.no_asset_id, pool_params.lbtc_asset_id)
-                    }
-                }
-            }
-            crate::amm_pool::math::SwapDirection::SellB => {
-                // Sell B (second-named), receive A (first-named)
-                match swap_pair {
-                    crate::amm_pool::math::SwapPair::YesNo => {
-                        (pool_params.no_asset_id, pool_params.yes_asset_id)
-                    }
-                    crate::amm_pool::math::SwapPair::YesLbtc => {
-                        (pool_params.lbtc_asset_id, pool_params.yes_asset_id)
-                    }
-                    crate::amm_pool::math::SwapPair::NoLbtc => {
-                        (pool_params.lbtc_asset_id, pool_params.no_asset_id)
-                    }
-                }
-            }
-        };
-
-        let trader_funding = self.select_funding_utxo(&trader_send_asset, delta_in, &[])?;
-        let (fee_utxo, change_addr) =
-            self.select_fee_utxo_excluding(fee_amount, &[trader_funding.outpoint])?;
-        let change_spk = change_addr.script_pubkey();
-        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
-
-        let swap_params = crate::amm_pool::pset::swap::SwapParams {
-            pool_yes_utxo: pool_yes,
-            pool_no_utxo: pool_no,
-            pool_lbtc_utxo: pool_lbtc,
-            pool_lp_rt_utxo: pool_rt,
-            issued_lp,
-            trader_utxos: vec![trader_funding],
-            swap_pair,
-            new_r_yes: swap_result.new_reserves.r_yes,
-            new_r_no: swap_result.new_reserves.r_no,
-            new_r_lbtc: swap_result.new_reserves.r_lbtc,
-            trader_receive_asset,
-            trader_receive_amount: swap_result.delta_out,
-            trader_receive_destination: change_spk.clone(),
-            trader_change_destination: Some(change_spk),
-            fee_utxo,
-            fee_amount,
-            fee_asset_id: policy_bytes,
-        };
-
-        let mut pset = crate::amm_pool::pset::swap::build_swap_pset(&contract, &swap_params)?;
-
-        // Blind wallet-destination outputs AND the RT output (index 3).
-        //
-        // The AMM pool covenant expects the RT output to be a confidential
-        // Pedersen commitment.  We must blind it here and then extract the
-        // blinding factors for the Simplicity witness.
-        //
-        // NOTE: blinding MUST happen before witness attachment so that
-        // pset_to_pruning_transaction (called inside attach_amm_pool_witnesses)
-        // sees the confidential RT output.
-        {
-            let lp_rt_id = AssetId::from_slice(&pool_params.lp_reissuance_token_id)
-                .map_err(|e| Error::Blinding(format!("bad LP RT asset: {e}")))?;
-
-            // Fill the Null RT output placeholder (output 3).
-            let outputs = pset.outputs_mut();
-            outputs[3].amount = Some(1);
-            outputs[3].asset = Some(lp_rt_id);
-
-            let mut all_inputs: Vec<(usize, &UnblindedUtxo)> = vec![
-                (0, &swap_params.pool_yes_utxo),
-                (1, &swap_params.pool_no_utxo),
-                (2, &swap_params.pool_lbtc_utxo),
-                (3, &swap_params.pool_lp_rt_utxo),
-            ];
-            for (i, utxo) in swap_params.trader_utxos.iter().enumerate() {
-                all_inputs.push((4 + i, utxo));
-            }
-            all_inputs.push((4 + swap_params.trader_utxos.len(), &swap_params.fee_utxo));
-            let n_outputs = pset.n_outputs();
-            let mut blind_indices: Vec<usize> = vec![3]; // RT output
-            blind_indices.extend(4..n_outputs - 1); // wallet outputs
-            self.blind_pool_pset(&mut pset, &all_inputs, &blind_indices, &change_addr)?;
-        }
-
-        // Extract the blinding factors that blind_last() chose for the RT
-        // output (index 3), then attach Simplicity witnesses.
-        let rt_txout = pset.outputs()[3].to_txout();
-        let (_, _, rt_out_abf, rt_out_vbf) = self.unblind_covenant_utxo(&rt_txout)?;
-
-        let rt_bf = crate::amm_pool::witness::RtBlindingFactors {
-            input_abf: swap_params.pool_lp_rt_utxo.asset_blinding_factor,
-            input_vbf: swap_params.pool_lp_rt_utxo.value_blinding_factor,
-            output_abf: rt_out_abf,
-            output_vbf: rt_out_vbf,
-        };
-        let spending_path = crate::amm_pool::witness::AmmPoolSpendingPath::Swap {
-            swap_pair,
-            issued_lp,
-            blinding: rt_bf,
-        };
-        crate::amm_pool::assembly::attach_amm_pool_witnesses(
-            &mut pset,
-            &contract,
-            issued_lp,
-            spending_path,
-        )?;
-
-        let tx = self.sign_pset(pset)?;
-        let txid = self.broadcast_and_sync(&tx)?;
-
-        Ok(PoolSwapResult {
-            txid,
-            delta_in: swap_result.delta_in,
-            delta_out: swap_result.delta_out,
-            new_reserves: swap_result.new_reserves,
-        })
-    }
-
-    /// Deposit liquidity into an AMM pool (mint LP tokens).
-    ///
-    /// Selects separate funding UTXOs for each asset being deposited
-    /// (YES, NO, L-BTC) as required by the three-asset pool covenant.
-    #[allow(clippy::too_many_arguments)]
-    pub fn pool_lp_deposit(
-        &mut self,
-        pool_params: &crate::amm_pool::params::AmmPoolParams,
-        issued_lp: u64,
-        new_r_yes: u64,
-        new_r_no: u64,
-        new_r_lbtc: u64,
-        lp_mint_amount: u64,
-        fee_amount: u64,
-        lp_creation_txid: &Txid,
-    ) -> Result<PoolLpResult> {
-        use crate::amm_pool::math::PoolReserves;
-
-        self.sync()?;
-        let contract = crate::amm_pool::contract::CompiledAmmPool::new(*pool_params)?;
-
-        let (pool_yes, pool_no, pool_lbtc, pool_rt) = self.scan_pool_utxos(&contract, issued_lp)?;
-
-        // Compute LP issuance entropy from the original LP creation transaction.
-        // The RT at the pool covenant is explicit (ABF = zeros).
-        let lp_creation_tx = self.fetch_transaction(lp_creation_txid)?;
-        let lp_entropy = crate::assembly::compute_lp_issuance_entropy(
-            &lp_creation_tx,
-            &pool_rt.asset_blinding_factor,
-        )?;
-
-        // Compute what the depositor needs to contribute for each asset
-        let deposit_yes = new_r_yes.saturating_sub(pool_yes.value);
-        let deposit_no = new_r_no.saturating_sub(pool_no.value);
-        let deposit_lbtc = new_r_lbtc.saturating_sub(pool_lbtc.value);
-
-        // Select separate funding UTXOs for each asset being deposited
-        let mut exclude = Vec::new();
-        let mut deposit_utxos = Vec::new();
-
-        if deposit_yes > 0 {
-            let utxo =
-                self.select_funding_utxo(&pool_params.yes_asset_id, deposit_yes, &exclude)?;
-            exclude.push(utxo.outpoint);
-            deposit_utxos.push(utxo);
-        }
-        if deposit_no > 0 {
-            let utxo = self.select_funding_utxo(&pool_params.no_asset_id, deposit_no, &exclude)?;
-            exclude.push(utxo.outpoint);
-            deposit_utxos.push(utxo);
-        }
-        if deposit_lbtc > 0 {
-            let utxo =
-                self.select_funding_utxo(&pool_params.lbtc_asset_id, deposit_lbtc, &exclude)?;
-            exclude.push(utxo.outpoint);
-            deposit_utxos.push(utxo);
-        }
-
-        let (fee_utxo, change_addr) = self.select_fee_utxo_excluding(fee_amount, &exclude)?;
-        let change_spk = change_addr.script_pubkey();
-        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
-
-        let deposit_params = crate::amm_pool::pset::lp_deposit::LpDepositParams {
-            pool_yes_utxo: pool_yes,
-            pool_no_utxo: pool_no,
-            pool_lbtc_utxo: pool_lbtc,
-            pool_lp_rt_utxo: pool_rt.clone(),
-            issued_lp,
-            deposit_utxos,
-            new_r_yes,
-            new_r_no,
-            new_r_lbtc,
-            lp_mint_amount,
-            lp_token_destination: change_spk.clone(),
-            change_destination: Some(change_spk),
-            fee_utxo,
-            fee_amount,
-            fee_asset_id: policy_bytes,
-            lp_issuance_blinding_nonce: lp_entropy.blinding_nonce,
-            lp_issuance_asset_entropy: lp_entropy.entropy,
-        };
-
-        let new_issued_lp = issued_lp
-            .checked_add(lp_mint_amount)
-            .ok_or_else(|| Error::AmmPool("issued_lp overflow".into()))?;
-
-        let mut pset =
-            crate::amm_pool::pset::lp_deposit::build_lp_deposit_pset(&contract, &deposit_params)?;
-
-        // Blind wallet-destination outputs AND the RT output (index 3).
-        //
-        // The RT output is a Null placeholder from the PSET builder.
-        // Like pool creation, we must fill it and set blinded_issuance
-        // before calling blind_last().
-        {
-            let lp_rt_id = AssetId::from_slice(&pool_params.lp_reissuance_token_id)
-                .map_err(|e| Error::Blinding(format!("bad LP RT asset: {e}")))?;
-
-            let blinding_pk = change_addr
-                .blinding_pubkey
-                .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
-            let pset_blinding_key = lwk_wollet::elements::bitcoin::PublicKey {
-                inner: blinding_pk,
-                compressed: true,
-            };
-
-            // Fill the Null RT output (output 3)
-            let outputs = pset.outputs_mut();
-            outputs[3].amount = Some(1);
-            outputs[3].asset = Some(lp_rt_id);
-            outputs[3].blinding_key = Some(pset_blinding_key);
-            outputs[3].blinder_index = Some(0);
-
-            // Set blinded_issuance on input 3 (required by blind_last for reissuance)
-            pset.inputs_mut()[3].blinded_issuance = Some(0x00);
-
-            let mut all_inputs: Vec<(usize, &UnblindedUtxo)> = vec![
-                (0, &deposit_params.pool_yes_utxo),
-                (1, &deposit_params.pool_no_utxo),
-                (2, &deposit_params.pool_lbtc_utxo),
-                (3, &deposit_params.pool_lp_rt_utxo),
-            ];
-            for (i, utxo) in deposit_params.deposit_utxos.iter().enumerate() {
-                all_inputs.push((4 + i, utxo));
-            }
-            all_inputs.push((
-                4 + deposit_params.deposit_utxos.len(),
-                &deposit_params.fee_utxo,
-            ));
-            let n_outputs = pset.n_outputs();
-            // Blind RT (3) + wallet outputs (4+), skip reserves (0-2) and fee (last)
-            let blind_indices: Vec<usize> = (3..n_outputs - 1).collect();
-            self.blind_pool_pset(&mut pset, &all_inputs, &blind_indices, &change_addr)?;
-        }
-
-        // Extract the RT output blinding factors, then attach witnesses.
-        let rt_txout = pset.outputs()[3].to_txout();
-        let (_, _, rt_out_abf, rt_out_vbf) = self.unblind_covenant_utxo(&rt_txout)?;
-
-        let rt_bf = crate::amm_pool::witness::RtBlindingFactors {
-            input_abf: pool_rt.asset_blinding_factor,
-            input_vbf: pool_rt.value_blinding_factor,
-            output_abf: rt_out_abf,
-            output_vbf: rt_out_vbf,
-        };
-        let spending_path = crate::amm_pool::witness::AmmPoolSpendingPath::LpDepositWithdraw {
-            issued_lp,
-            blinding: rt_bf,
-        };
-        crate::amm_pool::assembly::attach_amm_pool_witnesses(
-            &mut pset,
-            &contract,
-            issued_lp,
-            spending_path,
-        )?;
-
-        let tx = self.sign_pset(pset)?;
-        let txid = self.broadcast_and_sync(&tx)?;
-
-        Ok(PoolLpResult {
-            txid,
-            new_issued_lp,
-            new_reserves: PoolReserves {
-                r_yes: new_r_yes,
-                r_no: new_r_no,
-                r_lbtc: new_r_lbtc,
-            },
-        })
-    }
-
-    /// Withdraw liquidity from an AMM pool (burn LP tokens).
-    pub fn pool_lp_withdraw(
-        &mut self,
-        pool_params: &crate::amm_pool::params::AmmPoolParams,
-        issued_lp: u64,
-        lp_burn_amount: u64,
-        fee_amount: u64,
-    ) -> Result<PoolLpResult> {
-        use crate::amm_pool::math::{PoolReserves, compute_lp_proportional_withdraw};
-
-        self.sync()?;
-        let contract = crate::amm_pool::contract::CompiledAmmPool::new(*pool_params)?;
-
-        let (pool_yes, pool_no, pool_lbtc, pool_rt) = self.scan_pool_utxos(&contract, issued_lp)?;
-
-        let reserves = PoolReserves {
-            r_yes: pool_yes.value,
-            r_no: pool_no.value,
-            r_lbtc: pool_lbtc.value,
-        };
-
-        let withdrawn = compute_lp_proportional_withdraw(&reserves, issued_lp, lp_burn_amount)?;
-
-        let new_r_yes = reserves
-            .r_yes
-            .checked_sub(withdrawn.r_yes)
-            .ok_or_else(|| Error::AmmPool("reserve underflow (YES)".into()))?;
-        let new_r_no = reserves
-            .r_no
-            .checked_sub(withdrawn.r_no)
-            .ok_or_else(|| Error::AmmPool("reserve underflow (NO)".into()))?;
-        let new_r_lbtc = reserves
-            .r_lbtc
-            .checked_sub(withdrawn.r_lbtc)
-            .ok_or_else(|| Error::AmmPool("reserve underflow (LBTC)".into()))?;
-
-        // Find LP token UTXOs in wallet
-        let lp_token_utxos =
-            self.find_single_token_utxos(&pool_params.lp_asset_id, lp_burn_amount)?;
-
-        let exclude: Vec<OutPoint> = lp_token_utxos.iter().map(|u| u.outpoint).collect();
-        let (fee_utxo, change_addr) = self.select_fee_utxo_excluding(fee_amount, &exclude)?;
-        let change_spk = change_addr.script_pubkey();
-        let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
-
-        let new_issued_lp = issued_lp
-            .checked_sub(lp_burn_amount)
-            .ok_or_else(|| Error::AmmPool("issued_lp underflow".into()))?;
-
-        let withdraw_params = crate::amm_pool::pset::lp_withdraw::LpWithdrawParams {
-            pool_yes_utxo: pool_yes,
-            pool_no_utxo: pool_no,
-            pool_lbtc_utxo: pool_lbtc,
-            pool_lp_rt_utxo: pool_rt.clone(),
-            issued_lp,
-            lp_token_utxos,
-            lp_burn_amount,
-            new_r_yes,
-            new_r_no,
-            new_r_lbtc,
-            withdraw_destination: change_spk,
-            fee_utxo,
-            fee_amount,
-            fee_asset_id: policy_bytes,
-        };
-
-        let mut pset = crate::amm_pool::pset::lp_withdraw::build_lp_withdraw_pset(
-            &contract,
-            &withdraw_params,
-        )?;
-
-        // Blind wallet-destination outputs AND the RT output (index 3).
-        // Outputs 0-2 = reserves (explicit), 3 = RT (must be confidential),
-        // 4 = LP burn (OP_RETURN, not blinded), 5+ = wallet, last = fee.
-        {
-            let lp_rt_id = AssetId::from_slice(&pool_params.lp_reissuance_token_id)
-                .map_err(|e| Error::Blinding(format!("bad LP RT asset: {e}")))?;
-
-            // Fill the Null RT output placeholder (output 3).
-            let outputs = pset.outputs_mut();
-            outputs[3].amount = Some(1);
-            outputs[3].asset = Some(lp_rt_id);
-
-            let mut all_inputs: Vec<(usize, &UnblindedUtxo)> = vec![
-                (0, &withdraw_params.pool_yes_utxo),
-                (1, &withdraw_params.pool_no_utxo),
-                (2, &withdraw_params.pool_lbtc_utxo),
-                (3, &withdraw_params.pool_lp_rt_utxo),
-            ];
-            for (i, utxo) in withdraw_params.lp_token_utxos.iter().enumerate() {
-                all_inputs.push((4 + i, utxo));
-            }
-            all_inputs.push((
-                4 + withdraw_params.lp_token_utxos.len(),
-                &withdraw_params.fee_utxo,
-            ));
-            let n_outputs = pset.n_outputs();
-            // Blind RT (3) + wallet outputs (5+), skip reserves (0-2), LP burn (4), fee (last)
-            let mut blind_indices: Vec<usize> = vec![3];
-            blind_indices.extend(5..n_outputs - 1);
-            self.blind_pool_pset(&mut pset, &all_inputs, &blind_indices, &change_addr)?;
-        }
-
-        // Extract the RT output blinding factors, then attach witnesses.
-        let rt_txout = pset.outputs()[3].to_txout();
-        let (_, _, rt_out_abf, rt_out_vbf) = self.unblind_covenant_utxo(&rt_txout)?;
-
-        let rt_bf = crate::amm_pool::witness::RtBlindingFactors {
-            input_abf: pool_rt.asset_blinding_factor,
-            input_vbf: pool_rt.value_blinding_factor,
-            output_abf: rt_out_abf,
-            output_vbf: rt_out_vbf,
-        };
-        let spending_path = crate::amm_pool::witness::AmmPoolSpendingPath::LpDepositWithdraw {
-            issued_lp,
-            blinding: rt_bf,
-        };
-        crate::amm_pool::assembly::attach_amm_pool_witnesses(
-            &mut pset,
-            &contract,
-            issued_lp,
-            spending_path,
-        )?;
-
-        let tx = self.sign_pset(pset)?;
-        let txid = self.broadcast_and_sync(&tx)?;
-
-        Ok(PoolLpResult {
-            txid,
-            new_issued_lp,
-            new_reserves: PoolReserves {
-                r_yes: new_r_yes,
-                r_no: new_r_no,
-                r_lbtc: new_r_lbtc,
-            },
-        })
-    }
-
-    // ── Trade routing: combined AMM + limit order execution ──────────────
+    // ── Trade routing: combined LMSR + limit order execution ─────────────
 
     /// Execute a routed trade plan: build combined PSET, blind, attach
     /// Simplicity witnesses, sign, and broadcast.
@@ -2663,15 +1738,13 @@ impl DeadcatSdk {
 
         self.sync()?;
 
+        if let Some(ref lmsr_leg) = plan.lmsr_pool_leg {
+            self.validate_live_lmsr_reserve_anchors(lmsr_leg)?;
+        }
+
         let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
 
         // 1. Compile contracts
-        let pool_contract = plan
-            .pool_leg
-            .as_ref()
-            .map(|leg| crate::amm_pool::contract::CompiledAmmPool::new(leg.pool_params))
-            .transpose()?;
-
         let order_contracts: Vec<CompiledMakerOrder> = plan
             .order_legs
             .iter()
@@ -2680,11 +1753,10 @@ impl DeadcatSdk {
 
         // 2. Collect outpoints to exclude from wallet UTXO selection
         let mut exclude: Vec<OutPoint> = Vec::new();
-        if let Some(ref pool_leg) = plan.pool_leg {
-            exclude.push(pool_leg.pool_utxos.yes.outpoint);
-            exclude.push(pool_leg.pool_utxos.no.outpoint);
-            exclude.push(pool_leg.pool_utxos.lbtc.outpoint);
-            exclude.push(pool_leg.pool_utxos.rt.outpoint);
+        if let Some(ref lmsr_leg) = plan.lmsr_pool_leg {
+            exclude.push(lmsr_leg.pool_utxos.yes.outpoint);
+            exclude.push(lmsr_leg.pool_utxos.no.outpoint);
+            exclude.push(lmsr_leg.pool_utxos.collateral.outpoint);
         }
         for leg in &plan.order_legs {
             exclude.push(leg.order_utxo.outpoint);
@@ -2708,7 +1780,6 @@ impl DeadcatSdk {
         // 5. Build combined PSET
         let pset_result = build_trade_pset(&TradePsetParams {
             plan,
-            pool_contract: pool_contract.as_ref(),
             order_contracts: &order_contracts,
             taker_funding_utxos: vec![taker_funding],
             fee_utxo,
@@ -2719,24 +1790,8 @@ impl DeadcatSdk {
         })?;
         let mut pset = pset_result.pset;
 
-        // 6. Blind wallet-destination outputs (and RT output when pool leg present).
-        //
-        // The AMM pool covenant expects the RT output (index 3) to be a
-        // confidential Pedersen commitment.  Pool creation blinds it via
-        // blind_last(), so the on-chain RT UTXO is confidential.  We must
-        // keep it confidential when cycling it through the swap/trade tx.
-        let mut blind_indices = pset_result.blind_output_indices.clone();
-        if let Some(ref pool_leg) = plan.pool_leg {
-            // Fill the Null RT output placeholder (output 3).
-            let lp_rt_id = AssetId::from_slice(&pool_leg.pool_params.lp_reissuance_token_id)
-                .map_err(|e| Error::Blinding(format!("bad LP RT asset: {e}")))?;
-            let outputs = pset.outputs_mut();
-            outputs[3].amount = Some(1);
-            outputs[3].asset = Some(lp_rt_id);
-
-            blind_indices.push(3);
-            blind_indices.sort_unstable();
-        }
+        // 6. Blind wallet-destination outputs.
+        let blind_indices = pset_result.blind_output_indices.clone();
         self.blind_order_pset(
             &mut pset,
             &pset_result.all_input_utxos,
@@ -2744,32 +1799,17 @@ impl DeadcatSdk {
             &change_addr,
         )?;
 
-        // 7. Attach AMM pool witnesses (if pool leg present)
-        if let Some(ref pool_leg) = plan.pool_leg {
-            let contract = pool_contract.as_ref().unwrap();
-
-            // Extract the blinding factors that blind_last() chose for
-            // output 3 (the RT).  The covenant witness needs them to
-            // verify the Pedersen commitment.
-            let rt_txout = pset.outputs()[3].to_txout();
-            let (_, _, rt_out_abf, rt_out_vbf) = self.unblind_covenant_utxo(&rt_txout)?;
-
-            let rt_bf = crate::amm_pool::witness::RtBlindingFactors {
-                input_abf: pool_leg.pool_utxos.rt.asset_blinding_factor,
-                input_vbf: pool_leg.pool_utxos.rt.value_blinding_factor,
-                output_abf: rt_out_abf,
-                output_vbf: rt_out_vbf,
-            };
-            let spending_path = crate::amm_pool::witness::AmmPoolSpendingPath::Swap {
-                swap_pair: pool_leg.swap_pair,
-                issued_lp: pool_leg.issued_lp,
-                blinding: rt_bf,
-            };
-            crate::amm_pool::assembly::attach_amm_pool_witnesses(
+        // 7. Attach LMSR pool witnesses (if LMSR leg present)
+        if let Some(ref lmsr_leg) = plan.lmsr_pool_leg {
+            let lmsr_input_range = pset_result.lmsr_input_range.clone().ok_or_else(|| {
+                Error::TradeRouting(
+                    "internal error: missing lmsr_input_range for LMSR pool leg".into(),
+                )
+            })?;
+            crate::lmsr_pool::assembly::attach_lmsr_pool_witnesses(
                 &mut pset,
-                contract,
-                pool_leg.issued_lp,
-                spending_path,
+                lmsr_leg,
+                lmsr_input_range,
             )?;
         }
 
@@ -2839,9 +1879,43 @@ impl DeadcatSdk {
             total_input: plan.total_taker_input,
             total_output: plan.total_taker_output,
             num_orders_filled: plan.order_legs.len(),
-            pool_used: plan.pool_leg.is_some(),
-            new_reserves: plan.pool_leg.as_ref().map(|l| l.new_reserves),
+            pool_used: plan.lmsr_pool_leg.is_some(),
+            new_reserves: None,
         })
+    }
+
+    fn validate_live_lmsr_reserve_anchors(
+        &self,
+        leg: &crate::trade::types::LmsrPoolSwapLeg,
+    ) -> Result<()> {
+        let contract = CompiledLmsrPool::new(leg.pool_params)?;
+        let old_spk = contract.script_pubkey(leg.old_s_index);
+        let live = self.scan_covenant_utxos(&old_spk)?;
+        let expected = [
+            (&leg.pool_utxos.yes, "YES"),
+            (&leg.pool_utxos.no, "NO"),
+            (&leg.pool_utxos.collateral, "collateral"),
+        ];
+        for (utxo, role) in expected {
+            let Some((_, live_txout)) =
+                live.iter().find(|(outpoint, _)| *outpoint == utxo.outpoint)
+            else {
+                return Err(Error::TradeRouting(format!(
+                    "stale/non-canonical LMSR reserve anchors: {role} outpoint {} is no longer live",
+                    utxo.outpoint
+                )));
+            };
+            if live_txout.asset != utxo.txout.asset
+                || live_txout.value != utxo.txout.value
+                || live_txout.script_pubkey != utxo.txout.script_pubkey
+            {
+                return Err(Error::TradeRouting(format!(
+                    "stale/non-canonical LMSR reserve anchors: {role} outpoint {} changed on chain",
+                    utxo.outpoint
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Find the explicit collateral UTXO from a set of covenant UTXOs.
@@ -2986,6 +2060,228 @@ impl DeadcatSdk {
         self.chain.scan_script_utxos(script_pubkey)
     }
 
+    /// Scan LMSR pool reserves using canonical outpoint lineage.
+    ///
+    /// The tracker starts from the three canonical reserve anchors and advances
+    /// by following transactions that spend the full reserve bundle.
+    pub(crate) fn scan_lmsr_pool_state(
+        &self,
+        params: LmsrPoolParams,
+        creation_txid: [u8; 32],
+        initial_reserve_outpoints: [LmsrInitialOutpoint; 3],
+        hinted_s_index: u64,
+        witness_schema_version: &str,
+    ) -> Result<LmsrPoolScanResult> {
+        let parse_txid = |label: &str, bytes: [u8; 32]| -> Result<Txid> {
+            let txid_hex = hex::encode(bytes);
+            txid_hex
+                .parse::<Txid>()
+                .map_err(|e| Error::TradeRouting(format!("invalid {label} txid '{txid_hex}': {e}")))
+        };
+
+        let contract = CompiledLmsrPool::new(params)?;
+        let mut hinted_s_index = hinted_s_index;
+        let creation_txid_bytes = creation_txid;
+        for (idx, outpoint) in initial_reserve_outpoints.iter().enumerate() {
+            if outpoint.txid != creation_txid_bytes {
+                return Err(Error::TradeRouting(format!(
+                    "initial_reserve_outpoints[{idx}] txid must match creation_txid"
+                )));
+            }
+        }
+        let creation_txid = parse_txid("creation_txid", creation_txid_bytes)?;
+        let creation_tx = self.fetch_transaction(&creation_txid)?;
+        let expected_assets = [
+            params.yes_asset_id,
+            params.no_asset_id,
+            params.collateral_asset_id,
+        ];
+        let first_vout = initial_reserve_outpoints[0].vout;
+        let first_script = creation_tx
+            .output
+            .get(first_vout as usize)
+            .ok_or_else(|| {
+                Error::TradeRouting(format!(
+                    "creation_txid output {first_vout} missing for initial_reserve_outpoints[0]"
+                ))
+            })?
+            .script_pubkey
+            .clone();
+        for (idx, outpoint) in initial_reserve_outpoints.iter().enumerate() {
+            let out = creation_tx
+                .output
+                .get(outpoint.vout as usize)
+                .ok_or_else(|| {
+                    Error::TradeRouting(format!(
+                        "creation_txid output {} missing for initial_reserve_outpoints[{idx}]",
+                        outpoint.vout
+                    ))
+                })?;
+            let asset = match out.asset {
+                Asset::Explicit(asset) => asset.into_inner().to_byte_array(),
+                _ => {
+                    return Err(Error::TradeRouting(format!(
+                        "creation_txid output {} asset must be explicit for LMSR anchors",
+                        outpoint.vout
+                    )));
+                }
+            };
+            if asset != expected_assets[idx] {
+                return Err(Error::TradeRouting(format!(
+                    "creation_txid output {} asset mismatch for LMSR anchor slot {idx}",
+                    outpoint.vout
+                )));
+            }
+            if out.script_pubkey != first_script {
+                return Err(Error::TradeRouting(
+                    "creation_txid LMSR anchor outputs must share the same script".into(),
+                ));
+            }
+        }
+
+        let yes_txid = parse_txid(
+            "initial_reserve_outpoints[0]",
+            initial_reserve_outpoints[0].txid,
+        )?;
+        let no_txid = parse_txid(
+            "initial_reserve_outpoints[1]",
+            initial_reserve_outpoints[1].txid,
+        )?;
+        let collateral_txid = parse_txid(
+            "initial_reserve_outpoints[2]",
+            initial_reserve_outpoints[2].txid,
+        )?;
+
+        let mut bundle = [
+            OutPoint::new(yes_txid, initial_reserve_outpoints[0].vout),
+            OutPoint::new(no_txid, initial_reserve_outpoints[1].vout),
+            OutPoint::new(collateral_txid, initial_reserve_outpoints[2].vout),
+        ];
+
+        let mut safety_steps: u32 = 0;
+        loop {
+            safety_steps = safety_steps.saturating_add(1);
+            if safety_steps > 512 {
+                return Err(Error::TradeRouting(
+                    "LMSR canonical bundle walk exceeded step limit".into(),
+                ));
+            }
+
+            let yes_tx = self.fetch_transaction(&bundle[0].txid)?;
+            let no_tx = self.fetch_transaction(&bundle[1].txid)?;
+            let collateral_tx = self.fetch_transaction(&bundle[2].txid)?;
+
+            let yes_txout = yes_tx
+                .output
+                .get(bundle[0].vout as usize)
+                .ok_or_else(|| {
+                    Error::TradeRouting("YES reserve outpoint vout out of range".into())
+                })?
+                .clone();
+            let no_txout = no_tx
+                .output
+                .get(bundle[1].vout as usize)
+                .ok_or_else(|| Error::TradeRouting("NO reserve outpoint vout out of range".into()))?
+                .clone();
+            let collateral_txout = collateral_tx
+                .output
+                .get(bundle[2].vout as usize)
+                .ok_or_else(|| {
+                    Error::TradeRouting("collateral reserve outpoint vout out of range".into())
+                })?
+                .clone();
+
+            if yes_txout.script_pubkey != no_txout.script_pubkey
+                || yes_txout.script_pubkey != collateral_txout.script_pubkey
+            {
+                return Err(Error::TradeRouting(
+                    "canonical LMSR reserve scripts do not match".into(),
+                ));
+            }
+            let current_script = yes_txout.script_pubkey.clone();
+            let current_s_index =
+                find_lmsr_state_index_by_script(&contract, hinted_s_index, &current_script)?;
+
+            let history_txids = self.chain.script_history_txids(&current_script)?;
+            let mut spenders = Vec::new();
+            for txid in history_txids {
+                let tx = self.fetch_transaction(&txid)?;
+                let spends_yes = tx.input.iter().any(|i| i.previous_output == bundle[0]);
+                let spends_no = tx.input.iter().any(|i| i.previous_output == bundle[1]);
+                let spends_collateral = tx.input.iter().any(|i| i.previous_output == bundle[2]);
+
+                if spends_yes || spends_no || spends_collateral {
+                    if !(spends_yes && spends_no && spends_collateral) {
+                        return Err(Error::TradeRouting(
+                            "partial spend of canonical LMSR reserve bundle detected".into(),
+                        ));
+                    }
+                    spenders.push(tx);
+                }
+            }
+
+            if spenders.is_empty() {
+                let (pool_utxos, reserves) = make_live_reserve_bundle(
+                    bundle,
+                    yes_txout,
+                    no_txout,
+                    collateral_txout,
+                    contract.params(),
+                )?;
+                return Ok(LmsrPoolScanResult {
+                    current_s_index,
+                    pool_utxos,
+                    reserves,
+                });
+            }
+
+            if spenders.len() > 1 {
+                return Err(Error::TradeRouting(
+                    "ambiguous LMSR transition: multiple transactions spend canonical reserve bundle"
+                        .into(),
+                ));
+            }
+
+            let spend_tx = spenders.remove(0);
+            let payload = decode_primary_witness_payload_from_spend_tx(
+                &spend_tx,
+                bundle[0],
+                &contract,
+                witness_schema_version,
+            )?;
+            if payload.old_s_index != current_s_index {
+                return Err(Error::TradeRouting(format!(
+                    "LMSR witness OLD_S_INDEX {} does not match canonical script-derived state {}",
+                    payload.old_s_index, current_s_index
+                )));
+            }
+            if payload.path_tag == 0 && payload.new_s_index == payload.old_s_index {
+                return Err(Error::TradeRouting(
+                    "invalid LMSR swap payload: NEW_S_INDEX must differ from OLD_S_INDEX".into(),
+                ));
+            }
+            if payload.path_tag == 1 && payload.new_s_index != payload.old_s_index {
+                return Err(Error::TradeRouting(
+                    "invalid LMSR admin payload: NEW_S_INDEX must equal OLD_S_INDEX".into(),
+                ));
+            }
+            let (next_bundle_utxos, _, next_script) =
+                extract_reserve_window(&spend_tx, payload.out_base, contract.params())?;
+            let expected_next_script = contract.script_pubkey(payload.new_s_index);
+            if next_script != expected_next_script {
+                return Err(Error::TradeRouting(
+                    "LMSR transition output script does not match witness NEW_S_INDEX".into(),
+                ));
+            }
+            bundle = [
+                next_bundle_utxos.yes.outpoint,
+                next_bundle_utxos.no.outpoint,
+                next_bundle_utxos.collateral.outpoint,
+            ];
+            hinted_s_index = payload.new_s_index;
+        }
+    }
+
     /// Unblind a confidential covenant UTXO by trying wallet blinding keys.
     ///
     /// During creation/issuance, reissuance token outputs are blinded using the
@@ -3056,6 +2352,103 @@ fn validate_market_creation_tx(params: &PredictionMarketParams, tx: &Transaction
     });
 
     Ok(valid)
+}
+
+fn find_lmsr_state_index_by_script(
+    contract: &CompiledLmsrPool,
+    hinted_s_index: u64,
+    script: &Script,
+) -> Result<u64> {
+    if hinted_s_index <= contract.params().s_max_index
+        && contract.script_pubkey(hinted_s_index) == *script
+    {
+        return Ok(hinted_s_index);
+    }
+
+    let mut found: Option<u64> = None;
+    for idx in 0..=contract.params().s_max_index {
+        if contract.script_pubkey(idx) == *script {
+            if found.is_some() {
+                return Err(Error::TradeRouting(
+                    "ambiguous LMSR script match across multiple S_INDEX values".into(),
+                ));
+            }
+            found = Some(idx);
+        }
+    }
+
+    found.ok_or_else(|| Error::TradeRouting("unable to derive LMSR S_INDEX from script".into()))
+}
+
+fn make_live_reserve_bundle(
+    bundle: [OutPoint; 3],
+    yes_txout: TxOut,
+    no_txout: TxOut,
+    collateral_txout: TxOut,
+    params: &LmsrPoolParams,
+) -> Result<(crate::trade::types::LmsrPoolUtxos, PoolReserves)> {
+    use lwk_wollet::elements::confidential::{Asset, Value as ConfValue};
+
+    let build = |name: &str,
+                 outpoint: OutPoint,
+                 txout: TxOut,
+                 expected_asset: [u8; 32]|
+     -> Result<UnblindedUtxo> {
+        let asset = match txout.asset {
+            Asset::Explicit(asset) => asset,
+            _ => {
+                return Err(Error::TradeRouting(format!(
+                    "{name} reserve asset must be explicit"
+                )));
+            }
+        };
+        let value = match txout.value {
+            ConfValue::Explicit(v) => v,
+            _ => {
+                return Err(Error::TradeRouting(format!(
+                    "{name} reserve value must be explicit"
+                )));
+            }
+        };
+        let asset_id = asset.into_inner().to_byte_array();
+        if asset_id != expected_asset {
+            return Err(Error::TradeRouting(format!(
+                "{name} reserve asset mismatch"
+            )));
+        }
+        Ok(UnblindedUtxo {
+            outpoint,
+            txout,
+            asset_id,
+            value,
+            asset_blinding_factor: [0u8; 32],
+            value_blinding_factor: [0u8; 32],
+        })
+    };
+
+    let yes = build("YES", bundle[0], yes_txout, params.yes_asset_id)?;
+    let no = build("NO", bundle[1], no_txout, params.no_asset_id)?;
+    let collateral = build(
+        "collateral",
+        bundle[2],
+        collateral_txout,
+        params.collateral_asset_id,
+    )?;
+
+    let reserves = PoolReserves {
+        r_yes: yes.value,
+        r_no: no.value,
+        r_lbtc: collateral.value,
+    };
+
+    Ok((
+        crate::trade::types::LmsrPoolUtxos {
+            yes,
+            no,
+            collateral,
+        },
+        reserves,
+    ))
 }
 
 /// Convert a LWK `WalletTxOut` + full `TxOut` into the SDK's `UnblindedUtxo`.

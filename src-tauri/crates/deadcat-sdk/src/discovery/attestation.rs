@@ -2,10 +2,11 @@ use nostr_sdk::prelude::*;
 use nostr_sdk::secp256k1;
 use serde::{Deserialize, Serialize};
 
+use crate::network::Network;
 use crate::prediction_market::oracle::oracle_message;
 use crate::prediction_market::params::MarketId;
 
-use super::{APP_EVENT_KIND, ATTESTATION_TAG, NETWORK_TAG};
+use super::{APP_EVENT_KIND, ATTESTATION_TAG};
 
 /// Content of an attestation event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,7 +34,11 @@ pub fn build_attestation_event(
     outcome_yes: bool,
     signature_hex: &str,
     message_hex: &str,
+    network_tag: &str,
 ) -> Result<Event, String> {
+    network_tag
+        .parse::<Network>()
+        .map_err(|e| format!("unsupported network tag '{network_tag}': {e}"))?;
     let d_tag = format!("{market_id_hex}:attestation");
 
     let content = serde_json::to_string(&AttestationContent {
@@ -54,7 +59,7 @@ pub fn build_attestation_event(
                 .map_err(|e| format!("invalid event id: {e}"))?,
         ),
         Tag::custom(TagKind::custom("outcome"), vec![outcome_str.to_string()]),
-        Tag::custom(TagKind::custom("network"), vec![NETWORK_TAG.to_string()]),
+        Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
     ];
 
     let event = EventBuilder::new(APP_EVENT_KIND, &content)
@@ -79,8 +84,32 @@ pub fn build_attestation_subscription_filter() -> Filter {
     Filter::new().kind(APP_EVENT_KIND).hashtag(ATTESTATION_TAG)
 }
 
+fn event_network_tag(event: &Event) -> Option<String> {
+    event.tags.iter().find_map(|tag| {
+        let fields = tag.as_slice();
+        if fields.len() >= 2 && fields[0] == "network" {
+            Some(fields[1].to_string())
+        } else {
+            None
+        }
+    })
+}
+
 /// Parse a Nostr event into an AttestationContent.
-pub fn parse_attestation_event(event: &Event) -> Result<AttestationContent, String> {
+pub fn parse_attestation_event(
+    event: &Event,
+    expected_network_tag: &str,
+) -> Result<AttestationContent, String> {
+    expected_network_tag
+        .parse::<Network>()
+        .map_err(|e| format!("unsupported network tag '{expected_network_tag}': {e}"))?;
+    let network_tag = event_network_tag(event)
+        .ok_or_else(|| "missing network tag for attestation event".to_string())?;
+    if network_tag != expected_network_tag {
+        return Err(format!(
+            "unsupported network tag for attestation event: {network_tag}"
+        ));
+    }
     serde_json::from_str(&event.content).map_err(|e| format!("failed to parse attestation: {e}"))
 }
 
@@ -145,5 +174,26 @@ mod tests {
 
         assert_ne!(msg_yes, msg_no);
         assert_ne!(sig_yes, sig_no);
+    }
+
+    #[test]
+    fn parse_attestation_event_rejects_network_mismatch() {
+        let keys = Keys::generate();
+        let event = build_attestation_event(
+            &keys,
+            "abcd1234",
+            &EventId::all_zeros().to_hex(),
+            true,
+            &hex::encode([0x11; 64]),
+            &hex::encode([0x22; 32]),
+            "liquid-testnet",
+        )
+        .unwrap();
+
+        let err = parse_attestation_event(&event, "liquid-regtest").unwrap_err();
+        assert!(
+            err.contains("unsupported network tag for attestation event"),
+            "unexpected error: {err}"
+        );
     }
 }

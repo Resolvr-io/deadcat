@@ -9,6 +9,8 @@ use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
 use nostr_sdk::secp256k1;
 
+const NETWORK_TAG: &str = "liquid-testnet";
+
 fn test_metadata() -> ContractMetadata {
     ContractMetadata {
         question: "Will BTC close above $120k by Dec 2026?".to_string(),
@@ -54,7 +56,7 @@ async fn publish_discover_roundtrip() {
         creation_txid: Some("abc123def456".to_string()),
     };
 
-    let event = build_announcement_event(&keys, &announcement).unwrap();
+    let event = build_announcement_event(&keys, &announcement, NETWORK_TAG).unwrap();
 
     // Connect client and publish
     let client = Client::new(keys.clone());
@@ -77,7 +79,7 @@ async fn publish_discover_roundtrip() {
 
     // Parse and verify
     let fetched_event = events.iter().next().unwrap();
-    let market = parse_announcement_event(fetched_event).unwrap();
+    let market = parse_announcement_event(fetched_event, NETWORK_TAG).unwrap();
 
     assert_eq!(market.question, "Will BTC close above $120k by Dec 2026?");
     assert_eq!(market.category, "Bitcoin");
@@ -119,7 +121,7 @@ async fn oracle_attestation_roundtrip() {
         creation_txid: None,
     };
 
-    let ann_event = build_announcement_event(&keys, &announcement).unwrap();
+    let ann_event = build_announcement_event(&keys, &announcement, NETWORK_TAG).unwrap();
     let ann_event_id = ann_event.id.to_hex();
 
     let client = Client::new(keys.clone());
@@ -142,6 +144,7 @@ async fn oracle_attestation_roundtrip() {
         true,
         &sig_hex,
         &msg_hex,
+        NETWORK_TAG,
     )
     .unwrap();
 

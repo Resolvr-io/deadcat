@@ -279,7 +279,9 @@ use nostr_sdk::Keys;
 
 use crate::announcement::ContractMetadata;
 use crate::discovery::OrderAnnouncement;
-use crate::discovery::store_trait::{DiscoveredMarketMetadata, DiscoveryStore};
+use crate::discovery::store_trait::{
+    ContractMetadataInput, DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateUpdateInput,
+};
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
 use crate::prediction_market::params::PredictionMarketParams;
 use crate::taproot::NUMS_KEY_BYTES;
@@ -297,7 +299,7 @@ impl DiscoveryStore for TestStore {
     fn ingest_market(
         &mut self,
         params: &PredictionMarketParams,
-        _meta: Option<&DiscoveredMarketMetadata>,
+        _meta: Option<&ContractMetadataInput>,
     ) -> std::result::Result<(), String> {
         let mid = params.market_id();
         if !self.markets.iter().any(|p| p.market_id() == mid) {
@@ -319,89 +321,18 @@ impl DiscoveryStore for TestStore {
         Ok(())
     }
 
-    fn ingest_amm_pool(
+    fn ingest_lmsr_pool(
         &mut self,
-        _params: &crate::amm_pool::params::AmmPoolParams,
-        _issued_lp: u64,
-        _nostr_event_id: Option<&str>,
-        _nostr_event_json: Option<&str>,
-        _market_id: Option<&[u8; 32]>,
-        _creation_txid: Option<&[u8; 32]>,
+        _input: &LmsrPoolIngestInput,
     ) -> std::result::Result<(), String> {
         Ok(())
     }
 
-    fn update_pool_state(
+    fn upsert_lmsr_pool_state(
         &mut self,
-        _pool_id: &crate::amm_pool::params::PoolId,
-        _params: &crate::amm_pool::params::AmmPoolParams,
-        _issued_lp: u64,
+        _input: &LmsrPoolStateUpdateInput,
     ) -> std::result::Result<(), String> {
         Ok(())
-    }
-
-    fn get_pool_info(
-        &mut self,
-        _pool_id: &crate::amm_pool::params::PoolId,
-    ) -> std::result::Result<Option<crate::discovery::store_trait::PoolInfo>, String> {
-        Ok(None)
-    }
-
-    fn get_latest_pool_snapshot_resume(
-        &mut self,
-        _pool_id: &[u8; 32],
-    ) -> std::result::Result<Option<([u8; 32], u64)>, String> {
-        Ok(None)
-    }
-
-    fn insert_pool_snapshot(
-        &mut self,
-        _pool_id: &[u8; 32],
-        _txid: &[u8; 32],
-        _r_yes: u64,
-        _r_no: u64,
-        _r_lbtc: u64,
-        _issued_lp: u64,
-        _block_height: Option<i32>,
-    ) -> std::result::Result<(), String> {
-        Ok(())
-    }
-
-    fn get_pool_id_for_market(
-        &mut self,
-        _market_id: &crate::prediction_market::params::MarketId,
-    ) -> std::result::Result<Option<crate::amm_pool::params::PoolId>, String> {
-        Ok(None)
-    }
-
-    fn get_latest_pool_snapshot(
-        &mut self,
-        _pool_id: &crate::amm_pool::params::PoolId,
-    ) -> std::result::Result<Option<crate::discovery::store_trait::PoolSnapshot>, String> {
-        Ok(None)
-    }
-
-    fn get_pool_snapshot_history(
-        &mut self,
-        _pool_id: &crate::amm_pool::params::PoolId,
-    ) -> std::result::Result<Vec<crate::discovery::store_trait::PoolSnapshot>, String> {
-        Ok(vec![])
-    }
-
-    fn get_all_market_spks(
-        &mut self,
-    ) -> std::result::Result<Vec<([u8; 32], Vec<Vec<u8>>)>, String> {
-        Ok(vec![])
-    }
-
-    fn get_all_pool_watch_info(
-        &mut self,
-    ) -> std::result::Result<Vec<(crate::amm_pool::params::PoolId, Vec<u8>)>, String> {
-        Ok(vec![])
-    }
-
-    fn get_all_nostr_events(&mut self) -> std::result::Result<Vec<String>, String> {
-        Ok(vec![])
     }
 }
 
@@ -460,8 +391,6 @@ pub fn oracle_pubkey_from_keys(keys: &Keys) -> [u8; 32] {
 
 /// Build a test order announcement for a given market ID.
 pub fn test_order_announcement(market_id: &str) -> OrderAnnouncement {
-    let maker_base_pubkey = hex::encode([0xaa; 32]);
-    let order_nonce = hex::encode([0x11; 32]);
     let (params, _) = MakerOrderParams::new(
         [0x01; 32],
         [0xbb; 32],
@@ -475,11 +404,10 @@ pub fn test_order_announcement(market_id: &str) -> OrderAnnouncement {
     );
     OrderAnnouncement {
         version: 1,
-        order_uid: crate::discovery::derive_order_uid(market_id, &maker_base_pubkey, &order_nonce),
         params,
         market_id: market_id.to_string(),
-        maker_base_pubkey,
-        order_nonce,
+        maker_base_pubkey: hex::encode([0xaa; 32]),
+        order_nonce: hex::encode([0x11; 32]),
         covenant_address: "tex1qtest".to_string(),
         offered_amount: 100,
         direction_label: "sell-yes".to_string(),

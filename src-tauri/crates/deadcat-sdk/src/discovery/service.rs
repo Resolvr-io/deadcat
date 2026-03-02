@@ -1,5 +1,5 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use nostr_sdk::prelude::*;
 use tokio::sync::broadcast;
@@ -19,37 +19,14 @@ use super::market::{
 use super::pool::{
     DiscoveredPool, PoolAnnouncement, build_pool_event, build_pool_filter, parse_pool_event,
 };
-use super::store_trait::{DiscoveredMarketMetadata, DiscoveryStore};
+use super::store_trait::{
+    ContractMetadataInput, DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource,
+    LmsrPoolStateUpdateInput,
+};
 use super::{
     ATTESTATION_TAG, CONTRACT_TAG, DiscoveredOrder, ORDER_TAG, OrderAnnouncement, POOL_TAG,
     build_order_event, build_order_filter, parse_order_event,
 };
-
-/// Decode a hex string into a fixed-size 32-byte array.
-fn hex_to_bytes32(hex_str: &str, field: &str) -> Result<[u8; 32], String> {
-    let bytes = hex::decode(hex_str).map_err(|e| format!("{field}: hex decode: {e}"))?;
-    bytes
-        .try_into()
-        .map_err(|_| format!("{field}: expected 32 bytes"))
-}
-
-/// Stats returned by `DiscoveryService::reconcile()`.
-#[derive(Debug, Clone, Default, serde::Serialize)]
-pub struct ReconciliationStats {
-    pub events_sent: usize,
-    pub events_failed: usize,
-    pub events_skipped: usize,
-}
-
-impl std::fmt::Display for ReconciliationStats {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "sent={}, failed={}, skipped={}",
-            self.events_sent, self.events_failed, self.events_skipped
-        )
-    }
-}
 
 /// Unified Nostr discovery service for markets, orders, and attestations.
 ///
@@ -70,7 +47,7 @@ impl DiscoveryStore for NoopStore {
     fn ingest_market(
         &mut self,
         _params: &crate::prediction_market::params::PredictionMarketParams,
-        _meta: Option<&DiscoveredMarketMetadata>,
+        _meta: Option<&ContractMetadataInput>,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -86,87 +63,12 @@ impl DiscoveryStore for NoopStore {
         Ok(())
     }
 
-    fn ingest_amm_pool(
-        &mut self,
-        _params: &crate::amm_pool::params::AmmPoolParams,
-        _issued_lp: u64,
-        _nostr_event_id: Option<&str>,
-        _nostr_event_json: Option<&str>,
-        _market_id: Option<&[u8; 32]>,
-        _creation_txid: Option<&[u8; 32]>,
-    ) -> Result<(), String> {
+    fn ingest_lmsr_pool(&mut self, _input: &LmsrPoolIngestInput) -> Result<(), String> {
         Ok(())
     }
 
-    fn update_pool_state(
-        &mut self,
-        _pool_id: &crate::amm_pool::params::PoolId,
-        _params: &crate::amm_pool::params::AmmPoolParams,
-        _issued_lp: u64,
-    ) -> Result<(), String> {
+    fn upsert_lmsr_pool_state(&mut self, _input: &LmsrPoolStateUpdateInput) -> Result<(), String> {
         Ok(())
-    }
-
-    fn get_pool_info(
-        &mut self,
-        _pool_id: &crate::amm_pool::params::PoolId,
-    ) -> Result<Option<super::store_trait::PoolInfo>, String> {
-        Ok(None)
-    }
-
-    fn get_latest_pool_snapshot_resume(
-        &mut self,
-        _pool_id: &[u8; 32],
-    ) -> Result<Option<([u8; 32], u64)>, String> {
-        Ok(None)
-    }
-
-    fn insert_pool_snapshot(
-        &mut self,
-        _pool_id: &[u8; 32],
-        _txid: &[u8; 32],
-        _r_yes: u64,
-        _r_no: u64,
-        _r_lbtc: u64,
-        _issued_lp: u64,
-        _block_height: Option<i32>,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn get_pool_id_for_market(
-        &mut self,
-        _market_id: &crate::prediction_market::params::MarketId,
-    ) -> Result<Option<crate::amm_pool::params::PoolId>, String> {
-        Ok(None)
-    }
-
-    fn get_latest_pool_snapshot(
-        &mut self,
-        _pool_id: &crate::amm_pool::params::PoolId,
-    ) -> Result<Option<super::store_trait::PoolSnapshot>, String> {
-        Ok(None)
-    }
-
-    fn get_pool_snapshot_history(
-        &mut self,
-        _pool_id: &crate::amm_pool::params::PoolId,
-    ) -> Result<Vec<super::store_trait::PoolSnapshot>, String> {
-        Ok(vec![])
-    }
-
-    fn get_all_market_spks(&mut self) -> Result<Vec<([u8; 32], Vec<Vec<u8>>)>, String> {
-        Ok(vec![])
-    }
-
-    fn get_all_pool_watch_info(
-        &mut self,
-    ) -> Result<Vec<(crate::amm_pool::params::PoolId, Vec<u8>)>, String> {
-        Ok(vec![])
-    }
-
-    fn get_all_nostr_events(&mut self) -> Result<Vec<String>, String> {
-        Ok(vec![])
     }
 }
 
@@ -231,16 +133,15 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
                 .await
                 .map_err(|e| format!("failed to add relay {url}: {e}"))?;
         }
-        self.client
-            .connect_with_timeout(Duration::from_secs(5))
-            .await;
+        self.client.connect().await;
 
         let client = self.client.clone();
         let store = self.store.clone();
         let tx = self.tx.clone();
+        let network_tag = self.config.network_tag.clone();
 
         let handle = tokio::spawn(async move {
-            run_subscription_loop(client, store, tx).await;
+            run_subscription_loop(client, store, tx, network_tag).await;
         });
 
         Ok(handle)
@@ -259,7 +160,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
 
         let mut markets = Vec::new();
         for event in events.iter() {
-            match parse_announcement_event(event) {
+            match parse_announcement_event(event, &self.config.network_tag) {
                 Ok(mut market) => {
                     market.nostr_event_json = serde_json::to_string(event).ok();
                     self.persist_market(&market);
@@ -294,7 +195,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
 
         let mut orders = Vec::new();
         for event in events.iter() {
-            match parse_order_event(event) {
+            match parse_order_event(event, &self.config.network_tag) {
                 Ok(mut order) => {
                     order.nostr_event_json = serde_json::to_string(event).ok();
                     self.persist_order(&order);
@@ -325,7 +226,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
 
         match events.iter().next() {
             Some(event) => {
-                let content = parse_attestation_event(event)?;
+                let content = parse_attestation_event(event, &self.config.network_tag)?;
                 Ok(Some(content))
             }
             None => Ok(None),
@@ -339,7 +240,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
     ) -> Result<EventId, String> {
         self.ensure_connected().await?;
 
-        let event = build_announcement_event(&self.keys, announcement)?;
+        let event = build_announcement_event(&self.keys, announcement, &self.config.network_tag)?;
         let output = self
             .client
             .send_event(event)
@@ -355,7 +256,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
     ) -> Result<EventId, String> {
         self.ensure_connected().await?;
 
-        let event = build_order_event(&self.keys, announcement)?;
+        let event = build_order_event(&self.keys, announcement, &self.config.network_tag)?;
         let output = self
             .client
             .send_event(event)
@@ -386,6 +287,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
             outcome_yes,
             &sig_hex,
             &msg_hex,
+            &self.config.network_tag,
         )?;
 
         let output = self
@@ -402,11 +304,11 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
         })
     }
 
-    /// Publish an AMM pool announcement to relays.
+    /// Publish a pool announcement to relays.
     pub async fn announce_pool(&self, announcement: &PoolAnnouncement) -> Result<EventId, String> {
         self.ensure_connected().await?;
 
-        let event = build_pool_event(&self.keys, announcement)?;
+        let event = build_pool_event(&self.keys, announcement, &self.config.network_tag)?;
         let output = self
             .client
             .send_event(event)
@@ -415,7 +317,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
         Ok(*output.id())
     }
 
-    /// One-shot: fetch AMM pools from relays, optionally for a specific market.
+    /// One-shot: fetch pools from relays, optionally for a specific market.
     pub async fn fetch_pools(
         &self,
         market_id_hex: Option<&str>,
@@ -431,10 +333,9 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
 
         let mut pools = Vec::new();
         for event in events.iter() {
-            match parse_pool_event(event) {
+            match parse_pool_event(event, &self.config.network_tag) {
                 Ok(mut pool) => {
                     pool.nostr_event_json = serde_json::to_string(event).ok();
-                    self.persist_pool(&pool);
                     pools.push(pool);
                 }
                 Err(e) => {
@@ -443,34 +344,12 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
             }
         }
 
-        Ok(pools)
-    }
-
-    /// Load all stored Nostr event JSON strings for reconciliation.
-    ///
-    /// Returns an empty vec if no store is configured.
-    pub fn load_all_nostr_events(&self) -> Result<Vec<String>, String> {
-        match self.store {
-            Some(ref store) => {
-                let mut s = store
-                    .lock()
-                    .map_err(|_| "store lock poisoned".to_string())?;
-                s.get_all_nostr_events()
-            }
-            None => Ok(vec![]),
+        let pools = dedup_latest_pools_by_id(pools);
+        for pool in &pools {
+            self.persist_pool(pool);
         }
-    }
 
-    /// Reconcile stored discovery events with relays.
-    ///
-    /// Reads all persisted Nostr event JSON from the store, deserializes each
-    /// into a signed `Event`, and re-sends it to connected relays. NIP-33
-    /// replaceable events make this idempotent — relays deduplicate by
-    /// (pubkey, kind, d-tag).
-    pub async fn reconcile(&self) -> Result<ReconciliationStats, String> {
-        self.ensure_connected().await?;
-        let event_jsons = self.load_all_nostr_events()?;
-        Ok(send_reconciliation_events(&self.client, &event_jsons).await)
+        Ok(pools)
     }
 
     /// Get a reference to the underlying Nostr client.
@@ -493,9 +372,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
                     .await
                     .map_err(|e| format!("failed to add relay {url}: {e}"))?;
             }
-            self.client
-                .connect_with_timeout(Duration::from_secs(5))
-                .await;
+            self.client.connect().await;
         }
         Ok(())
     }
@@ -509,52 +386,28 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
     }
 
     fn persist_pool(&self, pool: &DiscoveredPool) {
-        persist_pool_to_store(&self.store, pool);
+        persist_pool_to_store(&self.store, pool, &self.config.network_tag);
     }
-}
-
-/// Send pre-loaded Nostr event JSON strings to relays.
-///
-/// Each JSON string is deserialized into a signed `Event` and sent.
-/// Malformed JSON is skipped (counted in `events_skipped`).
-/// This is a standalone function so callers can drop borrows (e.g. a node
-/// mutex guard) before performing network I/O.
-pub async fn send_reconciliation_events(
-    client: &Client,
-    event_jsons: &[String],
-) -> ReconciliationStats {
-    let mut stats = ReconciliationStats::default();
-    for json in event_jsons {
-        let event: Event = match serde_json::from_str(json) {
-            Ok(e) => e,
-            Err(e) => {
-                log::warn!("reconcile: skipping unparseable event: {e}");
-                stats.events_skipped += 1;
-                continue;
-            }
-        };
-        match client.send_event(event).await {
-            Ok(_) => stats.events_sent += 1,
-            Err(e) => {
-                log::warn!("reconcile: failed to send event: {e}");
-                stats.events_failed += 1;
-            }
-        }
-    }
-    stats
 }
 
 /// Convert a DiscoveredMarket into ContractParams for store ingestion.
 pub fn discovered_market_to_contract_params(
     m: &DiscoveredMarket,
 ) -> Result<crate::prediction_market::params::PredictionMarketParams, String> {
+    let decode32 = |hex_str: &str, name: &str| -> Result<[u8; 32], String> {
+        let bytes = hex::decode(hex_str).map_err(|e| format!("{name}: hex decode: {e}"))?;
+        bytes
+            .try_into()
+            .map_err(|_| format!("{name}: expected 32 bytes"))
+    };
+
     Ok(crate::prediction_market::params::PredictionMarketParams {
-        oracle_public_key: hex_to_bytes32(&m.oracle_pubkey, "oracle_pubkey")?,
-        collateral_asset_id: hex_to_bytes32(&m.collateral_asset_id, "collateral_asset_id")?,
-        yes_token_asset: hex_to_bytes32(&m.yes_asset_id, "yes_asset_id")?,
-        no_token_asset: hex_to_bytes32(&m.no_asset_id, "no_asset_id")?,
-        yes_reissuance_token: hex_to_bytes32(&m.yes_reissuance_token, "yes_reissuance_token")?,
-        no_reissuance_token: hex_to_bytes32(&m.no_reissuance_token, "no_reissuance_token")?,
+        oracle_public_key: decode32(&m.oracle_pubkey, "oracle_pubkey")?,
+        collateral_asset_id: decode32(&m.collateral_asset_id, "collateral_asset_id")?,
+        yes_token_asset: decode32(&m.yes_asset_id, "yes_asset_id")?,
+        no_token_asset: decode32(&m.no_asset_id, "no_asset_id")?,
+        yes_reissuance_token: decode32(&m.yes_reissuance_token, "yes_reissuance_token")?,
+        no_reissuance_token: decode32(&m.no_reissuance_token, "no_reissuance_token")?,
         collateral_per_token: m.cpt_sats,
         expiry_time: m.expiry_height,
     })
@@ -564,45 +417,31 @@ pub fn discovered_market_to_contract_params(
 fn discovered_order_to_maker_params(
     o: &DiscoveredOrder,
 ) -> Result<crate::maker_order::params::MakerOrderParams, String> {
+    let decode32 = |hex_str: &str, name: &str| -> Result<[u8; 32], String> {
+        let bytes = hex::decode(hex_str).map_err(|e| format!("{name}: hex decode: {e}"))?;
+        bytes
+            .try_into()
+            .map_err(|_| format!("{name}: expected 32 bytes"))
+    };
+
     let direction = match o.direction.as_str() {
         "sell-base" => crate::maker_order::params::OrderDirection::SellBase,
         "sell-quote" => crate::maker_order::params::OrderDirection::SellQuote,
         other => return Err(format!("unknown direction: {other}")),
     };
 
-    let maker_pubkey = hex_to_bytes32(&o.maker_base_pubkey, "maker_base_pubkey")?;
+    let maker_pubkey = decode32(&o.maker_base_pubkey, "maker_base_pubkey")?;
 
     Ok(crate::maker_order::params::MakerOrderParams {
-        base_asset_id: hex_to_bytes32(&o.base_asset_id, "base_asset_id")?,
-        quote_asset_id: hex_to_bytes32(&o.quote_asset_id, "quote_asset_id")?,
+        base_asset_id: decode32(&o.base_asset_id, "base_asset_id")?,
+        quote_asset_id: decode32(&o.quote_asset_id, "quote_asset_id")?,
         price: o.price,
         min_fill_lots: o.min_fill_lots,
         min_remainder_lots: o.min_remainder_lots,
         direction,
-        maker_receive_spk_hash: hex_to_bytes32(
-            &o.maker_receive_spk_hash,
-            "maker_receive_spk_hash",
-        )?,
-        cosigner_pubkey: hex_to_bytes32(&o.cosigner_pubkey, "cosigner_pubkey")?,
+        maker_receive_spk_hash: decode32(&o.maker_receive_spk_hash, "maker_receive_spk_hash")?,
+        cosigner_pubkey: decode32(&o.cosigner_pubkey, "cosigner_pubkey")?,
         maker_pubkey,
-    })
-}
-
-/// Convert a DiscoveredPool into AmmPoolParams for store ingestion.
-pub fn discovered_pool_to_amm_params(
-    p: &DiscoveredPool,
-) -> Result<crate::amm_pool::params::AmmPoolParams, String> {
-    Ok(crate::amm_pool::params::AmmPoolParams {
-        yes_asset_id: hex_to_bytes32(&p.yes_asset_id, "yes_asset_id")?,
-        no_asset_id: hex_to_bytes32(&p.no_asset_id, "no_asset_id")?,
-        lbtc_asset_id: hex_to_bytes32(&p.lbtc_asset_id, "lbtc_asset_id")?,
-        lp_asset_id: hex_to_bytes32(&p.lp_asset_id, "lp_asset_id")?,
-        lp_reissuance_token_id: hex_to_bytes32(
-            &p.lp_reissuance_token_id,
-            "lp_reissuance_token_id",
-        )?,
-        fee_bps: p.fee_bps,
-        cosigner_pubkey: hex_to_bytes32(&p.cosigner_pubkey, "cosigner_pubkey")?,
     })
 }
 
@@ -611,6 +450,7 @@ async fn run_subscription_loop<S: DiscoveryStore>(
     client: Client,
     store: Option<Arc<Mutex<S>>>,
     tx: broadcast::Sender<DiscoveryEvent>,
+    network_tag: String,
 ) {
     // Set up the notification receiver BEFORE subscribing so we don't miss events
     let mut notifications = client.notifications();
@@ -647,38 +487,31 @@ async fn run_subscription_loop<S: DiscoveryStore>(
                 .collect();
 
             if hashtags.iter().any(|t| t == CONTRACT_TAG) {
-                match parse_announcement_event(&event) {
+                match parse_announcement_event(&event, &network_tag) {
                     Ok(mut market) => {
                         market.nostr_event_json = serde_json::to_string(&*event).ok();
                         persist_market_to_store(&store, &market);
                         let _ = tx.send(DiscoveryEvent::MarketDiscovered(market));
                     }
                     Err(e) => {
-                        if e.contains("unsupported contract announcement version") {
-                            log::warn!("skipping market announcement {}: {e}", event.id);
-                        } else {
-                            log::warn!(
-                                "skipping unparseable market announcement {}: {e}",
-                                event.id
-                            );
-                        }
+                        log::warn!("skipping unparseable market announcement {}: {e}", event.id);
                     }
                 }
             } else if hashtags.iter().any(|t| t == ORDER_TAG) {
-                if let Ok(mut order) = parse_order_event(&event) {
+                if let Ok(mut order) = parse_order_event(&event, &network_tag) {
                     order.nostr_event_json = serde_json::to_string(&*event).ok();
                     persist_order_to_store(&store, &order);
                     let _ = tx.send(DiscoveryEvent::OrderDiscovered(order));
                 }
             } else if hashtags.iter().any(|t| t == ATTESTATION_TAG) {
-                if let Ok(attestation) = parse_attestation_event(&event) {
+                if let Ok(attestation) = parse_attestation_event(&event, &network_tag) {
                     let _ = tx.send(DiscoveryEvent::AttestationDiscovered(attestation));
                 }
             } else if hashtags.iter().any(|t| t == POOL_TAG)
-                && let Ok(mut pool) = parse_pool_event(&event)
+                && let Ok(mut pool) = parse_pool_event(&event, &network_tag)
             {
                 pool.nostr_event_json = serde_json::to_string(&*event).ok();
-                persist_pool_to_store(&store, &pool);
+                persist_pool_to_store(&store, &pool, &network_tag);
                 let _ = tx.send(DiscoveryEvent::PoolDiscovered(pool));
             }
         }
@@ -693,7 +526,7 @@ pub(crate) fn persist_market_to_store<S: DiscoveryStore>(
     let Ok(params) = discovered_market_to_contract_params(market) else {
         return;
     };
-    let meta = DiscoveredMarketMetadata {
+    let meta = ContractMetadataInput {
         question: Some(market.question.clone()),
         description: Some(market.description.clone()),
         category: Some(market.category.clone()),
@@ -712,28 +545,56 @@ pub(crate) fn persist_market_to_store<S: DiscoveryStore>(
 pub(crate) fn persist_pool_to_store<S: DiscoveryStore>(
     store: &Option<Arc<Mutex<S>>>,
     pool: &DiscoveredPool,
+    network_tag: &str,
 ) {
     let Some(store) = store else { return };
-    let Ok(params) = discovered_pool_to_amm_params(pool) else {
+    let Ok(parsed) = crate::trade::convert::parse_discovered_lmsr_pool(pool, network_tag) else {
         return;
     };
-    let market_id: Option<[u8; 32]> = hex::decode(&pool.market_id)
-        .ok()
-        .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
-    let creation_txid: Option<[u8; 32]> = pool
-        .creation_txid
-        .as_deref()
-        .and_then(|s| hex::decode(s).ok())
-        .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+
+    let input = LmsrPoolIngestInput {
+        pool_id: parsed.lmsr_pool_id.clone(),
+        market_id: pool.market_id.clone(),
+        yes_asset_id: parsed.params.yes_asset_id,
+        no_asset_id: parsed.params.no_asset_id,
+        collateral_asset_id: parsed.params.collateral_asset_id,
+        fee_bps: parsed.params.fee_bps,
+        cosigner_pubkey: parsed.params.cosigner_pubkey,
+        lmsr_table_root: parsed.params.lmsr_table_root,
+        table_depth: parsed.params.table_depth,
+        q_step_lots: parsed.params.q_step_lots,
+        s_bias: parsed.params.s_bias,
+        s_max_index: parsed.params.s_max_index,
+        half_payout_sats: parsed.params.half_payout_sats,
+        creation_txid: pool.creation_txid.clone(),
+        witness_schema_version: parsed.witness_schema_version.clone(),
+        current_s_index: parsed.current_s_index,
+        reserve_outpoints: [
+            pool.initial_reserve_outpoints[0].clone(),
+            pool.initial_reserve_outpoints[1].clone(),
+            pool.initial_reserve_outpoints[2].clone(),
+        ],
+        reserve_yes: pool.reserves.r_yes,
+        reserve_no: pool.reserves.r_no,
+        reserve_collateral: pool.reserves.r_lbtc,
+        state_source: LmsrPoolStateSource::Announcement,
+        last_transition_txid: None,
+        nostr_event_id: Some(pool.id.clone()),
+        nostr_event_json: pool.nostr_event_json.clone(),
+    };
+
     if let Ok(mut s) = store.lock() {
-        let _ = s.ingest_amm_pool(
-            &params,
-            pool.issued_lp,
-            Some(&pool.id),
-            pool.nostr_event_json.as_deref(),
-            market_id.as_ref(),
-            creation_txid.as_ref(),
-        );
+        let _ = s.ingest_lmsr_pool(&input);
+    }
+}
+
+pub(crate) fn persist_canonical_lmsr_state_to_store<S: DiscoveryStore>(
+    store: &Option<Arc<Mutex<S>>>,
+    input: &LmsrPoolStateUpdateInput,
+) {
+    let Some(store) = store else { return };
+    if let Ok(mut s) = store.lock() {
+        let _ = s.upsert_lmsr_pool_state(input);
     }
 }
 
@@ -762,84 +623,92 @@ fn persist_order_to_store<S: DiscoveryStore>(
     }
 }
 
+fn dedup_latest_pools_by_id(pools: Vec<DiscoveredPool>) -> Vec<DiscoveredPool> {
+    let mut dedup: HashMap<String, DiscoveredPool> = HashMap::new();
+    for pool in pools {
+        match dedup.get_mut(&pool.lmsr_pool_id) {
+            None => {
+                dedup.insert(pool.lmsr_pool_id.clone(), pool);
+            }
+            Some(existing) => {
+                let should_replace = pool.created_at > existing.created_at
+                    || (pool.created_at == existing.created_at && pool.id > existing.id);
+                if should_replace {
+                    *existing = pool;
+                }
+            }
+        }
+    }
+    let mut pools: Vec<_> = dedup.into_values().collect();
+    pools.sort_by(|a, b| a.lmsr_pool_id.cmp(&b.lmsr_pool_id));
+    pools
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pool::PoolReserves;
 
-    #[test]
-    fn reconciliation_stats_default_is_all_zero() {
-        let stats = ReconciliationStats::default();
-        assert_eq!(stats.events_sent, 0);
-        assert_eq!(stats.events_failed, 0);
-        assert_eq!(stats.events_skipped, 0);
+    fn hex32(byte: u8) -> String {
+        hex::encode([byte; 32])
+    }
+
+    fn sample_pool(event_id: &str, pool_byte: u8, created_at: u64) -> DiscoveredPool {
+        let creation_txid = hex32(0xaa);
+        DiscoveredPool {
+            id: event_id.to_string(),
+            market_id: "mkt".to_string(),
+            pool_id: hex32(pool_byte),
+            yes_asset_id: hex32(0x01),
+            no_asset_id: hex32(0x02),
+            lbtc_asset_id: hex32(0x03),
+            fee_bps: 30,
+            min_r_yes: 1,
+            min_r_no: 1,
+            min_r_collateral: 1,
+            cosigner_pubkey: hex32(0x04),
+            reserves: PoolReserves {
+                r_yes: 10,
+                r_no: 20,
+                r_lbtc: 30,
+            },
+            creator_pubkey: hex32(0x05),
+            created_at,
+            creation_txid: creation_txid.clone(),
+            lmsr_pool_id: hex32(pool_byte),
+            lmsr_table_root: hex32(0x06),
+            table_depth: 3,
+            q_step_lots: 10,
+            s_bias: 4,
+            s_max_index: 7,
+            half_payout_sats: 100,
+            current_s_index: 4,
+            initial_reserve_outpoints: vec![
+                format!("{creation_txid}:0"),
+                format!("{creation_txid}:1"),
+                format!("{creation_txid}:2"),
+            ],
+            witness_schema_version: super::super::pool::LMSR_WITNESS_SCHEMA_V2.to_string(),
+            table_manifest_hash: None,
+            lmsr_table_values: None,
+            nostr_event_json: None,
+        }
     }
 
     #[test]
-    fn reconciliation_stats_display() {
-        let stats = ReconciliationStats {
-            events_sent: 5,
-            events_failed: 1,
-            events_skipped: 2,
-        };
-        assert_eq!(stats.to_string(), "sent=5, failed=1, skipped=2");
+    fn dedup_pools_keeps_latest_event_per_pool_id() {
+        let older = sample_pool("evt-older", 0x11, 100);
+        let newer = sample_pool("evt-newer", 0x11, 200);
+        let deduped = dedup_latest_pools_by_id(vec![older, newer.clone()]);
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].id, newer.id);
     }
 
     #[test]
-    fn reconciliation_stats_serde_roundtrip() {
-        let stats = ReconciliationStats {
-            events_sent: 3,
-            events_failed: 0,
-            events_skipped: 1,
-        };
-        let json = serde_json::to_string(&stats).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["events_sent"], 3);
-        assert_eq!(parsed["events_failed"], 0);
-        assert_eq!(parsed["events_skipped"], 1);
-    }
-
-    #[test]
-    fn noop_store_load_all_nostr_events_returns_empty() {
-        let keys = Keys::generate();
-        let config = DiscoveryConfig::default();
-        let (service, _rx) = DiscoveryService::new(keys, config);
-        let events = service.load_all_nostr_events().unwrap();
-        assert!(events.is_empty());
-    }
-
-    #[tokio::test]
-    async fn reconcile_with_noop_store_returns_default_stats() {
-        let keys = Keys::generate();
-        let config = DiscoveryConfig {
-            relays: vec![], // no relays — ensure_connected is a no-op
-            ..Default::default()
-        };
-        let (service, _rx) = DiscoveryService::new(keys, config);
-        let stats = service.reconcile().await.unwrap();
-        assert_eq!(stats.events_sent, 0);
-        assert_eq!(stats.events_failed, 0);
-        assert_eq!(stats.events_skipped, 0);
-    }
-
-    #[tokio::test]
-    async fn send_reconciliation_events_skips_bad_json() {
-        let client = Client::default();
-        let events = vec![
-            "not valid json".to_string(),
-            "{\"also\": \"not a nostr event\"}".to_string(),
-        ];
-        let stats = send_reconciliation_events(&client, &events).await;
-        assert_eq!(stats.events_skipped, 2);
-        assert_eq!(stats.events_sent, 0);
-        assert_eq!(stats.events_failed, 0);
-    }
-
-    #[tokio::test]
-    async fn send_reconciliation_events_empty_is_noop() {
-        let client = Client::default();
-        let stats = send_reconciliation_events(&client, &[]).await;
-        assert_eq!(stats.events_sent, 0);
-        assert_eq!(stats.events_failed, 0);
-        assert_eq!(stats.events_skipped, 0);
+    fn dedup_pools_keeps_distinct_pool_ids() {
+        let a = sample_pool("evt-a", 0x11, 100);
+        let b = sample_pool("evt-b", 0x22, 200);
+        let deduped = dedup_latest_pools_by_id(vec![a, b]);
+        assert_eq!(deduped.len(), 2);
     }
 }

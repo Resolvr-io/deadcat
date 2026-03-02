@@ -8,6 +8,8 @@ deadcat-sdk = { path = ".." }
 diesel = { version = "2", features = ["sqlite", "r2d2", "64-column-tables"] }
 diesel_migrations = "2"
 thiserror = "2"
+serde_json = "1"
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

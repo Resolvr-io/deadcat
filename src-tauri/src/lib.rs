@@ -1,20 +1,17 @@
 mod chain_adapter;
 pub mod commands;
 pub mod discovery;
-mod payment_commands;
 mod payments;
 pub mod state;
 pub mod wallet;
 mod wallet_store;
 
-use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Instant;
 
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use state::{AppState, AppStateManager, AUTO_LOCK_TIMEOUT_SECS};
+use state::{AppState, AppStateManager, PaymentSwap, AUTO_LOCK_TIMEOUT_SECS};
 
 const APP_STATE_UPDATED_EVENT: &str = "app_state_updated";
 
@@ -28,42 +25,12 @@ const APP_STATE_UPDATED_EVENT: &str = "app_state_updated";
 /// std Mutex, to avoid holding both locks simultaneously.
 pub struct NodeState {
     pub node: tokio::sync::Mutex<Option<deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>>>,
-    /// Handle to the chain watcher thread (if running).
-    pub watcher_handle: tokio::sync::Mutex<Option<deadcat_sdk::ChainWatcherHandle>>,
-    /// JoinHandle for the chain event processing loop.
-    pub event_handler: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// JoinHandle for the periodic reconciliation task. Aborted on node replacement.
-    pub reconcile_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// In-memory quote cache for market trade quote->confirm execution.
-    pub trade_quote_cache: tokio::sync::Mutex<HashMap<String, CachedTradeQuote>>,
 }
 
 impl Default for NodeState {
     fn default() -> Self {
         Self {
             node: tokio::sync::Mutex::new(None),
-            watcher_handle: tokio::sync::Mutex::new(None),
-            event_handler: tokio::sync::Mutex::new(None),
-            reconcile_task: tokio::sync::Mutex::new(None),
-            trade_quote_cache: tokio::sync::Mutex::new(HashMap::new()),
-        }
-    }
-}
-
-pub struct CachedTradeQuote {
-    pub quote: deadcat_sdk::TradeQuote,
-    pub market_id: String,
-    pub expires_at: Instant,
-}
-
-impl NodeState {
-    /// Shut down the chain watcher and its event loop (if running).
-    async fn shutdown_watcher(&self) {
-        if let Some(handle) = self.watcher_handle.lock().await.take() {
-            handle.shutdown();
-        }
-        if let Some(join) = self.event_handler.lock().await.take() {
-            join.abort();
         }
     }
 }
@@ -300,7 +267,6 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
 
     // 2. Unlock the wallet via the node (needs node lock)
     let node_state = app_handle.state::<NodeState>();
-    node_state.shutdown_watcher().await;
     let guard = node_state.node.lock().await;
     let node = guard
         .as_ref()
@@ -310,38 +276,6 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
     let electrum_url = sdk_network.default_electrum_url();
     node.unlock_wallet(&mnemonic, electrum_url, &data_dir)
         .map_err(|e| format!("{e}"))?;
-
-    // 2b. Start the chain watcher for push-based monitoring
-    let watcher_config = deadcat_sdk::ChainWatcherConfig::new(electrum_url);
-    let (watcher_handle, event_rx) = deadcat_sdk::spawn_chain_watcher(watcher_config);
-
-    // Bootstrap: subscribe all known contracts from the store
-    if let Err(e) = node.bootstrap_watcher(&watcher_handle) {
-        log::warn!("chain watcher bootstrap failed: {e}");
-    }
-
-    // Spawn the event processing loop.
-    // prepare_chain_event() captures cloned Arc handles so we can drop the
-    // node lock before awaiting the work — avoids blocking Tauri commands.
-    let watcher_handle_clone = watcher_handle.clone();
-    let app_for_events = app_handle.clone();
-    let event_join = tokio::spawn(async move {
-        let node_state = app_for_events.state::<NodeState>();
-        let mut event_rx = event_rx;
-        while let Some(event) = event_rx.recv().await {
-            let work = {
-                let guard = node_state.node.lock().await;
-                let Some(node) = guard.as_ref() else { continue };
-                node.prepare_chain_event(event, &watcher_handle_clone)
-            }; // guard dropped here
-            work.await;
-        }
-    });
-
-    // Store handles for later shutdown
-    *node_state.watcher_handle.lock().await = Some(watcher_handle);
-    *node_state.event_handler.lock().await = Some(event_join);
-
     drop(guard);
 
     // 3. Update app state
@@ -368,10 +302,8 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
 
 #[tauri::command]
 async fn lock_wallet(app: AppHandle) -> Result<AppState, String> {
-    let node_state = app.state::<NodeState>();
-    node_state.shutdown_watcher().await;
-
     // Lock the node's wallet
+    let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     if let Some(node) = guard.as_ref() {
         node.lock_wallet();
@@ -399,10 +331,8 @@ async fn lock_wallet(app: AppHandle) -> Result<AppState, String> {
 
 #[tauri::command]
 async fn delete_wallet(app: AppHandle) -> Result<AppState, String> {
-    let node_state = app.state::<NodeState>();
-    node_state.shutdown_watcher().await;
-
     // Lock/drop the wallet in the node
+    let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     if let Some(node) = guard.as_ref() {
         node.lock_wallet();
@@ -625,6 +555,361 @@ async fn get_mnemonic_word(
 }
 
 // ============================================================================
+// Payment Commands (Boltz)
+// ============================================================================
+
+#[tauri::command]
+async fn pay_lightning_invoice(
+    invoice: String,
+    app: AppHandle,
+) -> Result<payments::boltz::BoltzSubmarineSwapCreated, String> {
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let refund_pubkey_hex = node
+        .boltz_submarine_refund_pubkey_hex()
+        .await
+        .map_err(|e| format!("Wallet must be unlocked to initiate swap: {e}"))?;
+    drop(guard);
+
+    let network = {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.network()
+            .ok_or("Not initialized - select a network first")?
+    };
+
+    let boltz = payments::boltz::BoltzService::new(network, None);
+    let created = boltz
+        .create_submarine_swap(&invoice, &refund_pubkey_hex)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let saved_swap = PaymentSwap {
+        id: created.id.clone(),
+        flow: created.flow.clone(),
+        network: created.network.clone(),
+        status: created.status.clone(),
+        invoice_amount_sat: created.invoice_amount_sat,
+        expected_amount_sat: Some(created.expected_amount_sat),
+        lockup_address: Some(created.lockup_address.clone()),
+        timeout_block_height: Some(created.timeout_block_height),
+        pair_hash: Some(created.pair_hash.clone()),
+        invoice: Some(invoice),
+        invoice_expiry_seconds: Some(created.invoice_expiry_seconds),
+        invoice_expires_at: Some(created.invoice_expires_at.clone()),
+        lockup_txid: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    let app_ref = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.upsert_payment_swap(saved_swap);
+        let state = mgr.snapshot();
+        emit_state(&app_ref, &state);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| format!("pay_lightning save task failed: {e}"))??;
+
+    Ok(created)
+}
+
+#[tauri::command]
+async fn create_lightning_receive(
+    amount_sat: u64,
+    app: AppHandle,
+) -> Result<payments::boltz::BoltzLightningReceiveCreated, String> {
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let claim_pubkey_hex = node
+        .boltz_reverse_claim_pubkey_hex()
+        .await
+        .map_err(|e| format!("Wallet must be unlocked to initiate swap: {e}"))?;
+    drop(guard);
+
+    let network = {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.network()
+            .ok_or("Not initialized - select a network first")?
+    };
+
+    let boltz = payments::boltz::BoltzService::new(network, None);
+    let created = boltz
+        .create_lightning_receive(amount_sat, &claim_pubkey_hex)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let saved_swap = PaymentSwap {
+        id: created.id.clone(),
+        flow: created.flow.clone(),
+        network: created.network.clone(),
+        status: created.status.clone(),
+        invoice_amount_sat: created.invoice_amount_sat,
+        expected_amount_sat: Some(created.expected_onchain_amount_sat),
+        lockup_address: Some(created.lockup_address.clone()),
+        timeout_block_height: Some(created.timeout_block_height),
+        pair_hash: Some(created.pair_hash.clone()),
+        invoice: Some(created.invoice.clone()),
+        invoice_expiry_seconds: Some(created.invoice_expiry_seconds),
+        invoice_expires_at: Some(created.invoice_expires_at.clone()),
+        lockup_txid: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    let app_ref = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.upsert_payment_swap(saved_swap);
+        let state = mgr.snapshot();
+        emit_state(&app_ref, &state);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| format!("lightning_receive save task failed: {e}"))??;
+
+    Ok(created)
+}
+
+#[tauri::command]
+async fn create_bitcoin_receive(
+    amount_sat: u64,
+    app: AppHandle,
+) -> Result<payments::boltz::BoltzChainSwapCreated, String> {
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let claim_pubkey_hex = node
+        .boltz_reverse_claim_pubkey_hex()
+        .await
+        .map_err(|e| format!("Wallet must be unlocked to initiate swap: {e}"))?;
+    let refund_pubkey_hex = node
+        .boltz_submarine_refund_pubkey_hex()
+        .await
+        .map_err(|e| format!("Wallet must be unlocked to initiate swap: {e}"))?;
+    drop(guard);
+
+    let network = {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.network()
+            .ok_or("Not initialized - select a network first")?
+    };
+
+    let boltz = payments::boltz::BoltzService::new(network, None);
+    let created = boltz
+        .create_chain_swap_btc_to_lbtc(amount_sat, &claim_pubkey_hex, &refund_pubkey_hex)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let saved_swap = PaymentSwap {
+        id: created.id.clone(),
+        flow: created.flow.clone(),
+        network: created.network.clone(),
+        status: created.status.clone(),
+        invoice_amount_sat: created.amount_sat,
+        expected_amount_sat: Some(created.expected_amount_sat),
+        lockup_address: Some(created.lockup_address.clone()),
+        timeout_block_height: Some(created.timeout_block_height),
+        pair_hash: Some(created.pair_hash.clone()),
+        invoice: None,
+        invoice_expiry_seconds: None,
+        invoice_expires_at: None,
+        lockup_txid: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    let app_ref = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.upsert_payment_swap(saved_swap);
+        let state = mgr.snapshot();
+        emit_state(&app_ref, &state);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| format!("bitcoin_receive save task failed: {e}"))??;
+
+    Ok(created)
+}
+
+#[tauri::command]
+async fn create_bitcoin_send(
+    amount_sat: u64,
+    app: AppHandle,
+) -> Result<payments::boltz::BoltzChainSwapCreated, String> {
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let claim_pubkey_hex = node
+        .boltz_reverse_claim_pubkey_hex()
+        .await
+        .map_err(|e| format!("Wallet must be unlocked to initiate swap: {e}"))?;
+    let refund_pubkey_hex = node
+        .boltz_submarine_refund_pubkey_hex()
+        .await
+        .map_err(|e| format!("Wallet must be unlocked to initiate swap: {e}"))?;
+    drop(guard);
+
+    let network = {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.network()
+            .ok_or("Not initialized - select a network first")?
+    };
+
+    let boltz = payments::boltz::BoltzService::new(network, None);
+    let created = boltz
+        .create_chain_swap_lbtc_to_btc(amount_sat, &claim_pubkey_hex, &refund_pubkey_hex)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let saved_swap = PaymentSwap {
+        id: created.id.clone(),
+        flow: created.flow.clone(),
+        network: created.network.clone(),
+        status: created.status.clone(),
+        invoice_amount_sat: created.amount_sat,
+        expected_amount_sat: Some(created.expected_amount_sat),
+        lockup_address: Some(created.lockup_address.clone()),
+        timeout_block_height: Some(created.timeout_block_height),
+        pair_hash: Some(created.pair_hash.clone()),
+        invoice: None,
+        invoice_expiry_seconds: None,
+        invoice_expires_at: None,
+        lockup_txid: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    let app_ref = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.upsert_payment_swap(saved_swap);
+        let state = mgr.snapshot();
+        emit_state(&app_ref, &state);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| format!("bitcoin_send save task failed: {e}"))??;
+
+    Ok(created)
+}
+
+#[tauri::command]
+async fn get_chain_swap_pairs(
+    app: AppHandle,
+) -> Result<payments::boltz::BoltzChainSwapPairsInfo, String> {
+    let network = {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.network()
+            .ok_or("Not initialized - select a network first".to_string())?
+    };
+
+    let boltz = payments::boltz::BoltzService::new(network, None);
+    boltz
+        .get_chain_swap_pairs_info()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_payment_swaps(app: AppHandle) -> Result<Vec<PaymentSwap>, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        Ok(mgr.payment_swaps().to_vec())
+    })
+    .await
+    .map_err(|e| format!("list_swaps task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn refresh_payment_swap_status(
+    swap_id: String,
+    app: AppHandle,
+) -> Result<PaymentSwap, String> {
+    let swap_id_clone = swap_id.clone();
+    let network = {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.network()
+            .ok_or("Not initialized - select a network first".to_string())?
+    };
+
+    let boltz = payments::boltz::BoltzService::new(network, None);
+    let status = boltz
+        .get_swap_status(&swap_id_clone)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let app_ref = app.clone();
+    let updated_swap = tokio::task::spawn_blocking(move || {
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        let existing = mgr
+            .payment_swaps()
+            .iter()
+            .find(|swap| swap.id == swap_id_clone)
+            .cloned()
+            .ok_or_else(|| format!("Payment swap not found: {}", swap_id_clone))?;
+
+        let mut updated = existing;
+        updated.status = status.status;
+        updated.lockup_txid = status.lockup_txid;
+        updated.updated_at = chrono::Utc::now().to_rfc3339();
+
+        mgr.upsert_payment_swap(updated.clone());
+        let state = mgr.snapshot();
+        emit_state(&app_ref, &state);
+        Ok::<_, String>(updated)
+    })
+    .await
+    .map_err(|e| format!("refresh_swap save task failed: {e}"))??;
+
+    Ok(updated_swap)
+}
+
+// ============================================================================
 // Legacy Commands (backward compatibility)
 // ============================================================================
 
@@ -712,7 +997,7 @@ async fn record_activity(app: AppHandle) -> Result<(), String> {
 // Helpers
 // ============================================================================
 
-pub(crate) fn emit_state(app: &AppHandle, state: &AppState) {
+fn emit_state(app: &AppHandle, state: &AppState) {
     let _ = app.emit(APP_STATE_UPDATED_EVENT, state);
 }
 
@@ -778,8 +1063,8 @@ pub fn run() {
                     };
 
                     if should_lock {
+                        // Also lock via the node
                         let node_state = app_handle.state::<NodeState>();
-                        node_state.shutdown_watcher().await;
                         let guard = node_state.node.lock().await;
                         if let Some(node) = guard.as_ref() {
                             node.lock_wallet();
@@ -824,13 +1109,13 @@ pub fn run() {
             // Activity / auto-lock
             record_activity,
             // Payments (Boltz)
-            payment_commands::pay_lightning_invoice,
-            payment_commands::create_lightning_receive,
-            payment_commands::create_bitcoin_receive,
-            payment_commands::create_bitcoin_send,
-            payment_commands::get_chain_swap_pairs,
-            payment_commands::list_payment_swaps,
-            payment_commands::refresh_payment_swap_status,
+            pay_lightning_invoice,
+            create_lightning_receive,
+            create_bitcoin_receive,
+            create_bitcoin_send,
+            get_chain_swap_pairs,
+            list_payment_swaps,
+            refresh_payment_swap_status,
             // Legacy
             fetch_chain_tip,
             // SDK / Nostr
@@ -841,8 +1126,6 @@ pub fn run() {
             commands::delete_nostr_identity,
             commands::import_nostr_nsec,
             commands::discover_contracts,
-            commands::discover_limit_orders,
-            commands::recover_own_limit_orders,
             commands::publish_contract,
             commands::oracle_attest,
             commands::backup_mnemonic_to_nostr,
@@ -856,23 +1139,16 @@ pub fn run() {
             commands::remove_relay,
             commands::fetch_nostr_profile,
             commands::create_contract_onchain,
-            commands::preview_market_trade,
-            commands::quote_market_trade,
-            commands::execute_market_trade_quote,
             commands::issue_tokens,
-            commands::create_limit_order,
-            commands::cancel_limit_order,
-            commands::fill_limit_order,
             commands::cancel_tokens,
             commands::resolve_market,
             commands::redeem_tokens,
             commands::redeem_expired,
             commands::get_market_state,
+            commands::quote_trade,
+            commands::execute_trade,
             commands::get_wallet_utxos,
             commands::list_contracts,
-            commands::sync_pool,
-            commands::get_pool_price_history,
-            commands::reconcile_nostr,
             // Wallet store (SDK)
             wallet_store::create_software_signer,
             wallet_store::create_wollet,

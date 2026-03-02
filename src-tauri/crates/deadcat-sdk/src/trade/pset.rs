@@ -1,43 +1,47 @@
 //! Combined trade PSET builder.
 //!
 //! Constructs a single Partially Signed Elements Transaction (PSET) that can
-//! spend from an AMM pool and/or one or more limit orders simultaneously.
+//! spend from an LMSR pool and/or one or more limit orders simultaneously.
 //!
 //! ## PSET Layout
 //!
 //! ```text
 //! Inputs:
-//!   [0-3]            Pool covenant (YES, NO, LBTC, RT)  — if pool leg present
-//!   [P..P+M-1]       M maker order covenant inputs       — P = 4 if pool, 0 otherwise
+//!   [IN_BASE..+2]    LMSR pool covenant (YES, NO, collateral) — if LMSR pool leg present
+//!   [P..P+M-1]       M maker order covenant inputs
 //!   [P+M..]          Taker wallet funding UTXOs + fee UTXO
 //!
 //! Outputs:
-//!   [0-3]            Pool reserve outputs (explicit)      — if pool leg present
-//!   [Q..Q+M-1]       M maker receive outputs (explicit)   — Q = 4 if pool, 0 otherwise
-//!   [Q+M]            Remainder (explicit, only if last order is partial)
+//!   [OUT_BASE..+2]   LMSR reserve outputs (explicit)          — if LMSR pool leg present
+//!   [i]              Maker receive output at each maker input index `i`
+//!   [j]              Remainder at `last_order_input_index + 1` (partial last only)
 //!   [next]           Taker receive (blindable)
 //!   [next]           Taker change (blindable, if applicable)
 //!   [next]           Fee output (explicit, empty script)
 //!   [next]           Fee change (blindable, if applicable)
 //! ```
 //!
-//! The AMM pool covenant hard-codes outputs 0-3 for its reserves.
+//! The LMSR builder path supports base-indexed reserve windows where
+//! `IN_BASE`/`OUT_BASE` place the three reserve slots within the combined
+//! order+pool prefix.
 //! Each maker order covenant checks `output(current_index())` for its
 //! maker receive, so order inputs and their corresponding outputs must
 //! be at matching indices. Only the last order may be a partial fill.
 
+use std::collections::BTreeMap;
+
 use simplicityhl::elements::Script;
 use simplicityhl::elements::pset::PartiallySignedTransaction;
 
-use crate::amm_pool::contract::CompiledAmmPool;
 use crate::error::{Error, Result};
+use crate::lmsr_pool::contract::CompiledLmsrPool;
+use crate::lmsr_pool::table::verify_lmsr_table_proof;
 use crate::maker_order::contract::CompiledMakerOrder;
 use crate::maker_order::params::{
     OrderDirection, derive_maker_receive, maker_receive_script_pubkey,
 };
 use crate::pset::{
     UnblindedUtxo, add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset,
-    reissuance_token_output,
 };
 
 use super::types::ExecutionPlan;
@@ -48,8 +52,6 @@ use super::types::ExecutionPlan;
 pub(crate) struct TradePsetParams<'a> {
     /// The execution plan produced by the router.
     pub plan: &'a ExecutionPlan,
-    /// Compiled AMM pool contract (required when `plan.pool_leg` is `Some`).
-    pub pool_contract: Option<&'a CompiledAmmPool>,
     /// Compiled maker order contracts, one per `plan.order_legs` entry (same order).
     pub order_contracts: &'a [CompiledMakerOrder],
     /// Taker's wallet funding UTXOs (must total at least `plan.total_taker_input`).
@@ -75,9 +77,9 @@ pub(crate) struct TradePsetResult {
     pub all_input_utxos: Vec<UnblindedUtxo>,
     /// Output indices that should be blinded (taker receive, taker change, fee change).
     pub blind_output_indices: Vec<usize>,
-    /// Input index range of pool covenant inputs (0..4 when present).
-    #[allow(dead_code)] // useful for test assertions; attach_amm_pool_witnesses assumes 0..4
-    pub pool_input_range: Option<std::ops::Range<usize>>,
+    /// Input index range of LMSR covenant inputs (0..3 when present).
+    #[allow(dead_code)] // reserved for upcoming LMSR witness attachment
+    pub lmsr_input_range: Option<std::ops::Range<usize>>,
     /// Input indices of maker order covenant inputs.
     pub order_input_indices: Vec<usize>,
 }
@@ -93,17 +95,13 @@ pub(crate) struct TradePsetResult {
 pub(crate) fn build_trade_pset(params: &TradePsetParams) -> Result<TradePsetResult> {
     let plan = params.plan;
     let num_orders = plan.order_legs.len();
-    let has_pool = plan.pool_leg.is_some();
+    let has_lmsr_pool = plan.lmsr_pool_leg.is_some();
+    let has_pool = has_lmsr_pool;
 
     // ── Validate ────────────────────────────────────────────────────────
 
     if !has_pool && num_orders == 0 {
         return Err(Error::NoLiquidity);
-    }
-    if has_pool && params.pool_contract.is_none() {
-        return Err(Error::TradeRouting(
-            "pool_contract required when pool_leg is present".into(),
-        ));
     }
     if params.order_contracts.len() != num_orders {
         return Err(Error::TradeRouting(format!(
@@ -140,24 +138,59 @@ pub(crate) fn build_trade_pset(params: &TradePsetParams) -> Result<TradePsetResu
 
     // ── INPUTS ──────────────────────────────────────────────────────────
 
-    // Pool covenant inputs at indices 0-3.
-    let pool_input_range = if let Some(ref pool_leg) = plan.pool_leg {
-        let utxos = &pool_leg.pool_utxos;
-        for utxo in [&utxos.yes, &utxos.no, &utxos.lbtc, &utxos.rt] {
+    // Pool + maker order covenant inputs.
+    //
+    // For LMSR, we support base-indexed windows by splitting maker inputs
+    // around the 3-slot reserve window at `IN_BASE`.
+    let mut lmsr_input_range = None;
+    if let Some(ref lmsr_leg) = plan.lmsr_pool_leg {
+        if lmsr_leg.new_s_index == lmsr_leg.old_s_index {
+            return Err(Error::TradeRouting(
+                "LMSR swap requires NEW_S_INDEX != OLD_S_INDEX".into(),
+            ));
+        }
+        validate_lmsr_table_membership(lmsr_leg)?;
+        let in_base = usize::try_from(lmsr_leg.in_base).map_err(|_| {
+            Error::TradeRouting(format!(
+                "LMSR IN_BASE {} does not fit usize",
+                lmsr_leg.in_base
+            ))
+        })?;
+        if in_base > num_orders {
+            return Err(Error::TradeRouting(format!(
+                "LMSR IN_BASE {} exceeds order leg count {}",
+                lmsr_leg.in_base, num_orders
+            )));
+        }
+
+        for leg in plan.order_legs.iter().take(in_base) {
+            let idx = pset.inputs().len();
+            add_pset_input(&mut pset, &leg.order_utxo);
+            all_input_utxos.push(leg.order_utxo.clone());
+            order_input_indices.push(idx);
+        }
+
+        let reserve_start = pset.inputs().len();
+        let utxos = &lmsr_leg.pool_utxos;
+        for utxo in [&utxos.yes, &utxos.no, &utxos.collateral] {
             add_pset_input(&mut pset, utxo);
             all_input_utxos.push(utxo.clone());
         }
-        Some(0..4)
-    } else {
-        None
-    };
+        lmsr_input_range = Some(reserve_start..reserve_start + 3);
 
-    // Maker order covenant inputs.
-    let order_start = if has_pool { 4 } else { 0 };
-    for (i, leg) in plan.order_legs.iter().enumerate() {
-        add_pset_input(&mut pset, &leg.order_utxo);
-        all_input_utxos.push(leg.order_utxo.clone());
-        order_input_indices.push(order_start + i);
+        for leg in plan.order_legs.iter().skip(in_base) {
+            let idx = pset.inputs().len();
+            add_pset_input(&mut pset, &leg.order_utxo);
+            all_input_utxos.push(leg.order_utxo.clone());
+            order_input_indices.push(idx);
+        }
+    } else {
+        for leg in &plan.order_legs {
+            let idx = pset.inputs().len();
+            add_pset_input(&mut pset, &leg.order_utxo);
+            all_input_utxos.push(leg.order_utxo.clone());
+            order_input_indices.push(idx);
+        }
     }
 
     // Taker wallet funding inputs.
@@ -172,37 +205,93 @@ pub(crate) fn build_trade_pset(params: &TradePsetParams) -> Result<TradePsetResu
 
     // ── OUTPUTS ─────────────────────────────────────────────────────────
 
-    let mut output_idx = 0usize;
+    let mut indexed_prefix_outputs = BTreeMap::new();
+    let mut reserve_prefix_output =
+        |index: usize, txout: simplicityhl::elements::TxOut, label: &str| -> Result<()> {
+            if indexed_prefix_outputs.insert(index, txout).is_some() {
+                return Err(Error::TradeRouting(format!(
+                    "output index conflict at {index} while placing {label}"
+                )));
+            }
+            Ok(())
+        };
 
-    // Pool reserve outputs at indices 0-3.
-    if let Some(ref pool_leg) = plan.pool_leg {
-        let contract = params.pool_contract.unwrap();
-        let covenant_spk = contract.script_pubkey(pool_leg.issued_lp);
-        let pp = contract.params();
+    if let Some(ref lmsr_leg) = plan.lmsr_pool_leg {
+        let contract = CompiledLmsrPool::new(lmsr_leg.pool_params)?;
+        let old_covenant_spk = contract.script_pubkey(lmsr_leg.old_s_index);
+        let new_covenant_spk = contract.script_pubkey(lmsr_leg.new_s_index);
+        if lmsr_leg.pool_utxos.yes.txout.script_pubkey != old_covenant_spk
+            || lmsr_leg.pool_utxos.no.txout.script_pubkey != old_covenant_spk
+            || lmsr_leg.pool_utxos.collateral.txout.script_pubkey != old_covenant_spk
+        {
+            return Err(Error::TradeRouting(
+                "LMSR reserve inputs must match the old-state covenant script".into(),
+            ));
+        }
 
-        add_pset_output(
-            &mut pset,
-            explicit_txout(&pp.yes_asset_id, pool_leg.new_reserves.r_yes, &covenant_spk),
-        );
-        add_pset_output(
-            &mut pset,
-            explicit_txout(&pp.no_asset_id, pool_leg.new_reserves.r_no, &covenant_spk),
-        );
-        add_pset_output(
-            &mut pset,
-            explicit_txout(
-                &pp.lbtc_asset_id,
-                pool_leg.new_reserves.r_lbtc,
-                &covenant_spk,
-            ),
-        );
-        // RT passthrough (Null placeholder, filled by blinder in sdk.rs).
-        add_pset_output(&mut pset, reissuance_token_output(&covenant_spk));
-        output_idx = 4;
+        let apply_delta = |start: u64, delta: i128, field: &str| -> Result<u64> {
+            if delta >= 0 {
+                start.checked_add(delta as u64).ok_or_else(|| {
+                    Error::TradeRouting(format!("overflow applying LMSR delta to {field}"))
+                })
+            } else {
+                start.checked_sub((-delta) as u64).ok_or_else(|| {
+                    Error::TradeRouting(format!("underflow applying LMSR delta to {field}"))
+                })
+            }
+        };
+        let traded_lots = if lmsr_leg.trade_kind.is_buy() {
+            lmsr_leg.delta_out
+        } else {
+            lmsr_leg.delta_in
+        };
+        let (yes_delta, no_delta) = match lmsr_leg.trade_kind {
+            crate::lmsr_pool::math::LmsrTradeKind::BuyYes => (-i128::from(traded_lots), 0),
+            crate::lmsr_pool::math::LmsrTradeKind::SellYes => (i128::from(traded_lots), 0),
+            crate::lmsr_pool::math::LmsrTradeKind::BuyNo => (0, -i128::from(traded_lots)),
+            crate::lmsr_pool::math::LmsrTradeKind::SellNo => (0, i128::from(traded_lots)),
+        };
+
+        let new_r_yes = apply_delta(lmsr_leg.pool_utxos.yes.value, yes_delta, "r_yes")?;
+        let new_r_no = apply_delta(lmsr_leg.pool_utxos.no.value, no_delta, "r_no")?;
+        let collateral_delta = if lmsr_leg.trade_kind.is_buy() {
+            i128::from(lmsr_leg.delta_in)
+        } else {
+            -i128::from(lmsr_leg.delta_out)
+        };
+        let new_r_collateral = apply_delta(
+            lmsr_leg.pool_utxos.collateral.value,
+            collateral_delta,
+            "r_collateral",
+        )?;
+        let out_base = usize::try_from(lmsr_leg.out_base).map_err(|_| {
+            Error::TradeRouting(format!(
+                "LMSR OUT_BASE {} does not fit usize",
+                lmsr_leg.out_base
+            ))
+        })?;
+
+        let pp = &lmsr_leg.pool_params;
+        reserve_prefix_output(
+            out_base,
+            explicit_txout(&pp.yes_asset_id, new_r_yes, &new_covenant_spk),
+            "LMSR YES reserve",
+        )?;
+        reserve_prefix_output(
+            out_base + 1,
+            explicit_txout(&pp.no_asset_id, new_r_no, &new_covenant_spk),
+            "LMSR NO reserve",
+        )?;
+        reserve_prefix_output(
+            out_base + 2,
+            explicit_txout(&pp.collateral_asset_id, new_r_collateral, &new_covenant_spk),
+            "LMSR collateral reserve",
+        )?;
     }
 
-    // Maker receive outputs (aligned 1:1 with order inputs).
-    for leg in &plan.order_legs {
+    // Maker receive outputs are aligned 1:1 with maker input indices.
+    for (i, leg) in plan.order_legs.iter().enumerate() {
+        let maker_output_index = order_input_indices[i];
         let (p_order, _) =
             derive_maker_receive(&leg.maker_base_pubkey, &leg.order_nonce, &leg.params);
         let maker_receive_spk = Script::from(maker_receive_script_pubkey(&p_order));
@@ -211,29 +300,52 @@ pub(crate) fn build_trade_pset(params: &TradePsetParams) -> Result<TradePsetResu
             OrderDirection::SellBase => &leg.params.quote_asset_id,
             OrderDirection::SellQuote => &leg.params.base_asset_id,
         };
-        add_pset_output(
-            &mut pset,
+        reserve_prefix_output(
+            maker_output_index,
             explicit_txout(receive_asset, leg.maker_receive_amount, &maker_receive_spk),
-        );
-        output_idx += 1;
+            "maker receive",
+        )?;
     }
 
-    // Remainder output (only for the last order if partially filled).
+    // Last-order remainder output is pinned at `last_order_input_index + 1`.
     if let Some(last) = plan.order_legs.last()
         && last.is_partial
         && last.remainder_value > 0
     {
+        let last_input_index = order_input_indices.last().copied().ok_or_else(|| {
+            Error::TradeRouting("partial maker fill requires at least one maker input index".into())
+        })?;
+        let remainder_index = last_input_index.checked_add(1).ok_or_else(|| {
+            Error::TradeRouting("overflow computing maker remainder output index".into())
+        })?;
         let remainder_asset = match last.params.direction {
             OrderDirection::SellBase => &last.params.base_asset_id,
             OrderDirection::SellQuote => &last.params.quote_asset_id,
         };
         let contract = &params.order_contracts[num_orders - 1];
         let covenant_spk = contract.script_pubkey(&last.maker_base_pubkey);
-        add_pset_output(
-            &mut pset,
+        reserve_prefix_output(
+            remainder_index,
             explicit_txout(remainder_asset, last.remainder_value, &covenant_spk),
-        );
-        output_idx += 1;
+            "maker remainder",
+        )?;
+    }
+
+    let mut output_idx = 0usize;
+    if !indexed_prefix_outputs.is_empty() {
+        let max_index = *indexed_prefix_outputs
+            .keys()
+            .next_back()
+            .expect("checked non-empty");
+        for idx in 0..=max_index {
+            let txout = indexed_prefix_outputs.remove(&idx).ok_or_else(|| {
+                Error::TradeRouting(format!(
+                    "cannot construct dense output prefix: missing output at index {idx}"
+                ))
+            })?;
+            add_pset_output(&mut pset, txout);
+        }
+        output_idx = max_index + 1;
     }
 
     // Taker receive output.
@@ -288,44 +400,73 @@ pub(crate) fn build_trade_pset(params: &TradePsetParams) -> Result<TradePsetResu
         pset,
         all_input_utxos,
         blind_output_indices,
-        pool_input_range,
+        lmsr_input_range,
         order_input_indices,
     })
+}
+
+fn validate_lmsr_table_membership(lmsr_leg: &super::types::LmsrPoolSwapLeg) -> Result<()> {
+    let params = &lmsr_leg.pool_params;
+    verify_lmsr_table_proof(
+        params.lmsr_table_root,
+        params.table_depth,
+        lmsr_leg.old_s_index,
+        lmsr_leg.old_f,
+        lmsr_leg.old_path_bits,
+        &lmsr_leg.old_siblings,
+    )
+    .map_err(|e| Error::TradeRouting(format!("invalid LMSR old-state table proof: {e}")))?;
+    verify_lmsr_table_proof(
+        params.lmsr_table_root,
+        params.table_depth,
+        lmsr_leg.new_s_index,
+        lmsr_leg.new_f,
+        lmsr_leg.new_path_bits,
+        &lmsr_leg.new_siblings,
+    )
+    .map_err(|e| Error::TradeRouting(format!("invalid LMSR new-state table proof: {e}")))?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amm_pool::math::{PoolReserves, SwapDirection, SwapPair};
-    use crate::amm_pool::params::AmmPoolParams;
+    use crate::lmsr_pool::math::LmsrTradeKind;
+    use crate::lmsr_pool::params::LmsrPoolParams;
+    use crate::lmsr_pool::table::{LmsrTableManifest, lmsr_table_root};
     use crate::maker_order::params::MakerOrderParams;
     use crate::taproot::NUMS_KEY_BYTES;
-    use crate::trade::types::{OrderFillLeg, PoolSwapLeg, PoolUtxos};
+    use crate::trade::types::{LmsrPoolSwapLeg, LmsrPoolUtxos, OrderFillLeg};
     use simplicityhl::elements::hashes::Hash as _;
     use simplicityhl::elements::{OutPoint, Txid};
-
-    // ── Helpers ─────────────────────────────────────────────────────────
 
     fn yes_asset() -> [u8; 32] {
         let mut a = [0u8; 32];
         a[0] = 0x01;
         a
     }
+
     fn no_asset() -> [u8; 32] {
         let mut a = [0u8; 32];
         a[0] = 0x02;
         a
     }
+
     fn lbtc_asset() -> [u8; 32] {
         let mut a = [0u8; 32];
         a[0] = 0x03;
         a
     }
 
-    fn test_utxo(asset: [u8; 32], value: u64, vout: u32) -> UnblindedUtxo {
+    fn test_utxo_with_script(
+        asset: [u8; 32],
+        value: u64,
+        vout: u32,
+        spk: &Script,
+    ) -> UnblindedUtxo {
         UnblindedUtxo {
             outpoint: OutPoint::new(Txid::all_zeros(), vout),
-            txout: explicit_txout(&asset, value, &Script::new()),
+            txout: explicit_txout(&asset, value, spk),
             asset_id: asset,
             value,
             asset_blinding_factor: [0u8; 32],
@@ -333,25 +474,8 @@ mod tests {
         }
     }
 
-    fn test_pool_params() -> AmmPoolParams {
-        AmmPoolParams {
-            yes_asset_id: yes_asset(),
-            no_asset_id: no_asset(),
-            lbtc_asset_id: lbtc_asset(),
-            lp_asset_id: [0x04; 32],
-            lp_reissuance_token_id: [0x05; 32],
-            fee_bps: 30,
-            cosigner_pubkey: NUMS_KEY_BYTES,
-        }
-    }
-
-    fn test_pool_utxos(r_yes: u64, r_no: u64, r_lbtc: u64) -> PoolUtxos {
-        PoolUtxos {
-            yes: test_utxo(yes_asset(), r_yes, 0),
-            no: test_utxo(no_asset(), r_no, 1),
-            lbtc: test_utxo(lbtc_asset(), r_lbtc, 2),
-            rt: test_utxo([0x05; 32], 1, 3),
-        }
+    fn test_utxo(asset: [u8; 32], value: u64, vout: u32) -> UnblindedUtxo {
+        test_utxo_with_script(asset, value, vout, &Script::new())
     }
 
     fn test_order_params(price: u64, nonce: &[u8; 32]) -> MakerOrderParams {
@@ -367,24 +491,6 @@ mod tests {
             nonce,
         );
         params
-    }
-
-    fn pool_swap_leg(delta_in: u64, delta_out: u64) -> PoolSwapLeg {
-        let pp = test_pool_params();
-        PoolSwapLeg {
-            pool_params: pp,
-            issued_lp: 1000,
-            pool_utxos: test_pool_utxos(10_000, 10_000, 50_000),
-            swap_pair: SwapPair::YesLbtc,
-            swap_direction: SwapDirection::SellB,
-            delta_in,
-            delta_out,
-            new_reserves: PoolReserves {
-                r_yes: 10_000 - delta_out,
-                r_no: 10_000,
-                r_lbtc: 50_000 + delta_in,
-            },
-        }
     }
 
     fn order_fill_leg(price: u64, available: u64, lots: u64, nonce: [u8; 32]) -> OrderFillLeg {
@@ -404,58 +510,84 @@ mod tests {
         }
     }
 
-    // ── Pool-only ───────────────────────────────────────────────────────
-
-    #[test]
-    fn pool_only_layout() {
-        let pp = test_pool_params();
-        let contract = CompiledAmmPool::new(pp).unwrap();
-
-        let plan = ExecutionPlan {
-            order_legs: vec![],
-            pool_leg: Some(pool_swap_leg(10_000, 100)),
-            taker_send_asset: lbtc_asset(),
-            taker_receive_asset: yes_asset(),
-            total_taker_input: 10_000,
-            total_taker_output: 100,
-            quoted_reserves: None,
-        };
-
-        let result = build_trade_pset(&TradePsetParams {
-            plan: &plan,
-            pool_contract: Some(&contract),
-            order_contracts: &[],
-            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 10_000, 10)],
-            fee_utxo: test_utxo(lbtc_asset(), 500, 11),
-            fee_amount: 500,
-            fee_asset_id: lbtc_asset(),
-            taker_receive_destination: Script::new(),
-            taker_change_destination: None,
-        })
-        .unwrap();
-
-        // 4 pool + 1 taker + 1 fee = 6 inputs
-        assert_eq!(result.pset.n_inputs(), 6);
-        assert_eq!(result.all_input_utxos.len(), 6);
-        // 4 pool + taker_receive + fee = 6 outputs
-        assert_eq!(result.pset.n_outputs(), 6);
-        assert_eq!(result.pool_input_range, Some(0..4));
-        assert!(result.order_input_indices.is_empty());
-        // Blind only taker receive (output 4)
-        assert_eq!(result.blind_output_indices, vec![4]);
+    fn test_lmsr_values() -> Vec<u64> {
+        (0u64..16).map(|i| 2_000 + i * 7).collect()
     }
 
-    // ── Orders-only with partial fill ───────────────────────────────────
+    fn test_lmsr_params() -> LmsrPoolParams {
+        let root = lmsr_table_root(&test_lmsr_values()).unwrap();
+        LmsrPoolParams {
+            yes_asset_id: yes_asset(),
+            no_asset_id: no_asset(),
+            collateral_asset_id: lbtc_asset(),
+            lmsr_table_root: root,
+            table_depth: 4,
+            q_step_lots: 10,
+            s_bias: 1_000,
+            s_max_index: 15,
+            half_payout_sats: 5_000,
+            fee_bps: 30,
+            min_r_yes: 1,
+            min_r_no: 1,
+            min_r_collateral: 1,
+            cosigner_pubkey: NUMS_KEY_BYTES,
+        }
+    }
+
+    fn test_lmsr_utxos(old_s: u64) -> LmsrPoolUtxos {
+        let params = test_lmsr_params();
+        let contract = CompiledLmsrPool::new(params).unwrap();
+        let old_spk = contract.script_pubkey(old_s);
+        LmsrPoolUtxos {
+            yes: test_utxo_with_script(yes_asset(), 10_000, 0, &old_spk),
+            no: test_utxo_with_script(no_asset(), 10_000, 1, &old_spk),
+            collateral: test_utxo_with_script(lbtc_asset(), 50_000, 2, &old_spk),
+        }
+    }
+
+    fn lmsr_swap_leg_with_base(
+        delta_in: u64,
+        delta_out: u64,
+        in_base: u32,
+        out_base: u32,
+        old_s_index: u64,
+        new_s_index: u64,
+    ) -> LmsrPoolSwapLeg {
+        let params = test_lmsr_params();
+        let manifest = LmsrTableManifest::new(params.table_depth, test_lmsr_values()).unwrap();
+        let old_proof = manifest.proof_at(old_s_index).unwrap();
+        let new_proof = manifest.proof_at(new_s_index).unwrap();
+        LmsrPoolSwapLeg {
+            primary_path: crate::trade::types::LmsrPrimaryPath::Swap,
+            pool_params: params,
+            pool_id: hex::encode([0x11; 32]),
+            old_s_index,
+            new_s_index,
+            old_path_bits: old_proof.path_bits,
+            new_path_bits: new_proof.path_bits,
+            old_siblings: old_proof.siblings,
+            new_siblings: new_proof.siblings,
+            in_base,
+            out_base,
+            pool_utxos: test_lmsr_utxos(old_s_index),
+            trade_kind: LmsrTradeKind::BuyYes,
+            old_f: old_proof.value,
+            new_f: new_proof.value,
+            delta_in,
+            delta_out,
+            admin_signature: [0u8; 64],
+        }
+    }
 
     #[test]
-    fn orders_only_partial_fill() {
+    fn orders_only_partial_fill_layout() {
         let nonce = [0xbb; 32];
         let params = test_order_params(400, &nonce);
         let contract = CompiledMakerOrder::new(params).unwrap();
 
         let plan = ExecutionPlan {
             order_legs: vec![order_fill_leg(400, 100, 10, nonce)],
-            pool_leg: None,
+            lmsr_pool_leg: None,
             taker_send_asset: lbtc_asset(),
             taker_receive_asset: yes_asset(),
             total_taker_input: 4_000,
@@ -465,7 +597,6 @@ mod tests {
 
         let result = build_trade_pset(&TradePsetParams {
             plan: &plan,
-            pool_contract: None,
             order_contracts: &[contract],
             taker_funding_utxos: vec![test_utxo(lbtc_asset(), 5_000, 30)],
             fee_utxo: test_utxo(lbtc_asset(), 500, 31),
@@ -476,85 +607,30 @@ mod tests {
         })
         .unwrap();
 
-        // 1 order + 1 taker + 1 fee = 3 inputs
         assert_eq!(result.pset.n_inputs(), 3);
-        // maker_receive + remainder + taker_receive + taker_change + fee = 5
         assert_eq!(result.pset.n_outputs(), 5);
-        assert_eq!(result.pool_input_range, None);
+        assert_eq!(result.lmsr_input_range, None);
         assert_eq!(result.order_input_indices, vec![0]);
-        // Blind: taker_receive (idx 2), taker_change (idx 3)
         assert_eq!(result.blind_output_indices, vec![2, 3]);
     }
 
-    // ── Combined pool + order (full fill) ───────────────────────────────
-
     #[test]
-    fn combined_pool_and_order() {
-        let pp = test_pool_params();
-        let pool_contract = CompiledAmmPool::new(pp).unwrap();
-        let nonce = [0xbb; 32];
-        let order_params = test_order_params(400, &nonce);
-        let order_contract = CompiledMakerOrder::new(order_params).unwrap();
-
+    fn lmsr_only_layout() {
         let plan = ExecutionPlan {
-            order_legs: vec![order_fill_leg(400, 10, 10, nonce)], // full fill
-            pool_leg: Some(pool_swap_leg(6_000, 60)),
+            order_legs: vec![],
+            lmsr_pool_leg: Some(lmsr_swap_leg_with_base(10_000, 100, 0, 0, 4, 5)),
             taker_send_asset: lbtc_asset(),
             taker_receive_asset: yes_asset(),
             total_taker_input: 10_000,
-            total_taker_output: 70,
+            total_taker_output: 100,
             quoted_reserves: None,
         };
 
         let result = build_trade_pset(&TradePsetParams {
             plan: &plan,
-            pool_contract: Some(&pool_contract),
-            order_contracts: &[order_contract],
-            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 12_000, 30)],
-            fee_utxo: test_utxo(lbtc_asset(), 600, 31),
-            fee_amount: 500,
-            fee_asset_id: lbtc_asset(),
-            taker_receive_destination: Script::new(),
-            taker_change_destination: Some(Script::new()),
-        })
-        .unwrap();
-
-        // 4 pool + 1 order + 1 taker + 1 fee = 7 inputs
-        assert_eq!(result.pset.n_inputs(), 7);
-        // 4 pool + maker_receive + taker_receive + taker_change + fee + fee_change = 9
-        assert_eq!(result.pset.n_outputs(), 9);
-        assert_eq!(result.pool_input_range, Some(0..4));
-        assert_eq!(result.order_input_indices, vec![4]);
-        // Blind: taker_receive (5), taker_change (6), fee_change (8)
-        assert_eq!(result.blind_output_indices, vec![5, 6, 8]);
-    }
-
-    // ── Combined pool + order (partial fill) ────────────────────────────
-
-    #[test]
-    fn combined_with_partial_fill() {
-        let pp = test_pool_params();
-        let pool_contract = CompiledAmmPool::new(pp).unwrap();
-        let nonce = [0xbb; 32];
-        let order_params = test_order_params(400, &nonce);
-        let order_contract = CompiledMakerOrder::new(order_params).unwrap();
-
-        let plan = ExecutionPlan {
-            order_legs: vec![order_fill_leg(400, 100, 10, nonce)], // partial: 10/100
-            pool_leg: Some(pool_swap_leg(6_000, 60)),
-            taker_send_asset: lbtc_asset(),
-            taker_receive_asset: yes_asset(),
-            total_taker_input: 10_000,
-            total_taker_output: 70,
-            quoted_reserves: None,
-        };
-
-        let result = build_trade_pset(&TradePsetParams {
-            plan: &plan,
-            pool_contract: Some(&pool_contract),
-            order_contracts: &[order_contract],
-            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 10_000, 30)],
-            fee_utxo: test_utxo(lbtc_asset(), 500, 31),
+            order_contracts: &[],
+            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 10_000, 10)],
+            fee_utxo: test_utxo(lbtc_asset(), 500, 11),
             fee_amount: 500,
             fee_asset_id: lbtc_asset(),
             taker_receive_destination: Script::new(),
@@ -562,199 +638,105 @@ mod tests {
         })
         .unwrap();
 
-        // 4 pool + 1 order + 1 taker + 1 fee = 7
-        assert_eq!(result.pset.n_inputs(), 7);
-        // 4 pool + maker_receive + remainder + taker_receive + fee = 8
-        assert_eq!(result.pset.n_outputs(), 8);
-        // Blind only taker_receive (idx 6)
-        assert_eq!(result.blind_output_indices, vec![6]);
+        assert_eq!(result.pset.n_inputs(), 5);
+        assert_eq!(result.pset.n_outputs(), 5);
+        assert_eq!(result.lmsr_input_range, Some(0..3));
+        assert!(result.order_input_indices.is_empty());
+        assert_eq!(result.blind_output_indices, vec![3]);
     }
 
-    // ── Multiple orders without pool ────────────────────────────────────
-
     #[test]
-    fn multiple_orders_no_pool() {
+    fn lmsr_nonzero_base_windows_with_orders() {
         let nonce1 = [0xbb; 32];
         let nonce2 = [0xcc; 32];
-        let params1 = test_order_params(400, &nonce1);
-        let params2 = test_order_params(450, &nonce2);
-        let contract1 = CompiledMakerOrder::new(params1).unwrap();
-        let contract2 = CompiledMakerOrder::new(params2).unwrap();
+        let contract1 = CompiledMakerOrder::new(test_order_params(400, &nonce1)).unwrap();
+        let contract2 = CompiledMakerOrder::new(test_order_params(450, &nonce2)).unwrap();
 
         let plan = ExecutionPlan {
             order_legs: vec![
-                order_fill_leg(400, 50, 50, nonce1), // full fill
-                order_fill_leg(450, 30, 20, nonce2), // partial: 20/30
+                order_fill_leg(400, 10, 10, nonce1),
+                order_fill_leg(450, 10, 10, nonce2),
             ],
-            pool_leg: None,
+            lmsr_pool_leg: Some(lmsr_swap_leg_with_base(10_000, 100, 1, 1, 4, 5)),
             taker_send_asset: lbtc_asset(),
             taker_receive_asset: yes_asset(),
-            total_taker_input: 50 * 400 + 20 * 450, // 20_000 + 9_000 = 29_000
-            total_taker_output: 70,
+            total_taker_input: 18_500,
+            total_taker_output: 120,
             quoted_reserves: None,
         };
 
         let result = build_trade_pset(&TradePsetParams {
             plan: &plan,
-            pool_contract: None,
             order_contracts: &[contract1, contract2],
-            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 30_000, 30)],
+            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 18_500, 30)],
             fee_utxo: test_utxo(lbtc_asset(), 500, 31),
             fee_amount: 500,
             fee_asset_id: lbtc_asset(),
             taker_receive_destination: Script::new(),
-            taker_change_destination: Some(Script::new()),
+            taker_change_destination: None,
         })
         .unwrap();
 
-        // 2 orders + 1 taker + 1 fee = 4 inputs
-        assert_eq!(result.pset.n_inputs(), 4);
-        // 2 maker_receive + remainder + taker_receive + taker_change + fee = 6
-        assert_eq!(result.pset.n_outputs(), 6);
-        assert_eq!(result.order_input_indices, vec![0, 1]);
-        // Blind: taker_receive (3), taker_change (4)
-        assert_eq!(result.blind_output_indices, vec![3, 4]);
-    }
-
-    // ── Error cases ─────────────────────────────────────────────────────
-
-    #[test]
-    fn error_insufficient_taker_funding() {
-        let pp = test_pool_params();
-        let contract = CompiledAmmPool::new(pp).unwrap();
-
-        let plan = ExecutionPlan {
-            order_legs: vec![],
-            pool_leg: Some(pool_swap_leg(10_000, 100)),
-            taker_send_asset: lbtc_asset(),
-            taker_receive_asset: yes_asset(),
-            total_taker_input: 10_000,
-            total_taker_output: 100,
-            quoted_reserves: None,
-        };
-
-        let result = build_trade_pset(&TradePsetParams {
-            plan: &plan,
-            pool_contract: Some(&contract),
-            order_contracts: &[],
-            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 5_000, 10)],
-            fee_utxo: test_utxo(lbtc_asset(), 500, 11),
-            fee_amount: 500,
-            fee_asset_id: lbtc_asset(),
-            taker_receive_destination: Script::new(),
-            taker_change_destination: None,
-        });
-
-        assert!(matches!(result, Err(Error::TradeRouting(_))));
+        assert_eq!(result.pset.n_inputs(), 7);
+        assert_eq!(result.pset.n_outputs(), 7);
+        assert_eq!(result.lmsr_input_range, Some(1..4));
+        assert_eq!(result.order_input_indices, vec![0, 4]);
+        assert_eq!(result.blind_output_indices, vec![5]);
     }
 
     #[test]
-    fn error_insufficient_fee() {
-        let pp = test_pool_params();
-        let contract = CompiledAmmPool::new(pp).unwrap();
-
-        let plan = ExecutionPlan {
-            order_legs: vec![],
-            pool_leg: Some(pool_swap_leg(10_000, 100)),
-            taker_send_asset: lbtc_asset(),
-            taker_receive_asset: yes_asset(),
-            total_taker_input: 10_000,
-            total_taker_output: 100,
-            quoted_reserves: None,
-        };
-
-        let result = build_trade_pset(&TradePsetParams {
-            plan: &plan,
-            pool_contract: Some(&contract),
-            order_contracts: &[],
-            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 10_000, 10)],
-            fee_utxo: test_utxo(lbtc_asset(), 100, 11),
-            fee_amount: 500,
-            fee_asset_id: lbtc_asset(),
-            taker_receive_destination: Script::new(),
-            taker_change_destination: None,
-        });
-
-        assert!(matches!(result, Err(Error::InsufficientFee)));
-    }
-
-    #[test]
-    fn error_missing_change_destination() {
-        let pp = test_pool_params();
-        let contract = CompiledAmmPool::new(pp).unwrap();
-
-        let plan = ExecutionPlan {
-            order_legs: vec![],
-            pool_leg: Some(pool_swap_leg(10_000, 100)),
-            taker_send_asset: lbtc_asset(),
-            taker_receive_asset: yes_asset(),
-            total_taker_input: 10_000,
-            total_taker_output: 100,
-            quoted_reserves: None,
-        };
-
-        let result = build_trade_pset(&TradePsetParams {
-            plan: &plan,
-            pool_contract: Some(&contract),
-            order_contracts: &[],
-            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 15_000, 10)],
-            fee_utxo: test_utxo(lbtc_asset(), 500, 11),
-            fee_amount: 500,
-            fee_asset_id: lbtc_asset(),
-            taker_receive_destination: Script::new(),
-            taker_change_destination: None,
-        });
-
-        assert!(matches!(result, Err(Error::MissingChangeDestination)));
-    }
-
-    #[test]
-    fn error_no_liquidity() {
-        let plan = ExecutionPlan {
-            order_legs: vec![],
-            pool_leg: None,
-            taker_send_asset: lbtc_asset(),
-            taker_receive_asset: yes_asset(),
-            total_taker_input: 10_000,
-            total_taker_output: 0,
-            quoted_reserves: None,
-        };
-
-        let result = build_trade_pset(&TradePsetParams {
-            plan: &plan,
-            pool_contract: None,
-            order_contracts: &[],
-            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 10_000, 10)],
-            fee_utxo: test_utxo(lbtc_asset(), 500, 11),
-            fee_amount: 500,
-            fee_asset_id: lbtc_asset(),
-            taker_receive_destination: Script::new(),
-            taker_change_destination: None,
-        });
-
-        assert!(matches!(result, Err(Error::NoLiquidity)));
-    }
-
-    #[test]
-    fn error_contract_count_mismatch() {
+    fn lmsr_out_base_can_differ_when_dense_prefix_is_satisfied() {
         let nonce = [0xbb; 32];
-
+        let contract = CompiledMakerOrder::new(test_order_params(400, &nonce)).unwrap();
         let plan = ExecutionPlan {
-            order_legs: vec![order_fill_leg(400, 10, 10, nonce)],
-            pool_leg: None,
+            order_legs: vec![order_fill_leg(400, 100, 10, nonce)],
+            lmsr_pool_leg: Some(lmsr_swap_leg_with_base(10_000, 100, 1, 2, 4, 5)),
             taker_send_asset: lbtc_asset(),
             taker_receive_asset: yes_asset(),
-            total_taker_input: 4_000,
-            total_taker_output: 10,
+            total_taker_input: 14_000,
+            total_taker_output: 110,
             quoted_reserves: None,
         };
 
-        // Pass empty contracts for 1 order leg
         let result = build_trade_pset(&TradePsetParams {
             plan: &plan,
-            pool_contract: None,
-            order_contracts: &[],
-            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 4_000, 10)],
+            order_contracts: &[contract],
+            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 14_000, 10)],
+            fee_utxo: test_utxo(lbtc_asset(), 500, 11),
+            fee_amount: 500,
+            fee_asset_id: lbtc_asset(),
+            taker_receive_destination: Script::new(),
+            taker_change_destination: None,
+        })
+        .unwrap();
+
+        assert_eq!(result.pset.n_inputs(), 6);
+        assert_eq!(result.pset.n_outputs(), 7);
+        assert_eq!(result.lmsr_input_range, Some(1..4));
+        assert_eq!(result.order_input_indices, vec![0]);
+        assert_eq!(result.blind_output_indices, vec![5]);
+    }
+
+    #[test]
+    fn error_conflicting_remainder_and_lmsr_output_index() {
+        let nonce = [0xbb; 32];
+        let contract = CompiledMakerOrder::new(test_order_params(400, &nonce)).unwrap();
+        let leg = lmsr_swap_leg_with_base(10_000, 100, 1, 1, 4, 5);
+
+        let plan = ExecutionPlan {
+            order_legs: vec![order_fill_leg(400, 100, 10, nonce)],
+            lmsr_pool_leg: Some(leg),
+            taker_send_asset: lbtc_asset(),
+            taker_receive_asset: yes_asset(),
+            total_taker_input: 14_000,
+            total_taker_output: 110,
+            quoted_reserves: None,
+        };
+
+        let result = build_trade_pset(&TradePsetParams {
+            plan: &plan,
+            order_contracts: &[contract],
+            taker_funding_utxos: vec![test_utxo(lbtc_asset(), 14_000, 10)],
             fee_utxo: test_utxo(lbtc_asset(), 500, 11),
             fee_amount: 500,
             fee_asset_id: lbtc_asset(),
@@ -762,6 +744,9 @@ mod tests {
             taker_change_destination: None,
         });
 
-        assert!(matches!(result, Err(Error::TradeRouting(_))));
+        match result {
+            Err(Error::TradeRouting(msg)) => assert!(msg.contains("output index conflict")),
+            _ => panic!("expected output index conflict"),
+        }
     }
 }

@@ -1,34 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppNetwork,
-  AttestationResult,
-  BoltzChainSwapCreated,
-  BoltzChainSwapPairsInfo,
-  BoltzLightningReceiveCreated,
-  BoltzSubmarineSwapCreated,
-  CancelLimitOrderRequestPayload,
-  CancelLimitOrderResult,
   ChainTipResponse,
-  ContractParamsPayload,
-  CreateLimitOrderRequestPayload,
-  CreateLimitOrderResult,
-  DiscoveredMarket,
-  DiscoveredOrder,
-  ExecuteMarketTradeQuoteRequestPayload,
-  ExecuteMarketTradeQuoteResult,
-  FillLimitOrderRequestPayload,
-  FillLimitOrderResult,
-  IdentityResponse,
-  IssuanceResult,
   NostrBackupStatus,
-  NostrProfile,
   PaymentSwap,
-  PreviewMarketTradeRequestPayload,
-  PreviewMarketTradeResult,
-  PricePoint,
-  QuoteMarketTradeRequestPayload,
-  QuoteMarketTradeResult,
-  RecoveredOwnLimitOrder,
   WalletNetwork,
   WalletTransaction,
 } from "../types.ts";
@@ -39,33 +14,11 @@ type AppStateResponse = {
 };
 
 type WalletBalanceResponse = { assets: Record<string, number> };
-type WalletAddressResponse = { address: string };
-type LiquidSendResult = { txid: string; feeSat: number };
-type ResolveMarketResult = {
-  txid: string;
-  previous_state: number;
-  new_state: number;
-  outcome_yes: boolean;
-};
-type CancelTokensResult = {
-  txid: string;
-  previous_state: number;
-  new_state: number;
-  pairs_burned: number;
-  is_full_cancellation: boolean;
-};
-type RedeemTokensResult = {
-  txid: string;
-  previous_state: number;
-  tokens_redeemed: number;
-  payout_sats: number;
-};
-type MarketStateResult = { state: number };
 
 export function tauriInvoke<T>(
   command: string,
   payload?: Record<string, unknown>,
-) {
+): Promise<T> {
   return invoke<T>(command, payload);
 }
 
@@ -76,152 +29,18 @@ export const tauriApi = {
   fetchChainTip: (network: WalletNetwork) =>
     tauriInvoke<ChainTipResponse>("fetch_chain_tip", { network }),
 
-  initNostrIdentity: () =>
-    tauriInvoke<IdentityResponse | null>("init_nostr_identity"),
-  generateNostrIdentity: () =>
-    tauriInvoke<IdentityResponse>("generate_nostr_identity"),
-  importNostrNsec: (nsec: string) =>
-    tauriInvoke<IdentityResponse>("import_nostr_nsec", { nsec }),
-  exportNostrNsec: () => tauriInvoke<string>("export_nostr_nsec"),
-  deleteNostrIdentity: () => tauriInvoke<void>("delete_nostr_identity"),
-  fetchNostrProfile: () =>
-    tauriInvoke<NostrProfile | null>("fetch_nostr_profile"),
   fetchNip65RelayList: () => tauriInvoke<string[]>("fetch_nip65_relay_list"),
-  setRelayList: (relays: string[]) =>
-    tauriInvoke<void>("set_relay_list", { relays }),
-  addRelay: (url: string) => tauriInvoke<string[]>("add_relay", { url }),
-  removeRelay: (url: string) => tauriInvoke<string[]>("remove_relay", { url }),
   checkNostrBackup: () => tauriInvoke<NostrBackupStatus>("check_nostr_backup"),
-  backupMnemonicToNostr: (password: string) =>
-    tauriInvoke<string>("backup_mnemonic_to_nostr", { password }),
-  restoreMnemonicFromNostr: () =>
-    tauriInvoke<string>("restore_mnemonic_from_nostr"),
-  deleteNostrBackup: () => tauriInvoke<string>("delete_nostr_backup"),
 
-  discoverContracts: () =>
-    tauriInvoke<DiscoveredMarket[]>("discover_contracts"),
-  discoverLimitOrders: (marketId?: string) =>
-    tauriInvoke<DiscoveredOrder[]>("discover_limit_orders", {
-      marketId: marketId ?? null,
-    }),
-  recoverOwnLimitOrders: (marketId?: string) =>
-    tauriInvoke<RecoveredOwnLimitOrder[]>("recover_own_limit_orders", {
-      marketId: marketId ?? null,
-    }),
-  listContracts: () => tauriInvoke<DiscoveredMarket[]>("list_contracts"),
-  createContractOnchain: (request: {
-    question: string;
-    description: string;
-    category: string;
-    resolution_source: string;
-    settlement_deadline_unix: number;
-    collateral_per_token: number;
-  }) => tauriInvoke<DiscoveredMarket>("create_contract_onchain", { request }),
-  previewMarketTrade: (request: PreviewMarketTradeRequestPayload) =>
-    tauriInvoke<PreviewMarketTradeResult>("preview_market_trade", { request }),
-  quoteMarketTrade: (request: QuoteMarketTradeRequestPayload) =>
-    tauriInvoke<QuoteMarketTradeResult>("quote_market_trade", { request }),
-  executeMarketTradeQuote: (request: ExecuteMarketTradeQuoteRequestPayload) =>
-    tauriInvoke<ExecuteMarketTradeQuoteResult>("execute_market_trade_quote", {
-      request,
-    }),
-  issueTokens: (
-    contractParams: ContractParamsPayload,
-    creationTxid: string,
-    pairs: number,
-  ) =>
-    tauriInvoke<IssuanceResult>("issue_tokens", {
-      contractParams,
-      creationTxid,
-      pairs,
-    }),
-  createLimitOrder: (request: CreateLimitOrderRequestPayload) =>
-    tauriInvoke<CreateLimitOrderResult>("create_limit_order", { request }),
-  cancelLimitOrder: (request: CancelLimitOrderRequestPayload) =>
-    tauriInvoke<CancelLimitOrderResult>("cancel_limit_order", { request }),
-  fillLimitOrder: (request: FillLimitOrderRequestPayload) =>
-    tauriInvoke<FillLimitOrderResult>("fill_limit_order", { request }),
-  cancelTokens: (contractParams: ContractParamsPayload, pairs: number) =>
-    tauriInvoke<CancelTokensResult>("cancel_tokens", {
-      contractParams,
-      pairs,
-    }),
-  resolveMarket: (
-    contractParams: ContractParamsPayload,
-    outcomeYes: boolean,
-    oracleSignatureHex: string,
-  ) =>
-    tauriInvoke<ResolveMarketResult>("resolve_market", {
-      contractParams,
-      outcomeYes,
-      oracleSignatureHex,
-    }),
-  redeemTokens: (contractParams: ContractParamsPayload, tokens: number) =>
-    tauriInvoke<RedeemTokensResult>("redeem_tokens", {
-      contractParams,
-      tokens,
-    }),
-  redeemExpired: (
-    contractParams: ContractParamsPayload,
-    tokenAssetHex: string,
-    tokens: number,
-  ) =>
-    tauriInvoke<RedeemTokensResult>("redeem_expired", {
-      contractParams,
-      tokenAssetHex,
-      tokens,
-    }),
-  getMarketState: (contractParams: ContractParamsPayload) =>
-    tauriInvoke<MarketStateResult>("get_market_state", { contractParams }),
-  oracleAttest: (marketIdHex: string, outcomeYes: boolean) =>
-    tauriInvoke<AttestationResult>("oracle_attest", {
-      marketIdHex,
-      outcomeYes,
-    }),
-  syncPool: (poolId: string) => tauriInvoke<void>("sync_pool", { poolId }),
-  getPoolPriceHistory: (marketId: string) =>
-    tauriInvoke<PricePoint[]>("get_pool_price_history", { marketId }),
-
-  createWallet: (password: string) =>
-    tauriInvoke<string>("create_wallet", { password }),
-  restoreWallet: (mnemonic: string, password: string) =>
-    tauriInvoke<void>("restore_wallet", {
-      mnemonic,
-      password,
-    }),
-  unlockWallet: (password: string) =>
-    tauriInvoke<void>("unlock_wallet", { password }),
-  lockWallet: () => tauriInvoke<void>("lock_wallet"),
-  deleteWallet: () => tauriInvoke<void>("delete_wallet"),
-  syncWallet: () => tauriInvoke<void>("sync_wallet"),
   getWalletBalance: () =>
     tauriInvoke<WalletBalanceResponse>("get_wallet_balance"),
   getWalletTransactions: () =>
     tauriInvoke<WalletTransaction[]>("get_wallet_transactions"),
-  getWalletAddress: (index?: number) =>
-    tauriInvoke<WalletAddressResponse>("get_wallet_address", { index }),
   listPaymentSwaps: () => tauriInvoke<PaymentSwap[]>("list_payment_swaps"),
-  refreshPaymentSwapStatus: (swapId: string) =>
-    tauriInvoke<PaymentSwap>("refresh_payment_swap_status", { swapId }),
-  getMnemonicWordCount: (password: string) =>
-    tauriInvoke<number>("get_mnemonic_word_count", { password }),
-  getMnemonicWord: (password: string, index: number) =>
-    tauriInvoke<string>("get_mnemonic_word", { password, index }),
 
-  getChainSwapPairs: () =>
-    tauriInvoke<BoltzChainSwapPairsInfo>("get_chain_swap_pairs"),
-  createLightningReceive: (amountSat: number) =>
-    tauriInvoke<BoltzLightningReceiveCreated>("create_lightning_receive", {
-      amountSat,
-    }),
-  createBitcoinReceive: (amountSat: number) =>
-    tauriInvoke<BoltzChainSwapCreated>("create_bitcoin_receive", { amountSat }),
-  createBitcoinSend: (amountSat: number) =>
-    tauriInvoke<BoltzChainSwapCreated>("create_bitcoin_send", { amountSat }),
-  payLightningInvoice: (invoice: string) =>
-    tauriInvoke<BoltzSubmarineSwapCreated>("pay_lightning_invoice", {
-      invoice,
-    }),
-  sendLbtc: (address: string, amountSat: number) =>
-    tauriInvoke<LiquidSendResult>("send_lbtc", { address, amountSat }),
+  restoreWallet: (mnemonic: string, password: string) =>
+    tauriInvoke<void>("restore_wallet", { mnemonic, password }),
+  unlockWallet: (password: string) =>
+    tauriInvoke<void>("unlock_wallet", { password }),
+  syncWallet: () => tauriInvoke<void>("sync_wallet"),
 };

@@ -4,42 +4,11 @@ use lwk_wollet::elements::confidential::{
 use lwk_wollet::elements::pset::PartiallySignedTransaction;
 use lwk_wollet::elements::secp256k1_zkp;
 use lwk_wollet::elements::{
-    AssetId, AssetIssuance, ContractHash, LockTime, OutPoint, Script, Sequence, Transaction, TxIn,
+    AssetId, AssetIssuance, LockTime, OutPoint, Script, Sequence, Transaction, TxIn,
 };
 
 use crate::error::{Error, Result};
 use crate::pset::UnblindedUtxo;
-
-/// Precomputed LP issuance entropy from the LP token creation transaction.
-pub(crate) struct LpIssuanceEntropy {
-    pub blinding_nonce: [u8; 32],
-    pub entropy: [u8; 32],
-}
-
-/// Compute LP issuance entropy from the LP token creation transaction.
-///
-/// The defining outpoint is the `previous_output` of the creation tx's first
-/// input — this is the standard Elements convention for `issueasset`.
-pub(crate) fn compute_lp_issuance_entropy(
-    lp_creation_tx: &Transaction,
-    rt_abf: &[u8; 32],
-) -> Result<LpIssuanceEntropy> {
-    use lwk_wollet::elements::hashes::Hash;
-
-    let defining_outpoint = lp_creation_tx
-        .input
-        .first()
-        .ok_or_else(|| Error::CovenantScan("LP creation tx has no inputs".into()))?
-        .previous_output;
-
-    let zero_contract_hash = ContractHash::from_byte_array([0u8; 32]);
-    let entropy = AssetId::generate_asset_entropy(defining_outpoint, zero_contract_hash);
-
-    Ok(LpIssuanceEntropy {
-        blinding_nonce: *rt_abf,
-        entropy: entropy.to_byte_array(),
-    })
-}
 
 /// Build a Transaction from the PSET for use as an ElementsEnv during pruning.
 ///

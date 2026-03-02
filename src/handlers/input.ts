@@ -1,136 +1,193 @@
 import { state } from "../state.ts";
-import { resetLimitSellWarningState } from "../utils/market.ts";
-
-type InputHandler = (target: HTMLInputElement, render: () => void) => void;
-
-function asTextarea(target: HTMLInputElement): HTMLTextAreaElement {
-  return target as unknown as HTMLTextAreaElement;
-}
-
-function resetTradeQuoteStateOnEdit(): void {
-  state.tradeQuoteModalOpen = false;
-  state.tradeQuoteLoading = false;
-  state.tradeQuoteExecuting = false;
-  state.tradeQuoteData = null;
-  state.tradeQuoteError = "";
-}
-
-const INPUT_HANDLERS: Record<string, InputHandler> = {
-  "onboarding-nostr-nsec": (target) => {
-    state.onboardingNostrNsec = target.value;
-  },
-  "onboarding-wallet-password": (target) => {
-    state.onboardingWalletPassword = target.value;
-  },
-  "onboarding-wallet-password-confirm": (target) => {
-    state.onboardingWalletPasswordConfirm = target.value;
-  },
-  "onboarding-wallet-mnemonic": (target) => {
-    state.onboardingWalletMnemonic = asTextarea(target).value;
-  },
-  "global-search": (target, render) => {
-    state.search = target.value;
-    if (state.view === "home") render();
-  },
-  "global-search-mobile": (target, render) => {
-    state.search = target.value;
-    if (state.view === "home") render();
-  },
-  "trade-size-sats": (target) => {
-    state.tradeSizeSatsDraft = target.value;
-    resetLimitSellWarningState();
-    resetTradeQuoteStateOnEdit();
-  },
-  "trade-size-contracts": (target) => {
-    const normalized = target.value.replace(/[^\d]/g, "").slice(0, 6);
-    state.tradeContractsDraft = normalized;
-    resetLimitSellWarningState();
-    resetTradeQuoteStateOnEdit();
-    if (target.value !== normalized) {
-      target.value = normalized;
-    }
-  },
-  "limit-price": (target) => {
-    state.limitPriceDraft = target.value.replace(/[^\d]/g, "").slice(0, 2);
-    resetLimitSellWarningState();
-    resetTradeQuoteStateOnEdit();
-  },
-  "pairs-input": (target, render) => {
-    state.pairsInput = Math.max(1, Math.floor(Number(target.value) || 1));
-    render();
-  },
-  "tokens-input": (target, render) => {
-    state.tokensInput = Math.max(1, Math.floor(Number(target.value) || 1));
-    render();
-  },
-  "wallet-password": (target) => {
-    state.walletPassword = target.value;
-  },
-  "wallet-password-confirm": (target) => {
-    state.walletPasswordConfirm = target.value;
-  },
-  "wallet-restore-mnemonic": (target) => {
-    state.walletRestoreMnemonic = asTextarea(target).value;
-  },
-  "nostr-import-nsec": (target) => {
-    state.nostrImportNsec = target.value;
-  },
-  "nostr-replace-confirm": (target, render) => {
-    state.nostrReplaceConfirm = target.value;
-    render();
-  },
-  "wallet-delete-confirm": (target, render) => {
-    state.walletDeleteConfirm = target.value;
-    render();
-  },
-  "dev-reset-confirm": (target, render) => {
-    state.devResetConfirm = target.value;
-    render();
-  },
-  "relay-input": (target) => {
-    state.relayInput = target.value;
-  },
-  "receive-amount": (target) => {
-    const v = target.value.replace(/^-/, "");
-    state.receiveAmount = v;
-    if (target.value !== v) target.value = v;
-  },
-  "send-invoice": (target) => {
-    state.sendInvoice = target.value;
-  },
-  "send-liquid-address": (target) => {
-    state.sendLiquidAddress = target.value;
-  },
-  "send-liquid-amount": (target) => {
-    const v = target.value.replace(/^-/, "");
-    state.sendLiquidAmount = v;
-    if (target.value !== v) target.value = v;
-  },
-  "send-btc-amount": (target) => {
-    const v = target.value.replace(/^-/, "");
-    state.sendBtcAmount = v;
-    if (target.value !== v) target.value = v;
-  },
-  "wallet-backup-password": (target) => {
-    if (state.walletData) state.walletData.backupPassword = target.value;
-  },
-  "settings-backup-password": (target) => {
-    state.nostrBackupPassword = target.value;
-  },
-  "create-question": (target) => {
-    state.createQuestion = target.value;
-  },
-  "create-description": (target) => {
-    state.createDescription = target.value;
-  },
-  "create-resolution-source": (target) => {
-    state.createResolutionSource = target.value;
-  },
-};
 
 export function handleInput(e: Event, render: () => void): void {
   const target = e.target as HTMLInputElement;
-  const handler = INPUT_HANDLERS[target.id];
-  if (!handler) return;
-  handler(target, render);
+
+  if (target.id === "onboarding-nostr-nsec") {
+    state.onboardingNostrNsec = target.value;
+    return;
+  }
+
+  if (target.id === "onboarding-wallet-password") {
+    state.onboardingWalletPassword = target.value;
+    return;
+  }
+
+  if (target.id === "onboarding-wallet-mnemonic") {
+    state.onboardingWalletMnemonic = (
+      target as unknown as HTMLTextAreaElement
+    ).value;
+    return;
+  }
+
+  if (target.id === "global-search" || target.id === "global-search-mobile") {
+    state.search = target.value;
+    if (state.view === "home") render();
+    return;
+  }
+
+  if (target.id === "trade-size-sats") {
+    state.tradeSizeSatsDraft = target.value;
+    state.tradeQuoteSnapshot = null;
+    state.tradeError = null;
+    return;
+  }
+
+  if (target.id === "trade-size-contracts") {
+    const cleaned = target.value
+      .replace(/[^\d.]/g, "")
+      .replace(/(\..*)\./g, "$1");
+    const [wholeRaw, fractionRaw] = cleaned.split(".");
+    const whole = wholeRaw.slice(0, 6);
+    const fraction = fractionRaw?.slice(0, 2);
+    const normalized =
+      cleaned.length === 0
+        ? ""
+        : fractionRaw !== undefined
+          ? `${whole}.${fraction ?? ""}`
+          : whole;
+    state.tradeContractsDraft = normalized;
+    if (target.value !== normalized) {
+      target.value = normalized;
+    }
+    state.tradeQuoteSnapshot = null;
+    state.tradeError = null;
+    return;
+  }
+
+  if (target.id === "limit-price") {
+    state.limitPriceDraft = target.value.replace(/[^\d]/g, "").slice(0, 2);
+    state.tradeQuoteSnapshot = null;
+    state.tradeError = null;
+    return;
+  }
+
+  if (target.id === "pairs-input") {
+    state.pairsInput = Math.max(1, Math.floor(Number(target.value) || 1));
+    render();
+    return;
+  }
+
+  if (target.id === "tokens-input") {
+    state.tokensInput = Math.max(1, Math.floor(Number(target.value) || 1));
+    render();
+    return;
+  }
+
+  if (target.id === "wallet-password") {
+    state.walletPassword = target.value;
+    return;
+  }
+
+  if (target.id === "wallet-restore-mnemonic") {
+    state.walletRestoreMnemonic = (
+      target as unknown as HTMLTextAreaElement
+    ).value;
+    return;
+  }
+
+  if (target.id === "nostr-import-nsec") {
+    state.nostrImportNsec = target.value;
+    return;
+  }
+
+  if (target.id === "nostr-replace-confirm") {
+    state.nostrReplaceConfirm = target.value;
+    const confirmBtn = document.querySelector(
+      "[data-action='nostr-replace-confirm']",
+    ) as HTMLButtonElement | null;
+    if (confirmBtn) {
+      const enabled = target.value.trim().toUpperCase() === "DELETE";
+      confirmBtn.disabled = !enabled;
+      confirmBtn.className = `shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${enabled ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`;
+    }
+    return;
+  }
+
+  if (target.id === "wallet-delete-confirm") {
+    state.walletDeleteConfirm = target.value;
+    const confirmBtn = document.querySelector(
+      "[data-action='wallet-delete-confirm']",
+    ) as HTMLButtonElement | null;
+    if (confirmBtn) {
+      const enabled = target.value.trim().toUpperCase() === "DELETE";
+      confirmBtn.disabled = !enabled;
+      confirmBtn.className = `shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${enabled ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`;
+    }
+    return;
+  }
+
+  if (target.id === "dev-reset-confirm") {
+    state.devResetConfirm = target.value;
+    const confirmBtn = document.querySelector(
+      "[data-action='dev-reset-confirm']",
+    ) as HTMLButtonElement | null;
+    if (confirmBtn) {
+      const enabled = target.value.trim().toUpperCase() === "RESET";
+      confirmBtn.disabled = !enabled;
+      confirmBtn.className = `shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${enabled ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`;
+    }
+    return;
+  }
+
+  if (target.id === "relay-input") {
+    state.relayInput = target.value;
+    return;
+  }
+
+  if (target.id === "receive-amount") {
+    const v = target.value.replace(/^-/, "");
+    state.receiveAmount = v;
+    if (target.value !== v) target.value = v;
+    return;
+  }
+
+  if (target.id === "send-invoice") {
+    state.sendInvoice = target.value;
+    return;
+  }
+
+  if (target.id === "send-liquid-address") {
+    state.sendLiquidAddress = target.value;
+    return;
+  }
+
+  if (target.id === "send-liquid-amount") {
+    const v = target.value.replace(/^-/, "");
+    state.sendLiquidAmount = v;
+    if (target.value !== v) target.value = v;
+    return;
+  }
+
+  if (target.id === "send-btc-amount") {
+    const v = target.value.replace(/^-/, "");
+    state.sendBtcAmount = v;
+    if (target.value !== v) target.value = v;
+    return;
+  }
+
+  if (target.id === "wallet-backup-password") {
+    if (state.walletData) state.walletData.backupPassword = target.value;
+    return;
+  }
+
+  if (target.id === "settings-backup-password") {
+    state.nostrBackupPassword = target.value;
+    return;
+  }
+
+  if (target.id === "create-question") {
+    state.createQuestion = target.value;
+    return;
+  }
+
+  if (target.id === "create-description") {
+    state.createDescription = target.value;
+    return;
+  }
+
+  if (target.id === "create-resolution-source") {
+    state.createResolutionSource = target.value;
+    return;
+  }
 }

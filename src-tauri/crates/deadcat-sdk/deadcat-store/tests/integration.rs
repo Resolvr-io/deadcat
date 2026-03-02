@@ -14,7 +14,7 @@ use deadcat_sdk::{
 };
 
 use deadcat_store::{
-    ChainSource, ChainUtxo, DeadcatStore, DiscoveredMarketMetadata, IssuanceData, MarketFilter,
+    ChainSource, ChainUtxo, ContractMetadataInput, DeadcatStore, IssuanceData, MarketFilter,
     OrderFilter, OrderStatus,
 };
 
@@ -1503,7 +1503,7 @@ fn test_ingest_market_with_metadata_roundtrip() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_params();
 
-    let metadata = DiscoveredMarketMetadata {
+    let metadata = ContractMetadataInput {
         question: Some("Will BTC hit 100k?".to_string()),
         description: Some("Resolves via exchange data.".to_string()),
         category: Some("Bitcoin".to_string()),
@@ -1552,7 +1552,7 @@ fn test_ingest_market_metadata_persists_across_reopen() {
 
     let market_id = {
         let mut store = DeadcatStore::open(&db_path).unwrap();
-        let metadata = DiscoveredMarketMetadata {
+        let metadata = ContractMetadataInput {
             question: Some("Test question".to_string()),
             category: Some("Politics".to_string()),
             ..Default::default()
@@ -1573,11 +1573,11 @@ fn test_ingest_market_metadata_persists_across_reopen() {
 fn test_list_markets_includes_metadata() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
 
-    let metadata1 = DiscoveredMarketMetadata {
+    let metadata1 = ContractMetadataInput {
         question: Some("Question 1".to_string()),
         ..Default::default()
     };
-    let metadata2 = DiscoveredMarketMetadata {
+    let metadata2 = ContractMetadataInput {
         question: Some("Question 2".to_string()),
         ..Default::default()
     };
@@ -1608,7 +1608,7 @@ fn test_market_nostr_event_json_roundtrip() {
     let params = test_params();
 
     let event_json = r#"{"id":"abc123","content":"test"}"#;
-    let metadata = DiscoveredMarketMetadata {
+    let metadata = ContractMetadataInput {
         question: Some("Test question".to_string()),
         nostr_event_id: Some("abc123".to_string()),
         nostr_event_json: Some(event_json.to_string()),
@@ -1666,215 +1666,6 @@ fn test_maker_order_nostr_event_json_none_by_default() {
     assert!(info.nostr_event_json.is_none());
 }
 
-// ==================== Pool State Snapshot Tests ====================
-
-fn test_amm_pool_params() -> deadcat_sdk::AmmPoolParams {
-    deadcat_sdk::AmmPoolParams {
-        yes_asset_id: [0x01; 32],
-        no_asset_id: [0x02; 32],
-        lbtc_asset_id: [0x03; 32],
-        lp_asset_id: [0x04; 32],
-        lp_reissuance_token_id: [0x05; 32],
-        fee_bps: 30,
-        cosigner_pubkey: NUMS_KEY_BYTES,
-    }
-}
-
-fn test_amm_pool_params_2() -> deadcat_sdk::AmmPoolParams {
-    deadcat_sdk::AmmPoolParams {
-        yes_asset_id: [0x11; 32],
-        no_asset_id: [0x12; 32],
-        lbtc_asset_id: [0x13; 32],
-        lp_asset_id: [0x14; 32],
-        lp_reissuance_token_id: [0x15; 32],
-        fee_bps: 50,
-        cosigner_pubkey: NUMS_KEY_BYTES,
-    }
-}
-
-#[test]
-fn test_insert_and_get_latest_pool_snapshot() {
-    let mut store = DeadcatStore::open_in_memory().unwrap();
-    let params = test_amm_pool_params();
-    let pool_id = store
-        .ingest_amm_pool(&params, 1_000_000, None, None, None, None)
-        .unwrap();
-
-    let txid1 = [0xaa; 32];
-    let txid2 = [0xbb; 32];
-
-    store
-        .insert_pool_snapshot(
-            &pool_id.0,
-            &txid1,
-            500_000,
-            500_000,
-            250_000,
-            1_000_000,
-            Some(100),
-        )
-        .unwrap();
-    store
-        .insert_pool_snapshot(
-            &pool_id.0,
-            &txid2,
-            480_000,
-            520_000,
-            250_000,
-            1_000_000,
-            Some(101),
-        )
-        .unwrap();
-
-    let latest = store.get_latest_pool_snapshot(&pool_id.0).unwrap().unwrap();
-    assert_eq!(latest.txid, txid2);
-    assert_eq!(latest.r_yes, 480_000);
-    assert_eq!(latest.r_no, 520_000);
-    assert_eq!(latest.block_height, Some(101));
-}
-
-#[test]
-fn test_get_pool_snapshots_chronological_order() {
-    let mut store = DeadcatStore::open_in_memory().unwrap();
-    let params = test_amm_pool_params();
-    let pool_id = store
-        .ingest_amm_pool(&params, 1_000_000, None, None, None, None)
-        .unwrap();
-
-    let txid1 = [0xaa; 32];
-    let txid2 = [0xbb; 32];
-    let txid3 = [0xcc; 32];
-
-    store
-        .insert_pool_snapshot(
-            &pool_id.0,
-            &txid1,
-            500_000,
-            500_000,
-            250_000,
-            1_000_000,
-            Some(100),
-        )
-        .unwrap();
-    store
-        .insert_pool_snapshot(
-            &pool_id.0,
-            &txid2,
-            480_000,
-            520_000,
-            250_000,
-            1_000_000,
-            Some(101),
-        )
-        .unwrap();
-    store
-        .insert_pool_snapshot(
-            &pool_id.0,
-            &txid3,
-            460_000,
-            540_000,
-            250_000,
-            1_000_000,
-            Some(102),
-        )
-        .unwrap();
-
-    let all = store.get_pool_snapshots(&pool_id.0).unwrap();
-    assert_eq!(all.len(), 3);
-    assert_eq!(all[0].txid, txid1);
-    assert_eq!(all[1].txid, txid2);
-    assert_eq!(all[2].txid, txid3);
-}
-
-#[test]
-fn test_insert_pool_snapshot_idempotent() {
-    let mut store = DeadcatStore::open_in_memory().unwrap();
-    let params = test_amm_pool_params();
-    let pool_id = store
-        .ingest_amm_pool(&params, 1_000_000, None, None, None, None)
-        .unwrap();
-
-    let txid = [0xaa; 32];
-
-    store
-        .insert_pool_snapshot(
-            &pool_id.0,
-            &txid,
-            500_000,
-            500_000,
-            250_000,
-            1_000_000,
-            Some(100),
-        )
-        .unwrap();
-    // Insert same (pool_id, txid) again — should be ignored
-    store
-        .insert_pool_snapshot(&pool_id.0, &txid, 999, 999, 999, 999, Some(200))
-        .unwrap();
-
-    let all = store.get_pool_snapshots(&pool_id.0).unwrap();
-    assert_eq!(all.len(), 1);
-    assert_eq!(all[0].r_yes, 500_000); // original values preserved
-}
-
-#[test]
-fn test_get_latest_pool_snapshot_empty() {
-    let mut store = DeadcatStore::open_in_memory().unwrap();
-    let params = test_amm_pool_params();
-    let pool_id = store
-        .ingest_amm_pool(&params, 1_000_000, None, None, None, None)
-        .unwrap();
-
-    assert!(
-        store
-            .get_latest_pool_snapshot(&pool_id.0)
-            .unwrap()
-            .is_none()
-    );
-    assert!(store.get_pool_snapshots(&pool_id.0).unwrap().is_empty());
-}
-
-#[test]
-fn test_get_pool_for_market() {
-    let mut store = DeadcatStore::open_in_memory().unwrap();
-    let market_id = [0xff; 32];
-    let params = test_amm_pool_params();
-
-    // Ingest pool with market_id
-    store
-        .ingest_amm_pool(&params, 1_000_000, None, None, Some(&market_id), None)
-        .unwrap();
-
-    let pool = store.get_pool_for_market(&market_id).unwrap();
-    assert!(pool.is_some());
-    let pool = pool.unwrap();
-    assert_eq!(pool.market_id, Some(market_id));
-
-    // Nonexistent market_id returns None
-    assert!(store.get_pool_for_market(&[0x00; 32]).unwrap().is_none());
-}
-
-#[test]
-fn test_get_pool_for_market_prefers_active() {
-    let mut store = DeadcatStore::open_in_memory().unwrap();
-    let market_id = [0xff; 32];
-
-    // Ingest two pools for the same market
-    let params1 = test_amm_pool_params();
-    store
-        .ingest_amm_pool(&params1, 1_000_000, None, None, Some(&market_id), None)
-        .unwrap();
-
-    let params2 = test_amm_pool_params_2();
-    store
-        .ingest_amm_pool(&params2, 2_000_000, None, None, Some(&market_id), None)
-        .unwrap();
-
-    // Both are Active — should return one of them
-    let pool = store.get_pool_for_market(&market_id).unwrap().unwrap();
-    assert_eq!(pool.market_id, Some(market_id));
-}
-
 #[test]
 fn test_update_market_state_txid() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
@@ -1898,48 +1689,4 @@ fn test_update_market_state_txid() {
     // Market still exists and is readable
     let info = store.get_market(&mid).unwrap();
     assert!(info.is_some());
-}
-
-#[test]
-fn test_ingest_amm_pool_with_market_id_and_creation_txid() {
-    let mut store = DeadcatStore::open_in_memory().unwrap();
-    let params = test_amm_pool_params();
-    let market_id = [0xee; 32];
-    let creation_txid = [0xdd; 32];
-
-    let pool_id = store
-        .ingest_amm_pool(
-            &params,
-            1_000_000,
-            None,
-            None,
-            Some(&market_id),
-            Some(&creation_txid),
-        )
-        .unwrap();
-
-    let info = store.get_amm_pool(&pool_id).unwrap().unwrap();
-    assert_eq!(info.market_id, Some(market_id));
-    assert_eq!(info.creation_txid, Some(creation_txid));
-}
-
-#[test]
-fn test_ingest_amm_pool_does_not_overwrite_existing_market_id() {
-    let mut store = DeadcatStore::open_in_memory().unwrap();
-    let params = test_amm_pool_params();
-    let market_id = [0xee; 32];
-    let new_market_id = [0xff; 32];
-
-    // First ingest sets market_id
-    store
-        .ingest_amm_pool(&params, 1_000_000, None, None, Some(&market_id), None)
-        .unwrap();
-
-    // Second ingest tries to set a different market_id — should be ignored (filter: is_null)
-    let pool_id = store
-        .ingest_amm_pool(&params, 1_000_000, None, None, Some(&new_market_id), None)
-        .unwrap();
-
-    let info = store.get_amm_pool(&pool_id).unwrap().unwrap();
-    assert_eq!(info.market_id, Some(market_id)); // original preserved
 }

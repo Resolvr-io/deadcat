@@ -20,7 +20,6 @@ pub struct UtxoRow {
     pub spending_txid: Option<Vec<u8>>,
     pub block_height: Option<i32>,
     pub spent_block_height: Option<i32>,
-    pub amm_pool_id: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -38,5 +37,4 @@ pub struct NewUtxoRow {
     pub maker_order_id: Option<i32>,
     pub market_state: Option<i32>,
     pub block_height: Option<i32>,
-    pub amm_pool_id: Option<Vec<u8>>,
 }

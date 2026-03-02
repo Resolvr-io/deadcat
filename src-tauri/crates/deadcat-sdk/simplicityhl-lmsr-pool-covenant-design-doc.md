@@ -10,17 +10,20 @@ SimplicityHL on Liquid - Resolvr Inc. - February 2026
 
 ## 1. Overview
 
+> Historical references to the legacy constant-product model are retained only for design context.
+> The runtime implementation and API surface are LMSR-only after cutover.
+
 This document proposes a SimplicityHL covenant for a binary, collateral-quoted LMSR market maker for prediction tokens on Liquid. The pool holds three explicit reserve UTXOs:
 
 - YES token reserve
 - NO token reserve
 - collateral reserve (for example, L-BTC)
 
-Unlike the existing constant-product AMM (`amm_pool.simf`), this design prices swaps using an LMSR cost function and enforces pricing via a committed lookup table (Merkle root parameter). The script commits to a single `LMSR_TABLE_ROOT` for the pool, and every swap must prove both old/new points against that same root. This avoids on-chain `log`/`exp` while preserving LMSR-style coherent pricing.
+This design prices swaps using an LMSR cost function and enforces pricing via a committed lookup table (Merkle root parameter). The script commits to a single `LMSR_TABLE_ROOT` for the pool, and every swap must prove both old/new points against that same root. This avoids on-chain `log`/`exp` while preserving LMSR-style coherent pricing.
 
-A key advantage versus the current 3-asset AMM is complement coherence: YES and NO are priced as complementary claims from one shared LMSR state, so the model itself enforces the market-pair relation (`YES + NO = pair value` in normalized units). In the CPAMM design, that relation is restored only by external arbitrage after trades. This removes endogenous YES/NO-sum dislocations created by the AMM mechanism itself (while normal execution slippage and fee spread still apply).
+A key advantage versus legacy triple-reserve constant-product routing is complement coherence: YES and NO are priced as complementary claims from one shared LMSR state, so the model itself enforces the market-pair relation (`YES + NO = pair value` in normalized units). This removes endogenous YES/NO-sum dislocations from that legacy mechanism (while normal execution slippage and fee spread still apply).
 
-The design keeps the same covenant architecture style as the current AMM:
+The design keeps the same covenant architecture style as the prior pool implementation:
 
 - fixed reserve ordering
 - tapdata-committed state in scriptPubKey
@@ -34,7 +37,7 @@ The design keeps the same covenant architecture style as the current AMM:
 - Enforce YES/NO coherent pricing from one shared state (`p_yes + p_no = 1` in normalized units).
 - Keep swap validation fully on-chain and deterministic.
 - Avoid direct on-chain logarithm/exponential evaluation.
-- Preserve simple UTXO layout and transaction construction patterns from the existing AMM SDK.
+- Preserve simple UTXO layout and transaction construction patterns from the existing SDK.
 - Keep all on-chain checks in integer arithmetic + hash verification.
 - Support atomic composition with the prediction market covenant in a single transaction.
 
@@ -113,7 +116,7 @@ The covenant enforces transitions between `old_index` and `new_index` using `F_o
 
 ## 4. Why Table-Committed LMSR
 
-`amm_pool.simf` avoided LMSR because SimplicityHL has no direct `log`/`exp` jets. This proposal resolves that by committing a deterministic, precomputed LMSR table at compile time:
+The prior pool covenant prototype avoided LMSR because SimplicityHL has no direct `log`/`exp` jets. This proposal resolves that by committing a deterministic, precomputed LMSR table at compile time:
 
 - on-chain: verify Merkle inclusion and arithmetic inequalities only
 - off-chain: generate table values from high-precision LMSR formula
@@ -299,7 +302,7 @@ To avoid redundant verification while preserving safety:
    - role mapping at reserve slots: `IN_BASE + 0 = YES`, `IN_BASE + 1 = NO`, `IN_BASE + 2 = collateral`
    - own script hash equals `input_script_hash(IN_BASE)`
 
-This keeps the primary/secondary split from current AMM structure but hardens secondary checks with explicit role mapping, and avoids triplicating the full output validation logic.
+This keeps the primary/secondary split from the prior pool structure but hardens secondary checks with explicit role mapping, and avoids triplicating the full output validation logic.
 
 ---
 
@@ -428,7 +431,7 @@ Fail-closed deployment rule:
 
 ### 8.3 Path 3: Secondary covenant input
 
-Secondary leaf enforces the hardened role/co-membership contract from Section 7.4 (strictly stronger than current AMM secondary checks):
+Secondary leaf enforces the hardened role/co-membership contract from Section 7.4 (strictly stronger than legacy secondary checks):
 
 - `current_index != IN_BASE`
 - `current_index` must equal `IN_BASE + 1` or `IN_BASE + 2`
@@ -703,7 +706,7 @@ All arithmetic remains in `u64`/`u128` composed operations:
 
 No division, no floating-point, no on-chain transcendental math.
 
-As in current `amm_pool.simf`, helper functions `safe_add`, `safe_subtract`, carry/borrow assertions are required.
+Helper functions `safe_add`, `safe_subtract`, and carry/borrow assertions are required.
 
 ### 12.1 Required parameter-validation matrix (SDK/generator)
 
@@ -806,7 +809,7 @@ Same structure as Section 14.1 with YES/NO and collateral deltas mirrored for th
 - Planner policy may default to `OUT_BASE >= IN_BASE` for readability, but this is not a consensus requirement.
 - Treat reserve bundle UTXOs as explicit only (non-confidential) in builder/scanner paths.
 
-Discovery payload additions vs current AMM:
+Discovery payload additions:
 
 - `lmsr_pool_id` (required canonical identity key)
 - `lmsr_table_root`
@@ -849,9 +852,9 @@ Multiple simultaneous pools with identical economic parameters are allowed in v0
 
 ---
 
-## 16. Comparison vs Existing `amm_pool.simf`
+## 16. Comparison vs Legacy Triple-Reserve Constant-Product Model
 
-| Topic | Current CPAMM | Proposed LMSR |
+| Topic | Legacy model | Proposed LMSR |
 |------|----------------|---------------|
 | Price function | 3-asset constant product | LMSR cost table |
 | YES/NO coherence | external via arbitrage | internal by shared `s` state |
@@ -907,26 +910,26 @@ This section records the key v0.1 design choices and why they were chosen. Conse
    - taproot-layer support for multi-simplicity-leaf trees (primary leaf + secondary leaf + tapdata leaf)
 3. Refactor fixed-index and LP-era assumptions in existing SDK flows:
    - `src-tauri/crates/deadcat-sdk/src/taproot.rs`: generalize scriptPubKey/control-block construction beyond single Simplicity leaf (variable-depth tree and control blocks)
-   - `src-tauri/crates/deadcat-sdk/src/amm_pool/contract.rs` (and LMSR equivalents): expose leaf-specific control block/program selection APIs for primary vs secondary leaves
-   - `src-tauri/crates/deadcat-sdk/src/trade/router.rs`: replace CPAMM spot/quote integration (`amm_pool::math`) with LMSR quote path and mixed-liquidity routing hooks
-   - `src-tauri/crates/deadcat-sdk/src/trade/types.rs`: add LMSR pool leg types/state (`S_INDEX`, 3-UTXO reserve model) alongside existing AMM-era structs
-   - `src-tauri/crates/deadcat-sdk/src/trade/convert.rs`: support LMSR discovery/announcement conversion instead of AMM LP-only pool parsing
+   - `src-tauri/crates/deadcat-sdk/src/lmsr_pool/contract.rs`: expose leaf-specific control block/program selection APIs for primary vs secondary leaves
+   - `src-tauri/crates/deadcat-sdk/src/trade/router.rs`: use LMSR quote path and mixed-liquidity routing hooks
+   - `src-tauri/crates/deadcat-sdk/src/trade/types.rs`: add LMSR pool leg types/state (`S_INDEX`, 3-UTXO reserve model)
+   - `src-tauri/crates/deadcat-sdk/src/trade/convert.rs`: support LMSR discovery/announcement conversion
    - `src-tauri/crates/deadcat-sdk/src/trade/pset.rs`: remove hardcoded pool input/output slot assumptions (`0..3`)
-   - `src-tauri/crates/deadcat-sdk/src/amm_pool/assembly.rs`: replace current fixed primary/secondary witness attachment assumptions with base-indexed LMSR attachment and separate witness sets for primary vs secondary leaves
+   - `src-tauri/crates/deadcat-sdk/src/lmsr_pool/assembly.rs`: use base-indexed LMSR witness attachment and separate witness sets for primary vs secondary leaves
    - `src-tauri/crates/deadcat-sdk/src/prediction_market/assembly.rs`: preserve market fixed-index path constraints while composing with non-zero LMSR base windows
-   - `src-tauri/crates/deadcat-sdk/src/amm_pool/chain_walk.rs`: replace LP-era fixed-slot walk with LMSR canonical 3-outpoint bundle tracking (no asset-first ambiguity)
+   - `src-tauri/crates/deadcat-sdk/src/lmsr_pool/chain_walk.rs`: use LMSR canonical 3-outpoint bundle tracking (no asset-first ambiguity)
    - `src-tauri/crates/deadcat-sdk/src/sdk.rs`: replace asset-first reserve scanning with canonical outpoint-lineage selection for LMSR pools
-   - `src-tauri/crates/deadcat-sdk/src/node.rs`: watcher/sync and pool-state refresh must be keyed by LMSR canonical bundle/state-hash churn, not LP-only `issued_lp` assumptions
+   - `src-tauri/crates/deadcat-sdk/src/node.rs`: watcher/sync and pool-state refresh must be keyed by LMSR canonical bundle/state-hash churn (no legacy LP-style state assumptions)
    - `src-tauri/crates/deadcat-sdk/src/node.rs` quote/execution path: remove "first discovered pool" and legacy scan assumptions; resolve pool and reserves by canonical bundle identity
-   - `src-tauri/crates/deadcat-sdk/src/discovery/pool.rs`: add LMSR discovery schema (table root/manifest + canonical bundle identity fields), separate from AMM LP announcement shape
+   - `src-tauri/crates/deadcat-sdk/src/discovery/pool.rs`: add LMSR discovery schema (table root/manifest + canonical bundle identity fields)
    - `src-tauri/crates/deadcat-sdk/src/discovery/service.rs` and `src-tauri/crates/deadcat-sdk/src/discovery/store_trait.rs`: add LMSR-specific ingest/update interfaces and canonical-bundle state updates
-   - `src-tauri/crates/deadcat-sdk/deadcat-store/src/schema.rs`: add LMSR pool/state tables keyed for canonical bundle lineage; do not overload AMM `issued_lp` schema
+   - `src-tauri/crates/deadcat-sdk/deadcat-store/src/schema.rs`: add LMSR pool/state tables keyed for canonical bundle lineage
    - discovery/bootstrap contract: require `lmsr_pool_id`, `creation_txid`, `initial_reserve_outpoints`, and `witness_schema_version` at announcement ingest time; reject announcements missing any
    - discovery replacement/dedup: derive and validate `lmsr_pool_id` canonically; use as NIP-33 identity key and store identity key
    - canonical witness decoder support: implement `DEADCAT/LMSR_WITNESS_SCHEMA_V1` parser + conformance vectors for `OUT_BASE` extraction
 
 These watcher/discovery/store/schema items are mandatory deliverables for v0.1 LMSR support, not optional follow-on cleanup.
-4. Add SDK modules mirroring existing AMM structure:
+4. Add SDK modules for LMSR pool support:
    - `lmsr_pool/params.rs`
    - `lmsr_pool/math.rs`
    - `lmsr_pool/pset/swap.rs`

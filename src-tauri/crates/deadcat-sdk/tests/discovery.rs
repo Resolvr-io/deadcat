@@ -20,6 +20,7 @@ async fn setup_service_with_store(
     let store = Arc::new(Mutex::new(TestStore::default()));
     let config = DiscoveryConfig {
         relays: vec![mock_url.to_string()],
+        network_tag: "liquid-testnet".to_string(),
         ..Default::default()
     };
     let (service, rx) = DiscoveryService::with_store(keys.clone(), store.clone(), config);
@@ -131,7 +132,8 @@ async fn subscription_delivers_market_events() {
         creation_txid: None,
     };
 
-    let event = deadcat_sdk::build_announcement_event(&keys, &announcement).unwrap();
+    let event =
+        deadcat_sdk::build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
     publisher.send_event(event).await.unwrap();
 
     // Wait for the broadcast event
@@ -163,7 +165,7 @@ async fn subscription_delivers_order_events() {
     publisher.connect().await;
 
     let announcement = test_order_announcement("market456");
-    let event = deadcat_sdk::build_order_event(&keys, &announcement).unwrap();
+    let event = deadcat_sdk::build_order_event(&keys, &announcement, "liquid-testnet").unwrap();
     publisher.send_event(event).await.unwrap();
 
     let result = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
@@ -203,7 +205,8 @@ async fn store_persistence_on_discovery() {
         metadata: test_metadata(),
         creation_txid: None,
     };
-    let event = deadcat_sdk::build_announcement_event(&keys, &announcement).unwrap();
+    let event =
+        deadcat_sdk::build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
     publisher.send_event(event).await.unwrap();
 
     // Wait for broadcast
@@ -211,7 +214,8 @@ async fn store_persistence_on_discovery() {
 
     // Publish an order
     let order_announcement = test_order_announcement("market789");
-    let order_event = deadcat_sdk::build_order_event(&keys, &order_announcement).unwrap();
+    let order_event =
+        deadcat_sdk::build_order_event(&keys, &order_announcement, "liquid-testnet").unwrap();
     publisher.send_event(order_event).await.unwrap();
 
     let _ = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;

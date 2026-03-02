@@ -1,5 +1,5 @@
 use simplicityhl::elements::hashes::{Hash, HashEngine, sha256};
-use simplicityhl::elements::secp256k1_zkp::{Secp256k1, XOnlyPublicKey};
+use simplicityhl::elements::secp256k1_zkp::{Parity, Secp256k1, XOnlyPublicKey};
 use simplicityhl::elements::{Address, AddressParams, Script};
 use simplicityhl::simplicity::Cmr;
 
@@ -69,43 +69,92 @@ pub fn taptweak_hash(pubkey: &[u8; 32], merkle_root: &[u8; 32]) -> [u8; 32] {
     tagged_hash(b"TapTweak/elements", &data)
 }
 
+fn tweak_output_key(
+    internal_key_bytes: &[u8; 32],
+    merkle_root: &[u8; 32],
+) -> (XOnlyPublicKey, Parity) {
+    let tweak = taptweak_hash(internal_key_bytes, merkle_root);
+    let secp = Secp256k1::new();
+    let internal_key = XOnlyPublicKey::from_slice(internal_key_bytes)
+        .expect("internal key must be a valid x-only public key");
+    internal_key
+        .add_tweak(
+            &secp,
+            &simplicityhl::elements::secp256k1_zkp::Scalar::from_be_bytes(tweak)
+                .expect("taptweak is a valid scalar"),
+        )
+        .expect("taptweak should not overflow")
+}
+
+fn parity_bit(parity: Parity) -> u8 {
+    match parity {
+        Parity::Even => 0,
+        Parity::Odd => 1,
+    }
+}
+
+fn build_p2tr_script(output_key: &XOnlyPublicKey) -> Script {
+    let mut script_bytes = Vec::with_capacity(34);
+    script_bytes.push(0x51); // OP_1 (witness version 1)
+    script_bytes.push(0x20); // push 32 bytes
+    script_bytes.extend_from_slice(&output_key.serialize());
+    Script::from(script_bytes)
+}
+
+fn nums_control_block(merkle_root: &[u8; 32], merkle_path: &[[u8; 32]]) -> Vec<u8> {
+    let (_output_key, parity) = tweak_output_key(&NUMS_KEY_BYTES, merkle_root);
+    let mut cb = Vec::with_capacity(1 + 32 + 32 * merkle_path.len());
+    cb.push(SIMPLICITY_LEAF_VERSION | parity_bit(parity));
+    cb.extend_from_slice(&NUMS_KEY_BYTES);
+    for sibling in merkle_path {
+        cb.extend_from_slice(sibling);
+    }
+    cb
+}
+
+/// Compute the full P2TR script pubkey from a Taproot merkle root using NUMS as internal key.
+pub fn covenant_script_pubkey_from_root(merkle_root: &[u8; 32]) -> Script {
+    let (output_key, _parity) = tweak_output_key(&NUMS_KEY_BYTES, merkle_root);
+    build_p2tr_script(&output_key)
+}
+
+/// Compute the script hash (SHA256 of scriptPubKey) from a Taproot merkle root.
+pub fn covenant_script_hash_from_root(merkle_root: &[u8; 32]) -> [u8; 32] {
+    let spk = covenant_script_pubkey_from_root(merkle_root);
+    sha256::Hash::hash(spk.as_bytes()).to_byte_array()
+}
+
+/// Compute the covenant address from a Taproot merkle root.
+pub fn covenant_address_from_root(
+    merkle_root: &[u8; 32],
+    params: &'static AddressParams,
+) -> Address {
+    let spk = covenant_script_pubkey_from_root(merkle_root);
+    Address::from_script(&spk, None, params).expect("valid P2TR script should produce an address")
+}
+
 /// Compute the full P2TR script pubkey from a CMR and state.
 pub fn covenant_script_pubkey(cmr: &Cmr, state: u64) -> Script {
     let sim_leaf = simplicity_leaf_hash(cmr);
     let data_leaf = tapdata_hash(state);
-    let branch = tapbranch_hash(&sim_leaf, &data_leaf);
-    let tweak = taptweak_hash(&NUMS_KEY_BYTES, &branch);
-
-    let secp = Secp256k1::new();
-    let nums_key =
-        XOnlyPublicKey::from_slice(&NUMS_KEY_BYTES).expect("NUMS key is a valid x-only public key");
-
-    let (tweaked_key, _parity) = nums_key
-        .add_tweak(
-            &secp,
-            &simplicityhl::elements::secp256k1_zkp::Scalar::from_be_bytes(tweak)
-                .expect("tweak is a valid scalar"),
-        )
-        .expect("tweak should not overflow");
-
-    // P2TR witness v1 script: OP_1 <32-byte-x-only-key>
-    let mut script_bytes = Vec::with_capacity(34);
-    script_bytes.push(0x51); // OP_1 (witness version 1)
-    script_bytes.push(0x20); // push 32 bytes
-    script_bytes.extend_from_slice(&tweaked_key.serialize());
-    Script::from(script_bytes)
+    let merkle_root = tapbranch_hash(&sim_leaf, &data_leaf);
+    covenant_script_pubkey_from_root(&merkle_root)
 }
 
 /// Compute the script hash (SHA256 of scriptPubKey) used for introspection jets.
 pub fn covenant_script_hash(cmr: &Cmr, state: u64) -> [u8; 32] {
-    let spk = covenant_script_pubkey(cmr, state);
-    sha256::Hash::hash(spk.as_bytes()).to_byte_array()
+    let sim_leaf = simplicity_leaf_hash(cmr);
+    let data_leaf = tapdata_hash(state);
+    let merkle_root = tapbranch_hash(&sim_leaf, &data_leaf);
+    covenant_script_hash_from_root(&merkle_root)
 }
 
 /// Compute the covenant address for a given CMR and state.
 pub fn covenant_address(cmr: &Cmr, state: u64, params: &'static AddressParams) -> Address {
-    let spk = covenant_script_pubkey(cmr, state);
-    Address::from_script(&spk, None, params).expect("valid P2TR script should produce an address")
+    let sim_leaf = simplicity_leaf_hash(cmr);
+    let data_leaf = tapdata_hash(state);
+    let merkle_root = tapbranch_hash(&sim_leaf, &data_leaf);
+    covenant_address_from_root(&merkle_root, params)
 }
 
 /// Build the Simplicity control block for a given CMR and state.
@@ -115,31 +164,103 @@ pub fn covenant_address(cmr: &Cmr, state: u64, params: &'static AddressParams) -
 /// The first byte encodes both the leaf version (upper 7 bits) and the parity of
 /// the tweaked output key (lowest bit), per BIP-341.
 pub fn simplicity_control_block(cmr: &Cmr, state: u64) -> Vec<u8> {
-    // Recompute the tweaked key to determine the output key parity.
     let sim_leaf = simplicity_leaf_hash(cmr);
     let data_leaf = tapdata_hash(state);
-    let branch = tapbranch_hash(&sim_leaf, &data_leaf);
-    let tweak = taptweak_hash(&NUMS_KEY_BYTES, &branch);
+    let merkle_root = tapbranch_hash(&sim_leaf, &data_leaf);
+    nums_control_block(&merkle_root, &[data_leaf])
+}
 
-    let secp = Secp256k1::new();
-    let nums_key =
-        XOnlyPublicKey::from_slice(&NUMS_KEY_BYTES).expect("NUMS key is a valid x-only public key");
-    let scalar = simplicityhl::elements::secp256k1_zkp::Scalar::from_be_bytes(tweak)
-        .expect("tweak is a valid scalar");
-    let (_tweaked_key, parity) = nums_key
-        .add_tweak(&secp, &scalar)
-        .expect("tweak should not overflow");
+/// Hashes for the canonical LMSR tree shape: `((primary, secondary), tapdata)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct LmsrTreeHashes {
+    pub primary_leaf: [u8; 32],
+    pub secondary_leaf: [u8; 32],
+    pub tapdata_leaf: [u8; 32],
+    pub primary_secondary_branch: [u8; 32],
+    pub merkle_root: [u8; 32],
+}
 
-    let parity_bit: u8 = match parity {
-        simplicityhl::elements::secp256k1_zkp::Parity::Even => 0,
-        simplicityhl::elements::secp256k1_zkp::Parity::Odd => 1,
-    };
+/// Compute all intermediate hashes for the canonical LMSR Taproot tree.
+#[allow(dead_code)]
+pub fn lmsr_tree_hashes(primary_cmr: &Cmr, secondary_cmr: &Cmr, state: u64) -> LmsrTreeHashes {
+    let primary_leaf = simplicity_leaf_hash(primary_cmr);
+    let secondary_leaf = simplicity_leaf_hash(secondary_cmr);
+    let tapdata_leaf = tapdata_hash(state);
+    let primary_secondary_branch = tapbranch_hash(&primary_leaf, &secondary_leaf);
+    let merkle_root = tapbranch_hash(&primary_secondary_branch, &tapdata_leaf);
+    LmsrTreeHashes {
+        primary_leaf,
+        secondary_leaf,
+        tapdata_leaf,
+        primary_secondary_branch,
+        merkle_root,
+    }
+}
 
-    let mut cb = Vec::with_capacity(65);
-    cb.push(SIMPLICITY_LEAF_VERSION | parity_bit);
-    cb.extend_from_slice(&NUMS_KEY_BYTES);
-    cb.extend_from_slice(&tapdata_hash(state));
-    cb
+/// Compute the canonical LMSR tree root.
+#[allow(dead_code)]
+pub fn lmsr_merkle_root(primary_cmr: &Cmr, secondary_cmr: &Cmr, state: u64) -> [u8; 32] {
+    lmsr_tree_hashes(primary_cmr, secondary_cmr, state).merkle_root
+}
+
+/// Compute LMSR covenant scriptPubKey from `(primary, secondary, tapdata)` tree.
+#[allow(dead_code)]
+pub fn lmsr_script_pubkey(primary_cmr: &Cmr, secondary_cmr: &Cmr, state: u64) -> Script {
+    let hashes = lmsr_tree_hashes(primary_cmr, secondary_cmr, state);
+    covenant_script_pubkey_from_root(&hashes.merkle_root)
+}
+
+/// Compute LMSR covenant script hash from `(primary, secondary, tapdata)` tree.
+#[allow(dead_code)]
+pub fn lmsr_script_hash(primary_cmr: &Cmr, secondary_cmr: &Cmr, state: u64) -> [u8; 32] {
+    let hashes = lmsr_tree_hashes(primary_cmr, secondary_cmr, state);
+    covenant_script_hash_from_root(&hashes.merkle_root)
+}
+
+/// Compute LMSR covenant address from `(primary, secondary, tapdata)` tree.
+#[allow(dead_code)]
+pub fn lmsr_address(
+    primary_cmr: &Cmr,
+    secondary_cmr: &Cmr,
+    state: u64,
+    params: &'static AddressParams,
+) -> Address {
+    let hashes = lmsr_tree_hashes(primary_cmr, secondary_cmr, state);
+    covenant_address_from_root(&hashes.merkle_root, params)
+}
+
+/// Build control block for LMSR primary leaf spend.
+///
+/// Merkle path is `[secondary_leaf, tapdata_leaf]`.
+#[allow(dead_code)]
+pub fn lmsr_primary_control_block(primary_cmr: &Cmr, secondary_cmr: &Cmr, state: u64) -> Vec<u8> {
+    let hashes = lmsr_tree_hashes(primary_cmr, secondary_cmr, state);
+    nums_control_block(
+        &hashes.merkle_root,
+        &[hashes.secondary_leaf, hashes.tapdata_leaf],
+    )
+}
+
+/// Build control block for LMSR secondary leaf spend.
+///
+/// Merkle path is `[primary_leaf, tapdata_leaf]`.
+#[allow(dead_code)]
+pub fn lmsr_secondary_control_block(primary_cmr: &Cmr, secondary_cmr: &Cmr, state: u64) -> Vec<u8> {
+    let hashes = lmsr_tree_hashes(primary_cmr, secondary_cmr, state);
+    nums_control_block(
+        &hashes.merkle_root,
+        &[hashes.primary_leaf, hashes.tapdata_leaf],
+    )
+}
+
+/// Build control block for LMSR tapdata leaf vectors.
+///
+/// Merkle path is `[tapbranch_hash(primary_leaf, secondary_leaf)]`.
+#[allow(dead_code)]
+pub fn lmsr_tapdata_control_block(primary_cmr: &Cmr, secondary_cmr: &Cmr, state: u64) -> Vec<u8> {
+    let hashes = lmsr_tree_hashes(primary_cmr, secondary_cmr, state);
+    nums_control_block(&hashes.merkle_root, &[hashes.primary_secondary_branch])
 }
 
 #[cfg(test)]
@@ -204,5 +325,56 @@ mod tests {
         let le_hash: [u8; 32] = hasher.finalize().into();
 
         assert_ne!(tapdata_hash(1), le_hash);
+    }
+
+    #[test]
+    fn covenant_script_pubkey_from_root_matches_legacy() {
+        let cmr = Cmr::from_byte_array([0x55; 32]);
+        let state = 42;
+        let legacy_spk = covenant_script_pubkey(&cmr, state);
+
+        let sim_leaf = simplicity_leaf_hash(&cmr);
+        let data_leaf = tapdata_hash(state);
+        let root = tapbranch_hash(&sim_leaf, &data_leaf);
+        let from_root_spk = covenant_script_pubkey_from_root(&root);
+
+        assert_eq!(legacy_spk, from_root_spk);
+    }
+
+    #[test]
+    fn lmsr_tree_root_deterministic() {
+        let p = Cmr::from_byte_array([0x11; 32]);
+        let s = Cmr::from_byte_array([0x22; 32]);
+        let r1 = lmsr_merkle_root(&p, &s, 5);
+        let r2 = lmsr_merkle_root(&p, &s, 5);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn lmsr_control_blocks_have_expected_lengths() {
+        let p = Cmr::from_byte_array([0x11; 32]);
+        let s = Cmr::from_byte_array([0x22; 32]);
+        let cb_primary = lmsr_primary_control_block(&p, &s, 7);
+        let cb_secondary = lmsr_secondary_control_block(&p, &s, 7);
+        let cb_tapdata = lmsr_tapdata_control_block(&p, &s, 7);
+
+        assert_eq!(cb_primary.len(), 97); // 1 + 32 + 32 + 32
+        assert_eq!(cb_secondary.len(), 97);
+        assert_eq!(cb_tapdata.len(), 65); // 1 + 32 + 32
+        assert_eq!(cb_primary[0] & 0xfe, SIMPLICITY_LEAF_VERSION);
+        assert_eq!(cb_secondary[0] & 0xfe, SIMPLICITY_LEAF_VERSION);
+        assert_eq!(cb_tapdata[0] & 0xfe, SIMPLICITY_LEAF_VERSION);
+    }
+
+    #[test]
+    fn lmsr_control_blocks_share_same_parity_bit() {
+        let p = Cmr::from_byte_array([0x31; 32]);
+        let s = Cmr::from_byte_array([0x32; 32]);
+        let cb_primary = lmsr_primary_control_block(&p, &s, 99);
+        let cb_secondary = lmsr_secondary_control_block(&p, &s, 99);
+        let cb_tapdata = lmsr_tapdata_control_block(&p, &s, 99);
+
+        assert_eq!(cb_primary[0] & 0x01, cb_secondary[0] & 0x01);
+        assert_eq!(cb_secondary[0] & 0x01, cb_tapdata[0] & 0x01);
     }
 }
