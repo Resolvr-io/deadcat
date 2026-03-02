@@ -1,9 +1,18 @@
 import { state } from "../state.ts";
+import { resetLimitSellWarningState } from "../utils/market.ts";
 
 type InputHandler = (target: HTMLInputElement, render: () => void) => void;
 
 function asTextarea(target: HTMLInputElement): HTMLTextAreaElement {
   return target as unknown as HTMLTextAreaElement;
+}
+
+function resetTradeQuoteStateOnEdit(): void {
+  state.tradeQuoteModalOpen = false;
+  state.tradeQuoteLoading = false;
+  state.tradeQuoteExecuting = false;
+  state.tradeQuoteData = null;
+  state.tradeQuoteError = "";
 }
 
 const INPUT_HANDLERS: Record<string, InputHandler> = {
@@ -29,27 +38,22 @@ const INPUT_HANDLERS: Record<string, InputHandler> = {
   },
   "trade-size-sats": (target) => {
     state.tradeSizeSatsDraft = target.value;
+    resetLimitSellWarningState();
+    resetTradeQuoteStateOnEdit();
   },
   "trade-size-contracts": (target) => {
-    const cleaned = target.value
-      .replace(/[^\d.]/g, "")
-      .replace(/(\..*)\./g, "$1");
-    const [wholeRaw, fractionRaw] = cleaned.split(".");
-    const whole = wholeRaw.slice(0, 6);
-    const fraction = fractionRaw?.slice(0, 2);
-    const normalized =
-      cleaned.length === 0
-        ? ""
-        : fractionRaw !== undefined
-          ? `${whole}.${fraction ?? ""}`
-          : whole;
+    const normalized = target.value.replace(/[^\d]/g, "").slice(0, 6);
     state.tradeContractsDraft = normalized;
+    resetLimitSellWarningState();
+    resetTradeQuoteStateOnEdit();
     if (target.value !== normalized) {
       target.value = normalized;
     }
   },
   "limit-price": (target) => {
     state.limitPriceDraft = target.value.replace(/[^\d]/g, "").slice(0, 2);
+    resetLimitSellWarningState();
+    resetTradeQuoteStateOnEdit();
   },
   "pairs-input": (target, render) => {
     state.pairsInput = Math.max(1, Math.floor(Number(target.value) || 1));

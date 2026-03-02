@@ -14,6 +14,8 @@ import type {
   CreateLimitOrderResult,
   DiscoveredMarket,
   DiscoveredOrder,
+  ExecuteMarketTradeQuoteRequestPayload,
+  ExecuteMarketTradeQuoteResult,
   FillLimitOrderRequestPayload,
   FillLimitOrderResult,
   IdentityResponse,
@@ -21,7 +23,11 @@ import type {
   NostrBackupStatus,
   NostrProfile,
   PaymentSwap,
+  PreviewMarketTradeRequestPayload,
+  PreviewMarketTradeResult,
   PricePoint,
+  QuoteMarketTradeRequestPayload,
+  QuoteMarketTradeResult,
   RecoveredOwnLimitOrder,
   WalletNetwork,
   WalletTransaction,
@@ -111,6 +117,14 @@ export const tauriApi = {
     settlement_deadline_unix: number;
     collateral_per_token: number;
   }) => tauriInvoke<DiscoveredMarket>("create_contract_onchain", { request }),
+  previewMarketTrade: (request: PreviewMarketTradeRequestPayload) =>
+    tauriInvoke<PreviewMarketTradeResult>("preview_market_trade", { request }),
+  quoteMarketTrade: (request: QuoteMarketTradeRequestPayload) =>
+    tauriInvoke<QuoteMarketTradeResult>("quote_market_trade", { request }),
+  executeMarketTradeQuote: (request: ExecuteMarketTradeQuoteRequestPayload) =>
+    tauriInvoke<ExecuteMarketTradeQuoteResult>("execute_market_trade_quote", {
+      request,
+    }),
   issueTokens: (
     contractParams: ContractParamsPayload,
     creationTxid: string,

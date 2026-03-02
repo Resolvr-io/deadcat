@@ -22,6 +22,9 @@ import {
   getOrderbookLevels,
   getPathAvailability,
   getPositionContracts,
+  getQuoteEffectivePriceContractsPerSat,
+  getQuoteEffectivePriceSatsPerContract,
+  getQuoteRemainingSeconds,
   getSelectedMarket,
   getTradePreview,
   isExpired,
@@ -54,11 +57,17 @@ export function renderActionTicket(market: Market): string {
   const preview = getTradePreview(market);
   const executionPriceSats = Math.round(preview.executionPriceSats);
   const positions = getPositionContracts(market);
+  const isBuy = state.tradeIntent === "open";
+  const isSellLimit = !isBuy && state.orderType === "limit";
+  const parsedSellDraftLots = Math.max(
+    0,
+    Math.floor(Number(state.tradeContractsDraft || "0") || 0),
+  );
+  const hasSellInput = parsedSellDraftLots >= 1;
   const selectedPositionContracts =
     state.selectedSide === "yes" ? positions.yes : positions.no;
-  const ctaVerb = state.tradeIntent === "open" ? "Buy" : "Sell";
-  const ctaTarget = state.selectedSide === "yes" ? "Yes" : "No";
-  const ctaLabel = `${ctaVerb} ${ctaTarget}`;
+  const availableSellLots = Math.max(0, Math.floor(selectedPositionContracts));
+  const hasSellBalance = availableSellLots >= 1;
   const fillabilityLabel =
     state.orderType === "limit"
       ? preview.fill.filledContracts <= 0
@@ -70,6 +79,8 @@ export function renderActionTicket(market: Market): string {
         ? "May partially fill"
         : "Expected to fill now";
   const sideOrders = getLimitOrdersForSide(market, state.selectedSide);
+  const limitSellWarning = isSellLimit ? state.limitSellWarning : null;
+  const limitSellWarningInfo = isSellLimit ? state.limitSellWarningInfo : "";
 
   const issueCollateral = state.pairsInput * 2 * market.cptSats;
   const cancelCollateral = state.pairsInput * 2 * market.cptSats;
@@ -105,85 +116,116 @@ export function renderActionTicket(market: Market): string {
   return `
     <aside class="rounded-[21px] border border-slate-800 bg-slate-900/80 p-[21px]">
       <p class="panel-subtitle">Contract Action Ticket</p>
-      <p class="mb-3 mt-1 text-sm text-slate-300">Buy or sell with a cleaner ticket flow. Advanced covenant actions are below.</p>
+      <p class="mb-3 mt-1 text-sm text-slate-300">Simple by default. Market trades use a quote confirmation. Advanced covenant actions are below.</p>
       <div class="mb-3 flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
         <div class="flex items-center gap-4">
           <button data-trade-intent="open" class="border-b-2 pb-1 text-xl font-medium ${state.tradeIntent === "open" ? "border-slate-100 text-slate-100" : "border-transparent text-slate-500"}">Buy</button>
           <button data-trade-intent="close" class="border-b-2 pb-1 text-xl font-medium ${state.tradeIntent === "close" ? "border-slate-100 text-slate-100" : "border-transparent text-slate-500"}">Sell</button>
         </div>
-        <div class="flex items-center gap-2 rounded-lg border border-slate-700 p-1">
+        ${
+          !isBuy
+            ? `<div class="flex items-center gap-2 rounded-lg border border-slate-700 p-1">
           <button data-order-type="market" class="rounded px-3 py-1 text-sm ${state.orderType === "market" ? "bg-slate-200 text-slate-950" : "text-slate-300"}">Market</button>
           <button data-order-type="limit" class="rounded px-3 py-1 text-sm ${state.orderType === "limit" ? "bg-slate-200 text-slate-950" : "text-slate-300"}">Limit</button>
-        </div>
+        </div>`
+            : ""
+        }
       </div>
       <div class="mb-3 grid grid-cols-2 gap-2">
-        <button data-side="yes" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "yes" ? (state.tradeIntent === "open" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">Yes ${yesDisplaySats} sats</button>
-        <button data-side="no" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "no" ? (state.tradeIntent === "open" ? "border-rose-400 bg-rose-400/20 text-rose-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">No ${noDisplaySats} sats</button>
-      </div>
-      <div class="mb-3 flex items-center justify-between gap-2">
-        <label class="text-xs text-slate-400">Amount</label>
-        <div class="grid grid-cols-2 gap-2">
-          <button data-size-mode="sats" class="rounded border px-2 py-1 text-xs ${state.sizeMode === "sats" ? "border-slate-500 bg-slate-700 text-slate-100" : "border-slate-700 text-slate-300"}">sats</button>
-          <button data-size-mode="contracts" class="rounded border px-2 py-1 text-xs ${state.sizeMode === "contracts" ? "border-slate-500 bg-slate-700 text-slate-100" : "border-slate-700 text-slate-300"}">contracts</button>
-        </div>
+        <button data-side="yes" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "yes" ? (isBuy ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">Yes ${yesDisplaySats} sats</button>
+        <button data-side="no" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "no" ? (isBuy ? "border-rose-400 bg-rose-400/20 text-rose-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">No ${noDisplaySats} sats</button>
       </div>
       ${
-        state.sizeMode === "sats"
-          ? `
-      <input id="trade-size-sats" type="text" inputmode="numeric" value="${escapeAttr(state.tradeSizeSatsDraft)}" class="mb-2 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
-      `
-          : `
+        isBuy
+          ? `<label for="trade-size-sats" class="mb-1 block text-xs text-slate-400">Spend amount (sats)</label>
+      <input id="trade-size-sats" type="text" inputmode="numeric" value="${escapeAttr(state.tradeSizeSatsDraft)}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
+      <button data-action="request-trade-quote" class="w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950">Review Buy Quote</button>
+      <button data-action="toggle-buy-limit-composer" class="mt-2 w-full rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300">${state.buyLimitComposerOpen ? "Hide Limit Buy" : "Place Limit Buy"}</button>
+      ${
+        state.buyLimitComposerOpen
+          ? `<div class="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+        <p class="mb-2 text-xs text-slate-500">Advanced limit buy</p>
+        <label for="trade-size-contracts" class="mb-1 block text-xs text-slate-400">Contracts</label>
+        <input id="trade-size-contracts" type="text" inputmode="numeric" pattern="[0-9]*" value="${escapeAttr(state.tradeContractsDraft)}" class="mb-1 h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2" />
+        <p class="mb-2 text-xs text-slate-500">Contracts are whole lots.</p>
+        <label for="limit-price" class="mb-1 block text-xs text-slate-400">Limit price (sats)</label>
+        <input id="limit-price" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="${escapeAttr(state.limitPriceDraft)}" class="mb-2 h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2" />
+        <p class="mb-2 text-xs text-slate-500">May not fill immediately; unfilled size rests on book. ${fillabilityLabel}.</p>
+        <button data-action="submit-limit-buy" class="w-full rounded-lg bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-950">Place Limit Buy</button>
+      </div>`
+          : ""
+      }`
+          : `<label for="trade-size-contracts" class="mb-1 block text-xs text-slate-400">Sell amount (contracts)</label>
       <div class="mb-3 grid grid-cols-[42px_1fr_42px] gap-2">
         <button data-action="step-trade-contracts" data-contracts-step-delta="-1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Decrease contracts">&minus;</button>
-        <input id="trade-size-contracts" type="text" inputmode="decimal" value="${escapeAttr(state.tradeContractsDraft)}" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2" />
+        <input id="trade-size-contracts" type="text" inputmode="numeric" pattern="[0-9]*" value="${escapeAttr(state.tradeContractsDraft)}" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2" />
         <button data-action="step-trade-contracts" data-contracts-step-delta="1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Increase contracts">+</button>
       </div>
+      <p class="mb-3 text-xs text-slate-500">Contracts are whole lots.</p>
       ${
-        state.tradeIntent === "close"
-          ? `<div class="mb-3 flex items-center gap-2 text-sm">
+        !hasSellBalance
+          ? `<p class="mb-3 rounded border border-slate-700 bg-slate-900/50 px-2 py-1 text-xs text-slate-300">No contracts available on this side.</p>`
+          : !hasSellInput
+            ? `<p class="mb-3 rounded border border-slate-700 bg-slate-900/50 px-2 py-1 text-xs text-slate-300">Enter contracts to sell.</p>`
+            : ""
+      }
+      <div class="mb-3 flex items-center gap-2 text-sm">
         <button data-action="sell-25" class="rounded border border-slate-700 px-3 py-1 text-slate-300">25%</button>
         <button data-action="sell-50" class="rounded border border-slate-700 px-3 py-1 text-slate-300">50%</button>
         <button data-action="sell-max" class="rounded border border-slate-700 px-3 py-1 text-slate-300">Max</button>
-      </div>`
-          : ""
-      }
-      `
-      }
+      </div>
       ${
         state.orderType === "limit"
-          ? `
-      <label for="limit-price" class="mb-1 block text-xs text-slate-400">Limit price (sats)</label>
+          ? `<label for="limit-price" class="mb-1 block text-xs text-slate-400">Limit price (sats)</label>
       <div class="mb-3 grid grid-cols-[42px_1fr_42px] gap-2">
         <button data-action="step-limit-price" data-limit-price-delta="-1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Decrease limit price">&minus;</button>
         <input id="limit-price" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="${escapeAttr(state.limitPriceDraft)}" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2" />
         <button data-action="step-limit-price" data-limit-price-delta="1" class="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800" aria-label="Increase limit price">+</button>
       </div>
-      <p class="mb-3 text-xs text-slate-500">May not fill immediately; unfilled size rests on book. ${fillabilityLabel}. Matchable now: ${formatSats(preview.executedSats)}.</p>
-      `
-          : `<p class="mb-3 text-xs text-slate-500">Estimated avg fill: ${preview.fill.avgPriceSats.toFixed(1)} sats (range ${preview.fill.bestPriceSats}-${preview.fill.worstPriceSats}).</p>`
-      }
-      <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
+      ${
+        limitSellWarning
+          ? `<div class="mb-3 rounded-lg border border-amber-700/60 bg-amber-950/20 p-2 text-xs text-amber-200">
+        <p>Limit is ${limitSellWarning.discountSats} sats below current executable bid from SDK quote (${limitSellWarning.referencePriceSats.toFixed(2)} sats, ${limitSellWarning.discountPct.toFixed(1)}%).</p>
         ${
-          state.tradeIntent === "open"
+          state.limitSellOverrideAccepted
+            ? `<p class="mt-1 text-emerald-300">Override acknowledged.</p>`
+            : `<button data-action="ack-limit-sell-warning" class="mt-2 rounded border border-amber-700/70 px-2 py-1 text-[11px] text-amber-200 transition hover:bg-amber-900/30">Acknowledge and allow this price</button>`
+        }
+      </div>`
+          : ""
+      }
+      ${
+        limitSellWarningInfo
+          ? `<div class="mb-3 rounded-lg border border-slate-700 bg-slate-900/60 p-2 text-xs text-slate-300">${escapeHtml(limitSellWarningInfo)}</div>`
+          : ""
+      }
+      <button data-action="submit-limit-sell" class="w-full rounded-lg bg-slate-200 px-4 py-2 font-semibold text-slate-950 ${hasSellInput && !state.limitSellGuardChecking ? "" : "opacity-60"}" ${hasSellInput && !state.limitSellGuardChecking ? "" : "disabled"}>${state.limitSellGuardChecking ? "Checking reference quote..." : "Place Limit Sell"}</button>`
+          : `<button data-action="request-trade-quote" class="w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950 ${hasSellInput ? "" : "opacity-60"}" ${hasSellInput ? "" : "disabled"}>Review Sell Quote</button>`
+      }`
+      }
+      <div class="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
+        ${
+          isBuy
             ? `<div class="flex items-center justify-between py-1"><span>You pay</span><span>${formatSats(preview.notionalSats)}</span></div>
-        <div class="flex items-center justify-between py-1"><span>If filled & correct</span><span>${formatSats(estimatedNetIfCorrectSats)}</span></div>`
-            : `<div class="flex items-center justify-between py-1"><span>You receive (if filled)</span><span>${formatSats(Math.max(0, preview.notionalSats - estimatedExecutionFeeSats))}</span></div>
-        <div class="flex items-center justify-between py-1"><span>Position remaining (if filled)</span><span>${Math.max(0, selectedPositionContracts - preview.requestedContracts).toFixed(2)} contracts</span></div>`
+        <div class="flex items-center justify-between py-1"><span>If correct (est.)</span><span>${formatSats(estimatedNetIfCorrectSats)}</span></div>`
+            : `<div class="flex items-center justify-between py-1"><span>You receive (est.)</span><span>${formatSats(Math.max(0, preview.notionalSats - estimatedExecutionFeeSats))}</span></div>
+        <div class="flex items-center justify-between py-1"><span>Position remaining (est.)</span><span>${Math.max(0, selectedPositionContracts - preview.requestedContracts).toFixed(2)} contracts</span></div>`
         }
         <div class="flex items-center justify-between py-1"><span>Estimated fees</span><span>${formatSats(estimatedFeesSats)}</span></div>
         <div class="mt-1 flex items-center justify-between py-1 text-xs text-slate-500"><span>Price</span><span>${executionPriceSats} sats · Yes + No = ${SATS_PER_FULL_CONTRACT}</span></div>
       </div>
-      <button data-action="submit-trade" class="mt-4 w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950">${ctaLabel}</button>
       <div class="mt-3 flex items-center justify-between text-xs text-slate-400">
         <span>You hold: YES ${positions.yes.toFixed(2)} · NO ${positions.no.toFixed(2)}</span>
-        ${
-          state.tradeIntent === "close"
-            ? `<button data-action="sell-max" class="rounded border border-slate-700 px-2 py-1 text-slate-300">Sell max</button>`
-            : ""
-        }
+        <div class="flex items-center gap-2 rounded-lg border border-slate-700 p-1">
+          ${
+            !isBuy
+              ? `<button data-action="sell-max" class="rounded border border-slate-700 px-2 py-1 text-slate-300">Sell max</button>`
+              : ""
+          }
+        </div>
       </div>
       ${
-        state.tradeIntent === "close" &&
+        !isBuy &&
         preview.requestedContracts > selectedPositionContracts + 0.0001
           ? `<p class="mt-2 text-xs text-rose-300">Requested size exceeds your current ${state.selectedSide.toUpperCase()} position.</p>`
           : ""
@@ -195,7 +237,7 @@ export function renderActionTicket(market: Market): string {
       ${
         state.showOrderbook
           ? `<div class="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-xs">
-        <p class="mb-2 font-semibold text-slate-200">${state.tradeIntent === "open" ? "Asks (buy depth)" : "Bids (sell depth)"} · ${state.selectedSide.toUpperCase()}</p>
+        <p class="mb-2 font-semibold text-slate-200">${isBuy ? "Asks (buy depth)" : "Bids (sell depth)"} · ${state.selectedSide.toUpperCase()}</p>
         <div class="space-y-1">
           ${getOrderbookLevels(market, state.selectedSide, state.tradeIntent)
             .map(
@@ -339,7 +381,110 @@ export function renderActionTicket(market: Market): string {
           : ""
       }
     </aside>
+    ${renderTradeQuoteModal()}
   `;
+}
+
+function renderTradeQuoteModal(): string {
+  if (!state.tradeQuoteModalOpen) return "";
+  const quote = state.tradeQuoteData;
+  const isBuyQuote = quote?.direction === "buy";
+  const nowUnix = state.tradeQuoteNowUnix;
+  const expiresAtText = quote
+    ? new Date(quote.expires_at_unix * 1000).toLocaleTimeString()
+    : "";
+  const remainingSeconds = quote
+    ? getQuoteRemainingSeconds(quote.expires_at_unix, nowUnix)
+    : 0;
+  const effectivePriceSatsPerContract = quote
+    ? getQuoteEffectivePriceSatsPerContract(quote)
+    : null;
+  const effectivePriceContractsPerSat = quote
+    ? getQuoteEffectivePriceContractsPerSat(quote)
+    : null;
+  const quoteInputLabel = isBuyQuote
+    ? "Exact input (sats)"
+    : "Exact input (contracts)";
+  const quoteOutputLabel = isBuyQuote
+    ? "Expected output (contracts)"
+    : "Expected output (sats)";
+  const quoteInputDisplay = quote
+    ? isBuyQuote
+      ? formatSats(quote.total_input)
+      : `${quote.total_input.toLocaleString()} contracts`
+    : "";
+  const quoteOutputDisplay = quote
+    ? isBuyQuote
+      ? `${quote.total_output.toLocaleString()} contracts`
+      : formatSats(quote.total_output)
+    : "";
+
+  return `<div data-action="trade-quote-backdrop" class="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm">
+    <div class="relative mx-4 w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-800 px-6 py-4">
+        <div>
+          <h3 class="text-lg font-medium text-slate-100">Trade Quote Confirmation</h3>
+          <p class="text-xs text-slate-400">Review route, pricing, and expiry before broadcast.</p>
+        </div>
+        <button data-action="close-trade-quote" class="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="space-y-3 p-6">
+        ${
+          state.tradeQuoteLoading
+            ? `<p class="text-sm text-slate-300">Fetching best route quote...</p>`
+            : ""
+        }
+        ${
+          state.tradeQuoteError
+            ? `<p class="rounded border border-rose-700/60 bg-rose-950/20 px-3 py-2 text-sm text-rose-200">${escapeHtml(state.tradeQuoteError)}</p>`
+            : ""
+        }
+        ${
+          quote
+            ? `<div class="rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-sm">
+          <div class="flex items-center justify-between py-1"><span>Direction</span><span>${escapeHtml(quote.direction.toUpperCase())} ${escapeHtml(quote.side.toUpperCase())}</span></div>
+          <div class="flex items-center justify-between py-1"><span>${quoteInputLabel}</span><span>${quoteInputDisplay}</span></div>
+          <div class="flex items-center justify-between py-1"><span>${quoteOutputLabel}</span><span>${quoteOutputDisplay}</span></div>
+          <div class="flex items-center justify-between py-1"><span>Effective price</span><span>${effectivePriceSatsPerContract === null ? "N/A" : `${effectivePriceSatsPerContract.toFixed(2)} sats / contract`}</span></div>
+          ${
+            effectivePriceContractsPerSat === null
+              ? ""
+              : `<div class="mt-1 flex items-center justify-between py-1 text-xs text-slate-500"><span>Inverse</span><span>${effectivePriceContractsPerSat.toFixed(6)} contracts / sat</span></div>`
+          }
+          <div class="mt-1 flex items-center justify-between py-1 text-xs text-slate-500"><span>Expires</span><span>${escapeHtml(expiresAtText)} (${remainingSeconds}s)</span></div>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs">
+          <p class="mb-2 font-semibold text-slate-200">Route breakdown</p>
+          ${
+            quote.legs.length === 0
+              ? `<p class="text-slate-500">No route legs available.</p>`
+              : quote.legs
+                  .map((leg) => {
+                    const sourceLabel =
+                      leg.source.kind === "amm_pool"
+                        ? `AMM pool ${leg.source.pool_id.slice(0, 8)}...`
+                        : `Limit order ${leg.source.order_id.slice(0, 8)}... @ ${leg.source.price} sats (${leg.source.lots} lots)`;
+                    const legFlow = isBuyQuote
+                      ? `${formatSats(leg.input_amount)} → ${leg.output_amount.toLocaleString()} contracts`
+                      : `${leg.input_amount.toLocaleString()} contracts → ${formatSats(leg.output_amount)}`;
+                    return `<div class="mb-1 rounded border border-slate-800 bg-slate-900/60 px-2 py-1.5">
+                    <div class="flex items-center justify-between"><span>${escapeHtml(sourceLabel)}</span><span>${legFlow}</span></div>
+                  </div>`;
+                  })
+                  .join("")
+          }
+        </div>`
+            : ""
+        }
+      </div>
+      <div class="flex items-center justify-end gap-2 border-t border-slate-800 px-6 py-4">
+        <button data-action="close-trade-quote" class="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">Cancel</button>
+        <button data-action="confirm-trade-quote" class="rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950 ${state.tradeQuoteLoading || state.tradeQuoteExecuting || !quote ? "opacity-60" : ""}" ${state.tradeQuoteLoading || state.tradeQuoteExecuting || !quote ? "disabled" : ""}>${state.tradeQuoteExecuting ? "Executing..." : "Confirm Trade"}</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 export function renderDetail(): string {

@@ -6,12 +6,14 @@ import type {
   BoltzChainSwapPairInfo,
   BoltzLightningReceiveCreated,
   BoltzSubmarineSwapCreated,
+  LimitSellWarning,
   Market,
   MarketCategory,
   NavCategory,
   NostrBackupStatus,
   NostrProfile,
   OrderType,
+  QuoteMarketTradeResult,
   RelayEntry,
   Side,
   SizeMode,
@@ -113,6 +115,18 @@ export const state: {
   tradeContractsDraft: string;
   limitPrice: number;
   limitPriceDraft: string;
+  buyLimitComposerOpen: boolean;
+  limitSellOverrideAccepted: boolean;
+  limitSellWarning: LimitSellWarning | null;
+  limitSellWarningInfo: string;
+  limitSellGuardVersion: number;
+  limitSellGuardChecking: boolean;
+  tradeQuoteModalOpen: boolean;
+  tradeQuoteLoading: boolean;
+  tradeQuoteExecuting: boolean;
+  tradeQuoteData: QuoteMarketTradeResult | null;
+  tradeQuoteError: string;
+  tradeQuoteNowUnix: number;
   pairsInput: number;
   tokensInput: number;
   createQuestion: string;
@@ -224,7 +238,7 @@ export const state: {
   trendingIndex: 0,
   selectedMarketId: "mkt-3",
   selectedSide: "yes",
-  orderType: "limit",
+  orderType: "market",
   actionTab: "trade",
   tradeIntent: "open",
   sizeMode: "sats",
@@ -235,9 +249,21 @@ export const state: {
   tradeSizeSats: 10000,
   tradeSizeSatsDraft: "10,000",
   tradeContracts: 10,
-  tradeContractsDraft: "10.00",
+  tradeContractsDraft: "10",
   limitPrice: 0.5,
   limitPriceDraft: "50",
+  buyLimitComposerOpen: false,
+  limitSellOverrideAccepted: false,
+  limitSellWarning: null,
+  limitSellWarningInfo: "",
+  limitSellGuardVersion: 0,
+  limitSellGuardChecking: false,
+  tradeQuoteModalOpen: false,
+  tradeQuoteLoading: false,
+  tradeQuoteExecuting: false,
+  tradeQuoteData: null,
+  tradeQuoteError: "",
+  tradeQuoteNowUnix: Math.floor(Date.now() / 1000),
   pairsInput: 10,
   tokensInput: 25,
   createQuestion: "",

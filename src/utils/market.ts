@@ -9,10 +9,12 @@ import type {
   CovenantState,
   DiscoveredOrder,
   FillEstimate,
+  LimitSellWarning,
   Market,
   OrderbookLevel,
   OrderType,
   PathAvailability,
+  QuoteMarketTradeResult,
   Side,
   TradeIntent,
   TradePreview,
@@ -137,6 +139,26 @@ export function getOrderbookLevels(
   side: Side,
   intent: TradeIntent,
 ): OrderbookLevel[] {
+  const discovered = getDiscoveredOrderbookLevels(market, side, intent);
+  if (discovered.length > 0) {
+    return discovered;
+  }
+
+  const seed = getMarketSeed(market);
+  const base = getBasePriceSats(market, side);
+  return Array.from({ length: 8 }).map((_, idx) => {
+    const offset = intent === "open" ? idx + 1 : -(idx + 1);
+    const priceSats = clampContractPriceSats(base + offset);
+    const contracts = 12 + ((seed + idx * 11) % 34);
+    return { priceSats, contracts };
+  });
+}
+
+export function getDiscoveredOrderbookLevels(
+  market: Market,
+  side: Side,
+  intent: TradeIntent,
+): OrderbookLevel[] {
   const targetDirection = intent === "open" ? "sell-base" : "sell-quote";
   const grouped = new Map<number, number>();
 
@@ -161,14 +183,93 @@ export function getOrderbookLevels(
     return sorted.slice(0, 8);
   }
 
-  const seed = getMarketSeed(market);
-  const base = getBasePriceSats(market, side);
-  return Array.from({ length: 8 }).map((_, idx) => {
-    const offset = intent === "open" ? idx + 1 : -(idx + 1);
-    const priceSats = clampContractPriceSats(base + offset);
-    const contracts = 12 + ((seed + idx * 11) % 34);
-    return { priceSats, contracts };
-  });
+  return [];
+}
+
+export function getLimitSellWarning(
+  limitPriceSats: number,
+  referencePriceSats: number | null,
+): LimitSellWarning | null {
+  if (
+    referencePriceSats === null ||
+    !Number.isFinite(referencePriceSats) ||
+    referencePriceSats <= 0
+  ) {
+    return null;
+  }
+  if (limitPriceSats >= referencePriceSats) return null;
+  const discountSats = referencePriceSats - limitPriceSats;
+  const discountPct = (discountSats / referencePriceSats) * 100;
+  return { referencePriceSats, discountSats, discountPct };
+}
+
+export function getSellQuoteReferencePriceSats(
+  quote: Pick<
+    QuoteMarketTradeResult,
+    "direction" | "total_input" | "total_output"
+  >,
+): number | null {
+  if (quote.direction !== "sell") return null;
+  if (!Number.isFinite(quote.total_input) || quote.total_input <= 0)
+    return null;
+  if (!Number.isFinite(quote.total_output) || quote.total_output <= 0)
+    return null;
+  return quote.total_output / quote.total_input;
+}
+
+export function getLimitSellWarningFromSellQuote(
+  limitPriceSats: number,
+  quote: Pick<
+    QuoteMarketTradeResult,
+    "direction" | "total_input" | "total_output"
+  >,
+): LimitSellWarning | null {
+  const referencePriceSats = getSellQuoteReferencePriceSats(quote);
+  return getLimitSellWarning(limitPriceSats, referencePriceSats);
+}
+
+export function getQuoteEffectivePriceSatsPerContract(
+  quote: Pick<
+    QuoteMarketTradeResult,
+    "direction" | "total_input" | "total_output"
+  >,
+): number | null {
+  if (quote.direction === "buy") {
+    if (!Number.isFinite(quote.total_output) || quote.total_output <= 0)
+      return null;
+    return quote.total_input / quote.total_output;
+  }
+  if (!Number.isFinite(quote.total_input) || quote.total_input <= 0)
+    return null;
+  return quote.total_output / quote.total_input;
+}
+
+export function getQuoteEffectivePriceContractsPerSat(
+  quote: Pick<
+    QuoteMarketTradeResult,
+    "direction" | "total_input" | "total_output"
+  >,
+): number | null {
+  const satsPerContract = getQuoteEffectivePriceSatsPerContract(quote);
+  if (!Number.isFinite(satsPerContract) || satsPerContract === null)
+    return null;
+  if (satsPerContract <= 0) return null;
+  return 1 / satsPerContract;
+}
+
+export function getQuoteRemainingSeconds(
+  expiresAtUnix: number,
+  nowUnix: number,
+): number {
+  return Math.max(0, Math.floor(expiresAtUnix) - Math.floor(nowUnix));
+}
+
+export function resetLimitSellWarningState(): void {
+  state.limitSellOverrideAccepted = false;
+  state.limitSellWarning = null;
+  state.limitSellWarningInfo = "";
+  state.limitSellGuardChecking = false;
+  state.limitSellGuardVersion += 1;
 }
 
 export function estimateFill(
@@ -178,7 +279,7 @@ export function estimateFill(
   orderType: OrderType,
   limitPriceSats: number,
 ): FillEstimate {
-  const request = Math.max(0.01, requestedContracts);
+  const request = Math.max(0, requestedContracts);
   const executable = levels.filter((level) =>
     orderType === "market"
       ? true
@@ -230,7 +331,9 @@ export function getTradePreview(market: Market): TradePreview {
     state.orderType === "limit" ? limitPriceSats : basePriceSats;
   const requestedContracts =
     state.sizeMode === "contracts"
-      ? Math.max(0.01, state.tradeContracts)
+      ? state.tradeIntent === "open"
+        ? Math.max(1, Math.floor(state.tradeContracts))
+        : Math.max(0, Math.floor(state.tradeContracts))
       : Math.max(1, state.tradeSizeSats) / Math.max(1, referencePriceSats);
   const fill = estimateFill(
     levels,
@@ -246,7 +349,7 @@ export function getTradePreview(market: Market): TradePreview {
   const notionalSats =
     state.sizeMode === "sats"
       ? Math.max(1, Math.floor(state.tradeSizeSats))
-      : Math.max(1, Math.round(requestedContracts * referencePriceSats));
+      : Math.max(0, Math.round(requestedContracts * referencePriceSats));
   const executedSats = Math.max(0, fill.totalSats);
   const executionFeeSats = Math.round(executedSats * EXECUTION_FEE_RATE);
   const grossPayoutSats = Math.floor(
@@ -306,15 +409,14 @@ export function commitTradeSizeSatsDraft(): void {
 export function commitTradeContractsDraft(market: Market): void {
   const positions = getPositionContracts(market);
   const available = state.selectedSide === "yes" ? positions.yes : positions.no;
-  const parsed = Number(state.tradeContractsDraft);
-  const base = Number.isFinite(parsed) ? parsed : 0.01;
-  const normalized = Math.max(0.01, base);
-  const clamped =
-    state.tradeIntent === "close"
-      ? Math.min(normalized, available)
-      : normalized;
+  const parsed = Math.floor(Number(state.tradeContractsDraft));
+  const isSell = state.tradeIntent === "close";
+  const base = Number.isFinite(parsed) ? parsed : isSell ? 0 : 1;
+  const normalized = isSell ? Math.max(0, base) : Math.max(1, base);
+  const availableLots = Math.max(0, Math.floor(available));
+  const clamped = isSell ? Math.min(normalized, availableLots) : normalized;
   state.tradeContracts = clamped;
-  state.tradeContractsDraft = clamped.toFixed(2);
+  state.tradeContractsDraft = String(clamped);
 }
 
 export function setLimitPriceSats(limitPriceSats: number): void {

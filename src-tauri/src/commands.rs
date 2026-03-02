@@ -1,11 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use deadcat_store::MarketFilter;
 use nostr_sdk::prelude::*;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
@@ -13,7 +14,7 @@ use crate::discovery::{
     self, ContractMetadata, CreateContractRequest, DiscoveredMarket, IdentityResponse,
 };
 use crate::state::AppStateManager;
-use crate::{NodeState, NostrAppState};
+use crate::{CachedTradeQuote, NodeState, NostrAppState};
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -48,6 +49,59 @@ fn parse_order_direction(direction: &str) -> Result<deadcat_sdk::OrderDirection,
         "sell-quote" => Ok(deadcat_sdk::OrderDirection::SellQuote),
         _ => Err("direction must be 'sell-base' or 'sell-quote'".to_string()),
     }
+}
+
+const MARKET_TRADE_QUOTE_TTL_SECS: u64 = 30;
+const MARKET_TRADE_EXEC_FEE_SATS: u64 = 500;
+
+fn parse_trade_side(side: &str) -> Result<deadcat_sdk::TradeSide, String> {
+    match side {
+        "yes" => Ok(deadcat_sdk::TradeSide::Yes),
+        "no" => Ok(deadcat_sdk::TradeSide::No),
+        _ => Err("side must be 'yes' or 'no'".to_string()),
+    }
+}
+
+fn parse_trade_direction(direction: &str) -> Result<deadcat_sdk::TradeDirection, String> {
+    match direction {
+        "buy" => Ok(deadcat_sdk::TradeDirection::Buy),
+        "sell" => Ok(deadcat_sdk::TradeDirection::Sell),
+        _ => Err("direction must be 'buy' or 'sell'".to_string()),
+    }
+}
+
+trait ExpiringEntry {
+    fn expires_at(&self) -> Instant;
+}
+
+impl ExpiringEntry for CachedTradeQuote {
+    fn expires_at(&self) -> Instant {
+        self.expires_at
+    }
+}
+
+fn prune_expired_entries<T: ExpiringEntry>(cache: &mut HashMap<String, T>, now: Instant) {
+    cache.retain(|_, entry| entry.expires_at() > now);
+}
+
+fn take_unexpired_entry<T: ExpiringEntry>(
+    cache: &mut HashMap<String, T>,
+    key: &str,
+    now: Instant,
+    missing_error: &str,
+) -> Result<T, String> {
+    prune_expired_entries(cache, now);
+    cache.remove(key).ok_or_else(|| missing_error.to_string())
+}
+
+fn market_quote_expires_at_unix(now_unix: u64, ttl_secs: u64) -> u64 {
+    now_unix.saturating_add(ttl_secs)
+}
+
+fn market_quote_id() -> String {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
 }
 
 async fn compute_tip_and_now(
@@ -212,6 +266,7 @@ async fn construct_and_store_node(
     // Replacing identity should always tear down the previous chain watcher.
     let node_state = app.state::<NodeState>();
     node_state.shutdown_watcher().await;
+    node_state.trade_quote_cache.lock().await.clear();
 
     let (sdk_network, store_arc) = {
         let manager = app.state::<Mutex<AppStateManager>>();
@@ -1223,6 +1278,283 @@ pub async fn create_contract_onchain(
 }
 
 // =========================================================================
+// Market trade quote commands
+// =========================================================================
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct QuoteMarketTradeRequest {
+    pub contract_params: deadcat_sdk::PredictionMarketParams,
+    pub market_id: String,
+    pub side: String,
+    pub direction: String,
+    pub exact_input: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TradeQuoteLegSourceResponse {
+    AmmPool {
+        pool_id: String,
+    },
+    LimitOrder {
+        order_id: String,
+        price: u64,
+        lots: u64,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct TradeQuoteLegResponse {
+    pub source: TradeQuoteLegSourceResponse,
+    pub input_amount: u64,
+    pub output_amount: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct QuoteMarketTradeResponse {
+    pub quote_id: String,
+    pub market_id: String,
+    pub side: String,
+    pub direction: String,
+    pub exact_input: u64,
+    pub total_input: u64,
+    pub total_output: u64,
+    pub effective_price: f64,
+    pub expires_at_unix: u64,
+    pub legs: Vec<TradeQuoteLegResponse>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PreviewMarketTradeResponse {
+    pub market_id: String,
+    pub side: String,
+    pub direction: String,
+    pub exact_input: u64,
+    pub total_input: u64,
+    pub total_output: u64,
+    pub effective_price: f64,
+    pub legs: Vec<TradeQuoteLegResponse>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ExecuteMarketTradeQuoteRequest {
+    pub quote_id: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ExecuteMarketTradeQuoteResponse {
+    pub txid: String,
+    pub total_input: u64,
+    pub total_output: u64,
+    pub num_orders_filled: usize,
+    pub pool_used: bool,
+}
+
+fn trade_side_label(side: deadcat_sdk::TradeSide) -> &'static str {
+    match side {
+        deadcat_sdk::TradeSide::Yes => "yes",
+        deadcat_sdk::TradeSide::No => "no",
+    }
+}
+
+fn trade_direction_label(direction: deadcat_sdk::TradeDirection) -> &'static str {
+    match direction {
+        deadcat_sdk::TradeDirection::Buy => "buy",
+        deadcat_sdk::TradeDirection::Sell => "sell",
+    }
+}
+
+fn map_route_leg(leg: &deadcat_sdk::RouteLeg) -> TradeQuoteLegResponse {
+    let source = match &leg.source {
+        deadcat_sdk::LiquiditySource::AmmPool { pool_id } => TradeQuoteLegSourceResponse::AmmPool {
+            pool_id: pool_id.clone(),
+        },
+        deadcat_sdk::LiquiditySource::LimitOrder {
+            order_id,
+            price,
+            lots,
+        } => TradeQuoteLegSourceResponse::LimitOrder {
+            order_id: order_id.clone(),
+            price: *price,
+            lots: *lots,
+        },
+    };
+    TradeQuoteLegResponse {
+        source,
+        input_amount: leg.input_amount,
+        output_amount: leg.output_amount,
+    }
+}
+
+fn build_preview_market_trade_response(
+    request: &QuoteMarketTradeRequest,
+    side: deadcat_sdk::TradeSide,
+    direction: deadcat_sdk::TradeDirection,
+    quote: &deadcat_sdk::TradeQuote,
+) -> PreviewMarketTradeResponse {
+    PreviewMarketTradeResponse {
+        market_id: request.market_id.clone(),
+        side: trade_side_label(side).to_string(),
+        direction: trade_direction_label(direction).to_string(),
+        exact_input: request.exact_input,
+        total_input: quote.total_input,
+        total_output: quote.total_output,
+        effective_price: quote.effective_price,
+        legs: quote.legs.iter().map(map_route_leg).collect(),
+    }
+}
+
+fn validate_quote_market_trade_request(request: &QuoteMarketTradeRequest) -> Result<(), String> {
+    if request.market_id.trim().is_empty() {
+        return Err("market_id is required".to_string());
+    }
+    if request.exact_input == 0 {
+        return Err("exact_input must be > 0".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn quote_market_trade(
+    request: QuoteMarketTradeRequest,
+    app: tauri::AppHandle,
+) -> Result<QuoteMarketTradeResponse, String> {
+    validate_quote_market_trade_request(&request)?;
+
+    let side = parse_trade_side(&request.side)?;
+    let direction = parse_trade_direction(&request.direction)?;
+    let market_id = request.market_id.clone();
+    let contract_params = request.contract_params;
+    let exact_input = request.exact_input;
+
+    let quote = run_node_query(&app, |node| {
+        Box::pin(async move {
+            node.quote_trade(
+                contract_params,
+                &market_id,
+                side,
+                direction,
+                deadcat_sdk::TradeAmount::ExactInput(exact_input),
+            )
+            .await
+            .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
+
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("time error: {e}"))?
+        .as_secs();
+    let expires_at_unix = market_quote_expires_at_unix(now_unix, MARKET_TRADE_QUOTE_TTL_SECS);
+    let now = Instant::now();
+    let expires_at = now + Duration::from_secs(MARKET_TRADE_QUOTE_TTL_SECS);
+    let quote_id = market_quote_id();
+
+    let response = QuoteMarketTradeResponse {
+        quote_id: quote_id.clone(),
+        market_id: request.market_id.clone(),
+        side: trade_side_label(side).to_string(),
+        direction: trade_direction_label(direction).to_string(),
+        exact_input: request.exact_input,
+        total_input: quote.total_input,
+        total_output: quote.total_output,
+        effective_price: quote.effective_price,
+        expires_at_unix,
+        legs: quote.legs.iter().map(map_route_leg).collect(),
+    };
+
+    let node_state = app.state::<NodeState>();
+    let mut cache = node_state.trade_quote_cache.lock().await;
+    prune_expired_entries(&mut cache, now);
+    cache.insert(
+        quote_id,
+        CachedTradeQuote {
+            quote,
+            market_id: request.market_id,
+            expires_at,
+        },
+    );
+
+    Ok(response)
+}
+
+#[tauri::command]
+pub async fn preview_market_trade(
+    request: QuoteMarketTradeRequest,
+    app: tauri::AppHandle,
+) -> Result<PreviewMarketTradeResponse, String> {
+    validate_quote_market_trade_request(&request)?;
+
+    let side = parse_trade_side(&request.side)?;
+    let direction = parse_trade_direction(&request.direction)?;
+    let market_id = request.market_id.clone();
+    let contract_params = request.contract_params;
+    let exact_input = request.exact_input;
+
+    let quote = run_node_query(&app, |node| {
+        Box::pin(async move {
+            // TODO(deadcat-sdk): expose a dedicated non-binding preview quote API.
+            // For now this intentionally reuses quote_trade and returns no executable quote_id.
+            node.quote_trade(
+                contract_params,
+                &market_id,
+                side,
+                direction,
+                deadcat_sdk::TradeAmount::ExactInput(exact_input),
+            )
+            .await
+            .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
+
+    Ok(build_preview_market_trade_response(
+        &request, side, direction, &quote,
+    ))
+}
+
+#[tauri::command]
+pub async fn execute_market_trade_quote(
+    request: ExecuteMarketTradeQuoteRequest,
+    app: tauri::AppHandle,
+) -> Result<ExecuteMarketTradeQuoteResponse, String> {
+    if request.quote_id.trim().is_empty() {
+        return Err("quote_id is required".to_string());
+    }
+
+    let cached = {
+        let node_state = app.state::<NodeState>();
+        let mut cache = node_state.trade_quote_cache.lock().await;
+        take_unexpired_entry(
+            &mut cache,
+            &request.quote_id,
+            Instant::now(),
+            "Quote not found or expired",
+        )?
+    };
+
+    let market_id = cached.market_id;
+    let quote = cached.quote;
+    let result = run_node_mutation(&app, |node| {
+        Box::pin(async move {
+            node.execute_trade(quote, MARKET_TRADE_EXEC_FEE_SATS, &market_id)
+                .await
+                .map_err(|e| format!("{e}"))
+        })
+    })
+    .await?;
+
+    Ok(ExecuteMarketTradeQuoteResponse {
+        txid: result.txid.to_string(),
+        total_input: result.total_input,
+        total_output: result.total_output,
+        num_orders_filled: result.num_orders_filled,
+        pool_used: result.pool_used,
+    })
+}
+
+// =========================================================================
 // Token issuance command
 // =========================================================================
 
@@ -1855,6 +2187,8 @@ pub async fn reconcile_nostr(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
 
     fn valid_request() -> CreateContractRequest {
         CreateContractRequest {
@@ -1880,6 +2214,29 @@ mod tests {
             maker_receive_spk_hash: [0x33; 32],
             cosigner_pubkey: [0x44; 32],
             maker_pubkey: [0x55; 32],
+        }
+    }
+
+    fn sample_contract_params() -> deadcat_sdk::PredictionMarketParams {
+        deadcat_sdk::PredictionMarketParams {
+            oracle_public_key: [0x10; 32],
+            collateral_asset_id: [0x20; 32],
+            yes_token_asset: [0x30; 32],
+            no_token_asset: [0x40; 32],
+            yes_reissuance_token: [0x50; 32],
+            no_reissuance_token: [0x60; 32],
+            collateral_per_token: 100,
+            expiry_time: 120_000,
+        }
+    }
+
+    fn valid_quote_request() -> QuoteMarketTradeRequest {
+        QuoteMarketTradeRequest {
+            contract_params: sample_contract_params(),
+            market_id: "ab".repeat(32),
+            side: "yes".to_string(),
+            direction: "buy".to_string(),
+            exact_input: 1_000,
         }
     }
 
@@ -1940,6 +2297,163 @@ mod tests {
     fn parse_order_direction_rejects_unknown_value() {
         let err = parse_order_direction("buy-base").expect_err("unknown direction should fail");
         assert!(err.contains("direction must be 'sell-base' or 'sell-quote'"));
+    }
+
+    #[test]
+    fn parse_trade_side_accepts_known_values() {
+        assert_eq!(
+            parse_trade_side("yes").expect("yes should parse"),
+            deadcat_sdk::TradeSide::Yes
+        );
+        assert_eq!(
+            parse_trade_side("no").expect("no should parse"),
+            deadcat_sdk::TradeSide::No
+        );
+    }
+
+    #[test]
+    fn parse_trade_side_rejects_unknown_value() {
+        let err = parse_trade_side("maybe").expect_err("unknown side should fail");
+        assert!(err.contains("side must be 'yes' or 'no'"));
+    }
+
+    #[test]
+    fn parse_trade_direction_accepts_known_values() {
+        assert_eq!(
+            parse_trade_direction("buy").expect("buy should parse"),
+            deadcat_sdk::TradeDirection::Buy
+        );
+        assert_eq!(
+            parse_trade_direction("sell").expect("sell should parse"),
+            deadcat_sdk::TradeDirection::Sell
+        );
+    }
+
+    #[test]
+    fn parse_trade_direction_rejects_unknown_value() {
+        let err = parse_trade_direction("hold").expect_err("unknown direction should fail");
+        assert!(err.contains("direction must be 'buy' or 'sell'"));
+    }
+
+    #[test]
+    fn validate_quote_market_trade_request_rejects_zero_exact_input() {
+        let mut request = valid_quote_request();
+        request.exact_input = 0;
+        let err = validate_quote_market_trade_request(&request)
+            .expect_err("zero exact_input should fail");
+        assert!(err.contains("exact_input must be > 0"));
+    }
+
+    #[test]
+    fn validate_quote_market_trade_request_rejects_missing_market_id() {
+        let mut request = valid_quote_request();
+        request.market_id = "   ".to_string();
+        let err =
+            validate_quote_market_trade_request(&request).expect_err("empty market_id should fail");
+        assert!(err.contains("market_id is required"));
+    }
+
+    #[test]
+    fn preview_market_trade_request_validation_reuses_quote_rules() {
+        let mut request = valid_quote_request();
+        request.exact_input = 0;
+        let err = validate_quote_market_trade_request(&request)
+            .expect_err("preview request should reject zero exact_input");
+        assert!(err.contains("exact_input must be > 0"));
+    }
+
+    #[test]
+    fn market_quote_expires_at_unix_adds_ttl() {
+        assert_eq!(market_quote_expires_at_unix(1_000, 30), 1_030);
+    }
+
+    #[test]
+    fn prune_expired_entries_removes_expired() {
+        struct DummyEntry {
+            expires_at: Instant,
+        }
+        impl ExpiringEntry for DummyEntry {
+            fn expires_at(&self) -> Instant {
+                self.expires_at
+            }
+        }
+
+        let now = Instant::now();
+        let mut cache = HashMap::<String, DummyEntry>::new();
+        cache.insert(
+            "expired".to_string(),
+            DummyEntry {
+                expires_at: now - Duration::from_secs(1),
+            },
+        );
+        cache.insert(
+            "fresh".to_string(),
+            DummyEntry {
+                expires_at: now + Duration::from_secs(1),
+            },
+        );
+
+        prune_expired_entries(&mut cache, now);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains_key("fresh"));
+    }
+
+    #[test]
+    fn take_unexpired_entry_is_single_use() {
+        struct DummyEntry {
+            expires_at: Instant,
+            value: u64,
+        }
+        impl ExpiringEntry for DummyEntry {
+            fn expires_at(&self) -> Instant {
+                self.expires_at
+            }
+        }
+
+        let now = Instant::now();
+        let mut cache = HashMap::<String, DummyEntry>::new();
+        cache.insert(
+            "q1".to_string(),
+            DummyEntry {
+                expires_at: now + Duration::from_secs(10),
+                value: 7,
+            },
+        );
+
+        let first = take_unexpired_entry(&mut cache, "q1", now, "missing")
+            .expect("first lookup should succeed");
+        assert_eq!(first.value, 7);
+        let second = take_unexpired_entry(&mut cache, "q1", now, "missing");
+        assert!(second.is_err());
+    }
+
+    #[test]
+    fn map_route_leg_maps_limit_order_fields() {
+        let leg = deadcat_sdk::RouteLeg {
+            source: deadcat_sdk::LiquiditySource::LimitOrder {
+                order_id: "o-1".to_string(),
+                price: 42,
+                lots: 5,
+            },
+            input_amount: 210,
+            output_amount: 5,
+        };
+
+        let mapped = map_route_leg(&leg);
+        match mapped.source {
+            TradeQuoteLegSourceResponse::LimitOrder {
+                order_id,
+                price,
+                lots,
+            } => {
+                assert_eq!(order_id, "o-1");
+                assert_eq!(price, 42);
+                assert_eq!(lots, 5);
+            }
+            _ => panic!("expected limit-order source"),
+        }
+        assert_eq!(mapped.input_amount, 210);
+        assert_eq!(mapped.output_amount, 5);
     }
 
     #[test]
