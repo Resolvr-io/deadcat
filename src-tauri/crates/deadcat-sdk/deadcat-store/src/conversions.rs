@@ -156,6 +156,10 @@ pub fn new_market_row(
             .script_pubkey(MarketState::ResolvedNo)
             .as_bytes()
             .to_vec(),
+        expired_spk: compiled
+            .script_pubkey(MarketState::Expired)
+            .as_bytes()
+            .to_vec(),
         question: metadata.and_then(|m| m.question.clone()),
         description: metadata.and_then(|m| m.description.clone()),
         category: metadata.and_then(|m| m.category.clone()),

@@ -15,6 +15,7 @@ pub const AUTO_LOCK_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
 const LOCAL_STATE_FILE: &str = "deadcat_state.json";
 const CONFIG_FILE: &str = "network_config.json";
+const STORE_CUTOVER_MARKER_FILE: &str = "deadcat_store_cutover_v2.marker";
 
 // ============================================================================
 // Persisted local state (payment swaps)
@@ -157,9 +158,50 @@ impl AppStateManager {
         let store_dir = self.app_data_dir.join(network.as_str());
         std::fs::create_dir_all(&store_dir).ok();
         let db_path = store_dir.join("deadcat.db");
+        self.apply_unreleased_store_cutover(&store_dir, &db_path);
         let store = deadcat_store::DeadcatStore::open(db_path.to_str().unwrap_or(":memory:"))
             .expect("failed to open deadcat store");
+        self.write_store_cutover_marker(&store_dir);
         self.store = Some(Arc::new(std::sync::Mutex::new(store)));
+    }
+
+    fn apply_unreleased_store_cutover(&self, store_dir: &Path, db_path: &Path) {
+        // Pre-release breaking cutover: wipe any pre-cutover DB once per network.
+        let marker = store_dir.join(STORE_CUTOVER_MARKER_FILE);
+        if marker.exists() || !db_path.exists() {
+            return;
+        }
+
+        log::warn!(
+            "applying pre-release store cutover: resetting database at {}",
+            db_path.display()
+        );
+
+        if let Err(e) = fs::remove_file(db_path) {
+            log::warn!("failed to remove pre-cutover db {}: {e}", db_path.display());
+        }
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = store_dir.join(format!("deadcat.db{suffix}"));
+            if let Err(e) = fs::remove_file(&sidecar) {
+                if sidecar.exists() {
+                    log::warn!("failed to remove sqlite sidecar {}: {e}", sidecar.display());
+                }
+            }
+        }
+    }
+
+    fn write_store_cutover_marker(&self, store_dir: &Path) {
+        let marker = store_dir.join(STORE_CUTOVER_MARKER_FILE);
+        if marker.exists() {
+            return;
+        }
+
+        if let Err(e) = fs::write(&marker, b"deadcat-store-cutover-v2\n") {
+            log::warn!(
+                "failed to write store cutover marker {}: {e}",
+                marker.display()
+            );
+        }
     }
 
     pub fn persister(&self) -> Option<&MnemonicPersister> {

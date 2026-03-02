@@ -24,6 +24,8 @@ pub struct MarketRow {
     pub resolved_yes_spk: Vec<u8>,
     /// Cached: see `dormant_spk`.
     pub resolved_no_spk: Vec<u8>,
+    /// Cached: see `dormant_spk`.
+    pub expired_spk: Vec<u8>,
     pub current_state: i32,
     pub created_at: String,
     pub updated_at: String,
@@ -44,6 +46,7 @@ pub struct MarketRow {
     pub unresolved_txid: Option<String>,
     pub resolved_yes_txid: Option<String>,
     pub resolved_no_txid: Option<String>,
+    pub expired_txid: Option<String>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -63,6 +66,7 @@ pub struct NewMarketRow {
     pub unresolved_spk: Vec<u8>,
     pub resolved_yes_spk: Vec<u8>,
     pub resolved_no_spk: Vec<u8>,
+    pub expired_spk: Vec<u8>,
     pub question: Option<String>,
     pub description: Option<String>,
     pub category: Option<String>,

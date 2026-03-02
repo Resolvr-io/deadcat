@@ -54,6 +54,7 @@ export function renderPathCard(
 
 export function renderActionTicket(market: Market): string {
   const paths = getPathAvailability(market);
+  const expired = isExpired(market);
   const preview = getTradePreview(market);
   const executionPriceSats = Math.round(preview.executionPriceSats);
   const positions = getPositionContracts(market);
@@ -348,12 +349,17 @@ export function renderActionTicket(market: Market): string {
         state.actionTab === "redeem"
           ? `
       <div class="mt-3">
-        <p class="mb-2 text-sm text-slate-300">Path: ${paths.redeem ? "Post-resolution redemption" : paths.expiryRedeem ? "Expiry redemption" : "Unavailable"}</p>
+        <p class="mb-2 text-sm text-slate-300">Path: ${paths.redeem ? "Post-resolution redemption" : paths.expiryRedeem ? (market.state === 1 && expired ? "Auto finalize (1 → 4) then expiry redemption (4 → 4)" : "Expiry redemption (4 → 4)") : "Unavailable"}</p>
         <label for="tokens-input" class="mb-1 block text-xs text-slate-400">Tokens to burn</label>
         <input id="tokens-input" type="number" min="1" step="1" value="${escapeAttr(state.tokensInput)}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
         <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
           <div class="flex items-center justify-between"><span>Collateral withdrawn</span><span>${formatSats(redeemCollateral)}</span></div>
           <div class="mt-1 text-xs text-slate-400">Formula: tokens * ${paths.redeem ? "2*CPT" : paths.expiryRedeem ? "CPT" : "N/A"}</div>
+          ${
+            market.state === 1 && expired && paths.expiryRedeem
+              ? `<div class="mt-1 text-xs text-amber-300">Auto-finalize mode: this redeem action may broadcast two transactions and pay fees twice.</div>`
+              : ""
+          }
         </div>
         <button data-action="submit-redeem" ${paths.redeem || paths.expiryRedeem ? "" : "disabled"} class="mt-4 w-full rounded-lg ${paths.redeem || paths.expiryRedeem ? "bg-emerald-300 text-slate-950" : "bg-slate-700 text-slate-400"} px-4 py-2 font-semibold">Submit redemption tx</button>
       </div>
@@ -502,7 +508,7 @@ export function renderDetail(): string {
     <div class="phi-container py-6 lg:py-8">
       ${
         expired && market.state === 1
-          ? `<div class="mb-4 rounded-xl border border-slate-600 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">Market expired unresolved at height ${market.expiryHeight}. Expiry redemption path is active. Issuance and oracle resolve are disabled.</div>`
+          ? `<div class="mb-4 rounded-xl border border-slate-600 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">Market expired unresolved at height ${market.expiryHeight}. Redeem will auto-finalize to EXPIRED first, then execute expiry redemption (can be two transactions and two fees).</div>`
           : ""
       }
       <div class="grid gap-[21px] xl:grid-cols-[1.618fr_1fr]">
@@ -633,7 +639,8 @@ export function renderDetail(): string {
               ${renderPathCard("1 \u2192 1 Subsequent issuance", paths.issue, "pairs * 2 * CPT", "Collateral UTXO reconsolidated")}
               ${renderPathCard("1 \u2192 2/3 Oracle resolve", paths.resolve, "state commit via oracle signature", "All covenant outputs move atomically")}
               ${renderPathCard("2/3 Redemption", paths.redeem, "tokens * 2 * CPT", "Winning side burns tokens")}
-              ${renderPathCard("1 Expiry redemption", paths.expiryRedeem, "tokens * CPT", "Unresolved + expiry only")}
+              ${renderPathCard("1 \u2192 4 Expire transition", market.state === 1 && expired, "check_lock_height(EXPIRY_TIME)", "Reissuance + collateral move to state-4 address")}
+              ${renderPathCard("4 \u2192 4 Expiry redemption", market.state === 4, "tokens * CPT", "Remaining collateral stays in EXPIRED")}
               ${renderPathCard("1 \u2192 1 Cancellation", paths.cancel, "pairs * 2 * CPT", "Equal YES/NO burn")}
             </div>
           </section>

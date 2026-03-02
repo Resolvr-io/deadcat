@@ -1,5 +1,6 @@
 pub mod cancellation;
 pub mod creation;
+pub mod expire_transition;
 pub mod expiry_redemption;
 pub mod initial_issuance;
 pub mod issuance;
@@ -95,6 +96,18 @@ mod tests {
             expiry_time: 1_000_000,
         };
         CompiledPredictionMarket::new(params).expect("test contract should compile")
+    }
+
+    #[test]
+    fn covenant_state_spks_are_distinct_including_expired() {
+        let contract = test_contract();
+        let mut spks = std::collections::HashSet::<Vec<u8>>::new();
+        spks.insert(contract.script_pubkey(MarketState::Dormant).to_bytes());
+        spks.insert(contract.script_pubkey(MarketState::Unresolved).to_bytes());
+        spks.insert(contract.script_pubkey(MarketState::ResolvedYes).to_bytes());
+        spks.insert(contract.script_pubkey(MarketState::ResolvedNo).to_bytes());
+        spks.insert(contract.script_pubkey(MarketState::Expired).to_bytes());
+        assert_eq!(spks.len(), 5);
     }
 
     // ===== build_creation_pset =====
@@ -575,6 +588,8 @@ mod tests {
         assert_eq!(pset.inputs().len(), 3);
         // remaining > 0 → covenant + burn + payout + fee = 4
         assert_eq!(pset.outputs().len(), 4);
+        let expired_spk = contract.script_pubkey(MarketState::Expired);
+        assert_eq!(pset.outputs()[0].script_pubkey, expired_spk);
     }
 
     #[test]
@@ -635,6 +650,49 @@ mod tests {
             lock_time: 999_999,
         };
         let pset = expiry_redemption::build_expiry_redemption_pset(&contract, &params).unwrap();
+        assert_eq!(
+            pset.global.tx_data.fallback_locktime,
+            Some(LockTime::from_consensus(999_999))
+        );
+    }
+
+    // ===== build_expire_transition_pset =====
+
+    #[test]
+    fn expire_transition_happy_path() {
+        let contract = test_contract();
+        let p = contract.params();
+        let params = expire_transition::ExpireTransitionParams {
+            yes_reissuance_utxo: test_utxo(p.yes_reissuance_token, 1),
+            no_reissuance_utxo: test_utxo(p.no_reissuance_token, 1),
+            collateral_utxo: test_utxo(p.collateral_asset_id, 5_000_000),
+            fee_utxo: test_utxo(p.collateral_asset_id, 500),
+            fee_amount: 500,
+            lock_time: p.expiry_time,
+        };
+        let pset = expire_transition::build_expire_transition_pset(&contract, &params).unwrap();
+        assert_eq!(pset.inputs().len(), 4);
+        assert_eq!(pset.outputs().len(), 4);
+        let expired_spk = contract.script_pubkey(MarketState::Expired);
+        assert_eq!(pset.outputs()[0].script_pubkey, expired_spk);
+        assert_eq!(pset.outputs()[1].script_pubkey, expired_spk);
+        assert_eq!(pset.outputs()[2].script_pubkey, expired_spk);
+        assert_eq!(pset.outputs()[2].amount, Some(5_000_000));
+    }
+
+    #[test]
+    fn expire_transition_sets_locktime() {
+        let contract = test_contract();
+        let p = contract.params();
+        let params = expire_transition::ExpireTransitionParams {
+            yes_reissuance_utxo: test_utxo(p.yes_reissuance_token, 1),
+            no_reissuance_utxo: test_utxo(p.no_reissuance_token, 1),
+            collateral_utxo: test_utxo(p.collateral_asset_id, 5_000_000),
+            fee_utxo: test_utxo(p.collateral_asset_id, 500),
+            fee_amount: 500,
+            lock_time: 999_999,
+        };
+        let pset = expire_transition::build_expire_transition_pset(&contract, &params).unwrap();
         assert_eq!(
             pset.global.tx_data.fallback_locktime,
             Some(LockTime::from_consensus(999_999))

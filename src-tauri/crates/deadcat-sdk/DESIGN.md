@@ -31,10 +31,10 @@ deadcat-sdk/src/
 │
 ├── prediction_market/
 │   ├── params.rs             # PredictionMarketParams, MarketId
-│   ├── state.rs              # MarketState enum (4 states)
+│   ├── state.rs              # MarketState enum (5 states)
 │   ├── contract.rs           # CompiledPredictionMarket
 │   ├── assembly.rs           # Issuance/resolve/redeem/cancel PSET assembly
-│   ├── witness.rs            # Simplicity witness satisfaction (7 paths)
+│   ├── witness.rs            # Simplicity witness satisfaction (8 paths)
 │   ├── oracle.rs             # Oracle message construction
 │   └── pset/                 # Per-operation PSET builders
 │       ├── creation.rs
@@ -42,6 +42,7 @@ deadcat-sdk/src/
 │       ├── issuance.rs
 │       ├── oracle_resolve.rs
 │       ├── post_resolution_redemption.rs
+│       ├── expire_transition.rs
 │       ├── expiry_redemption.rs
 │       └── cancellation.rs
 │
@@ -94,7 +95,7 @@ deadcat-sdk/src/
 
 ### State Machine
 
-A market has four states, each corresponding to a distinct Taproot address derived from the same Simplicity CMR but different state values encoded in tapdata:
+A market has five states, each corresponding to a distinct Taproot address derived from the same Simplicity CMR but different state values encoded in tapdata:
 
 ```
 Dormant ──(initial issuance)──▶ Unresolved
@@ -104,12 +105,12 @@ Dormant ──(initial issuance)──▶ Unresolved
     │                               ├──(partial cancel)──▶ Unresolved
     │                               │
     │                               ├──(oracle resolve)──▶ ResolvedYes
-    │                               │                          │
+    │                               │                          └──(post-res redeem)──▶ ResolvedYes
     │                               ├──(oracle resolve)──▶ ResolvedNo
-    │                               │                          │
-    │                               └──(expiry redeem)──▶ Unresolved
-    │                                                          │
-    └──────────────────────────────────────(post-res redeem)───┘
+    │                               │                          └──(post-res redeem)──▶ ResolvedNo
+    │                               └──(expire transition, locktime >= expiry)──▶ Expired
+    │                                                                  │
+    └────────────────────────────────────────────(expiry redeem)────────┘
 ```
 
 State transitions move covenant UTXOs from one address to another. The Simplicity contract validates every transition.
@@ -122,7 +123,7 @@ State transitions move covenant UTXOs from one address to another. The Simplicit
 
 ### Simplicity Contract
 
-The prediction market contract (`prediction_market.simf`) is a 7-path dispatch tree:
+The prediction market contract (`prediction_market.simf`) is an 8-path dispatch tree:
 
 | Path | Transition | Key Enforcement |
 |------|-----------|-----------------|
@@ -130,11 +131,14 @@ The prediction market contract (`prediction_market.simf`) is a 7-path dispatch t
 | 2 | Subsequent Issuance (Unresolved → Unresolved) | Old collateral accumulates; new issuance amounts equal |
 | 3 | Oracle Resolve (Unresolved → Resolved) | BIP-340 Schnorr signature verified against oracle pubkey over `SHA256(market_id \|\| outcome_byte)` |
 | 4 | Post-Resolution Redemption | Winning tokens burned; payout = tokens × 2 × cpt |
-| 5 | Expiry Redemption | Block height ≥ expiry enforced via `check_lock_height`; payout = tokens × 1 × cpt |
-| 6 | Cancellation | Equal YES + NO pairs burned; refund = pairs × 2 × cpt |
-| 7 | Secondary Input | Co-membership check: this input's script hash == input 0's script hash |
+| 5 | Expire Transition (Unresolved → Expired) | `state == 1`, primary input index, `check_lock_height(expiry)`; collateral and reissuance tokens moved 1:1 to expired SPK |
+| 6 | Expiry Redemption (Expired → Expired) | `state == 4`, `check_lock_height(expiry)`; payout = tokens × 1 × cpt |
+| 7 | Cancellation | Equal YES + NO pairs burned; refund = pairs × 2 × cpt |
+| 8 | Secondary Input | Co-membership check: this input's script hash == input 0's script hash |
 
 Compile-time parameters (oracle key, asset IDs, collateral rate, expiry) are injected into a SimplicityHL template program. The resulting CMR (Commitment Merkle Root) is unique per market.
+
+`redeem_expired` in the SDK uses auto-finalize flow: if a market is still `Unresolved` and already past expiry height, it first broadcasts path 5 (`1 -> 4`) and then performs path 6 redemption. This can require two transactions and two fees.
 
 ### Taproot Encoding
 
@@ -298,6 +302,8 @@ All events use NIP-78 (kind 30078, application-specific data). Content is JSON; 
 
 All four event types use NIP-33 parameterized replaceable events (kind 30078 falls in the 30000-39999 range), keyed by pubkey + `d` tag. For pools, the `d` tag is the pool ID, so each swap/deposit/withdraw publishes a replacement with updated reserves. For attestations, the `d` tag is `"{market_id}:attestation"`, so re-attestation replaces the previous verdict. Markets and orders are keyed by market ID and order UID respectively.
 
+Market announcements are version-gated: this release publishes `ContractAnnouncement.version = 2`, and discovery parsing accepts only v2 market announcements (v1 markets are intentionally skipped in this breaking cutover).
+
 ### DiscoveryService
 
 `DiscoveryService<S>` manages a Nostr client with background subscription:
@@ -329,7 +335,7 @@ The `ChainWatcher` maintains a persistent Electrum TCP connection on a dedicated
 
 ### Subscription Model
 
-- **Markets**: 4 scripts per market (one per state). Subscribed at discovery time.
+- **Markets**: 5 scripts per market (one per state). Subscribed at discovery time.
 - **Orders**: 1 script per order. Subscribed at discovery time.
 - **Pools**: 1 script per pool, derived from current `issued_lp`. Re-subscribed when `issued_lp` changes (deposit/withdraw moves the pool address). The spending transaction appears in the old address's history, so the notification always arrives before the pool "moves."
 
@@ -401,7 +407,7 @@ SQLite database via Diesel ORM with 6 tables:
 
 | Table | Purpose |
 |-------|---------|
-| `markets` | Market params + metadata + 4 cached SPKs + state + Nostr event info |
+| `markets` | Market params + metadata + 5 cached SPKs + state + Nostr event info (`expired_spk`/`expired_txid` included) |
 | `maker_orders` | Order params + maker info + covenant SPK + status |
 | `amm_pools` | Pool params + issued_lp + covenant SPK + market association |
 | `pool_state_snapshots` | Per-pool reserve history (r_yes, r_no, r_lbtc, issued_lp, block_height) |

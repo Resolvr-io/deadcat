@@ -93,6 +93,12 @@ pub enum Error {
     #[error("market not in redeemable state (found {0:?})")]
     NotRedeemable(MarketState),
 
+    #[error("expiry finalize broadcast as {finalize_txid}, but redemption failed: {reason}")]
+    ExpiryFinalizeThenRedeemFailed {
+        finalize_txid: String,
+        reason: String,
+    },
+
     #[error("market not in cancellable state (found {0:?})")]
     NotCancellable(MarketState),
 

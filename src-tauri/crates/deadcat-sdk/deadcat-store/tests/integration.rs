@@ -687,7 +687,7 @@ fn test_watched_script_pubkeys() {
     assert_eq!(store.watched_script_pubkeys().unwrap().len(), 0);
 
     store.ingest_market(&test_params(), None).unwrap();
-    assert_eq!(store.watched_script_pubkeys().unwrap().len(), 4);
+    assert_eq!(store.watched_script_pubkeys().unwrap().len(), 5);
 
     store
         .ingest_maker_order(
@@ -698,13 +698,13 @@ fn test_watched_script_pubkeys() {
             None,
         )
         .unwrap();
-    assert_eq!(store.watched_script_pubkeys().unwrap().len(), 5);
+    assert_eq!(store.watched_script_pubkeys().unwrap().len(), 6);
 
     // Order without pubkey -> no covenant_spk -> no additional watched SPK
     store
         .ingest_maker_order(&test_maker_order_params_2(), None, None, None, None)
         .unwrap();
-    assert_eq!(store.watched_script_pubkeys().unwrap().len(), 5);
+    assert_eq!(store.watched_script_pubkeys().unwrap().len(), 6);
 }
 
 // ==================== Sync Tests ====================

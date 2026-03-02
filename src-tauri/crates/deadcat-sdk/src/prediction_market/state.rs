@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::prediction_market::params::PredictionMarketParams;
 
-/// Four-state model for the binary prediction market covenant.
+/// Five-state model for the binary prediction market covenant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u64)]
 pub enum MarketState {
@@ -14,6 +14,8 @@ pub enum MarketState {
     ResolvedYes = 2,
     /// Oracle committed NO outcome. NO tokens are redeemable.
     ResolvedNo = 3,
+    /// Oracle was not used; market was explicitly finalized as expired.
+    Expired = 4,
 }
 
 impl MarketState {
@@ -23,6 +25,7 @@ impl MarketState {
             1 => Some(Self::Unresolved),
             2 => Some(Self::ResolvedYes),
             3 => Some(Self::ResolvedNo),
+            4 => Some(Self::Expired),
             _ => None,
         }
     }
@@ -53,11 +56,11 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        for v in 0..=3 {
+        for v in 0..=4 {
             let state = MarketState::from_u64(v).unwrap();
             assert_eq!(state.as_u64(), v);
         }
-        assert!(MarketState::from_u64(4).is_none());
+        assert!(MarketState::from_u64(5).is_none());
     }
 
     #[test]
@@ -82,5 +85,6 @@ mod tests {
         );
         assert_eq!(MarketState::Unresolved.winning_token_asset(&params), None);
         assert_eq!(MarketState::Dormant.winning_token_asset(&params), None);
+        assert_eq!(MarketState::Expired.winning_token_asset(&params), None);
     }
 }

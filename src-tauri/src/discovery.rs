@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn contract_announcement_serde_roundtrip() {
         let announcement = ContractAnnouncement {
-            version: 1,
+            version: 2,
             contract_params: test_params(),
             metadata: test_metadata(),
             creation_txid: Some("abc123".to_string()),
@@ -372,7 +372,7 @@ mod tests {
         let json = serde_json::to_string(&announcement).unwrap();
         let parsed: ContractAnnouncement = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.version, 2);
         assert_eq!(parsed.contract_params, announcement.contract_params);
         assert_eq!(parsed.metadata.question, "Will BTC hit 100k?");
         assert_eq!(parsed.creation_txid, Some("abc123".to_string()));

@@ -65,7 +65,7 @@ async fn node_announce_and_fetch_market() {
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
     let params = test_market_params(oracle_pubkey);
     let announcement = ContractAnnouncement {
-        version: 1,
+        version: 2,
         contract_params: params,
         metadata: test_metadata(),
         creation_txid: Some("abc123def456".to_string()),
@@ -136,7 +136,7 @@ async fn node_attestation() {
 
     // First publish the announcement
     let announcement = ContractAnnouncement {
-        version: 1,
+        version: 2,
         contract_params: params,
         metadata: test_metadata(),
         creation_txid: None,
@@ -182,7 +182,7 @@ async fn node_subscription_delivers_events() {
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
     let params = test_market_params(oracle_pubkey);
     let announcement = ContractAnnouncement {
-        version: 1,
+        version: 2,
         contract_params: params,
         metadata: test_metadata(),
         creation_txid: None,

@@ -1,0 +1,2 @@
+ALTER TABLE markets ADD COLUMN expired_spk BLOB NOT NULL DEFAULT X'';
+ALTER TABLE markets ADD COLUMN expired_txid TEXT;

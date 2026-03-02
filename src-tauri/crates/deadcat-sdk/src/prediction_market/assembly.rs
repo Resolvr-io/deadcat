@@ -14,6 +14,7 @@ use crate::assembly::{pset_to_pruning_transaction, txout_secrets_from_unblinded}
 use crate::error::{Error, Result};
 use crate::prediction_market::contract::CompiledPredictionMarket;
 use crate::prediction_market::pset::UnblindedUtxo;
+use crate::prediction_market::pset::expire_transition::build_expire_transition_pset;
 use crate::prediction_market::pset::initial_issuance::{
     InitialIssuanceParams, build_initial_issuance_pset,
 };
@@ -184,6 +185,7 @@ fn find_wallet_output_indices(
         MarketState::Unresolved,
         MarketState::ResolvedYes,
         MarketState::ResolvedNo,
+        MarketState::Expired,
     ]
     .iter()
     .map(|s| contract.script_pubkey(*s))
@@ -512,27 +514,36 @@ pub(crate) fn attach_witnesses(
     let cmr_bytes = contract.cmr().to_byte_array().to_vec();
 
     // Prune, serialize, and build the witness stack for a covenant input.
-    let build_witness_stack =
-        |path: &PredictionMarketSpendingPath, input_index: u32| -> Result<Vec<Vec<u8>>> {
-            let env = build_pruning_env(&tx, &utxos, input_index, contract, state)?;
-            let satisfied = satisfy_contract_with_env(contract, path, state, Some(&env))
-                .map_err(|e| Error::Witness(e.to_string()))?;
-            let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
+    let build_witness_stack = |path: &PredictionMarketSpendingPath,
+                               input_index: u32|
+     -> Result<Vec<Vec<u8>>> {
+        let env = build_pruning_env(&tx, &utxos, input_index, contract, state)?;
+        let satisfied = satisfy_contract_with_env(contract, path, state, Some(&env))
+            .map_err(|e| Error::Witness(e.to_string()))?;
+        let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
 
-            let stack = vec![
-                witness_bytes,
-                program_bytes,
-                cmr_bytes.clone(),
-                control_block_bytes.clone(),
-            ];
+        let stack = vec![
+            witness_bytes,
+            program_bytes,
+            cmr_bytes.clone(),
+            control_block_bytes.clone(),
+        ];
 
-            debug_assert!(
-                satisfied.redeem().bounds().cost.is_budget_valid(&stack),
-                "input {input_index}: Simplicity program cost exceeds witness budget"
-            );
+        let required_padding = satisfied
+            .redeem()
+            .bounds()
+            .cost
+            .get_padding(&stack)
+            .map(|padding| padding.len())
+            .unwrap_or(0);
 
-            Ok(stack)
-        };
+        debug_assert!(
+            satisfied.redeem().bounds().cost.is_budget_valid(&stack),
+            "input {input_index}: Simplicity program cost exceeds witness budget (required_padding_bytes={required_padding})"
+        );
+
+        Ok(stack)
+    };
 
     // Primary covenant input (index 0)
     pset.inputs_mut()[0].final_script_witness = Some(build_witness_stack(&spending_path, 0)?);
@@ -602,27 +613,36 @@ fn attach_covenant_witnesses(
     let control_block_bytes = contract.control_block(state);
     let cmr_bytes = contract.cmr().to_byte_array().to_vec();
 
-    let build_witness_stack =
-        |path: &PredictionMarketSpendingPath, input_index: u32| -> Result<Vec<Vec<u8>>> {
-            let env = build_pruning_env(&tx, &utxos, input_index, contract, state)?;
-            let satisfied = satisfy_contract_with_env(contract, path, state, Some(&env))
-                .map_err(|e| Error::Witness(e.to_string()))?;
-            let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
+    let build_witness_stack = |path: &PredictionMarketSpendingPath,
+                               input_index: u32|
+     -> Result<Vec<Vec<u8>>> {
+        let env = build_pruning_env(&tx, &utxos, input_index, contract, state)?;
+        let satisfied = satisfy_contract_with_env(contract, path, state, Some(&env))
+            .map_err(|e| Error::Witness(e.to_string()))?;
+        let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
 
-            let stack = vec![
-                witness_bytes,
-                program_bytes,
-                cmr_bytes.clone(),
-                control_block_bytes.clone(),
-            ];
+        let stack = vec![
+            witness_bytes,
+            program_bytes,
+            cmr_bytes.clone(),
+            control_block_bytes.clone(),
+        ];
 
-            debug_assert!(
-                satisfied.redeem().bounds().cost.is_budget_valid(&stack),
-                "input {input_index}: Simplicity program cost exceeds witness budget"
-            );
+        let required_padding = satisfied
+            .redeem()
+            .bounds()
+            .cost
+            .get_padding(&stack)
+            .map(|padding| padding.len())
+            .unwrap_or(0);
 
-            Ok(stack)
-        };
+        debug_assert!(
+            satisfied.redeem().bounds().cost.is_budget_valid(&stack),
+            "input {input_index}: Simplicity program cost exceeds witness budget (required_padding_bytes={required_padding})"
+        );
+
+        Ok(stack)
+    };
 
     // Primary covenant input
     pset.inputs_mut()[primary_index].final_script_witness =
@@ -713,7 +733,7 @@ pub(crate) fn assemble_expiry_redemption(
     attach_covenant_witnesses(
         &mut pset,
         contract,
-        MarketState::Unresolved,
+        MarketState::Expired,
         spending_path,
         0,
         &[],
@@ -821,6 +841,52 @@ pub(crate) fn assemble_cancellation(
 
         Ok(pset)
     }
+}
+
+/// Assemble an expire-transition transaction (state 1 -> 4).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn assemble_expire_transition(
+    contract: &CompiledPredictionMarket,
+    params: &crate::prediction_market::pset::expire_transition::ExpireTransitionParams,
+    slip77_key: &lwk_wollet::elements_miniscript::confidential::slip77::MasterBlindingKey,
+    blinding_pubkey: PublicKey,
+    change_spk: &Script,
+    yes_rt_input: &UnblindedUtxo,
+    no_rt_input: &UnblindedUtxo,
+) -> Result<PartiallySignedTransaction> {
+    let mut pset = build_expire_transition_pset(contract, params)?;
+
+    // Expire transition: 4 outputs (RT0, RT1, collateral, fee). Only RT outputs are blinded.
+    // Inputs: yes_rt(0), no_rt(1), collateral(2), fee(3)
+    let input_refs: Vec<(usize, &UnblindedUtxo)> = vec![
+        (0, yes_rt_input),
+        (1, no_rt_input),
+        (2, &params.collateral_utxo),
+        (3, &params.fee_utxo),
+    ];
+    blind_pset(
+        &mut pset,
+        Some((yes_rt_input, no_rt_input)),
+        &[],
+        &input_refs,
+        blinding_pubkey,
+    )?;
+
+    let blinding =
+        recover_blinding_factors(&pset, slip77_key, change_spk, yes_rt_input, no_rt_input)?;
+
+    let spending_path = PredictionMarketSpendingPath::ExpireTransition { blinding };
+
+    attach_covenant_witnesses(
+        &mut pset,
+        contract,
+        MarketState::Unresolved,
+        spending_path,
+        0,
+        &[1, 2],
+    )?;
+
+    Ok(pset)
 }
 
 /// Assemble an oracle resolve transaction.

@@ -100,9 +100,9 @@ pub trait DiscoveryStore: Send + 'static {
 
     // ── Chain watcher bootstrap queries ──────────────────────────────
 
-    /// Return all markets with their 4 cached scriptPubKeys.
+    /// Return all markets with their cached non-empty scriptPubKeys (up to 5).
     ///
-    /// Each entry is `(market_id, [dormant_spk, unresolved_spk, resolved_yes_spk, resolved_no_spk])`.
+    /// Typical order is `[dormant_spk, unresolved_spk, resolved_yes_spk, resolved_no_spk, expired_spk]`.
     #[allow(clippy::type_complexity)]
     fn get_all_market_spks(&mut self) -> Result<Vec<([u8; 32], Vec<Vec<u8>>)>, String>;
 

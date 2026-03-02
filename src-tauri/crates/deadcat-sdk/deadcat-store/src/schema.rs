@@ -63,6 +63,7 @@ diesel::table! {
         unresolved_spk -> Binary,
         resolved_yes_spk -> Binary,
         resolved_no_spk -> Binary,
+        expired_spk -> Binary,
         current_state -> Integer,
         created_at -> Text,
         updated_at -> Text,
@@ -83,6 +84,7 @@ diesel::table! {
         unresolved_txid -> Nullable<Text>,
         resolved_yes_txid -> Nullable<Text>,
         resolved_no_txid -> Nullable<Text>,
+        expired_txid -> Nullable<Text>,
     }
 }
 
