@@ -7,7 +7,9 @@ pub mod state;
 pub mod wallet;
 mod wallet_store;
 
+use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -32,6 +34,8 @@ pub struct NodeState {
     pub event_handler: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// JoinHandle for the periodic reconciliation task. Aborted on node replacement.
     pub reconcile_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// In-memory quote cache for market trade quote->confirm execution.
+    pub trade_quote_cache: tokio::sync::Mutex<HashMap<String, CachedTradeQuote>>,
 }
 
 impl Default for NodeState {
@@ -41,8 +45,15 @@ impl Default for NodeState {
             watcher_handle: tokio::sync::Mutex::new(None),
             event_handler: tokio::sync::Mutex::new(None),
             reconcile_task: tokio::sync::Mutex::new(None),
+            trade_quote_cache: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
+}
+
+pub struct CachedTradeQuote {
+    pub quote: deadcat_sdk::TradeQuote,
+    pub market_id: String,
+    pub expires_at: Instant,
 }
 
 impl NodeState {
@@ -845,6 +856,9 @@ pub fn run() {
             commands::remove_relay,
             commands::fetch_nostr_profile,
             commands::create_contract_onchain,
+            commands::preview_market_trade,
+            commands::quote_market_trade,
+            commands::execute_market_trade_quote,
             commands::issue_tokens,
             commands::create_limit_order,
             commands::cancel_limit_order,

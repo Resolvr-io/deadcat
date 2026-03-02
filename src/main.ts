@@ -25,6 +25,7 @@ import {
   getBasePriceSats,
   getMarketById,
   getPositionContracts,
+  resetLimitSellWarningState,
   setLimitPriceSats,
 } from "./utils/market.ts";
 
@@ -32,6 +33,7 @@ import {
 
 let chartAspectSyncRaf: number | null = null;
 let chartHoverRenderRaf: number | null = null;
+let tradeQuoteCountdownInterval: number | null = null;
 const CHART_ASPECT_MIN = 1.2;
 const CHART_ASPECT_MAX = 8;
 const CHART_ASPECT_EPSILON = 0.005;
@@ -114,12 +116,38 @@ function scheduleChartHoverRender(): void {
   });
 }
 
+function stopTradeQuoteCountdown(): void {
+  if (tradeQuoteCountdownInterval !== null) {
+    window.clearInterval(tradeQuoteCountdownInterval);
+    tradeQuoteCountdownInterval = null;
+  }
+}
+
+function syncTradeQuoteCountdown(): void {
+  const shouldTick = state.tradeQuoteModalOpen && state.tradeQuoteData !== null;
+  if (!shouldTick) {
+    stopTradeQuoteCountdown();
+    return;
+  }
+  state.tradeQuoteNowUnix = Math.floor(Date.now() / 1000);
+  if (tradeQuoteCountdownInterval !== null) return;
+  tradeQuoteCountdownInterval = window.setInterval(() => {
+    if (!state.tradeQuoteModalOpen || state.tradeQuoteData === null) {
+      stopTradeQuoteCountdown();
+      return;
+    }
+    state.tradeQuoteNowUnix = Math.floor(Date.now() / 1000);
+    render();
+  }, 1000);
+}
+
 let _savedScrollY = hmrData.savedScrollY ?? 0;
 
 function render(): void {
   if (state.onboardingStep !== null) {
     app.innerHTML = `<div class="min-h-screen text-slate-100 flex items-center justify-center">${renderOnboarding()}</div>`;
     scheduleChartAspectSync();
+    syncTradeQuoteCountdown();
     return;
   }
   const html = `
@@ -135,6 +163,7 @@ function render(): void {
   window.scrollTo(0, _savedScrollY);
   app.style.minHeight = "";
   scheduleChartAspectSync();
+  syncTradeQuoteCountdown();
 }
 
 function updateEstClockLabels(): void {
@@ -168,13 +197,24 @@ function openMarket(
   state.showAdvancedActions = false;
   state.showOrderbook = false;
   state.showFeeDetails = false;
+  state.buyLimitComposerOpen = false;
+  resetLimitSellWarningState();
+  state.tradeQuoteModalOpen = false;
+  state.tradeQuoteLoading = false;
+  state.tradeQuoteExecuting = false;
+  state.tradeQuoteData = null;
+  state.tradeQuoteError = "";
+  state.tradeQuoteNowUnix = Math.floor(Date.now() / 1000);
   state.tradeSizeSats = 10000;
   state.tradeSizeSatsDraft = formatSatsInput(10000);
+  const selectedPositionLots = Math.max(0, Math.floor(selectedPosition));
   state.tradeContracts =
     nextIntent === "close"
-      ? Math.max(0.01, Math.min(selectedPosition, selectedPosition / 2))
+      ? selectedPositionLots > 0
+        ? Math.max(1, Math.floor(selectedPositionLots / 2))
+        : 0
       : 10;
-  state.tradeContractsDraft = state.tradeContracts.toFixed(2);
+  state.tradeContractsDraft = String(state.tradeContracts);
   state.chartHoverMarketId = null;
   state.chartHoverX = null;
   setLimitPriceSats(getBasePriceSats(market, nextSide));

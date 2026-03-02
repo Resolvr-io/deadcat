@@ -5,6 +5,7 @@ import {
   commitTradeContractsDraft,
   commitTradeSizeSatsDraft,
   getSelectedMarket,
+  resetLimitSellWarningState,
   setLimitPriceSats,
 } from "../utils/market.ts";
 
@@ -87,6 +88,12 @@ export function handleKeydown(
           : state.limitPrice * SATS_PER_FULL_CONTRACT,
       );
       setLimitPriceSats(currentSats + delta);
+      resetLimitSellWarningState();
+      state.tradeQuoteModalOpen = false;
+      state.tradeQuoteLoading = false;
+      state.tradeQuoteExecuting = false;
+      state.tradeQuoteData = null;
+      state.tradeQuoteError = "";
       render();
       return;
     }
@@ -102,13 +109,22 @@ export function handleKeydown(
     if (e.key === "ArrowUp" || e.key === "ArrowDown") {
       e.preventDefault();
       const market = getSelectedMarket();
-      const current = Number(state.tradeContractsDraft);
+      const current = Math.floor(Number(state.tradeContractsDraft));
+      const minContracts = state.tradeIntent === "close" ? 0 : 1;
       const baseValue = Number.isFinite(current)
         ? current
-        : Math.max(0.01, state.tradeContracts);
-      const delta = e.key === "ArrowUp" ? 0.01 : -0.01;
-      state.tradeContractsDraft = Math.max(0.01, baseValue + delta).toFixed(2);
+        : Math.max(minContracts, Math.floor(state.tradeContracts));
+      const delta = e.key === "ArrowUp" ? 1 : -1;
+      state.tradeContractsDraft = String(
+        Math.max(minContracts, baseValue + delta),
+      );
       commitTradeContractsDraft(market);
+      resetLimitSellWarningState();
+      state.tradeQuoteModalOpen = false;
+      state.tradeQuoteLoading = false;
+      state.tradeQuoteExecuting = false;
+      state.tradeQuoteData = null;
+      state.tradeQuoteError = "";
       render();
       return;
     }

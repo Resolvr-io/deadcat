@@ -261,6 +261,84 @@ export type FillLimitOrderResult = {
   is_partial: boolean;
 };
 
+export type TradeDirection = "buy" | "sell";
+
+export type TradeQuoteLegSource =
+  | {
+      kind: "amm_pool";
+      pool_id: string;
+    }
+  | {
+      kind: "limit_order";
+      order_id: string;
+      price: number;
+      lots: number;
+    };
+
+export type TradeQuoteLeg = {
+  source: TradeQuoteLegSource;
+  input_amount: number;
+  output_amount: number;
+};
+
+export type QuoteMarketTradeRequestPayload = {
+  contract_params: ContractParamsPayload;
+  market_id: string;
+  side: Side;
+  direction: TradeDirection;
+  exact_input: number;
+};
+
+export type PreviewMarketTradeRequestPayload = {
+  contract_params: ContractParamsPayload;
+  market_id: string;
+  side: Side;
+  direction: TradeDirection;
+  exact_input: number;
+};
+
+export type QuoteMarketTradeResult = {
+  quote_id: string;
+  market_id: string;
+  side: Side;
+  direction: TradeDirection;
+  exact_input: number;
+  total_input: number;
+  total_output: number;
+  effective_price: number;
+  expires_at_unix: number;
+  legs: TradeQuoteLeg[];
+};
+
+export type PreviewMarketTradeResult = {
+  market_id: string;
+  side: Side;
+  direction: TradeDirection;
+  exact_input: number;
+  total_input: number;
+  total_output: number;
+  effective_price: number;
+  legs: TradeQuoteLeg[];
+};
+
+export type ExecuteMarketTradeQuoteRequestPayload = {
+  quote_id: string;
+};
+
+export type ExecuteMarketTradeQuoteResult = {
+  txid: string;
+  total_input: number;
+  total_output: number;
+  num_orders_filled: number;
+  pool_used: boolean;
+};
+
+export type LimitSellWarning = {
+  referencePriceSats: number;
+  discountSats: number;
+  discountPct: number;
+};
+
 export type IdentityResponse = { pubkey_hex: string; npub: string };
 
 export type RelayEntry = { url: string; has_backup: boolean };

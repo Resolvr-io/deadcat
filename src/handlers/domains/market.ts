@@ -14,11 +14,15 @@ import {
 } from "../../state.ts";
 import type {
   ActionTab,
+  ContractParamsPayload,
   CovenantState,
   DiscoveredOrder,
   Market,
   MarketCategory,
+  OrderType,
+  QuoteMarketTradeRequestPayload,
   Side,
+  TradeDirection,
   TradeIntent,
 } from "../../types.ts";
 import { showToast } from "../../ui/toast.ts";
@@ -30,11 +34,13 @@ import {
   commitTradeContractsDraft,
   getAvailableOrderContracts,
   getBasePriceSats,
+  getLimitSellWarningFromSellQuote,
   getPathAvailability,
   getPositionContracts,
   getSelectedMarket,
   getTradePreview,
   getTrendingMarkets,
+  resetLimitSellWarningState,
   setLimitPriceSats,
   stateLabel,
 } from "../../utils/market.ts";
@@ -61,6 +67,186 @@ function toMakerOrderPayload(order: DiscoveredOrder) {
     maker_receive_spk_hash_hex: order.maker_receive_spk_hash,
     cosigner_pubkey_hex: order.cosigner_pubkey,
     maker_pubkey_hex: order.maker_base_pubkey,
+  };
+}
+
+function resetTradeQuoteState(): void {
+  state.tradeQuoteModalOpen = false;
+  state.tradeQuoteLoading = false;
+  state.tradeQuoteExecuting = false;
+  state.tradeQuoteData = null;
+  state.tradeQuoteError = "";
+  state.tradeQuoteNowUnix = Math.floor(Date.now() / 1000);
+}
+
+function resetLimitSellOverride(): void {
+  resetLimitSellWarningState();
+}
+
+function commitTradeSatsDraftForQuote(): void {
+  const parsed = Math.floor(
+    Number(state.tradeSizeSatsDraft.replace(/,/g, "")) ||
+      state.tradeSizeSats ||
+      1,
+  );
+  const clamped = Math.max(1, parsed);
+  state.tradeSizeSats = clamped;
+  state.tradeSizeSatsDraft = formatSatsInput(clamped);
+}
+
+function getSelectedPositionLots(market: Market): number {
+  const positions = getPositionContracts(market);
+  const raw = state.selectedSide === "yes" ? positions.yes : positions.no;
+  return Math.max(0, Math.floor(raw));
+}
+
+function getSellSizeValidationMessage(market: Market): string {
+  return getSelectedPositionLots(market) < 1
+    ? "No contracts available on this side."
+    : "Enter contracts to sell.";
+}
+
+function clampContractsForSell(
+  contracts: number,
+  availableLots: number,
+): number {
+  if (availableLots <= 0) return 0;
+  return Math.max(0, Math.min(Math.floor(contracts), availableLots));
+}
+
+type LimitSellGuardSnapshot = {
+  guardVersion: number;
+  marketId: string;
+  side: Side;
+  tradeIntent: TradeIntent;
+  orderType: OrderType;
+  contracts: number;
+  limitPriceSats: number;
+};
+
+function captureLimitSellGuardSnapshot(market: Market): LimitSellGuardSnapshot {
+  return {
+    guardVersion: state.limitSellGuardVersion,
+    marketId: market.marketId,
+    side: state.selectedSide,
+    tradeIntent: state.tradeIntent,
+    orderType: state.orderType,
+    contracts: state.tradeContracts,
+    limitPriceSats: clampContractPriceSats(
+      state.limitPrice * SATS_PER_FULL_CONTRACT,
+    ),
+  };
+}
+
+function isLimitSellGuardSnapshotCurrent(
+  market: Market,
+  snapshot: LimitSellGuardSnapshot,
+): boolean {
+  return (
+    state.limitSellGuardVersion === snapshot.guardVersion &&
+    market.marketId === snapshot.marketId &&
+    state.selectedSide === snapshot.side &&
+    state.tradeIntent === snapshot.tradeIntent &&
+    state.orderType === snapshot.orderType &&
+    state.tradeContracts === snapshot.contracts &&
+    clampContractPriceSats(state.limitPrice * SATS_PER_FULL_CONTRACT) ===
+      snapshot.limitPriceSats
+  );
+}
+
+function submitLimitOrder(
+  market: Market,
+  intent: TradeIntent,
+  render: () => void,
+): void {
+  if (intent === "close" && state.tradeContracts < 1) {
+    showToast(getSellSizeValidationMessage(market), "error");
+    return;
+  }
+  const preview = getTradePreview(market);
+  const pairs = Math.max(1, Math.floor(preview.requestedContracts));
+  const paths = getPathAvailability(market);
+  if (!paths.issue) {
+    showToast("Market is not in a tradeable state for limit orders", "error");
+    return;
+  }
+
+  const sideAssetId =
+    state.selectedSide === "yes" ? market.yesAssetId : market.noAssetId;
+  const direction = intent === "open" ? "sell-quote" : "sell-base";
+  const orderAmount =
+    direction === "sell-quote" ? pairs * preview.limitPriceSats : pairs;
+  const directionLabel = `${intent === "open" ? "buy" : "sell"}-${state.selectedSide}`;
+
+  if (!Number.isSafeInteger(orderAmount) || orderAmount <= 0) {
+    showToast("Computed order amount is invalid", "error");
+    return;
+  }
+
+  if (intent === "close") {
+    const availableLots = getSelectedPositionLots(market);
+    if (pairs > availableLots) {
+      showToast(
+        `Insufficient ${state.selectedSide.toUpperCase()} tokens for this limit order`,
+        "error",
+      );
+      return;
+    }
+  }
+
+  const confirmation =
+    intent === "open"
+      ? `Place limit buy for ${pairs} ${state.selectedSide.toUpperCase()} token(s) at ${preview.limitPriceSats} sats each?\n\nThis posts a resting order and locks ${formatSats(orderAmount)} of quote collateral until filled/cancelled.`
+      : `Place limit sell for ${pairs} ${state.selectedSide.toUpperCase()} token(s) at ${preview.limitPriceSats} sats each?\n\nThis posts a resting order and locks ${pairs.toLocaleString()} token(s) until filled/cancelled.`;
+  if (!window.confirm(confirmation)) return;
+
+  showToast("Placing limit order...", "info");
+  runAsyncAction(async () => {
+    try {
+      const result = await tauriApi.createLimitOrder({
+        base_asset_id_hex: sideAssetId,
+        quote_asset_id_hex: market.collateralAssetId,
+        price: preview.limitPriceSats,
+        order_amount: orderAmount,
+        direction,
+        min_fill_lots: 1,
+        min_remainder_lots: 1,
+        market_id: market.marketId,
+        direction_label: directionLabel,
+      });
+      showToast(
+        `Limit order posted! txid: ${result.txid.slice(0, 16)}...`,
+        "success",
+      );
+      resetLimitSellOverride();
+      await refreshWallet(render);
+      await refreshMarketsFromStore();
+      render();
+    } catch (error) {
+      showToast(`Limit order failed: ${error}`, "error");
+    }
+  });
+}
+
+export function buildMarketQuoteRequestPayload(
+  contractParams: ContractParamsPayload,
+  marketId: string,
+  side: Side,
+  intent: TradeIntent,
+  tradeSizeSats: number,
+  tradeContracts: number,
+): QuoteMarketTradeRequestPayload {
+  const direction: TradeDirection = intent === "open" ? "buy" : "sell";
+  const exactInput =
+    direction === "buy"
+      ? Math.max(1, Math.floor(tradeSizeSats))
+      : Math.max(1, Math.trunc(tradeContracts));
+  return {
+    contract_params: contractParams,
+    market_id: marketId,
+    side,
+    direction,
+    exact_input: exactInput,
   };
 }
 
@@ -334,44 +520,171 @@ export async function handleMarketDomain(
       return;
     }
 
+    if (action === "toggle-buy-limit-composer") {
+      state.buyLimitComposerOpen = !state.buyLimitComposerOpen;
+      if (state.buyLimitComposerOpen) {
+        state.orderType = "limit";
+        state.sizeMode = "contracts";
+      } else {
+        state.orderType = "market";
+        state.sizeMode = "sats";
+      }
+      render();
+      return;
+    }
+
+    if (action === "ack-limit-sell-warning") {
+      state.limitSellOverrideAccepted = true;
+      render();
+      return;
+    }
+
+    if (action === "close-trade-quote") {
+      resetTradeQuoteState();
+      render();
+      return;
+    }
+
+    if (action === "trade-quote-backdrop" && actionEl === ctx.target) {
+      resetTradeQuoteState();
+      render();
+      return;
+    }
+
+    if (action === "request-trade-quote") {
+      const market = getSelectedMarket();
+      const direction: TradeDirection =
+        state.tradeIntent === "open" ? "buy" : "sell";
+
+      if (direction === "buy") {
+        state.sizeMode = "sats";
+        commitTradeSatsDraftForQuote();
+      } else {
+        state.sizeMode = "contracts";
+        commitTradeContractsDraft(market);
+        if (state.tradeContracts < 1) {
+          showToast(getSellSizeValidationMessage(market), "error");
+          return;
+        }
+      }
+      const quoteRequest = buildMarketQuoteRequestPayload(
+        marketToContractParams(market),
+        market.marketId,
+        state.selectedSide,
+        state.tradeIntent,
+        state.tradeSizeSats,
+        state.tradeContracts,
+      );
+
+      state.tradeQuoteModalOpen = true;
+      state.tradeQuoteLoading = true;
+      state.tradeQuoteExecuting = false;
+      state.tradeQuoteData = null;
+      state.tradeQuoteError = "";
+      render();
+
+      runAsyncAction(async () => {
+        try {
+          const quote = await tauriApi.quoteMarketTrade(quoteRequest);
+          state.tradeQuoteData = quote;
+        } catch (error) {
+          state.tradeQuoteError = String(error);
+          showToast(`Failed to fetch trade quote: ${error}`, "error");
+        } finally {
+          state.tradeQuoteLoading = false;
+          render();
+        }
+      });
+      return;
+    }
+
+    if (action === "confirm-trade-quote") {
+      const quoteId = state.tradeQuoteData?.quote_id;
+      if (!quoteId) {
+        showToast("No active quote to execute", "error");
+        return;
+      }
+      state.tradeQuoteExecuting = true;
+      state.tradeQuoteError = "";
+      render();
+
+      runAsyncAction(async () => {
+        try {
+          const result = await tauriApi.executeMarketTradeQuote({
+            quote_id: quoteId,
+          });
+          showToast(
+            `Trade executed! txid: ${result.txid.slice(0, 16)}...`,
+            "success",
+          );
+          resetTradeQuoteState();
+          await refreshWallet(render);
+          await refreshMarketsFromStore();
+        } catch (error) {
+          const message = String(error);
+          state.tradeQuoteError = message;
+          if (
+            message.toLowerCase().includes("expired") ||
+            message.toLowerCase().includes("not found")
+          ) {
+            state.tradeQuoteData = null;
+          }
+          showToast(`Trade execution failed: ${error}`, "error");
+        } finally {
+          state.tradeQuoteExecuting = false;
+          render();
+        }
+      });
+      return;
+    }
+
     if (action === "use-cashout") {
       const market = getSelectedMarket();
       const positions = getPositionContracts(market);
       const closeSide: Side = positions.yes >= positions.no ? "yes" : "no";
-      const available = closeSide === "yes" ? positions.yes : positions.no;
+      const availableLots = Math.max(
+        0,
+        Math.floor(closeSide === "yes" ? positions.yes : positions.no),
+      );
       state.tradeIntent = "close";
       state.sizeMode = "contracts";
+      state.buyLimitComposerOpen = false;
       state.selectedSide = closeSide;
-      state.tradeContracts = Math.max(0.01, Math.min(available, available / 2));
-      state.tradeContractsDraft = state.tradeContracts.toFixed(2);
+      state.tradeContracts =
+        availableLots > 0 ? Math.max(1, Math.floor(availableLots / 2)) : 0;
+      state.tradeContractsDraft = String(state.tradeContracts);
       setLimitPriceSats(getBasePriceSats(market, closeSide));
+      resetLimitSellOverride();
+      resetTradeQuoteState();
       render();
       return;
     }
 
     if (action === "sell-max") {
       const market = getSelectedMarket();
-      const positions = getPositionContracts(market);
-      const available =
-        state.selectedSide === "yes" ? positions.yes : positions.no;
+      const availableLots = getSelectedPositionLots(market);
       state.tradeIntent = "close";
       state.sizeMode = "contracts";
-      state.tradeContracts = Math.max(0.01, available);
-      state.tradeContractsDraft = state.tradeContracts.toFixed(2);
+      state.buyLimitComposerOpen = false;
+      state.tradeContracts = Math.max(0, availableLots);
+      state.tradeContractsDraft = String(state.tradeContracts);
+      resetLimitSellOverride();
+      resetTradeQuoteState();
       render();
       return;
     }
 
     if (action === "sell-25" || action === "sell-50") {
       const market = getSelectedMarket();
-      const positions = getPositionContracts(market);
-      const available =
-        state.selectedSide === "yes" ? positions.yes : positions.no;
+      const availableLots = getSelectedPositionLots(market);
       const ratio = action === "sell-25" ? 0.25 : 0.5;
       state.tradeIntent = "close";
       state.sizeMode = "contracts";
-      state.tradeContracts = Math.max(0.01, available * ratio);
-      state.tradeContractsDraft = state.tradeContracts.toFixed(2);
+      state.buyLimitComposerOpen = false;
+      state.tradeContracts = Math.max(0, Math.floor(availableLots * ratio));
+      state.tradeContractsDraft = String(state.tradeContracts);
+      resetLimitSellOverride();
+      resetTradeQuoteState();
       render();
       return;
     }
@@ -394,6 +707,8 @@ export async function handleMarketDomain(
       state.selectedSide = side;
       const market = getSelectedMarket();
       setLimitPriceSats(getBasePriceSats(market, side));
+      resetLimitSellOverride();
+      resetTradeQuoteState();
       render();
       return;
     }
@@ -409,17 +724,23 @@ export async function handleMarketDomain(
         state.tradeIntent = intent;
         state.selectedSide = pickedSide;
         const market = getSelectedMarket();
-        const positions = getPositionContracts(market);
-        const available = pickedSide === "yes" ? positions.yes : positions.no;
+        const availableLots = getSelectedPositionLots(market);
         setLimitPriceSats(getBasePriceSats(market, pickedSide));
         if (intent === "close") {
           state.sizeMode = "contracts";
-          state.tradeContracts = Math.max(
-            0.01,
-            Math.min(Math.max(0.01, available), state.tradeContracts),
+          state.buyLimitComposerOpen = false;
+          state.tradeContracts = clampContractsForSell(
+            state.tradeContracts,
+            availableLots,
           );
-          state.tradeContractsDraft = state.tradeContracts.toFixed(2);
+          state.tradeContractsDraft = String(state.tradeContracts);
+        } else {
+          state.sizeMode = "sats";
+          state.orderType = "market";
+          state.buyLimitComposerOpen = false;
         }
+        resetLimitSellOverride();
+        resetTradeQuoteState();
         render();
         return;
       }
@@ -428,23 +749,30 @@ export async function handleMarketDomain(
     if (tradeIntent) {
       state.tradeIntent = tradeIntent;
       const market = getSelectedMarket();
-      const positions = getPositionContracts(market);
-      const available =
-        state.selectedSide === "yes" ? positions.yes : positions.no;
+      const availableLots = getSelectedPositionLots(market);
       if (tradeIntent === "close") {
         state.sizeMode = "contracts";
-        state.tradeContracts = Math.max(
-          0.01,
-          Math.min(Math.max(0.01, available), state.tradeContracts),
+        state.buyLimitComposerOpen = false;
+        state.tradeContracts = clampContractsForSell(
+          state.tradeContracts,
+          availableLots,
         );
-        state.tradeContractsDraft = state.tradeContracts.toFixed(2);
+        state.tradeContractsDraft = String(state.tradeContracts);
+      } else {
+        state.sizeMode = "sats";
+        state.orderType = "market";
+        state.buyLimitComposerOpen = false;
       }
+      resetLimitSellOverride();
+      resetTradeQuoteState();
       render();
       return;
     }
 
     if (sizeMode) {
       state.sizeMode = sizeMode;
+      resetLimitSellOverride();
+      resetTradeQuoteState();
       render();
       return;
     }
@@ -453,6 +781,8 @@ export async function handleMarketDomain(
       state.sizeMode = "sats";
       state.tradeSizeSats = Math.floor(tradeSizePreset);
       state.tradeSizeSatsDraft = formatSatsInput(state.tradeSizeSats);
+      resetLimitSellOverride();
+      resetTradeQuoteState();
       render();
       return;
     }
@@ -466,6 +796,8 @@ export async function handleMarketDomain(
       const next = Math.max(1, current + Math.floor(tradeSizeDelta));
       state.tradeSizeSats = next;
       state.tradeSizeSatsDraft = formatSatsInput(next);
+      resetLimitSellOverride();
+      resetTradeQuoteState();
       render();
       return;
     }
@@ -481,6 +813,8 @@ export async function handleMarketDomain(
           : state.limitPrice * SATS_PER_FULL_CONTRACT,
       );
       setLimitPriceSats(currentSats + Math.sign(limitPriceDelta));
+      resetLimitSellOverride();
+      resetTradeQuoteState();
       render();
       return;
     }
@@ -491,16 +825,19 @@ export async function handleMarketDomain(
       contractsStepDelta !== 0
     ) {
       const market = getSelectedMarket();
-      const current = Number(state.tradeContractsDraft);
+      const minContracts = state.tradeIntent === "close" ? 0 : 1;
+      const current = Math.floor(Number(state.tradeContractsDraft));
       const baseValue = Number.isFinite(current)
         ? current
-        : Math.max(0.01, state.tradeContracts);
+        : Math.max(minContracts, Math.floor(state.tradeContracts));
       const nextValue = Math.max(
-        0.01,
-        baseValue + Math.sign(contractsStepDelta) * 0.01,
+        minContracts,
+        baseValue + Math.sign(contractsStepDelta),
       );
-      state.tradeContractsDraft = nextValue.toFixed(2);
+      state.tradeContractsDraft = String(nextValue);
       commitTradeContractsDraft(market);
+      resetLimitSellOverride();
+      resetTradeQuoteState();
       render();
       return;
     }
@@ -510,6 +847,8 @@ export async function handleMarketDomain(
       if (orderType === "limit") {
         commitLimitPriceDraft();
       }
+      resetLimitSellOverride();
+      resetTradeQuoteState();
       render();
       return;
     }
@@ -525,6 +864,8 @@ export async function handleMarketDomain(
 
     if (
       action === "submit-trade" ||
+      action === "submit-limit-buy" ||
+      action === "submit-limit-sell" ||
       action === "submit-issue" ||
       action === "submit-redeem" ||
       action === "submit-cancel" ||
@@ -691,147 +1032,103 @@ export async function handleMarketDomain(
       }
 
       if (action === "submit-trade") {
-        const preview = getTradePreview(market);
-        const pairs = Math.max(1, Math.floor(preview.requestedContracts));
-        const paths = getPathAvailability(market);
+        showToast("Use the quote flow for market trades", "info");
+        return;
+      }
 
-        if (state.orderType === "limit") {
-          if (!paths.issue) {
-            showToast(
-              "Market is not in a tradeable state for limit orders",
-              "error",
-            );
-            return;
-          }
+      if (action === "submit-limit-buy") {
+        state.tradeIntent = "open";
+        state.orderType = "limit";
+        state.sizeMode = "contracts";
+        commitTradeContractsDraft(market);
+        commitLimitPriceDraft();
+        submitLimitOrder(market, "open", render);
+        return;
+      }
 
-          const sideAssetId =
-            state.selectedSide === "yes" ? market.yesAssetId : market.noAssetId;
-          const direction =
-            state.tradeIntent === "open" ? "sell-quote" : "sell-base";
-          const orderAmount =
-            direction === "sell-quote" ? pairs * preview.limitPriceSats : pairs;
-          const directionLabel = `${state.tradeIntent === "open" ? "buy" : "sell"}-${state.selectedSide}`;
-
-          if (!Number.isSafeInteger(orderAmount) || orderAmount <= 0) {
-            showToast("Computed order amount is invalid", "error");
-            return;
-          }
-
-          if (state.tradeIntent === "close") {
-            const position = getPositionContracts(market);
-            const available =
-              state.selectedSide === "yes" ? position.yes : position.no;
-            if (pairs > available + 0.0001) {
-              showToast(
-                `Insufficient ${state.selectedSide.toUpperCase()} tokens for this limit order`,
-                "error",
-              );
-              return;
-            }
-          }
-
-          const confirmation =
-            state.tradeIntent === "open"
-              ? `Place limit buy for ${pairs} ${state.selectedSide.toUpperCase()} token(s) at ${preview.limitPriceSats} sats each?\n\nThis posts a resting order and locks ${formatSats(orderAmount)} of quote collateral until filled/cancelled.`
-              : `Place limit sell for ${pairs} ${state.selectedSide.toUpperCase()} token(s) at ${preview.limitPriceSats} sats each?\n\nThis posts a resting order and locks ${pairs.toLocaleString()} token(s) until filled/cancelled.`;
-          if (!window.confirm(confirmation)) return;
-
-          showToast("Placing limit order...", "info");
-          runAsyncAction(async () => {
-            try {
-              const result = await tauriApi.createLimitOrder({
-                base_asset_id_hex: sideAssetId,
-                quote_asset_id_hex: market.collateralAssetId,
-                price: preview.limitPriceSats,
-                order_amount: orderAmount,
-                direction,
-                min_fill_lots: 1,
-                min_remainder_lots: 1,
-                market_id: market.marketId,
-                direction_label: directionLabel,
-              });
-              showToast(
-                `Limit order posted! txid: ${result.txid.slice(0, 16)}...`,
-                "success",
-              );
-              await refreshWallet(render);
-              await refreshMarketsFromStore();
-              render();
-            } catch (error) {
-              showToast(`Limit order failed: ${error}`, "error");
-            }
-          });
+      if (action === "submit-limit-sell") {
+        state.tradeIntent = "close";
+        state.orderType = "limit";
+        state.sizeMode = "contracts";
+        commitTradeContractsDraft(market);
+        commitLimitPriceDraft();
+        if (state.tradeContracts < 1) {
+          showToast(getSellSizeValidationMessage(market), "error");
+          return;
+        }
+        if (state.limitSellOverrideAccepted) {
+          submitLimitOrder(market, "close", render);
+          return;
+        }
+        if (state.limitSellGuardChecking) {
           return;
         }
 
-        if (state.tradeIntent === "open") {
-          // Buy = Issue pairs (mint YES+NO tokens, user keeps the side they want)
-          if (!market.creationTxid) {
-            showToast("Market has no creation txid — cannot trade", "error");
-            return;
-          }
-          const paths = getPathAvailability(market);
-          if (!paths.issue && !paths.initialIssue) {
-            showToast(
-              "Market is not in a tradeable state for issuance",
-              "error",
-            );
-            return;
-          }
-          const collateralNeeded = pairs * 2 * market.cptSats;
-          const confirmed = window.confirm(
-            `Issue ${pairs} token pair(s) for "${market.question.slice(0, 50)}"?\n\nYou will receive ${pairs} YES + ${pairs} NO tokens.\nCollateral required: ${formatSats(collateralNeeded)}\n\nProceed?`,
-          );
-          if (!confirmed) return;
+        const preview = getTradePreview(market);
+        const guardSnapshot = captureLimitSellGuardSnapshot(market);
+        const quoteRequest = buildMarketQuoteRequestPayload(
+          marketToContractParams(market),
+          market.marketId,
+          state.selectedSide,
+          "close",
+          state.tradeSizeSats,
+          state.tradeContracts,
+        );
 
-          showToast(`Issuing ${pairs} pair(s)...`, "info");
-          runAsyncAction(async () => {
-            try {
-              const result = await issueTokens(market, pairs);
-              showToast(
-                `Tokens issued! txid: ${result.txid.slice(0, 16)}...`,
-                "success",
-              );
-              await refreshWallet(render);
-            } catch (error) {
-              showToast(`Issuance failed: ${error}`, "error");
-            }
-          });
-        } else {
-          // Sell = Cancel pairs (burn equal YES+NO -> reclaim collateral)
-          const position = getPositionContracts(market);
-          const maxPairs = Math.min(position.yes, position.no);
-          if (maxPairs <= 0) {
-            showToast(
-              "You need both YES and NO tokens to cancel pairs. Use Advanced Actions for single-side operations.",
-              "error",
-            );
-            return;
-          }
-          const actualPairs = Math.min(pairs, maxPairs);
-          const refund = actualPairs * 2 * market.cptSats;
-          const confirmed = window.confirm(
-            `Cancel ${actualPairs} token pair(s) for "${market.question.slice(0, 50)}"?\n\nBurns ${actualPairs} YES + ${actualPairs} NO tokens.\nCollateral refund: ${formatSats(refund)}\n\nProceed?`,
-          );
-          if (!confirmed) return;
+        state.limitSellGuardChecking = true;
+        render();
 
-          showToast(`Cancelling ${actualPairs} pair(s)...`, "info");
-          runAsyncAction(async () => {
+        runAsyncAction(
+          async () => {
             try {
-              const result = await tauriApi.cancelTokens(
-                marketToContractParams(market),
-                actualPairs,
+              const sellQuote = await tauriApi.previewMarketTrade(quoteRequest);
+              if (!isLimitSellGuardSnapshotCurrent(market, guardSnapshot)) {
+                return;
+              }
+              const warning = getLimitSellWarningFromSellQuote(
+                preview.limitPriceSats,
+                sellQuote,
               );
+              if (warning && !state.limitSellOverrideAccepted) {
+                state.limitSellWarning = warning;
+                state.limitSellWarningInfo = "";
+                showToast(
+                  `Limit price is ${warning.discountSats} sats below executable reference (${warning.referencePriceSats.toFixed(2)} sats). Acknowledge override to continue.`,
+                  "error",
+                );
+                render();
+                return;
+              }
+              state.limitSellWarning = null;
+              state.limitSellWarningInfo = "";
+            } catch {
+              if (!isLimitSellGuardSnapshotCurrent(market, guardSnapshot)) {
+                return;
+              }
+              state.limitSellWarning = null;
+              state.limitSellWarningInfo =
+                "Could not fetch a live executable sell reference quote. You can still place this limit sell.";
               showToast(
-                `Pairs cancelled! txid: ${result.txid.slice(0, 16)}... (${result.is_full_cancellation ? "full" : "partial"})`,
-                "success",
+                "Executable reference quote unavailable. Continuing without limit-sell warning check.",
+                "info",
               );
-              await refreshWallet(render);
-            } catch (error) {
-              showToast(`Cancellation failed: ${error}`, "error");
+              render();
             }
-          });
-        }
+            if (!isLimitSellGuardSnapshotCurrent(market, guardSnapshot)) {
+              return;
+            }
+            submitLimitOrder(market, "close", render);
+          },
+          {
+            onFinally: () => {
+              if (!isLimitSellGuardSnapshotCurrent(market, guardSnapshot)) {
+                return;
+              }
+              state.limitSellGuardChecking = false;
+              render();
+            },
+          },
+        );
         return;
       }
 
