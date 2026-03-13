@@ -11,7 +11,6 @@ import {
   formatBlockHeight,
   formatProbabilityWithPercent,
   formatSats,
-  formatSettlementDateTime,
 } from "../utils/format.ts";
 import { escapeAttr, escapeHtml } from "../utils/html.ts";
 import {
@@ -32,6 +31,18 @@ import {
   stateLabel,
 } from "../utils/market.ts";
 import { chartSkeleton } from "./market-chart.ts";
+
+function formatSettlementCountdown(targetDate: Date): string {
+  const totalMinutes = Math.floor((targetDate.getTime() - Date.now()) / 60000);
+  if (totalMinutes <= 0) return "Expired";
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 export function renderPathCard(
   label: string,
   enabled: boolean,
@@ -53,10 +64,19 @@ export function renderPathCard(
 }
 
 export function renderActionTicket(market: Market): string {
+  const yesMarketPriceAvailable = market.yesPrice != null;
+  const noMarketPriceAvailable = market.yesPrice != null;
+  const selectedSideMarketPriceAvailable =
+    state.selectedSide === "yes"
+      ? yesMarketPriceAvailable
+      : noMarketPriceAvailable;
   const paths = getPathAvailability(market);
   const expired = isExpired(market);
-  const preview = getTradePreview(market);
-  const executionPriceSats = Math.round(preview.executionPriceSats);
+  const preview = selectedSideMarketPriceAvailable
+    ? getTradePreview(market)
+    : null;
+  const executionPriceSats =
+    preview === null ? null : Math.round(preview.executionPriceSats);
   const positions = getPositionContracts(market);
   const isBuy = state.tradeIntent === "open";
   const isSellLimit = !isBuy && state.orderType === "limit";
@@ -70,15 +90,17 @@ export function renderActionTicket(market: Market): string {
   const availableSellLots = Math.max(0, Math.floor(selectedPositionContracts));
   const hasSellBalance = availableSellLots >= 1;
   const fillabilityLabel =
-    state.orderType === "limit"
-      ? preview.fill.filledContracts <= 0
-        ? "Resting only (not fillable now)"
+    preview === null
+      ? "No live price reference available."
+      : state.orderType === "limit"
+        ? preview.fill.filledContracts <= 0
+          ? "Resting only (not fillable now)"
+          : preview.fill.isPartial
+            ? "Partially fillable now"
+            : "Fully fillable now"
         : preview.fill.isPartial
-          ? "Partially fillable now"
-          : "Fully fillable now"
-      : preview.fill.isPartial
-        ? "May partially fill"
-        : "Expected to fill now";
+          ? "May partially fill"
+          : "Expected to fill now";
   const sideOrders = getLimitOrdersForSide(market, state.selectedSide);
   const limitSellWarning = isSellLimit ? state.limitSellWarning : null;
   const limitSellWarningInfo = isSellLimit ? state.limitSellWarningInfo : "";
@@ -91,19 +113,25 @@ export function renderActionTicket(market: Market): string {
       ? market.cptSats
       : 0;
   const redeemCollateral = state.tokensInput * redeemRate;
-  const yesDisplaySats = clampContractPriceSats(
-    Math.round((market.yesPrice ?? 0.5) * SATS_PER_FULL_CONTRACT),
-  );
-  const noDisplaySats = SATS_PER_FULL_CONTRACT - yesDisplaySats;
-  const estimatedExecutionFeeSats = Math.round(
-    preview.notionalSats * EXECUTION_FEE_RATE,
-  );
-  const estimatedGrossPayoutSats = Math.floor(
-    preview.requestedContracts * SATS_PER_FULL_CONTRACT,
-  );
+  const yesDisplaySats = yesMarketPriceAvailable
+    ? clampContractPriceSats(
+        Math.round((market.yesPrice ?? 0.5) * SATS_PER_FULL_CONTRACT),
+      )
+    : null;
+  const noDisplaySats = noMarketPriceAvailable
+    ? SATS_PER_FULL_CONTRACT - (yesDisplaySats ?? 0)
+    : null;
+  const estimatedExecutionFeeSats =
+    preview === null
+      ? 0
+      : Math.round(preview.notionalSats * EXECUTION_FEE_RATE);
+  const estimatedGrossPayoutSats =
+    preview === null
+      ? 0
+      : Math.floor(preview.requestedContracts * SATS_PER_FULL_CONTRACT);
   const estimatedProfitSats = Math.max(
     0,
-    estimatedGrossPayoutSats - preview.notionalSats,
+    estimatedGrossPayoutSats - (preview?.notionalSats ?? 0),
   );
   const estimatedWinFeeSats =
     state.tradeIntent === "open"
@@ -115,7 +143,7 @@ export function renderActionTicket(market: Market): string {
     estimatedGrossPayoutSats - estimatedFeesSats,
   );
   return `
-    <aside class="rounded-[21px] border border-slate-800 bg-slate-900/80 p-[21px]">
+    <aside class="relative rounded-[21px] border border-slate-800 bg-slate-900/80 p-[21px]">
       <p class="panel-subtitle">Contract Action Ticket</p>
       <p class="mb-3 mt-1 text-sm text-slate-300">Simple by default. Market trades use a quote confirmation. Advanced covenant actions are below.</p>
       <div class="mb-3 flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
@@ -126,21 +154,29 @@ export function renderActionTicket(market: Market): string {
         ${
           !isBuy
             ? `<div class="flex items-center gap-2 rounded-lg border border-slate-700 p-1">
-          <button data-order-type="market" class="rounded px-3 py-1 text-sm ${state.orderType === "market" ? "bg-slate-200 text-slate-950" : "text-slate-300"}">Market</button>
+          ${
+            selectedSideMarketPriceAvailable
+              ? `<button data-order-type="market" class="rounded px-3 py-1 text-sm ${state.orderType === "market" ? "bg-slate-200 text-slate-950" : "text-slate-300"}">Market</button>`
+              : ""
+          }
           <button data-order-type="limit" class="rounded px-3 py-1 text-sm ${state.orderType === "limit" ? "bg-slate-200 text-slate-950" : "text-slate-300"}">Limit</button>
         </div>`
             : ""
         }
       </div>
       <div class="mb-3 grid grid-cols-2 gap-2">
-        <button data-side="yes" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "yes" ? (isBuy ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">Yes ${yesDisplaySats} sats</button>
-        <button data-side="no" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "no" ? (isBuy ? "border-rose-400 bg-rose-400/20 text-rose-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">No ${noDisplaySats} sats</button>
+        <button data-side="yes" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "yes" ? (isBuy ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">Yes ${yesDisplaySats === null ? "Price unavailable" : `${yesDisplaySats} sats`}</button>
+        <button data-side="no" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "no" ? (isBuy ? "border-rose-400 bg-rose-400/20 text-rose-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">No ${noDisplaySats === null ? "Price unavailable" : `${noDisplaySats} sats`}</button>
       </div>
       ${
         isBuy
-          ? `<label for="trade-size-sats" class="mb-1 block text-xs text-slate-400">Spend amount (sats)</label>
+          ? `${
+              selectedSideMarketPriceAvailable
+                ? `<label for="trade-size-sats" class="mb-1 block text-xs text-slate-400">Spend amount (sats)</label>
       <input id="trade-size-sats" type="text" inputmode="numeric" value="${escapeAttr(state.tradeSizeSatsDraft)}" class="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm" />
-      <button data-action="request-trade-quote" class="w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950">Review Buy Quote</button>
+      <button data-action="request-trade-quote" class="w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950">Review Buy Quote</button>`
+                : `<p class="mb-3 rounded border border-amber-700/60 bg-amber-950/20 px-2 py-1 text-xs text-amber-200">Market buy unavailable for ${state.selectedSide.toUpperCase()} because price is unavailable.</p>`
+            }
       <button data-action="toggle-buy-limit-composer" class="mt-2 w-full rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300">${state.buyLimitComposerOpen ? "Hide Limit Buy" : "Place Limit Buy"}</button>
       ${
         state.buyLimitComposerOpen
@@ -201,10 +237,15 @@ export function renderActionTicket(market: Market): string {
           : ""
       }
       <button data-action="submit-limit-sell" class="w-full rounded-lg bg-slate-200 px-4 py-2 font-semibold text-slate-950 ${hasSellInput && !state.limitSellGuardChecking ? "" : "opacity-60"}" ${hasSellInput && !state.limitSellGuardChecking ? "" : "disabled"}>${state.limitSellGuardChecking ? "Checking reference quote..." : "Place Limit Sell"}</button>`
-          : `<button data-action="request-trade-quote" class="w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950 ${hasSellInput ? "" : "opacity-60"}" ${hasSellInput ? "" : "disabled"}>Review Sell Quote</button>`
+          : selectedSideMarketPriceAvailable
+            ? `<button data-action="request-trade-quote" class="w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950 ${hasSellInput ? "" : "opacity-60"}" ${hasSellInput ? "" : "disabled"}>Review Sell Quote</button>`
+            : `<p class="rounded border border-amber-700/60 bg-amber-950/20 px-2 py-1 text-xs text-amber-200">Market sell unavailable for ${state.selectedSide.toUpperCase()} because price is unavailable.</p>`
       }`
       }
-      <div class="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
+      ${
+        preview === null
+          ? ""
+          : `<div class="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
         ${
           isBuy
             ? `<div class="flex items-center justify-between py-1"><span>You pay</span><span>${formatSats(preview.notionalSats)}</span></div>
@@ -214,7 +255,8 @@ export function renderActionTicket(market: Market): string {
         }
         <div class="flex items-center justify-between py-1"><span>Estimated fees</span><span>${formatSats(estimatedFeesSats)}</span></div>
         <div class="mt-1 flex items-center justify-between py-1 text-xs text-slate-500"><span>Price</span><span>${executionPriceSats} sats · Yes + No = ${SATS_PER_FULL_CONTRACT}</span></div>
-      </div>
+      </div>`
+      }
       <div class="mt-3 flex items-center justify-between text-xs text-slate-400">
         <span>You hold: YES ${positions.yes.toFixed(2)} · NO ${positions.no.toFixed(2)}</span>
         <div class="flex items-center gap-2 rounded-lg border border-slate-700 p-1">
@@ -227,16 +269,21 @@ export function renderActionTicket(market: Market): string {
       </div>
       ${
         !isBuy &&
+        preview !== null &&
         preview.requestedContracts > selectedPositionContracts + 0.0001
           ? `<p class="mt-2 text-xs text-rose-300">Requested size exceeds your current ${state.selectedSide.toUpperCase()} position.</p>`
           : ""
       }
-      <div class="mt-3 flex items-center gap-2">
+      ${
+        preview === null
+          ? ""
+          : `<div class="mt-3 flex items-center gap-2">
         <button data-action="toggle-orderbook" class="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300">${state.showOrderbook ? "Hide depth" : "Show depth"}</button>
         <button data-action="toggle-fee-details" class="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300">${state.showFeeDetails ? "Hide fee details" : "Fee details"}</button>
-      </div>
+      </div>`
+      }
       ${
-        state.showOrderbook
+        preview !== null && state.showOrderbook
           ? `<div class="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-xs">
         <p class="mb-2 font-semibold text-slate-200">${isBuy ? "Asks (buy depth)" : "Bids (sell depth)"} · ${state.selectedSide.toUpperCase()}</p>
         <div class="space-y-1">
@@ -256,7 +303,7 @@ export function renderActionTicket(market: Market): string {
           : ""
       }
       ${
-        state.showFeeDetails
+        preview !== null && state.showFeeDetails
           ? `<div class="mt-3 rounded border border-slate-800 bg-slate-900/40 p-2 text-xs text-slate-400">
         <p>Execution fee: 1% of matched notional.</p>
         <p>Winning PnL fee: 2% of positive payout minus entry cost (buy only).</p>
@@ -499,6 +546,9 @@ export function renderDetail(): string {
   const paths = getPathAvailability(market);
   const expired = isExpired(market);
   const estimatedSettlementDate = getEstimatedSettlementDate(market);
+  const settlementCountdown = formatSettlementCountdown(
+    estimatedSettlementDate,
+  );
   const collateralPoolSats = market.collateralUtxos.reduce(
     (sum, utxo) => sum + utxo.amountSats,
     0,
@@ -526,13 +576,15 @@ export function renderDetail(): string {
               <button data-action="open-nostr-event" data-market-id="${escapeAttr(market.id)}" data-nevent="${escapeAttr(market.nevent)}" class="text-xs text-slate-400 transition hover:text-slate-200">Nostr Event</button>
               ${market.creationTxid ? `<button data-action="open-explorer-tx" data-txid="${escapeAttr(market.creationTxid)}" class="text-xs text-slate-400 transition hover:text-slate-200">Creation TX</button>` : ""}
             </div>
-            <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${escapeHtml(market.question)}</h1>
+            <div class="mb-2 flex flex-wrap items-center gap-2">
+              <h1 class="phi-title text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${escapeHtml(market.question)}</h1>
+              <span class="rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-xs text-slate-300">Settlement in ${escapeHtml(settlementCountdown)}</span>
+            </div>
             <p class="mb-3 text-base text-slate-400">${escapeHtml(market.description)}</p>
 
-            <div class="mb-4 grid gap-3 sm:grid-cols-3">
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Yes price<br/><span class="text-lg font-medium text-emerald-400">${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span></div>
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">No price<br/><span class="text-lg font-medium text-rose-400">${noPrice != null ? formatProbabilityWithPercent(noPrice) : "\u2014"}</span></div>
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Settlement deadline<br/><span class="text-slate-100">Est. by ${formatSettlementDateTime(estimatedSettlementDate)}</span></div>
+            <div class="mb-4 grid gap-3 sm:grid-cols-2">
+              <div class="rounded-xl border border-emerald-900 bg-emerald-950/45 p-3 text-sm text-slate-200">YES<br/><span class="text-lg font-medium ${market.yesPrice != null ? "text-emerald-300" : "text-slate-300"}">${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "Price unavailable"}</span></div>
+              <div class="rounded-xl border border-rose-900 bg-rose-950/45 p-3 text-sm text-slate-200">NO<br/><span class="text-lg font-medium ${noPrice != null ? "text-rose-300" : "text-slate-300"}">${noPrice != null ? formatProbabilityWithPercent(noPrice) : "Price unavailable"}</span></div>
             </div>
 
             ${(() => {

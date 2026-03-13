@@ -116,6 +116,15 @@ function scheduleChartHoverRender(): void {
   });
 }
 
+let detailCountdownTimeout: number | null = null;
+
+function stopDetailCountdown(): void {
+  if (detailCountdownTimeout !== null) {
+    window.clearTimeout(detailCountdownTimeout);
+    detailCountdownTimeout = null;
+  }
+}
+
 function stopTradeQuoteCountdown(): void {
   if (tradeQuoteCountdownInterval !== null) {
     window.clearInterval(tradeQuoteCountdownInterval);
@@ -141,6 +150,21 @@ function syncTradeQuoteCountdown(): void {
   }, 1000);
 }
 
+function syncDetailCountdown(): void {
+  const shouldTick = state.onboardingStep === null && state.view === "detail";
+  if (!shouldTick) {
+    stopDetailCountdown();
+    return;
+  }
+  if (detailCountdownTimeout !== null) return;
+  const delay = 60_000 - (Date.now() % 60_000) || 60_000;
+  detailCountdownTimeout = window.setTimeout(() => {
+    detailCountdownTimeout = null;
+    if (state.onboardingStep !== null || state.view !== "detail") return;
+    render();
+  }, delay);
+}
+
 let _savedScrollY = hmrData.savedScrollY ?? 0;
 
 function render(): void {
@@ -148,6 +172,7 @@ function render(): void {
     app.innerHTML = `<div class="min-h-screen text-slate-100 flex items-center justify-center">${renderOnboarding()}</div>`;
     scheduleChartAspectSync();
     syncTradeQuoteCountdown();
+    syncDetailCountdown();
     return;
   }
   const html = `
@@ -164,6 +189,7 @@ function render(): void {
   app.style.minHeight = "";
   scheduleChartAspectSync();
   syncTradeQuoteCountdown();
+  syncDetailCountdown();
 }
 
 function updateEstClockLabels(): void {
