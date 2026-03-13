@@ -14,14 +14,12 @@ use nostr_sdk::prelude::*;
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
-use crate::amm_pool::math::{PoolReserves, implied_probability_bps};
 use crate::announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement, ContractMetadata};
 use crate::discovery::config::DiscoveryConfig;
 use crate::discovery::events::DiscoveryEvent;
 use crate::discovery::market::DiscoveredMarket;
-use crate::discovery::pool::{DiscoveredPool, PoolAnnouncement};
 use crate::discovery::service::{
-    DiscoveryService, NoopStore, ReconciliationStats, persist_market_to_store,
+    DiscoveryService, NoopStore, persist_canonical_lmsr_state_to_store, persist_market_to_store,
 };
 use crate::discovery::store_trait::DiscoveryStore;
 use crate::discovery::{
@@ -36,29 +34,9 @@ use crate::prediction_market::params::{MarketId, PredictionMarketParams};
 use crate::prediction_market::state::MarketState;
 use crate::sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, DeadcatSdk, FillOrderResult,
-    IssuanceResult, LimitOrderRecoveryConfig, RecoveredOwnOrder, RedemptionResult,
-    ResolutionResult,
+    IssuanceResult, RedemptionResult, ResolutionResult,
 };
 use crate::trade::types::{TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide};
-
-// ── Market price types ───────────────────────────────────────────────────────
-
-/// Current market price derived from AMM pool reserves.
-#[derive(Debug, Clone)]
-pub struct MarketPrice {
-    pub yes_bps: u16,
-    pub no_bps: u16,
-    pub reserves: PoolReserves,
-}
-
-/// A single historical price observation.
-#[derive(Debug, Clone)]
-pub struct PricePoint {
-    pub block_height: Option<i32>,
-    pub yes_bps: u16,
-    pub no_bps: u16,
-    pub reserves: PoolReserves,
-}
 
 // ── Wallet snapshot ────────────────────────────────────────────────────────
 
@@ -98,8 +76,9 @@ impl DeadcatNode<NoopStore> {
     pub fn new(
         keys: Keys,
         network: Network,
-        config: DiscoveryConfig,
+        mut config: DiscoveryConfig,
     ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
+        config.network_tag = network.discovery_tag().to_string();
         let (discovery, rx) = DiscoveryService::new(keys.clone(), config);
         let (snapshot_tx, snapshot_rx) = watch::channel(None);
         (
@@ -123,8 +102,9 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         keys: Keys,
         network: Network,
         store: Arc<Mutex<S>>,
-        config: DiscoveryConfig,
+        mut config: DiscoveryConfig,
     ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
+        config.network_tag = network.discovery_tag().to_string();
         let (discovery, rx) = DiscoveryService::with_store(keys.clone(), store.clone(), config);
         let (snapshot_tx, snapshot_rx) = watch::channel(None);
         (
@@ -217,121 +197,6 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     fn persist_market(&self, market: &DiscoveredMarket) {
         persist_market_to_store(&self.store, market);
-    }
-
-    fn persist_pool(&self, pool: &DiscoveredPool) {
-        use crate::discovery::service::persist_pool_to_store;
-        persist_pool_to_store(&self.store, pool);
-    }
-
-    /// Persist updated pool state (issued_lp + covenant_spk) to the store.
-    /// Reserves are tracked exclusively in pool_state_snapshots.
-    fn persist_pool_state(&self, params: &crate::amm_pool::params::AmmPoolParams, issued_lp: u64) {
-        if let Some(ref store) = self.store
-            && let Ok(mut guard) = store.lock()
-        {
-            let pool_id = crate::amm_pool::params::PoolId::from_params(params);
-            if let Err(e) = guard.update_pool_state(&pool_id, params, issued_lp) {
-                log::warn!("failed to persist pool state: {e}");
-            }
-        }
-    }
-
-    // ── Market price queries (synchronous, store reads only) ──────────
-
-    /// Current implied-probability price for a market, derived from its pool.
-    ///
-    /// Returns `Ok(None)` when no pool or no snapshot exists for the market.
-    pub fn market_price(&self, market_id: &MarketId) -> Result<Option<MarketPrice>, NodeError> {
-        let store = match self.store {
-            Some(ref s) => s,
-            None => return Ok(None),
-        };
-        let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
-        let pool_id = match guard.get_pool_id_for_market(market_id) {
-            Ok(Some(id)) => id,
-            Ok(None) => return Ok(None),
-            Err(e) => return Err(NodeError::Discovery(e)),
-        };
-        let snap = match guard.get_latest_pool_snapshot(&pool_id) {
-            Ok(Some(s)) => s,
-            Ok(None) => return Ok(None),
-            Err(e) => return Err(NodeError::Discovery(e)),
-        };
-        match implied_probability_bps(&snap.reserves) {
-            Some((yes_bps, no_bps)) => Ok(Some(MarketPrice {
-                yes_bps,
-                no_bps,
-                reserves: snap.reserves,
-            })),
-            None => Ok(None),
-        }
-    }
-
-    /// Full price history for a market's pool (one entry per chain-walk snapshot).
-    pub fn market_price_history(&self, market_id: &MarketId) -> Result<Vec<PricePoint>, NodeError> {
-        let store = match self.store {
-            Some(ref s) => s,
-            None => return Ok(vec![]),
-        };
-        let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
-        let pool_id = match guard.get_pool_id_for_market(market_id) {
-            Ok(Some(id)) => id,
-            Ok(None) => return Ok(vec![]),
-            Err(e) => return Err(NodeError::Discovery(e)),
-        };
-        let snaps = guard
-            .get_pool_snapshot_history(&pool_id)
-            .map_err(NodeError::Discovery)?;
-        Ok(snaps
-            .into_iter()
-            .filter_map(|s| {
-                let (yes_bps, no_bps) = implied_probability_bps(&s.reserves)?;
-                Some(PricePoint {
-                    block_height: s.block_height,
-                    yes_bps,
-                    no_bps,
-                    reserves: s.reserves,
-                })
-            })
-            .collect())
-    }
-
-    /// Publish an updated NIP-33 replaceable pool announcement after LP state changes.
-    async fn update_pool_announcement(
-        &self,
-        pool_params: &crate::amm_pool::params::AmmPoolParams,
-        new_issued_lp: u64,
-        r_yes: u64,
-        r_no: u64,
-        r_lbtc: u64,
-        market_id: &str,
-    ) {
-        let cmr_hex = match crate::amm_pool::contract::CompiledAmmPool::new(*pool_params) {
-            Ok(c) => hex::encode(c.cmr().as_ref()),
-            Err(_) => return,
-        };
-
-        let announcement = PoolAnnouncement {
-            version: 1,
-            params: *pool_params,
-            market_id: market_id.to_string(),
-            issued_lp: new_issued_lp,
-            covenant_cmr: cmr_hex,
-            // Outpoints intentionally empty — see design doc §D5.
-            // Consumers must chain-scan the covenant address to find current UTXOs.
-            outpoints: Vec::new(),
-            reserves: crate::amm_pool::math::PoolReserves {
-                r_yes,
-                r_no,
-                r_lbtc,
-            },
-            creation_txid: None,
-        };
-
-        if let Err(e) = self.discovery.announce_pool(&announcement).await {
-            log::warn!("failed to update pool Nostr announcement: {e}");
-        }
     }
 
     // ── Combined on-chain + Nostr operations ────────────────────────────
@@ -462,6 +327,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         direction: OrderDirection,
         min_fill_lots: u64,
         min_remainder_lots: u64,
+        order_index: u32,
         fee_amount: u64,
         market_id: String,
         direction_label: String,
@@ -477,20 +343,15 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                     direction,
                     min_fill_lots,
                     min_remainder_lots,
+                    order_index,
                     fee_amount,
                 )
             })
             .await?;
 
         // 2. Nostr announcement
-        let order_uid = crate::discovery::derive_order_uid(
-            &market_id,
-            &hex::encode(result.maker_base_pubkey),
-            &hex::encode(result.order_nonce),
-        );
         let announcement = OrderAnnouncement {
             version: 1,
-            order_uid,
             params: result.order_params,
             market_id,
             maker_base_pubkey: hex::encode(result.maker_base_pubkey),
@@ -514,25 +375,11 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         &self,
         params: MakerOrderParams,
         maker_pubkey: [u8; 32],
-        order_nonce: [u8; 32],
+        order_index: u32,
         fee_amount: u64,
     ) -> Result<CancelOrderResult, NodeError> {
         self.with_sdk(move |sdk| {
-            sdk.cancel_limit_order(&params, maker_pubkey, order_nonce, fee_amount)
-        })
-        .await
-    }
-
-    /// Recover own limit orders from deterministic wallet+chain scan (v2).
-    pub async fn recover_own_limit_orders(
-        &self,
-        candidate_base_assets: Vec<[u8; 32]>,
-    ) -> Result<Vec<RecoveredOwnOrder>, NodeError> {
-        self.with_sdk(move |sdk| {
-            sdk.recover_own_limit_orders(
-                &candidate_base_assets,
-                LimitOrderRecoveryConfig::default(),
-            )
+            sdk.cancel_limit_order(&params, maker_pubkey, order_index, fee_amount)
         })
         .await
     }
@@ -615,212 +462,6 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             .await
     }
 
-    // ── AMM Pool ──────────────────────────────────────────────────────
-
-    /// Create a new AMM pool: on-chain TX + Nostr announcement + store persistence.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create_pool(
-        &self,
-        pool_params: crate::amm_pool::params::AmmPoolParams,
-        initial_r_yes: u64,
-        initial_r_no: u64,
-        initial_r_lbtc: u64,
-        initial_issued_lp: u64,
-        fee_amount: u64,
-        market_id: String,
-        lp_creation_txid: Txid,
-    ) -> Result<(DiscoveredPool, Txid), NodeError> {
-        // 1. On-chain
-        let result = self
-            .with_sdk(move |sdk| {
-                sdk.create_amm_pool(
-                    &pool_params,
-                    initial_r_yes,
-                    initial_r_no,
-                    initial_r_lbtc,
-                    initial_issued_lp,
-                    fee_amount,
-                    &lp_creation_txid,
-                )
-            })
-            .await?;
-
-        let txid = result.txid;
-
-        // 2. Build and publish Nostr announcement
-        let compiled = crate::amm_pool::contract::CompiledAmmPool::new(result.pool_params)
-            .map_err(NodeError::Sdk)?;
-        let creation_txid_hex = txid.to_string();
-        let announcement = PoolAnnouncement {
-            version: 1,
-            params: result.pool_params,
-            market_id: market_id.clone(),
-            issued_lp: result.issued_lp,
-            covenant_cmr: hex::encode(compiled.cmr().as_ref()),
-            outpoints: Vec::new(), // Outpoints not yet confirmed
-            reserves: crate::amm_pool::math::PoolReserves {
-                r_yes: initial_r_yes,
-                r_no: initial_r_no,
-                r_lbtc: initial_r_lbtc,
-            },
-            creation_txid: Some(creation_txid_hex.clone()),
-        };
-
-        let event_id = self
-            .discovery
-            .announce_pool(&announcement)
-            .await
-            .map_err(NodeError::Discovery)?;
-
-        // 3. Build DiscoveredPool for return + store persistence
-        let pool_id = crate::amm_pool::params::PoolId::from_params(&result.pool_params);
-        let pool = DiscoveredPool {
-            id: event_id.to_hex(),
-            market_id,
-            pool_id: pool_id.to_hex(),
-            yes_asset_id: bytes_to_hex(&result.pool_params.yes_asset_id),
-            no_asset_id: bytes_to_hex(&result.pool_params.no_asset_id),
-            lbtc_asset_id: bytes_to_hex(&result.pool_params.lbtc_asset_id),
-            lp_asset_id: bytes_to_hex(&result.pool_params.lp_asset_id),
-            lp_reissuance_token_id: bytes_to_hex(&result.pool_params.lp_reissuance_token_id),
-            fee_bps: result.pool_params.fee_bps,
-            cosigner_pubkey: bytes_to_hex(&result.pool_params.cosigner_pubkey),
-            issued_lp: result.issued_lp,
-            covenant_cmr: announcement.covenant_cmr,
-            outpoints: Vec::new(),
-            reserves: announcement.reserves,
-            creator_pubkey: self.keys.public_key().to_hex(),
-            created_at: nostr_sdk::Timestamp::now().as_u64(),
-            creation_txid: Some(creation_txid_hex),
-            nostr_event_json: None,
-        };
-
-        // 4. Persist to store
-        self.persist_pool(&pool);
-
-        Ok((pool, txid))
-    }
-
-    /// Execute a swap against an AMM pool: on-chain TX + update Nostr + persist.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn pool_swap(
-        &self,
-        pool_params: crate::amm_pool::params::AmmPoolParams,
-        issued_lp: u64,
-        swap_pair: crate::amm_pool::math::SwapPair,
-        delta_in: u64,
-        direction: crate::amm_pool::math::SwapDirection,
-        fee_amount: u64,
-        market_id: String,
-    ) -> Result<crate::sdk::PoolSwapResult, NodeError> {
-        let result = self
-            .with_sdk(move |sdk| {
-                sdk.pool_swap(
-                    &pool_params,
-                    issued_lp,
-                    swap_pair,
-                    delta_in,
-                    direction,
-                    fee_amount,
-                )
-            })
-            .await?;
-
-        // Use SDK-computed reserves (derived from on-chain state) for Nostr + store
-        let nr = &result.new_reserves;
-
-        // Swap doesn't change issued_lp, but reserves change — update Nostr
-        self.update_pool_announcement(
-            &pool_params,
-            issued_lp,
-            nr.r_yes,
-            nr.r_no,
-            nr.r_lbtc,
-            &market_id,
-        )
-        .await;
-
-        self.persist_pool_state(&pool_params, issued_lp);
-
-        Ok(result)
-    }
-
-    /// Deposit liquidity into an AMM pool: on-chain TX + update Nostr + persist.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn pool_deposit(
-        &self,
-        pool_params: crate::amm_pool::params::AmmPoolParams,
-        issued_lp: u64,
-        new_r_yes: u64,
-        new_r_no: u64,
-        new_r_lbtc: u64,
-        lp_mint_amount: u64,
-        fee_amount: u64,
-        market_id: String,
-        lp_creation_txid: Txid,
-    ) -> Result<crate::sdk::PoolLpResult, NodeError> {
-        let result = self
-            .with_sdk(move |sdk| {
-                sdk.pool_lp_deposit(
-                    &pool_params,
-                    issued_lp,
-                    new_r_yes,
-                    new_r_no,
-                    new_r_lbtc,
-                    lp_mint_amount,
-                    fee_amount,
-                    &lp_creation_txid,
-                )
-            })
-            .await?;
-
-        // Use SDK-computed reserves for Nostr + store
-        let nr = &result.new_reserves;
-        self.update_pool_announcement(
-            &pool_params,
-            result.new_issued_lp,
-            nr.r_yes,
-            nr.r_no,
-            nr.r_lbtc,
-            &market_id,
-        )
-        .await;
-
-        self.persist_pool_state(&pool_params, result.new_issued_lp);
-
-        Ok(result)
-    }
-
-    /// Withdraw liquidity from an AMM pool: on-chain TX + update Nostr + persist.
-    pub async fn pool_withdraw(
-        &self,
-        pool_params: crate::amm_pool::params::AmmPoolParams,
-        issued_lp: u64,
-        lp_burn: u64,
-        fee_amount: u64,
-        market_id: String,
-    ) -> Result<crate::sdk::PoolLpResult, NodeError> {
-        let result = self
-            .with_sdk(move |sdk| sdk.pool_lp_withdraw(&pool_params, issued_lp, lp_burn, fee_amount))
-            .await?;
-
-        // Use SDK-computed reserves (derived from on-chain state)
-        let nr = &result.new_reserves;
-        self.update_pool_announcement(
-            &pool_params,
-            result.new_issued_lp,
-            nr.r_yes,
-            nr.r_no,
-            nr.r_lbtc,
-            &market_id,
-        )
-        .await;
-
-        self.persist_pool_state(&pool_params, result.new_issued_lp);
-
-        Ok(result)
-    }
-
     // ── Trade routing ────────────────────────────────────────────────────
 
     /// Fetch liquidity from Nostr, scan the chain, and compute a trade quote.
@@ -837,14 +478,13 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         direction: TradeDirection,
         amount: TradeAmount,
     ) -> Result<TradeQuote, NodeError> {
-        use crate::amm_pool::math::PoolReserves;
+        use crate::lmsr_pool::table::LmsrTableManifest;
         use crate::maker_order::params::OrderDirection as OD;
         use crate::pset::UnblindedUtxo;
-        use crate::trade::convert::{parse_discovered_order, parse_discovered_pool};
+        use crate::trade::convert::{parse_discovered_lmsr_pool, parse_discovered_order};
         use crate::trade::router::{
-            ScannedOrder, ScannedPool, build_execution_plan, plan_to_route_legs,
+            ScannedLmsrPool, ScannedOrder, build_execution_plan, plan_to_route_legs,
         };
-        use crate::trade::types::PoolUtxos;
 
         // Only ExactInput supported for now
         let total_input = match amount {
@@ -858,40 +498,49 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         let pools = self.fetch_pools(Some(market_id)).await?;
         let orders = self.fetch_orders(Some(market_id)).await?;
 
-        // 2. Parse discovered data
-        let parsed_pool = pools
-            .first()
-            .map(parse_discovered_pool)
-            .transpose()
-            .map_err(NodeError::Sdk)?;
+        let mut pools_by_id = HashMap::new();
+        for pool in pools {
+            match pools_by_id.get_mut(&pool.lmsr_pool_id) {
+                None => {
+                    pools_by_id.insert(pool.lmsr_pool_id.clone(), pool);
+                }
+                Some(existing) => {
+                    let should_replace = pool.created_at > existing.created_at
+                        || (pool.created_at == existing.created_at && pool.id > existing.id);
+                    if should_replace {
+                        *existing = pool;
+                    }
+                }
+            }
+        }
+        let mut canonical_pools: Vec<_> = pools_by_id.into_values().collect();
+        canonical_pools.sort_by(|a, b| a.lmsr_pool_id.cmp(&b.lmsr_pool_id));
+        let network_tag = self.network.discovery_tag();
 
+        // 2. Parse discovered LMSR pool data (fail-closed on ambiguous selection).
+        let parsed_lmsr = match canonical_pools.len() {
+            0 => None,
+            1 => Some(
+                parse_discovered_lmsr_pool(&canonical_pools[0], network_tag)
+                    .map_err(NodeError::Sdk)?,
+            ),
+            _ => {
+                return Err(NodeError::Sdk(Error::TradeRouting(
+                "multiple distinct LMSR pools discovered for market; deterministic selection is required"
+                    .into(),
+            )));
+            }
+        };
+
+        // 3. Parse discovered order data
         let parsed_orders: Vec<_> = orders
             .iter()
             .filter_map(|o| parse_discovered_order(o).ok().map(|r| (r, o.clone())))
             .collect();
 
-        // 3. Chain scan + route (on blocking thread via SDK)
+        // 4. Chain scan + route (on blocking thread via SDK)
+        let store = self.store.clone();
         self.with_sdk(move |sdk| {
-            // Scan pool UTXOs
-            let scanned_pool = if let Some((pool_params, issued_lp, pool_id)) = parsed_pool {
-                let contract = crate::amm_pool::contract::CompiledAmmPool::new(pool_params)?;
-                let (yes, no, lbtc, rt) = sdk.scan_pool_utxos(&contract, issued_lp)?;
-                let reserves = PoolReserves {
-                    r_yes: yes.value,
-                    r_no: no.value,
-                    r_lbtc: lbtc.value,
-                };
-                Some(ScannedPool {
-                    params: pool_params,
-                    issued_lp,
-                    reserves,
-                    utxos: PoolUtxos { yes, no, lbtc, rt },
-                    pool_id,
-                })
-            } else {
-                None
-            };
-
             // Scan order UTXOs
             let mut scanned_orders = Vec::new();
             for ((params, maker_pubkey, nonce), discovered) in &parsed_orders {
@@ -927,9 +576,62 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                 }
             }
 
+            let scanned_lmsr_pool = if let Some(parsed) = parsed_lmsr.clone() {
+                let table_values = parsed.table_values.clone().ok_or_else(|| {
+                    Error::TradeRouting(
+                        "missing required LMSR quote data: lmsr_table_values".into(),
+                    )
+                })?;
+                let manifest = LmsrTableManifest::new(parsed.params.table_depth, table_values)?;
+                manifest.verify_matches_pool_params(&parsed.params)?;
+
+                let scan = sdk.scan_lmsr_pool_state(
+                    parsed.params,
+                    parsed.creation_txid,
+                    parsed.initial_reserve_outpoints,
+                    parsed.current_s_index,
+                    &parsed.witness_schema_version,
+                )?;
+                let creation_txid = hex::encode(parsed.creation_txid)
+                    .parse::<Txid>()
+                    .map_err(|e| Error::TradeRouting(format!("invalid creation_txid: {e}")))?;
+                let transition_txid = if scan.pool_utxos.yes.outpoint.txid == creation_txid {
+                    None
+                } else {
+                    Some(scan.pool_utxos.yes.outpoint.txid.to_string())
+                };
+                persist_canonical_lmsr_state_to_store(
+                    &store,
+                    &crate::discovery::LmsrPoolStateUpdateInput {
+                        pool_id: parsed.lmsr_pool_id.clone(),
+                        current_s_index: scan.current_s_index,
+                        reserve_outpoints: [
+                            scan.pool_utxos.yes.outpoint.to_string(),
+                            scan.pool_utxos.no.outpoint.to_string(),
+                            scan.pool_utxos.collateral.outpoint.to_string(),
+                        ],
+                        reserve_yes: scan.reserves.r_yes,
+                        reserve_no: scan.reserves.r_no,
+                        reserve_collateral: scan.reserves.r_lbtc,
+                        last_transition_txid: transition_txid,
+                    },
+                );
+
+                Some(ScannedLmsrPool {
+                    params: parsed.params,
+                    pool_id: parsed.lmsr_pool_id,
+                    current_s_index: scan.current_s_index,
+                    reserves: scan.reserves,
+                    pool_utxos: scan.pool_utxos,
+                    manifest,
+                })
+            } else {
+                None
+            };
+
             // Route
             let plan = build_execution_plan(
-                scanned_pool.as_ref(),
+                scanned_lmsr_pool.as_ref(),
                 &scanned_orders,
                 side,
                 direction,
@@ -939,8 +641,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                 &contract_params.no_token_asset,
             )?;
 
-            let pool_id = scanned_pool.as_ref().map(|p| p.pool_id.as_str());
-            let legs = plan_to_route_legs(&plan, pool_id, &scanned_orders);
+            let legs = plan_to_route_legs(&plan, &scanned_orders);
 
             let effective_price = if plan.total_taker_output > 0 {
                 plan.total_taker_input as f64 / plan.total_taker_output as f64
@@ -964,42 +665,16 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     /// Execute a previously quoted trade.
     ///
-    /// Broadcasts the transaction on-chain, then updates the Nostr pool
-    /// announcement and persists reserves if the trade used the AMM pool.
+    /// Broadcasts the transaction on-chain.
     pub async fn execute_trade(
         &self,
         quote: TradeQuote,
         fee_amount: u64,
-        market_id: &str,
+        _market_id: &str,
     ) -> Result<TradeResult, NodeError> {
-        // Extract pool info before moving the plan into the closure
-        let pool_leg_info = quote
-            .plan
-            .pool_leg
-            .as_ref()
-            .map(|leg| (leg.pool_params, leg.issued_lp, leg.new_reserves));
-
         let plan = quote.plan;
-        let result = self
-            .with_sdk(move |sdk| sdk.execute_trade_plan(&plan, fee_amount))
-            .await?;
-
-        // Update Nostr + persist if pool was used
-        if let Some((pool_params, issued_lp, new_reserves)) = pool_leg_info {
-            self.update_pool_announcement(
-                &pool_params,
-                issued_lp,
-                new_reserves.r_yes,
-                new_reserves.r_no,
-                new_reserves.r_lbtc,
-                market_id,
-            )
-            .await;
-
-            self.persist_pool_state(&pool_params, issued_lp);
-        }
-
-        Ok(result)
+        self.with_sdk(move |sdk| sdk.execute_trade_plan(&plan, fee_amount))
+            .await
     }
 
     // ── Discovery (delegated to DiscoveryService) ───────────────────────
@@ -1023,7 +698,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             .map_err(NodeError::Discovery)
     }
 
-    /// Fetch AMM pools from Nostr relays, optionally for a specific market.
+    /// Fetch pool announcements from Nostr relays, optionally for a specific market.
     pub async fn fetch_pools(
         &self,
         market_id: Option<&str>,
@@ -1034,7 +709,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             .map_err(NodeError::Discovery)
     }
 
-    /// Publish an AMM pool announcement to Nostr relays.
+    /// Publish a pool announcement to Nostr relays.
     pub async fn announce_pool(
         &self,
         announcement: &crate::discovery::pool::PoolAnnouncement,
@@ -1064,32 +739,6 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Get an additional broadcast receiver for discovery events.
     pub fn subscribe(&self) -> broadcast::Receiver<DiscoveryEvent> {
         self.discovery.subscribe()
-    }
-
-    /// Reconcile stored discovery events with Nostr relays.
-    ///
-    /// Re-sends all persisted Nostr events to connected relays to ensure
-    /// they remain available. Idempotent thanks to NIP-33 replaceable events.
-    pub async fn reconcile_discovery(&self) -> Result<ReconciliationStats, NodeError> {
-        self.discovery
-            .reconcile()
-            .await
-            .map_err(NodeError::Discovery)
-    }
-
-    /// Prepare data needed for reconciliation without performing network I/O.
-    ///
-    /// Returns a cloned Nostr client handle and all stored event JSON strings.
-    /// Callers can drop their borrow on the node before calling
-    /// [`send_reconciliation_events`](crate::send_reconciliation_events) with
-    /// the returned data, avoiding holding a lock across async I/O.
-    pub fn prepare_reconciliation(&self) -> Result<(nostr_sdk::Client, Vec<String>), NodeError> {
-        let client = self.discovery.client().clone();
-        let events = self
-            .discovery
-            .load_all_nostr_events()
-            .map_err(NodeError::Discovery)?;
-        Ok((client, events))
     }
 
     // ── Wallet queries (via spawn_blocking) ─────────────────────────────
@@ -1165,85 +814,6 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             .await
     }
 
-    // ── Pool Chain Walk ────────────────────────────────────────────────
-
-    /// Sync a pool's on-chain state history. Returns new snapshots since last sync.
-    ///
-    /// Reads pool params + creation_txid from store, checks for last snapshot (for
-    /// incremental sync), calls `walk_pool_chain`, persists new snapshots to store,
-    /// and updates the `amm_pools` current reserves.
-    pub async fn sync_pool_chain(
-        &self,
-        pool_id: &crate::amm_pool::params::PoolId,
-    ) -> Result<Vec<crate::amm_pool::chain_walk::PoolStateSnapshot>, NodeError> {
-        use crate::amm_pool::chain_walk::walk_pool_chain;
-        use simplicityhl::elements::hashes::Hash;
-
-        // Read pool info from store via trait methods
-        let store = self
-            .store
-            .as_ref()
-            .ok_or_else(|| NodeError::Discovery("no store configured".into()))?;
-
-        let (params, creation_txid_bytes, resume_from) = {
-            let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
-            let pool_info = guard
-                .get_pool_info(pool_id)
-                .map_err(|e| NodeError::Discovery(format!("store error: {e}")))?
-                .ok_or_else(|| NodeError::Discovery("pool not found in store".into()))?;
-
-            let creation_txid = pool_info
-                .creation_txid
-                .ok_or_else(|| NodeError::Discovery("pool has no creation_txid".into()))?;
-
-            // Check for last snapshot for incremental sync
-            let resume: Option<([u8; 32], u64)> = guard
-                .get_latest_pool_snapshot_resume(&pool_id.0)
-                .map_err(|e| NodeError::Discovery(format!("store error: {e}")))?;
-
-            (pool_info.params, creation_txid, resume)
-        };
-
-        let creation_txid = Txid::from_byte_array(creation_txid_bytes);
-        let resume = resume_from.map(|(txid_bytes, lp)| (Txid::from_byte_array(txid_bytes), lp));
-        let pool_id_owned = *pool_id;
-
-        // Run chain walk on blocking thread
-        let snapshots = self
-            .with_sdk(move |sdk| {
-                walk_pool_chain(sdk.chain_backend(), &params, creation_txid, resume)
-            })
-            .await?;
-
-        // Persist snapshots to store
-        if !snapshots.is_empty() {
-            let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
-            for snap in &snapshots {
-                let txid_bytes = *snap.txid.as_byte_array();
-                guard
-                    .insert_pool_snapshot(
-                        &pool_id_owned.0,
-                        &txid_bytes,
-                        snap.r_yes,
-                        snap.r_no,
-                        snap.r_lbtc,
-                        snap.issued_lp,
-                        snap.block_height,
-                    )
-                    .map_err(|e| NodeError::Discovery(format!("store insert error: {e}")))?;
-            }
-
-            // Update amm_pools current reserves from the last snapshot
-            if let Some(last) = snapshots.last() {
-                guard
-                    .update_pool_state(&pool_id_owned, &params, last.issued_lp)
-                    .map_err(|e| NodeError::Discovery(format!("store update error: {e}")))?;
-            }
-        }
-
-        Ok(snapshots)
-    }
-
     /// Validate a market was created at its Dormant covenant address.
     pub async fn validate_market_creation(
         &self,
@@ -1256,265 +826,6 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
         self.with_sdk(move |sdk| sdk.validate_market_creation(&params, &txid))
             .await
-    }
-
-    // ── Chain Watcher ─────────────────────────────────────────────────
-
-    /// Bootstrap the chain watcher by subscribing all known contracts from the store.
-    pub fn bootstrap_watcher(
-        &self,
-        handle: &crate::chain_watcher::ChainWatcherHandle,
-    ) -> Result<(), NodeError> {
-        use crate::chain_watcher::ScriptOwner;
-
-        let store = match self.store {
-            Some(ref s) => s,
-            None => return Ok(()), // no store → nothing to bootstrap
-        };
-
-        let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
-
-        // Subscribe all market SPKs (up to 5 per market; empty entries skipped by store).
-        match guard.get_all_market_spks() {
-            Ok(markets) => {
-                for (market_id, spks) in markets {
-                    for spk in spks {
-                        handle.subscribe(spk, ScriptOwner::Market { market_id });
-                    }
-                }
-            }
-            Err(e) => log::warn!("bootstrap_watcher: failed to load market SPKs: {e}"),
-        }
-
-        // Subscribe all pool SPKs (1 per pool, derived from current issued_lp)
-        match guard.get_all_pool_watch_info() {
-            Ok(pools) => {
-                for (pool_id, covenant_spk) in pools {
-                    handle.subscribe(covenant_spk, ScriptOwner::Pool { pool_id });
-                }
-            }
-            Err(e) => log::warn!("bootstrap_watcher: failed to load pool watch info: {e}"),
-        }
-
-        Ok(())
-    }
-
-    /// Prepare a future that processes a single [`ChainEvent`].
-    ///
-    /// The returned future is `'static` — it captures cloned `Arc` handles
-    /// and does **not** borrow `self`.  The caller should drop any outer
-    /// lock before `.await`-ing the future:
-    ///
-    /// ```ignore
-    /// let work = node.prepare_chain_event(event, &watcher_handle);
-    /// drop(node_guard);
-    /// work.await;
-    /// ```
-    pub fn prepare_chain_event(
-        &self,
-        event: crate::chain_watcher::ChainEvent,
-        watcher_handle: &crate::chain_watcher::ChainWatcherHandle,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-        use crate::chain_watcher::ChainEvent;
-
-        // Clone Arc-based handles so the future is 'static
-        let sdk = self.sdk.clone();
-        let snapshot_tx = self.snapshot_tx.clone();
-        let store = self.store.clone();
-        let watcher_handle = watcher_handle.clone();
-
-        Box::pin(async move {
-            match event {
-                ChainEvent::NewBlock { height } => {
-                    log::debug!("chain_event: new block {height}");
-                    if let Err(e) = Self::sync_wallet_detached(sdk, snapshot_tx).await {
-                        log::warn!("chain_event: sync_wallet failed: {e}");
-                    }
-                }
-                ChainEvent::MarketActivity { market_id } => {
-                    log::debug!("chain_event: market activity on {}", hex::encode(market_id),);
-                    // TODO: re-scan market UTXOs for state updates once implemented.
-                    // For now, sync the wallet to pick up balance changes.
-                    if let Err(e) = Self::sync_wallet_detached(sdk, snapshot_tx).await {
-                        log::warn!("chain_event: sync_wallet on market activity failed: {e}");
-                    }
-                }
-                ChainEvent::OrderActivity { order_spk } => {
-                    log::debug!("chain_event: order activity on {}", hex::encode(&order_spk),);
-                    // TODO: re-scan order UTXOs for status updates once implemented.
-                }
-                ChainEvent::PoolActivity { pool_id } => {
-                    log::debug!("chain_event: pool activity on {pool_id}");
-                    Self::handle_pool_activity_detached(
-                        sdk,
-                        snapshot_tx,
-                        store,
-                        pool_id,
-                        watcher_handle,
-                    )
-                    .await;
-                }
-                ChainEvent::ConnectionLost => {
-                    log::warn!("chain_event: electrum connection lost");
-                }
-                ChainEvent::Reconnected => {
-                    log::info!("chain_event: electrum reconnected");
-                }
-            }
-        })
-    }
-
-    /// Wallet sync that works with cloned `Arc` handles (no `&self` borrow).
-    async fn sync_wallet_detached(
-        sdk: Arc<Mutex<Option<DeadcatSdk>>>,
-        snapshot_tx: tokio::sync::watch::Sender<Option<WalletSnapshot>>,
-    ) -> Result<(), NodeError> {
-        tokio::task::spawn_blocking(move || {
-            let mut guard = sdk.lock().map_err(|_| NodeError::MutexPoisoned)?;
-            let sdk = guard.as_mut().ok_or(NodeError::WalletLocked)?;
-            let result = sdk.sync();
-            let snapshot = WalletSnapshot {
-                balance: sdk.balance().unwrap_or_default(),
-                utxos: sdk.utxos().unwrap_or_default(),
-                transactions: sdk.transactions().unwrap_or_default(),
-            };
-            let _ = snapshot_tx.send(Some(snapshot));
-            result.map_err(NodeError::Sdk)
-        })
-        .await
-        .map_err(|e| NodeError::Task(e.to_string()))?
-    }
-
-    /// Pool activity handler that works with cloned handles (no `&self` borrow).
-    async fn handle_pool_activity_detached(
-        sdk: Arc<Mutex<Option<DeadcatSdk>>>,
-        snapshot_tx: tokio::sync::watch::Sender<Option<WalletSnapshot>>,
-        store: Option<Arc<Mutex<S>>>,
-        pool_id: crate::amm_pool::params::PoolId,
-        watcher_handle: crate::chain_watcher::ChainWatcherHandle,
-    ) {
-        use crate::amm_pool::chain_walk::walk_pool_chain;
-        use simplicityhl::elements::hashes::Hash;
-
-        let Some(store) = store else { return };
-
-        // Read pool info + current issued_lp from store
-        let (params, creation_txid_bytes, resume, old_issued_lp) = {
-            let mut guard = match store.lock() {
-                Ok(g) => g,
-                Err(_) => {
-                    log::warn!("handle_pool_activity: store mutex poisoned");
-                    return;
-                }
-            };
-
-            let pool_info = match guard.get_pool_info(&pool_id) {
-                Ok(Some(info)) => info,
-                Ok(None) => {
-                    log::warn!("handle_pool_activity: pool not found in store");
-                    return;
-                }
-                Err(e) => {
-                    log::warn!("handle_pool_activity: store error: {e}");
-                    return;
-                }
-            };
-
-            let creation_txid = match pool_info.creation_txid {
-                Some(txid) => txid,
-                None => {
-                    log::warn!("handle_pool_activity: pool has no creation_txid");
-                    return;
-                }
-            };
-
-            let resume = guard
-                .get_latest_pool_snapshot_resume(&pool_id.0)
-                .ok()
-                .flatten();
-
-            let old_lp = resume.map(|(_, lp)| lp);
-
-            (pool_info.params, creation_txid, resume, old_lp)
-        };
-
-        // Run chain walk on a blocking thread
-        let creation_txid = Txid::from_byte_array(creation_txid_bytes);
-        let resume_arg = resume.map(|(txid_bytes, lp)| (Txid::from_byte_array(txid_bytes), lp));
-        let walk_result = tokio::task::spawn_blocking({
-            let sdk = sdk.clone();
-            let snapshot_tx = snapshot_tx.clone();
-            move || {
-                let mut guard = sdk.lock().map_err(|_| NodeError::MutexPoisoned)?;
-                let sdk = guard.as_mut().ok_or(NodeError::WalletLocked)?;
-                let result =
-                    walk_pool_chain(sdk.chain_backend(), &params, creation_txid, resume_arg);
-                let snapshot = WalletSnapshot {
-                    balance: sdk.balance().unwrap_or_default(),
-                    utxos: sdk.utxos().unwrap_or_default(),
-                    transactions: sdk.transactions().unwrap_or_default(),
-                };
-                let _ = snapshot_tx.send(Some(snapshot));
-                result.map_err(NodeError::Sdk)
-            }
-        })
-        .await;
-
-        let snapshots = match walk_result {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                log::warn!("handle_pool_activity: sync_pool_chain failed: {e}");
-                return;
-            }
-            Err(e) => {
-                log::warn!("handle_pool_activity: task join failed: {e}");
-                return;
-            }
-        };
-
-        // Persist snapshots and update pool state in store
-        if let Ok(mut guard) = store.lock() {
-            for snap in &snapshots {
-                let txid_bytes = snap.txid.to_byte_array();
-                if let Err(e) = guard.insert_pool_snapshot(
-                    &pool_id.0,
-                    &txid_bytes,
-                    snap.r_yes,
-                    snap.r_no,
-                    snap.r_lbtc,
-                    snap.issued_lp,
-                    snap.block_height,
-                ) {
-                    log::warn!("handle_pool_activity: insert_pool_snapshot failed: {e}");
-                }
-            }
-            if let Some(last) = snapshots.last()
-                && let Err(e) = guard.update_pool_state(&pool_id, &params, last.issued_lp)
-            {
-                log::warn!("handle_pool_activity: update_pool_state failed: {e}");
-            }
-        }
-
-        // Re-subscribe if issued_lp changed (deposit/withdraw moves the pool address)
-        let Some(last) = snapshots.last() else { return };
-        let new_issued_lp = last.issued_lp;
-        let Some(old_lp) = old_issued_lp.filter(|&old| old != new_issued_lp) else {
-            return;
-        };
-
-        let contract = match crate::amm_pool::contract::CompiledAmmPool::new(params) {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("handle_pool_activity: compile failed: {e}");
-                return;
-            }
-        };
-
-        watcher_handle.unsubscribe(contract.script_pubkey(old_lp).to_bytes());
-        watcher_handle.subscribe(
-            contract.script_pubkey(new_issued_lp).to_bytes(),
-            crate::chain_watcher::ScriptOwner::Pool { pool_id },
-        );
     }
 
     // ── Accessors ───────────────────────────────────────────────────────

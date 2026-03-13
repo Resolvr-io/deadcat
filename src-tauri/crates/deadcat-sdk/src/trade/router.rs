@@ -1,20 +1,19 @@
-//! Trade routing: given discovered liquidity (AMM pool + limit orders) and a
-//! trade request, compute the optimal execution plan.
+//! Trade routing: given discovered liquidity (LMSR pool + limit orders)
+//! and a trade request, compute the optimal execution plan.
 //!
 //! The routing algorithm is greedy:
 //! 1. Sort eligible limit orders by effective price (cheapest first for Buy,
 //!    best payout first for Sell).
-//! 2. Fill orders that beat the AMM's current marginal price.
-//! 3. Route the remaining amount through the AMM pool.
+//! 2. Fill orders that beat the pool's current marginal reference price.
+//! 3. Route the remaining amount through the selected pool.
 
-use crate::amm_pool::math::{
-    PoolReserves, SwapDirection, SwapPair, compute_swap_exact_input, spot_price_no_lbtc,
-    spot_price_yes_lbtc,
-};
-use crate::amm_pool::params::AmmPoolParams;
 use crate::discovery::DiscoveredOrder;
 use crate::error::{Error, Result};
+use crate::lmsr_pool::math::{LmsrTradeKind, quote_exact_input_from_manifest, quote_from_table};
+use crate::lmsr_pool::params::LmsrPoolParams;
+use crate::lmsr_pool::table::LmsrTableManifest;
 use crate::maker_order::params::OrderDirection;
+use crate::pool::PoolReserves;
 use crate::pset::UnblindedUtxo;
 
 use super::types::*;
@@ -36,27 +35,71 @@ pub(crate) struct ScannedOrder {
     pub params: crate::maker_order::params::MakerOrderParams,
 }
 
-/// Scanned pool state ready for routing.
+/// Scanned LMSR pool state ready for routing.
 #[derive(Debug, Clone)]
-pub(crate) struct ScannedPool {
-    pub params: AmmPoolParams,
-    pub issued_lp: u64,
-    pub reserves: PoolReserves,
-    pub utxos: PoolUtxos,
+pub(crate) struct ScannedLmsrPool {
+    pub params: LmsrPoolParams,
     pub pool_id: String,
+    pub current_s_index: u64,
+    pub reserves: PoolReserves,
+    pub pool_utxos: LmsrPoolUtxos,
+    pub manifest: LmsrTableManifest,
 }
 
 // ── Price helpers ───────────────────────────────────────────────────────
 
-/// AMM spot price in collateral-per-token terms for the given side.
-///
-/// Buy YES: how many sats per YES token (r_lbtc / r_yes).
-/// Buy NO:  how many sats per NO token (r_lbtc / r_no).
-pub(crate) fn amm_spot_price(reserves: &PoolReserves, side: TradeSide) -> f64 {
-    match side {
-        TradeSide::Yes => spot_price_yes_lbtc(reserves),
-        TradeSide::No => spot_price_no_lbtc(reserves),
+/// Map trade side/direction to LMSR trade kind.
+fn lmsr_trade_kind(side: TradeSide, direction: TradeDirection) -> LmsrTradeKind {
+    match (side, direction) {
+        (TradeSide::Yes, TradeDirection::Buy) => LmsrTradeKind::BuyYes,
+        (TradeSide::Yes, TradeDirection::Sell) => LmsrTradeKind::SellYes,
+        (TradeSide::No, TradeDirection::Buy) => LmsrTradeKind::BuyNo,
+        (TradeSide::No, TradeDirection::Sell) => LmsrTradeKind::SellNo,
     }
+}
+
+/// LMSR reference spot price in collateral-per-token units.
+///
+/// Uses a single index step from `current_s_index` in the trade direction and
+/// derives average per-lot price from that step quote.
+fn lmsr_spot_price(
+    pool: &ScannedLmsrPool,
+    side: TradeSide,
+    direction: TradeDirection,
+) -> Result<Option<f64>> {
+    let kind = lmsr_trade_kind(side, direction);
+    let old_s = pool.current_s_index;
+    let new_s = if kind.requires_increasing_index() {
+        old_s.checked_add(1)
+    } else {
+        old_s.checked_sub(1)
+    };
+    let Some(new_s) = new_s else {
+        return Ok(None);
+    };
+    if new_s > pool.params.s_max_index {
+        return Ok(None);
+    }
+
+    let old_f = pool.manifest.value_at(old_s)?;
+    let new_f = pool.manifest.value_at(new_s)?;
+    let quote = quote_from_table(
+        kind,
+        old_s,
+        new_s,
+        old_f,
+        new_f,
+        pool.params.q_step_lots,
+        pool.params.half_payout_sats,
+        pool.params.fee_bps,
+    )?;
+    if quote.traded_lots == 0 || quote.collateral_amount == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(
+        quote.collateral_amount as f64 / quote.traded_lots as f64,
+    ))
 }
 
 /// Effective collateral-per-token price of a limit order for a Buy trade.
@@ -96,20 +139,6 @@ fn order_sell_price(order: &ScannedOrder, target_token_asset: &[u8; 32]) -> Opti
 
 // ── Core routing ────────────────────────────────────────────────────────
 
-/// Map `TradeSide` + `TradeDirection` to AMM swap parameters.
-pub(crate) fn swap_params(side: TradeSide, direction: TradeDirection) -> (SwapPair, SwapDirection) {
-    match (side, direction) {
-        // Buy YES: deposit L-BTC, receive YES → YesLbtc, SellB
-        (TradeSide::Yes, TradeDirection::Buy) => (SwapPair::YesLbtc, SwapDirection::SellB),
-        // Sell YES: deposit YES, receive L-BTC → YesLbtc, SellA
-        (TradeSide::Yes, TradeDirection::Sell) => (SwapPair::YesLbtc, SwapDirection::SellA),
-        // Buy NO: deposit L-BTC, receive NO → NoLbtc, SellB
-        (TradeSide::No, TradeDirection::Buy) => (SwapPair::NoLbtc, SwapDirection::SellB),
-        // Sell NO: deposit NO, receive L-BTC → NoLbtc, SellA
-        (TradeSide::No, TradeDirection::Sell) => (SwapPair::NoLbtc, SwapDirection::SellA),
-    }
-}
-
 /// Determine the token asset ID targeted by a trade.
 pub(crate) fn target_token_asset(
     side: TradeSide,
@@ -128,7 +157,7 @@ pub(crate) fn target_token_asset(
 /// for Buy, tokens for Sell).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_execution_plan(
-    pool: Option<&ScannedPool>,
+    lmsr_pool: Option<&ScannedLmsrPool>,
     orders: &[ScannedOrder],
     side: TradeSide,
     direction: TradeDirection,
@@ -143,8 +172,12 @@ pub(crate) fn build_execution_plan(
         TradeDirection::Sell => (token_asset, *collateral_asset),
     };
 
-    // Determine AMM spot price (if pool exists).
-    let amm_spot = pool.as_ref().map(|p| amm_spot_price(&p.reserves, side));
+    // Determine LMSR spot price (if an LMSR pool exists).
+    let pool_spot = if let Some(p) = lmsr_pool {
+        lmsr_spot_price(p, side, direction)?
+    } else {
+        None
+    };
 
     // Filter and sort eligible orders.
     let mut eligible: Vec<(usize, f64)> = orders
@@ -155,16 +188,14 @@ pub(crate) fn build_execution_plan(
                 TradeDirection::Buy => order_buy_price(o, &token_asset),
                 TradeDirection::Sell => order_sell_price(o, &token_asset),
             }?;
-            // For Buy: order is eligible if its price < AMM spot price.
-            // For Sell: order is eligible if its payout > AMM payout (price > AMM price).
+            // For Buy: order is eligible if its price is <= pool spot price.
+            // For Sell: order is eligible if its payout is >= pool spot price.
             // If no pool exists, all orders are eligible.
-            let eligible = match (direction, amm_spot) {
+            let eligible = match (direction, pool_spot) {
                 (TradeDirection::Buy, Some(spot)) => price <= spot,
                 (TradeDirection::Sell, Some(spot)) => {
-                    // AMM "spot" for selling = 1/spot_price_token_lbtc = token/lbtc.
-                    // Order pays `price` sats per token. AMM pays ~`1/spot` sats per token.
-                    // Actually, for selling: AMM price is r_lbtc/r_token and order price
-                    // is also in sats-per-token. The order is better if it pays MORE.
+                    // Pool "spot" for selling is in sats-per-token. The order
+                    // is better when it pays MORE than the pool.
                     price >= spot
                 }
                 (_, None) => true,
@@ -206,38 +237,68 @@ pub(crate) fn build_execution_plan(
         }
     }
 
-    // Route remainder through AMM.
-    let pool_leg = if remaining_input > 0 {
-        match pool {
-            Some(scanned_pool) => {
-                let (swap_pair, swap_direction) = swap_params(side, direction);
-                let swap = compute_swap_exact_input(
-                    &scanned_pool.reserves,
-                    swap_pair,
-                    remaining_input,
-                    scanned_pool.params.fee_bps,
-                    swap_direction,
-                )?;
-                total_output += swap.delta_out;
-                Some(PoolSwapLeg {
-                    pool_params: scanned_pool.params,
-                    issued_lp: scanned_pool.issued_lp,
-                    pool_utxos: scanned_pool.utxos.clone(),
-                    swap_pair,
-                    swap_direction,
-                    delta_in: swap.delta_in,
-                    delta_out: swap.delta_out,
-                    new_reserves: swap.new_reserves,
-                })
+    let mut lmsr_pool_leg: Option<LmsrPoolSwapLeg> = None;
+
+    // Route remainder through LMSR.
+    if remaining_input > 0 {
+        if let Some(scanned_lmsr_pool) = lmsr_pool {
+            let kind = lmsr_trade_kind(side, direction);
+            let quote = quote_exact_input_from_manifest(
+                &scanned_lmsr_pool.manifest,
+                &scanned_lmsr_pool.params,
+                kind,
+                scanned_lmsr_pool.current_s_index,
+                remaining_input,
+            )?;
+            if let Some(lmsr_quote) = quote {
+                let old_f = scanned_lmsr_pool
+                    .manifest
+                    .value_at(lmsr_quote.old_s_index)?;
+                let new_f = scanned_lmsr_pool
+                    .manifest
+                    .value_at(lmsr_quote.new_s_index)?;
+                let old_proof = scanned_lmsr_pool
+                    .manifest
+                    .proof_at(lmsr_quote.old_s_index)?;
+                let new_proof = scanned_lmsr_pool
+                    .manifest
+                    .proof_at(lmsr_quote.new_s_index)?;
+                let (delta_in, delta_out) = if direction == TradeDirection::Buy {
+                    (lmsr_quote.collateral_amount, lmsr_quote.traded_lots)
+                } else {
+                    (lmsr_quote.traded_lots, lmsr_quote.collateral_amount)
+                };
+                if delta_out > 0 {
+                    total_output += delta_out;
+                    remaining_input = remaining_input.saturating_sub(delta_in);
+                    lmsr_pool_leg = Some(LmsrPoolSwapLeg {
+                        primary_path: crate::trade::types::LmsrPrimaryPath::Swap,
+                        pool_params: scanned_lmsr_pool.params,
+                        pool_id: scanned_lmsr_pool.pool_id.clone(),
+                        old_s_index: lmsr_quote.old_s_index,
+                        new_s_index: lmsr_quote.new_s_index,
+                        old_path_bits: old_proof.path_bits,
+                        new_path_bits: new_proof.path_bits,
+                        old_siblings: old_proof.siblings,
+                        new_siblings: new_proof.siblings,
+                        in_base: 0,
+                        out_base: 0,
+                        pool_utxos: scanned_lmsr_pool.pool_utxos.clone(),
+                        trade_kind: kind,
+                        old_f,
+                        new_f,
+                        delta_in,
+                        delta_out,
+                        admin_signature: [0u8; 64],
+                    });
+                }
+            } else if order_legs.is_empty() {
+                return Err(Error::NoLiquidity);
             }
-            None if order_legs.is_empty() => return Err(Error::NoLiquidity),
-            // No pool, but we consumed everything via orders — shouldn't happen
-            // since remaining_input > 0 means we still have unrouted amount.
-            None => return Err(Error::NoLiquidity),
+        } else {
+            return Err(Error::NoLiquidity);
         }
-    } else {
-        None
-    };
+    }
 
     if total_output == 0 {
         return Err(Error::NoLiquidity);
@@ -250,14 +311,20 @@ pub(crate) fn build_execution_plan(
         }
     }
 
+    let total_taker_input = if lmsr_pool.is_some() {
+        total_input.saturating_sub(remaining_input)
+    } else {
+        total_input
+    };
+
     Ok(ExecutionPlan {
         order_legs,
-        pool_leg,
+        lmsr_pool_leg,
         taker_send_asset,
         taker_receive_asset,
-        total_taker_input: total_input,
+        total_taker_input,
         total_taker_output: total_output,
-        quoted_reserves: pool.as_ref().map(|p| p.reserves),
+        quoted_reserves: lmsr_pool.as_ref().map(|p| p.reserves),
     })
 }
 
@@ -420,11 +487,7 @@ fn fill_sell_order_with_lots(
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /// Build display-friendly route legs from an execution plan.
-pub(crate) fn plan_to_route_legs(
-    plan: &ExecutionPlan,
-    pool_id: Option<&str>,
-    orders: &[ScannedOrder],
-) -> Vec<RouteLeg> {
+pub(crate) fn plan_to_route_legs(plan: &ExecutionPlan, orders: &[ScannedOrder]) -> Vec<RouteLeg> {
     let mut legs = Vec::new();
 
     for order_leg in &plan.order_legs {
@@ -446,13 +509,15 @@ pub(crate) fn plan_to_route_legs(
         });
     }
 
-    if let Some(ref pool_leg) = plan.pool_leg {
+    if let Some(ref lmsr_leg) = plan.lmsr_pool_leg {
         legs.push(RouteLeg {
-            source: LiquiditySource::AmmPool {
-                pool_id: pool_id.unwrap_or_default().to_string(),
+            source: LiquiditySource::LmsrPool {
+                pool_id: lmsr_leg.pool_id.clone(),
+                old_s_index: lmsr_leg.old_s_index,
+                new_s_index: lmsr_leg.new_s_index,
             },
-            input_amount: pool_leg.delta_in,
-            output_amount: pool_leg.delta_out,
+            input_amount: lmsr_leg.delta_in,
+            output_amount: lmsr_leg.delta_out,
         });
     }
 
@@ -462,8 +527,10 @@ pub(crate) fn plan_to_route_legs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amm_pool::math::PoolReserves;
+    use crate::lmsr_pool::params::LmsrPoolParams;
+    use crate::lmsr_pool::table::{LmsrTableManifest, lmsr_table_root};
     use crate::maker_order::params::{MakerOrderParams, OrderDirection};
+    use crate::pool::PoolReserves;
     use lwk_wollet::elements::hashes::Hash as _;
     use lwk_wollet::elements::{OutPoint, Txid};
 
@@ -506,31 +573,41 @@ mod tests {
         a
     }
 
-    fn mock_pool(r_yes: u64, r_no: u64, r_lbtc: u64) -> ScannedPool {
-        let params = AmmPoolParams {
+    fn mock_lmsr_pool() -> ScannedLmsrPool {
+        let values = vec![2_000, 2_010, 2_025, 2_045, 2_070, 2_100, 2_135, 2_175];
+        let root = lmsr_table_root(&values).unwrap();
+        let params = LmsrPoolParams {
             yes_asset_id: yes_asset(),
             no_asset_id: no_asset(),
-            lbtc_asset_id: lbtc_asset(),
-            lp_asset_id: [0x04; 32],
-            lp_reissuance_token_id: [0x05; 32],
+            collateral_asset_id: lbtc_asset(),
+            lmsr_table_root: root,
+            table_depth: 3,
+            q_step_lots: 10,
+            s_bias: 4,
+            s_max_index: 7,
+            half_payout_sats: 100,
             fee_bps: 30,
+            min_r_yes: 1,
+            min_r_no: 1,
+            min_r_collateral: 1,
             cosigner_pubkey: crate::taproot::NUMS_KEY_BYTES,
         };
-        ScannedPool {
+        let manifest = LmsrTableManifest::new(params.table_depth, values).unwrap();
+        ScannedLmsrPool {
             params,
-            issued_lp: 1000,
+            pool_id: "lmsr-test-pool".to_string(),
+            current_s_index: 4,
             reserves: PoolReserves {
-                r_yes,
-                r_no,
-                r_lbtc,
+                r_yes: 500,
+                r_no: 500,
+                r_lbtc: 1_000,
             },
-            utxos: PoolUtxos {
-                yes: mock_utxo(yes_asset(), r_yes),
-                no: mock_utxo(no_asset(), r_no),
-                lbtc: mock_utxo(lbtc_asset(), r_lbtc),
-                rt: mock_utxo([0x05; 32], 1),
+            pool_utxos: LmsrPoolUtxos {
+                yes: mock_utxo(yes_asset(), 500),
+                no: mock_utxo(no_asset(), 500),
+                collateral: mock_utxo(lbtc_asset(), 1_000),
             },
-            pool_id: "test-pool".to_string(),
+            manifest,
         }
     }
 
@@ -538,7 +615,6 @@ mod tests {
         ScannedOrder {
             discovered: DiscoveredOrder {
                 id: "order-1".to_string(),
-                order_uid: "uid-order-1".to_string(),
                 market_id: "market-1".to_string(),
                 base_asset_id: hex::encode(yes_asset()),
                 quote_asset_id: hex::encode(lbtc_asset()),
@@ -575,30 +651,10 @@ mod tests {
     }
 
     #[test]
-    fn swap_params_mapping() {
-        assert_eq!(
-            swap_params(TradeSide::Yes, TradeDirection::Buy),
-            (SwapPair::YesLbtc, SwapDirection::SellB)
-        );
-        assert_eq!(
-            swap_params(TradeSide::Yes, TradeDirection::Sell),
-            (SwapPair::YesLbtc, SwapDirection::SellA)
-        );
-        assert_eq!(
-            swap_params(TradeSide::No, TradeDirection::Buy),
-            (SwapPair::NoLbtc, SwapDirection::SellB)
-        );
-        assert_eq!(
-            swap_params(TradeSide::No, TradeDirection::Sell),
-            (SwapPair::NoLbtc, SwapDirection::SellA)
-        );
-    }
-
-    #[test]
-    fn amm_only_buy_yes() {
-        let pool = mock_pool(1_000_000, 1_000_000, 500_000);
+    fn lmsr_only_buy_yes_uses_lmsr_leg() {
+        let lmsr_pool = mock_lmsr_pool();
         let plan = build_execution_plan(
-            Some(&pool),
+            Some(&lmsr_pool),
             &[],
             TradeSide::Yes,
             TradeDirection::Buy,
@@ -610,52 +666,45 @@ mod tests {
         .unwrap();
 
         assert!(plan.order_legs.is_empty());
-        assert!(plan.pool_leg.is_some());
-        let pool_leg = plan.pool_leg.unwrap();
-        assert_eq!(pool_leg.delta_in, 10_000);
-        assert!(pool_leg.delta_out > 0);
-        assert_eq!(plan.total_taker_input, 10_000);
-        assert_eq!(plan.total_taker_output, pool_leg.delta_out);
+        assert!(plan.lmsr_pool_leg.is_some());
+        let lmsr_leg = plan.lmsr_pool_leg.unwrap();
+        assert_eq!(lmsr_leg.pool_id, "lmsr-test-pool");
+        assert_eq!(lmsr_leg.old_s_index, 4);
+        assert_eq!(lmsr_leg.new_s_index, 7);
+        assert_eq!(lmsr_leg.delta_in, 3_115);
+        assert_eq!(lmsr_leg.delta_out, 30);
+        assert_eq!(plan.total_taker_input, 3_115);
+        assert_eq!(plan.total_taker_output, 30);
     }
 
     #[test]
-    fn order_cheaper_than_amm_gets_filled_first() {
-        // Pool: YES/LBTC spot price = 500_000_000 / 1_000_000 = 500 sats per YES
-        let pool = mock_pool(1_000_000, 1_000_000, 500_000_000);
-        // Order: selling YES at 400 sats per token (cheaper than AMM spot of 500)
-        let order = mock_sell_base_order(400, 10);
-
+    fn order_cheaper_than_lmsr_gets_filled_first() {
+        let order = mock_sell_base_order(1, 10);
+        let lmsr_pool = mock_lmsr_pool();
         let plan = build_execution_plan(
-            Some(&pool),
+            Some(&lmsr_pool),
             &[order],
             TradeSide::Yes,
             TradeDirection::Buy,
-            10_000, // 10k sats to spend
+            10_000,
             &lbtc_asset(),
             &yes_asset(),
             &no_asset(),
         )
         .unwrap();
 
-        // Order should be filled first: 10 lots * 400 = 4000 sats
         assert_eq!(plan.order_legs.len(), 1);
         assert_eq!(plan.order_legs[0].lots, 10);
-        assert_eq!(plan.order_legs[0].taker_pays, 4_000);
-        assert_eq!(plan.order_legs[0].taker_receives, 10);
-        // Remaining 6000 sats go through AMM
-        assert!(plan.pool_leg.is_some());
-        assert_eq!(plan.pool_leg.as_ref().unwrap().delta_in, 6_000);
+        assert_eq!(plan.order_legs[0].taker_pays, 10);
+        assert!(plan.lmsr_pool_leg.is_some());
     }
 
     #[test]
-    fn order_more_expensive_than_amm_is_skipped() {
-        // AMM spot = 500_000_000 / 1_000_000 = 500 sats per YES
-        let pool = mock_pool(1_000_000, 1_000_000, 500_000_000);
-        // Order at 600 sats per token (more expensive than AMM spot of 500)
-        let order = mock_sell_base_order(600, 10);
-
+    fn order_more_expensive_than_lmsr_is_skipped() {
+        let order = mock_sell_base_order(1_000_000, 10);
+        let lmsr_pool = mock_lmsr_pool();
         let plan = build_execution_plan(
-            Some(&pool),
+            Some(&lmsr_pool),
             &[order],
             TradeSide::Yes,
             TradeDirection::Buy,
@@ -667,8 +716,7 @@ mod tests {
         .unwrap();
 
         assert!(plan.order_legs.is_empty());
-        assert!(plan.pool_leg.is_some());
-        assert_eq!(plan.pool_leg.as_ref().unwrap().delta_in, 10_000);
+        assert!(plan.lmsr_pool_leg.is_some());
     }
 
     #[test]
@@ -688,9 +736,24 @@ mod tests {
         .unwrap();
 
         assert!(!plan.order_legs.is_empty());
-        assert!(plan.pool_leg.is_none());
         // 10000 / 400 = 25 lots, but order only has 100 lots → 25 lots
         assert_eq!(plan.order_legs[0].lots, 25);
+    }
+
+    #[test]
+    fn orders_only_insufficient_depth_returns_no_liquidity() {
+        let order = mock_sell_base_order(400, 10);
+        let plan = build_execution_plan(
+            None,
+            &[order],
+            TradeSide::Yes,
+            TradeDirection::Buy,
+            10_000,
+            &lbtc_asset(),
+            &yes_asset(),
+            &no_asset(),
+        );
+        assert!(matches!(plan, Err(Error::NoLiquidity)));
     }
 
     #[test]
@@ -740,7 +803,6 @@ mod tests {
         ScannedOrder {
             discovered: DiscoveredOrder {
                 id: "order-sell-1".to_string(),
-                order_uid: "uid-order-sell-1".to_string(),
                 market_id: "market-1".to_string(),
                 base_asset_id: hex::encode(yes_asset()),
                 quote_asset_id: hex::encode(lbtc_asset()),
@@ -797,7 +859,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.order_legs.len(), 1);
-        assert!(plan.pool_leg.is_none());
         let leg = &plan.order_legs[0];
         assert_eq!(leg.lots, 10);
         assert_eq!(leg.taker_pays, 10); // taker sends 10 tokens
@@ -830,7 +891,6 @@ mod tests {
         )
         .unwrap();
 
-        assert!(plan.pool_leg.is_none());
         // Order B (500 sats) should be filled first, then Order A (300 sats).
         assert_eq!(plan.order_legs.len(), 2);
         // First leg: order B — 50 lots at 500 sats
@@ -847,17 +907,15 @@ mod tests {
     }
 
     #[test]
-    fn sell_partial_fill_order_has_less_capacity() {
+    fn sell_partial_fill_order_then_lmsr() {
         // Order: 400 sats/token, covenant holds 2_000 sats → 5 lots.
-        // Taker wants to sell 20 tokens, but only 5 can be filled by the order.
-        // No pool → remaining 15 tokens cause NoLiquidity for the remainder,
-        // but the 5-lot partial fill still appears.
-        // We need a pool to absorb the remainder so the plan succeeds.
-        let pool = mock_pool(1_000_000, 1_000_000, 500_000);
+        // Taker sells 20 tokens, 5 lots fill from order and the remainder
+        // routes through LMSR.
         let order = mock_sell_quote_order(400, 2_000);
+        let lmsr_pool = mock_lmsr_pool();
 
         let plan = build_execution_plan(
-            Some(&pool),
+            Some(&lmsr_pool),
             &[order],
             TradeSide::Yes,
             TradeDirection::Sell,
@@ -868,17 +926,14 @@ mod tests {
         )
         .unwrap();
 
-        // Order fills 5 lots (all it can afford), remainder goes to AMM.
+        // Order fills 5 lots (all it can afford), remainder goes to LMSR.
         assert_eq!(plan.order_legs.len(), 1);
         let leg = &plan.order_legs[0];
         assert_eq!(leg.lots, 5);
         assert_eq!(leg.taker_pays, 5);
         assert_eq!(leg.taker_receives, 2_000); // 5 * 400
         assert!(!leg.is_partial); // fully consumed the order's capacity
-        // Remaining 15 tokens routed through the AMM.
-        assert!(plan.pool_leg.is_some());
-        assert_eq!(plan.pool_leg.as_ref().unwrap().delta_in, 15);
-        assert_eq!(plan.total_taker_input, 20);
+        assert!(plan.lmsr_pool_leg.is_some());
     }
 
     #[test]
@@ -916,7 +971,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.order_legs.len(), 1);
-        assert!(plan.pool_leg.is_none());
         let leg = &plan.order_legs[0];
         assert_eq!(leg.lots, 10);
         assert_eq!(leg.taker_pays, 10);
@@ -925,5 +979,31 @@ mod tests {
         assert_eq!(leg.remainder_value, 0);
         assert_eq!(plan.total_taker_input, 10);
         assert_eq!(plan.total_taker_output, 5_000);
+    }
+
+    #[test]
+    fn plan_to_route_legs_has_limit_and_lmsr_only() {
+        let order = mock_sell_base_order(1, 10);
+        let lmsr_pool = mock_lmsr_pool();
+        let plan = build_execution_plan(
+            Some(&lmsr_pool),
+            &[order.clone()],
+            TradeSide::Yes,
+            TradeDirection::Buy,
+            10_000,
+            &lbtc_asset(),
+            &yes_asset(),
+            &no_asset(),
+        )
+        .unwrap();
+        let legs = plan_to_route_legs(&plan, &[order]);
+        assert!(
+            legs.iter()
+                .any(|l| matches!(l.source, LiquiditySource::LimitOrder { .. }))
+        );
+        assert!(
+            legs.iter()
+                .any(|l| matches!(l.source, LiquiditySource::LmsrPool { .. }))
+        );
     }
 }

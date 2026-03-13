@@ -5,11 +5,12 @@ mod schema;
 mod store;
 mod sync;
 
-pub use deadcat_sdk::DiscoveredMarketMetadata;
+pub use deadcat_sdk::{
+    ContractMetadataInput, LmsrPoolIngestInput, LmsrPoolStateSource, LmsrPoolStateUpdateInput,
+};
 pub use error::StoreError;
 pub use store::{
-    AmmPoolInfo, DeadcatStore, IssuanceData, MakerOrderInfo, MarketFilter, MarketInfo, OrderFilter,
-    OrderStatus, PoolStateSnapshotInfo, PoolStatus,
+    DeadcatStore, IssuanceData, MakerOrderInfo, MarketFilter, MarketInfo, OrderFilter, OrderStatus,
 };
 pub use sync::{ChainSource, ChainUtxo, MarketStateChange, OrderStatusChange, SyncReport};
 

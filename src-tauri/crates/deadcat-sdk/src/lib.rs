@@ -1,19 +1,19 @@
 pub use simplicityhl::elements;
 pub use simplicityhl::simplicity;
 
-pub(crate) mod amm_pool;
 pub(crate) mod announcement;
 pub(crate) mod assembly;
 pub(crate) mod chain;
-pub(crate) mod chain_watcher;
 pub(crate) mod discovery;
 pub(crate) mod error;
+pub(crate) mod lmsr_pool;
 #[cfg(any(test, feature = "testing"))]
 pub mod maker_order;
 #[cfg(not(any(test, feature = "testing")))]
 pub(crate) mod maker_order;
 pub(crate) mod network;
 pub(crate) mod node;
+pub(crate) mod pool;
 pub(crate) mod prediction_market;
 pub(crate) mod pset;
 pub(crate) mod sdk;
@@ -36,16 +36,14 @@ pub use prediction_market::state::MarketState;
 pub use pset::UnblindedUtxo;
 pub use sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, FillOrderResult, IssuanceResult,
-    LIMIT_ORDER_MIN_FILL_LOTS_V2, LIMIT_ORDER_MIN_REMAINDER_LOTS_V2, LIMIT_ORDER_PRICE_MAX,
-    LIMIT_ORDER_PRICE_MIN, LimitOrderRecoveryConfig, PoolCreationResult, PoolLpResult,
-    PoolSwapResult, RecoveredOwnOrder, RecoveredOwnOrderStatus, RedemptionResult, ResolutionResult,
+    RedemptionResult, ResolutionResult,
 };
 
 // Re-export LWK for app-layer use
 pub use lwk_wollet;
 
 // ── Node ──────────────────────────────────────────────────────────
-pub use node::{MarketPrice, PricePoint, WalletSnapshot};
+pub use node::WalletSnapshot;
 
 // ── Maker orders ───────────────────────────────────────────────────
 pub use maker_order::contract::CompiledMakerOrder;
@@ -53,11 +51,19 @@ pub use maker_order::params::{
     MakerOrderParams, OrderDirection, derive_maker_receive, maker_receive_script_pubkey,
 };
 
-// ── AMM pools ──────────────────────────────────────────────────────
-pub use amm_pool::chain_walk::PoolStateSnapshot;
-pub use amm_pool::contract::CompiledAmmPool;
-pub use amm_pool::math::{PoolReserves, SwapDirection, SwapPair, implied_probability_bps};
-pub use amm_pool::params::{AmmPoolParams, PoolId};
+// ── LMSR pools ─────────────────────────────────────────────────────
+pub use lmsr_pool::contract::CompiledLmsrPool;
+pub use lmsr_pool::math::{
+    LmsrQuote, LmsrTradeKind, max_collateral_out, min_collateral_in,
+    quote_exact_input_from_manifest, quote_from_table,
+};
+pub use lmsr_pool::params::{LmsrInitialOutpoint, LmsrPoolId, LmsrPoolIdInput, LmsrPoolParams};
+pub use lmsr_pool::table::{
+    LmsrTableManifest, lmsr_table_leaf_hash, lmsr_table_node_hash, lmsr_table_root,
+};
+
+// ── Pool helpers ───────────────────────────────────────────────────
+pub use pool::{PoolReserves, implied_probability_bps};
 
 // ── Trade routing ──────────────────────────────────────────────────
 pub use trade::types::{
@@ -73,41 +79,34 @@ pub use discovery::{
     AttestationContent,
     AttestationResult,
     CONTRACT_TAG,
+    ContractMetadataInput,
     DEFAULT_RELAYS,
     DiscoveredMarket,
-    DiscoveredMarketMetadata,
     DiscoveredOrder,
     DiscoveredPool,
     DiscoveryConfig,
     DiscoveryEvent,
     DiscoveryService,
     DiscoveryStore,
+    LmsrPoolIngestInput,
+    LmsrPoolStateSource,
+    LmsrPoolStateUpdateInput,
     NETWORK_TAG,
     NoopStore,
     OrderAnnouncement,
     PoolAnnouncement,
-    PoolInfo,
-    PoolSnapshot,
-    ReconciliationStats,
+    PoolParams,
     // Functions
     build_announcement_event,
     build_attestation_event,
     build_attestation_filter,
     build_contract_filter,
     connect_client,
-    derive_order_uid,
     discovered_market_to_contract_params,
-    discovered_pool_to_amm_params,
     fetch_announcements,
     parse_announcement_event,
     publish_event,
-    send_reconciliation_events,
     sign_attestation,
-};
-
-// ── Chain watcher ────────────────────────────────────────────────
-pub use chain_watcher::{
-    ChainEvent, ChainWatcherConfig, ChainWatcherHandle, ScriptOwner, spawn_chain_watcher,
 };
 
 // ── Testing-only re-exports ────────────────────────────────────────

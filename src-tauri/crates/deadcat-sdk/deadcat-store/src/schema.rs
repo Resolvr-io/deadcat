@@ -1,29 +1,6 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
-    amm_pools (pool_id) {
-        pool_id -> Binary,
-        yes_asset_id -> Binary,
-        no_asset_id -> Binary,
-        lbtc_asset_id -> Binary,
-        lp_asset_id -> Binary,
-        lp_reissuance_token_id -> Binary,
-        fee_bps -> Integer,
-        cosigner_pubkey -> Binary,
-        cmr -> Binary,
-        issued_lp -> BigInt,
-        covenant_spk -> Binary,
-        pool_status -> Integer,
-        created_at -> Text,
-        updated_at -> Text,
-        nostr_event_id -> Nullable<Text>,
-        nostr_event_json -> Nullable<Text>,
-        market_id -> Nullable<Binary>,
-        creation_txid -> Nullable<Binary>,
-    }
-}
-
-diesel::table! {
     maker_orders (id) {
         id -> Integer,
         base_asset_id -> Binary,
@@ -44,6 +21,29 @@ diesel::table! {
         maker_receive_spk -> Nullable<Binary>,
         nostr_event_id -> Nullable<Text>,
         nostr_event_json -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    lmsr_pools (pool_id) {
+        pool_id -> Text,
+        market_id -> Text,
+        creation_txid -> Text,
+        witness_schema_version -> Text,
+        current_s_index -> BigInt,
+        reserve_yes -> BigInt,
+        reserve_no -> BigInt,
+        reserve_collateral -> BigInt,
+        reserve_yes_outpoint -> Text,
+        reserve_no_outpoint -> Text,
+        reserve_collateral_outpoint -> Text,
+        state_source -> Text,
+        last_transition_txid -> Nullable<Text>,
+        params_json -> Text,
+        nostr_event_id -> Nullable<Text>,
+        nostr_event_json -> Nullable<Text>,
+        created_at -> Text,
+        updated_at -> Text,
     }
 }
 
@@ -89,20 +89,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    pool_state_snapshots (id) {
-        id -> Integer,
-        pool_id -> Binary,
-        txid -> Binary,
-        r_yes -> BigInt,
-        r_no -> BigInt,
-        r_lbtc -> BigInt,
-        issued_lp -> BigInt,
-        block_height -> Nullable<Integer>,
-        created_at -> Text,
-    }
-}
-
-diesel::table! {
     sync_state (id) {
         id -> Integer,
         last_block_hash -> Nullable<Binary>,
@@ -128,20 +114,10 @@ diesel::table! {
         spending_txid -> Nullable<Binary>,
         block_height -> Nullable<Integer>,
         spent_block_height -> Nullable<Integer>,
-        amm_pool_id -> Nullable<Binary>,
     }
 }
 
-diesel::joinable!(pool_state_snapshots -> amm_pools (pool_id));
-diesel::joinable!(utxos -> amm_pools (amm_pool_id));
 diesel::joinable!(utxos -> maker_orders (maker_order_id));
 diesel::joinable!(utxos -> markets (market_id));
 
-diesel::allow_tables_to_appear_in_same_query!(
-    amm_pools,
-    maker_orders,
-    markets,
-    pool_state_snapshots,
-    sync_state,
-    utxos,
-);
+diesel::allow_tables_to_appear_in_same_query!(lmsr_pools, maker_orders, markets, sync_state, utxos,);

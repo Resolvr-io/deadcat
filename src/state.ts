@@ -18,6 +18,7 @@ import type {
   Side,
   SizeMode,
   TradeIntent,
+  TradeQuoteSnapshot,
   ViewMode,
   WalletData,
 } from "./types.ts";
@@ -109,6 +110,10 @@ export const state: {
   showAdvancedActions: boolean;
   showOrderbook: boolean;
   showFeeDetails: boolean;
+  tradeQuoteLoading: boolean;
+  tradeExecuteLoading: boolean;
+  tradeQuoteSnapshot: TradeQuoteSnapshot | null;
+  tradeError: string | null;
   tradeSizeSats: number;
   tradeSizeSatsDraft: string;
   tradeContracts: number;
@@ -122,7 +127,6 @@ export const state: {
   limitSellGuardVersion: number;
   limitSellGuardChecking: boolean;
   tradeQuoteModalOpen: boolean;
-  tradeQuoteLoading: boolean;
   tradeQuoteExecuting: boolean;
   tradeQuoteData: QuoteMarketTradeResult | null;
   tradeQuoteError: string;
@@ -246,6 +250,10 @@ export const state: {
   showAdvancedActions: false,
   showOrderbook: false,
   showFeeDetails: false,
+  tradeQuoteLoading: false,
+  tradeExecuteLoading: false,
+  tradeQuoteSnapshot: null,
+  tradeError: null,
   tradeSizeSats: 10000,
   tradeSizeSatsDraft: "10,000",
   tradeContracts: 10,
@@ -259,7 +267,6 @@ export const state: {
   limitSellGuardVersion: 0,
   limitSellGuardChecking: false,
   tradeQuoteModalOpen: false,
-  tradeQuoteLoading: false,
   tradeQuoteExecuting: false,
   tradeQuoteData: null,
   tradeQuoteError: "",

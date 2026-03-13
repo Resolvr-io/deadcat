@@ -1,17 +1,17 @@
-import { tauriApi } from "../api/tauri.ts";
+import { invoke } from "@tauri-apps/api/core";
 import { setMarkets } from "../state.ts";
 import type {
-  ContractParamsPayload,
   DiscoveredMarket,
-  DiscoveredOrder,
+  ExecuteTradeExpectedQuote,
+  ExecuteTradeResponse,
   IssuanceResult,
   Market,
   MarketCategory,
-  PricePoint,
-  RecoveredOwnLimitOrder,
+  Side,
+  TradeDirection,
+  TradeQuoteResponse,
 } from "../types.ts";
 import { hexToBytes } from "../utils/crypto.ts";
-import { attachOrdersToMarkets } from "./market-order-merge.ts";
 
 export function discoveredToMarket(d: DiscoveredMarket): Market {
   return {
@@ -42,6 +42,7 @@ export function discoveredToMarket(d: DiscoveredMarket): Market {
     noAssetId: d.no_asset_id,
     yesReissuanceToken: d.yes_reissuance_token,
     noReissuanceToken: d.no_reissuance_token,
+    limitOrders: [],
     creationTxid: d.creation_txid,
     collateralUtxos: [],
     nostrEventJson: d.nostr_event_json ?? null,
@@ -49,52 +50,13 @@ export function discoveredToMarket(d: DiscoveredMarket): Market {
     change24h: 0,
     volumeBtc: 0,
     liquidityBtc: 0,
-    limitOrders: [],
   };
-}
-
-async function loadOrdersAndRecovery(mode: "load" | "refresh"): Promise<{
-  orders: DiscoveredOrder[];
-  recoveredOwnOrders: RecoveredOwnLimitOrder[];
-}> {
-  const ordersError =
-    mode === "load"
-      ? "Failed to load limit orders:"
-      : "Failed to refresh limit orders:";
-
-  let orders: DiscoveredOrder[] = [];
-  let recoveredOwnOrders: RecoveredOwnLimitOrder[] = [];
-  try {
-    orders = await tauriApi.discoverLimitOrders();
-  } catch (error) {
-    console.warn(ordersError, error);
-  }
-  try {
-    recoveredOwnOrders = await tauriApi.recoverOwnLimitOrders();
-  } catch (error) {
-    console.warn("Failed to recover own limit orders:", error);
-  }
-  return { orders, recoveredOwnOrders };
-}
-
-async function refreshMarkets(
-  fetchMarkets: () => Promise<DiscoveredMarket[]>,
-  mode: "load" | "refresh",
-): Promise<void> {
-  const stored = await fetchMarkets();
-  const { orders, recoveredOwnOrders } = await loadOrdersAndRecovery(mode);
-  setMarkets(
-    attachOrdersToMarkets(
-      stored.map(discoveredToMarket),
-      orders,
-      recoveredOwnOrders,
-    ),
-  );
 }
 
 export async function loadMarkets(): Promise<void> {
   try {
-    await refreshMarkets(() => tauriApi.discoverContracts(), "load");
+    const stored = await invoke<DiscoveredMarket[]>("discover_contracts");
+    setMarkets(stored.map(discoveredToMarket));
   } catch (error) {
     console.warn("Failed to load markets:", error);
     setMarkets([]);
@@ -103,14 +65,15 @@ export async function loadMarkets(): Promise<void> {
 
 export async function refreshMarketsFromStore(): Promise<void> {
   try {
-    await refreshMarkets(() => tauriApi.listContracts(), "refresh");
+    const stored = await invoke<DiscoveredMarket[]>("list_contracts");
+    setMarkets(stored.map(discoveredToMarket));
   } catch (error) {
     console.warn("Failed to refresh markets from store:", error);
   }
 }
 
-export function marketToContractParams(market: Market): ContractParamsPayload {
-  return {
+export function marketToContractParamsJson(market: Market): string {
+  return JSON.stringify({
     oracle_public_key: hexToBytes(market.oraclePubkey),
     collateral_asset_id: hexToBytes(market.collateralAssetId),
     yes_token_asset: hexToBytes(market.yesAssetId),
@@ -119,7 +82,7 @@ export function marketToContractParams(market: Market): ContractParamsPayload {
     no_reissuance_token: hexToBytes(market.noReissuanceToken),
     collateral_per_token: market.cptSats,
     expiry_time: market.expiryHeight,
-  };
+  });
 }
 
 export async function issueTokens(
@@ -129,19 +92,47 @@ export async function issueTokens(
   if (!market.creationTxid) {
     throw new Error("Market has no creation txid — cannot issue tokens");
   }
-  return tauriApi.issueTokens(
-    marketToContractParams(market),
-    market.creationTxid,
+  return invoke<IssuanceResult>("issue_tokens", {
+    contractParamsJson: marketToContractParamsJson(market),
+    creationTxid: market.creationTxid,
     pairs,
-  );
+  });
 }
 
-export async function syncPool(poolId: string): Promise<void> {
-  await tauriApi.syncPool(poolId);
+export async function quoteTrade(
+  market: Market,
+  side: Side,
+  direction: TradeDirection,
+  exactInput: number,
+): Promise<TradeQuoteResponse> {
+  return invoke<TradeQuoteResponse>("quote_trade", {
+    request: {
+      contract_params_json: marketToContractParamsJson(market),
+      market_id: market.marketId,
+      side,
+      direction,
+      exact_input: Math.max(1, Math.floor(exactInput)),
+    },
+  });
 }
 
-export async function loadPriceHistory(
-  marketId: string,
-): Promise<PricePoint[]> {
-  return tauriApi.getPoolPriceHistory(marketId);
+export async function executeTrade(
+  market: Market,
+  side: Side,
+  direction: TradeDirection,
+  exactInput: number,
+  feeAmount = 500,
+  expectedQuote?: ExecuteTradeExpectedQuote,
+): Promise<ExecuteTradeResponse> {
+  return invoke<ExecuteTradeResponse>("execute_trade", {
+    request: {
+      contract_params_json: marketToContractParamsJson(market),
+      market_id: market.marketId,
+      side,
+      direction,
+      exact_input: Math.max(1, Math.floor(exactInput)),
+      fee_amount: feeAmount,
+      expected_quote: expectedQuote,
+    },
+  });
 }

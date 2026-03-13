@@ -1,10 +1,15 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use deadcat_sdk::PoolParams;
 use deadcat_sdk::testing::{
     TestStore, oracle_pubkey_from_keys, test_market_params, test_metadata, test_order_announcement,
 };
-use deadcat_sdk::{ContractAnnouncement, DeadcatNode, DiscoveryConfig, DiscoveryEvent};
+use deadcat_sdk::{
+    CompiledLmsrPool, ContractAnnouncement, DeadcatNode, DiscoveryConfig, DiscoveryEvent,
+    LmsrInitialOutpoint, LmsrPoolId, LmsrPoolIdInput, LmsrPoolParams, PoolAnnouncement,
+    PoolReserves,
+};
 use deadcat_sdk::{NodeError, TradeAmount, TradeDirection, TradeSide};
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
@@ -21,6 +26,7 @@ async fn setup_node_with_store(
     let store = Arc::new(Mutex::new(TestStore::default()));
     let config = DiscoveryConfig {
         relays: vec![mock_url.to_string()],
+        network_tag: "liquid-testnet".to_string(),
         ..Default::default()
     };
     let (node, rx) = DeadcatNode::with_store(
@@ -30,6 +36,60 @@ async fn setup_node_with_store(
         config,
     );
     (node, rx, store, keys)
+}
+
+fn parse_lmsr_outpoint(outpoint: &str) -> LmsrInitialOutpoint {
+    let (txid, vout) = outpoint
+        .split_once(':')
+        .expect("test outpoint must contain ':'");
+    let txid: [u8; 32] = hex::decode(txid)
+        .expect("test outpoint txid must be hex")
+        .try_into()
+        .expect("test outpoint txid must be 32 bytes");
+    let vout = vout.parse::<u32>().expect("test outpoint vout must be u32");
+    LmsrInitialOutpoint { txid, vout }
+}
+
+fn derive_test_lmsr_pool_id(announcement: &PoolAnnouncement) -> String {
+    let params = LmsrPoolParams {
+        yes_asset_id: announcement.params.yes_asset_id,
+        no_asset_id: announcement.params.no_asset_id,
+        collateral_asset_id: announcement.params.lbtc_asset_id,
+        lmsr_table_root: hex::decode(&announcement.lmsr_table_root)
+            .expect("table root hex")
+            .try_into()
+            .expect("table root len"),
+        table_depth: announcement.table_depth,
+        q_step_lots: announcement.q_step_lots,
+        s_bias: announcement.s_bias,
+        s_max_index: announcement.s_max_index,
+        half_payout_sats: announcement.half_payout_sats,
+        fee_bps: announcement.params.fee_bps,
+        min_r_yes: announcement.params.min_r_yes,
+        min_r_no: announcement.params.min_r_no,
+        min_r_collateral: announcement.params.min_r_collateral,
+        cosigner_pubkey: announcement.params.cosigner_pubkey,
+    };
+    let creation_txid: [u8; 32] = hex::decode(&announcement.creation_txid)
+        .expect("creation txid hex")
+        .try_into()
+        .expect("creation txid len");
+    let contract = CompiledLmsrPool::new(params).expect("compile test lmsr pool");
+    let initial_yes_outpoint = parse_lmsr_outpoint(&announcement.initial_reserve_outpoints[0]);
+    let initial_no_outpoint = parse_lmsr_outpoint(&announcement.initial_reserve_outpoints[1]);
+    let initial_collateral_outpoint =
+        parse_lmsr_outpoint(&announcement.initial_reserve_outpoints[2]);
+    LmsrPoolId::derive_v1(&LmsrPoolIdInput {
+        chain_genesis_hash: deadcat_sdk::Network::LiquidTestnet.genesis_hash(),
+        params,
+        covenant_cmr: contract.primary_cmr().to_byte_array(),
+        creation_txid,
+        initial_yes_outpoint,
+        initial_no_outpoint,
+        initial_collateral_outpoint,
+    })
+    .expect("derive test lmsr pool id")
+    .to_hex()
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +248,8 @@ async fn node_subscription_delivers_events() {
         creation_txid: None,
     };
 
-    let event = deadcat_sdk::build_announcement_event(&keys, &announcement).unwrap();
+    let event =
+        deadcat_sdk::build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
     publisher.send_event(event).await.unwrap();
 
     // Wait for broadcast event
@@ -287,6 +348,239 @@ async fn quote_trade_no_liquidity() {
     match result {
         Err(NodeError::Sdk(deadcat_sdk::Error::NoLiquidity)) => {}
         other => panic!("expected NoLiquidity, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn quote_trade_requires_chain_access_for_lmsr_pool_scan() {
+    let mock = MockRelay::run().await.unwrap();
+    let (node, _rx, _store, keys) = setup_node_with_store(&mock.url()).await;
+
+    // Unlock wallet with a valid mnemonic so with_sdk doesn't return WalletLocked.
+    let datadir = tempfile::tempdir().unwrap();
+    let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    node.unlock_wallet(mnemonic, "tcp://127.0.0.1:1", datadir.path())
+        .unwrap();
+
+    let table_values = vec![2_000, 2_010, 2_025, 2_045, 2_070, 2_100, 2_135, 2_175];
+    let table_root = deadcat_sdk::lmsr_table_root(&table_values).unwrap();
+    let creation_txid = hex::encode([0x88; 32]);
+
+    let mut announcement = PoolAnnouncement {
+        version: 2,
+        params: PoolParams {
+            yes_asset_id: [0x01; 32],
+            no_asset_id: [0x02; 32],
+            lbtc_asset_id: [0x03; 32],
+            fee_bps: 30,
+            min_r_yes: 1,
+            min_r_no: 1,
+            min_r_collateral: 1,
+            cosigner_pubkey: [0x06; 32],
+        },
+        market_id: "mkt1".to_string(),
+        reserves: PoolReserves {
+            r_yes: 500,
+            r_no: 500,
+            r_lbtc: 1_000,
+        },
+        creation_txid: creation_txid.clone(),
+        lmsr_pool_id: String::new(),
+        lmsr_table_root: hex::encode(table_root),
+        table_depth: 3,
+        q_step_lots: 10,
+        s_bias: 4,
+        s_max_index: 7,
+        half_payout_sats: 100,
+        current_s_index: 4,
+        initial_reserve_outpoints: vec![
+            format!("{creation_txid}:0"),
+            format!("{creation_txid}:1"),
+            format!("{creation_txid}:2"),
+        ],
+        witness_schema_version: "DEADCAT/LMSR_WITNESS_SCHEMA_V2".to_string(),
+        table_manifest_hash: Some(hex::encode([0xaa; 32])),
+        lmsr_table_values: Some(table_values),
+    };
+    announcement.lmsr_pool_id = derive_test_lmsr_pool_id(&announcement);
+
+    node.announce_pool(&announcement).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
+    let params = test_market_params(oracle_pubkey);
+
+    let result = node
+        .quote_trade(
+            params,
+            "mkt1",
+            TradeSide::Yes,
+            TradeDirection::Buy,
+            TradeAmount::ExactInput(10_000),
+        )
+        .await;
+
+    match result {
+        Err(NodeError::Sdk(deadcat_sdk::Error::Electrum(msg))) => {
+            assert!(
+                msg.contains("Connection refused")
+                    || msg.contains("failed")
+                    || msg.contains("error")
+            );
+        }
+        other => panic!("expected electrum error while scanning LMSR reserves, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn quote_trade_ignores_malformed_lmsr_pool_payload() {
+    let mock = MockRelay::run().await.unwrap();
+    let (node, _rx, _store, keys) = setup_node_with_store(&mock.url()).await;
+
+    // Unlock wallet with a valid mnemonic so with_sdk doesn't return WalletLocked.
+    let datadir = tempfile::tempdir().unwrap();
+    let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    node.unlock_wallet(mnemonic, "tcp://127.0.0.1:1", datadir.path())
+        .unwrap();
+
+    // Deliberately malformed LMSR payload: invalid reserve outpoint encoding.
+    let announcement = PoolAnnouncement {
+        version: 2,
+        params: PoolParams {
+            yes_asset_id: [0x01; 32],
+            no_asset_id: [0x02; 32],
+            lbtc_asset_id: [0x03; 32],
+            fee_bps: 30,
+            min_r_yes: 1,
+            min_r_no: 1,
+            min_r_collateral: 1,
+            cosigner_pubkey: [0x06; 32],
+        },
+        market_id: "mkt1".to_string(),
+        reserves: PoolReserves {
+            r_yes: 500,
+            r_no: 500,
+            r_lbtc: 1_000,
+        },
+        creation_txid: hex::encode([0x88; 32]),
+        lmsr_pool_id: hex::encode([0x22; 32]),
+        lmsr_table_root: hex::encode([0x77; 32]),
+        table_depth: 3,
+        q_step_lots: 10,
+        s_bias: 4,
+        s_max_index: 7,
+        half_payout_sats: 100,
+        current_s_index: 4,
+        initial_reserve_outpoints: vec![
+            "not-an-outpoint".to_string(),
+            format!("{}:1", hex::encode([0xb2; 32])),
+            format!("{}:2", hex::encode([0xb3; 32])),
+        ],
+        witness_schema_version: "DEADCAT/LMSR_WITNESS_SCHEMA_V2".to_string(),
+        table_manifest_hash: None,
+        lmsr_table_values: None,
+    };
+
+    let announce_result = node.announce_pool(&announcement).await;
+    match announce_result {
+        Err(NodeError::Discovery(msg)) => {
+            assert!(msg.contains("initial_reserve_outpoints[0]"));
+        }
+        other => panic!("expected malformed pool announcement rejection, got {other:?}"),
+    }
+
+    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
+    let params = test_market_params(oracle_pubkey);
+
+    let result = node
+        .quote_trade(
+            params,
+            "mkt1",
+            TradeSide::Yes,
+            TradeDirection::Buy,
+            TradeAmount::ExactInput(10_000),
+        )
+        .await;
+
+    match result {
+        Err(NodeError::Sdk(deadcat_sdk::Error::NoLiquidity)) => {}
+        other => panic!("expected NoLiquidity after malformed pool rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn quote_trade_rejects_lmsr_pool_without_table_values() {
+    let mock = MockRelay::run().await.unwrap();
+    let (node, _rx, _store, keys) = setup_node_with_store(&mock.url()).await;
+
+    let datadir = tempfile::tempdir().unwrap();
+    let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    node.unlock_wallet(mnemonic, "tcp://127.0.0.1:1", datadir.path())
+        .unwrap();
+
+    let table_values = vec![2_000, 2_010, 2_025, 2_045, 2_070, 2_100, 2_135, 2_175];
+    let table_root = deadcat_sdk::lmsr_table_root(&table_values).unwrap();
+    let creation_txid = hex::encode([0x88; 32]);
+
+    let mut announcement = PoolAnnouncement {
+        version: 2,
+        params: PoolParams {
+            yes_asset_id: [0x01; 32],
+            no_asset_id: [0x02; 32],
+            lbtc_asset_id: [0x03; 32],
+            fee_bps: 30,
+            min_r_yes: 1,
+            min_r_no: 1,
+            min_r_collateral: 1,
+            cosigner_pubkey: [0x06; 32],
+        },
+        market_id: "mkt1".to_string(),
+        reserves: PoolReserves {
+            r_yes: 500,
+            r_no: 500,
+            r_lbtc: 1_000,
+        },
+        creation_txid: creation_txid.clone(),
+        lmsr_pool_id: String::new(),
+        lmsr_table_root: hex::encode(table_root),
+        table_depth: 3,
+        q_step_lots: 10,
+        s_bias: 4,
+        s_max_index: 7,
+        half_payout_sats: 100,
+        current_s_index: 4,
+        initial_reserve_outpoints: vec![
+            format!("{creation_txid}:0"),
+            format!("{creation_txid}:1"),
+            format!("{creation_txid}:2"),
+        ],
+        witness_schema_version: "DEADCAT/LMSR_WITNESS_SCHEMA_V2".to_string(),
+        table_manifest_hash: Some(hex::encode([0xaa; 32])),
+        lmsr_table_values: None,
+    };
+    announcement.lmsr_pool_id = derive_test_lmsr_pool_id(&announcement);
+
+    node.announce_pool(&announcement).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
+    let params = test_market_params(oracle_pubkey);
+
+    let result = node
+        .quote_trade(
+            params,
+            "mkt1",
+            TradeSide::Yes,
+            TradeDirection::Buy,
+            TradeAmount::ExactInput(10_000),
+        )
+        .await;
+
+    match result {
+        Err(NodeError::Sdk(deadcat_sdk::Error::TradeRouting(msg))) => {
+            assert!(msg.contains("lmsr_table_values"));
+        }
+        other => panic!("expected missing table-values error, got {other:?}"),
     }
 }
 

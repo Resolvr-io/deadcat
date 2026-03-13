@@ -1,8 +1,5 @@
 use deadcat_sdk::PredictionMarketParams;
-use deadcat_sdk::{
-    DeadcatSdk, LimitOrderRecoveryConfig, MarketState, OrderDirection, RecoveredOwnOrder,
-    RecoveredOwnOrderStatus,
-};
+use deadcat_sdk::{DeadcatSdk, MarketState, OrderDirection};
 use lwk_signer::SwSigner;
 use lwk_test_util::{
     TEST_MNEMONIC, TestEnv, TestEnvBuilder, generate_mnemonic, regtest_policy_asset,
@@ -104,7 +101,6 @@ fn test_oracle_pubkey() -> [u8; 32] {
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
-
 #[test]
 fn test_generate_mnemonic() {
     let (mnemonic, _signer) = DeadcatSdk::generate_mnemonic(false).unwrap();
@@ -815,32 +811,6 @@ fn issue_market_tokens(fixture: &mut TestFixture, pairs: u64) -> (Txid, Predicti
     create_and_issue(fixture, oracle_pubkey, 10_000, 500_000, pairs)
 }
 
-fn recovery_candidates(params: &PredictionMarketParams) -> Vec<[u8; 32]> {
-    vec![params.yes_token_asset, params.no_token_asset]
-}
-
-fn recover_orders(
-    sdk: &DeadcatSdk,
-    params: &PredictionMarketParams,
-) -> Result<Vec<RecoveredOwnOrder>, deadcat_sdk::Error> {
-    sdk.recover_own_limit_orders(
-        &recovery_candidates(params),
-        LimitOrderRecoveryConfig::default(),
-    )
-}
-
-fn restore_sdk_from_mnemonic(mnemonic: &str, electrum_url: &str) -> (DeadcatSdk, TempDir) {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let sdk = DeadcatSdk::new(
-        mnemonic,
-        deadcat_sdk::Network::LiquidRegtest,
-        electrum_url,
-        temp_dir.path(),
-    )
-    .unwrap();
-    (sdk, temp_dir)
-}
-
 #[test]
 fn test_create_and_cancel_limit_order() {
     let mut fixture = TestFixture::new();
@@ -858,6 +828,7 @@ fn test_create_and_cancel_limit_order() {
 
     // Create a SellBase limit order: sell 5 YES tokens at price 10 sats/token
     let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
+    let order_index = 11u32;
     let create_result = fixture
         .sdk
         .create_limit_order(
@@ -866,8 +837,9 @@ fn test_create_and_cancel_limit_order() {
             10, // price: 10 sats per YES token
             5,  // order_amount: 5 YES tokens
             OrderDirection::SellBase,
-            1,   // min_fill_lots
-            1,   // min_remainder_lots
+            1, // min_fill_lots
+            1, // min_remainder_lots
+            order_index,
             500, // fee_amount
         )
         .unwrap();
@@ -887,7 +859,7 @@ fn test_create_and_cancel_limit_order() {
         .cancel_limit_order(
             &create_result.order_params,
             create_result.maker_base_pubkey,
-            create_result.order_nonce,
+            order_index,
             500, // fee_amount
         )
         .unwrap();
@@ -913,6 +885,7 @@ fn test_create_and_full_fill_limit_order() {
     let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
 
     // Create a SellBase limit order: sell 5 YES tokens at price 10 sats/token
+    let order_index = 12u32;
     let create_result = fixture
         .sdk
         .create_limit_order(
@@ -921,8 +894,9 @@ fn test_create_and_full_fill_limit_order() {
             10, // price
             5,  // order_amount
             OrderDirection::SellBase,
-            1,   // min_fill_lots
-            1,   // min_remainder_lots
+            1, // min_fill_lots
+            1, // min_remainder_lots
+            order_index,
             500, // fee_amount
         )
         .unwrap();
@@ -967,6 +941,7 @@ fn test_partial_fill_limit_order() {
     let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
 
     // Create a SellBase limit order: sell 5 YES tokens at price 10 sats/token
+    let order_index = 13u32;
     let create_result = fixture
         .sdk
         .create_limit_order(
@@ -975,8 +950,9 @@ fn test_partial_fill_limit_order() {
             10, // price
             5,  // order_amount
             OrderDirection::SellBase,
-            1,   // min_fill_lots
-            1,   // min_remainder_lots
+            1, // min_fill_lots
+            1, // min_remainder_lots
+            order_index,
             500, // fee_amount
         )
         .unwrap();
@@ -1011,7 +987,7 @@ fn test_partial_fill_limit_order() {
         .cancel_limit_order(
             &create_result.order_params,
             create_result.maker_base_pubkey,
-            create_result.order_nonce,
+            order_index,
             500, // fee_amount
         )
         .unwrap();
@@ -1023,376 +999,4 @@ fn test_partial_fill_limit_order() {
     // All 10 tokens back in wallet
     let balance = fixture.sdk.balance().unwrap();
     assert_eq!(*balance.get(&yes_asset).unwrap_or(&0), 10);
-}
-
-#[test]
-fn test_recover_unfilled_limit_order_after_restore() {
-    let mut fixture = TestFixture::new();
-    fixture.fund_and_sync(20, 500_000);
-
-    let (_creation_txid, params) = issue_market_tokens(&mut fixture, 10);
-    let lbtc = regtest_policy_asset();
-    let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
-
-    let create_result = fixture
-        .sdk
-        .create_limit_order(
-            params.yes_token_asset,
-            lbtc_bytes,
-            10,
-            5,
-            OrderDirection::SellBase,
-            1,
-            1,
-            500,
-        )
-        .unwrap();
-    fixture.mine_and_sync(1);
-
-    let (mut restored, _restored_dir) =
-        restore_sdk_from_mnemonic(TEST_MNEMONIC, fixture.sdk.electrum_url());
-    restored.sync().unwrap();
-
-    let recovered = recover_orders(&restored, &params).unwrap();
-    let recovered_order = recovered
-        .iter()
-        .find(|r| r.order_nonce == Some(create_result.order_nonce))
-        .expect("expected recovery for unfilled order");
-
-    assert_eq!(
-        recovered_order.status,
-        RecoveredOwnOrderStatus::ActiveConfirmed
-    );
-    assert!(recovered_order.is_cancelable());
-    assert_eq!(recovered_order.order_index, Some(create_result.order_index));
-    assert_eq!(recovered_order.offered_amount, 5);
-}
-
-#[test]
-fn test_recover_partial_fill_limit_order_after_restore() {
-    let mut fixture = TestFixture::new();
-    fixture.fund_and_sync(25, 500_000);
-
-    let (_creation_txid, params) = issue_market_tokens(&mut fixture, 10);
-    let lbtc = regtest_policy_asset();
-    let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
-
-    let create_result = fixture
-        .sdk
-        .create_limit_order(
-            params.yes_token_asset,
-            lbtc_bytes,
-            10,
-            5,
-            OrderDirection::SellBase,
-            1,
-            1,
-            500,
-        )
-        .unwrap();
-    fixture.mine_and_sync(1);
-
-    let fill = fixture
-        .sdk
-        .fill_limit_order(
-            &create_result.order_params,
-            create_result.maker_base_pubkey,
-            create_result.order_nonce,
-            3,
-            500,
-        )
-        .unwrap();
-    assert!(fill.is_partial);
-    fixture.mine_and_sync(1);
-
-    let (mut restored, _restored_dir) =
-        restore_sdk_from_mnemonic(TEST_MNEMONIC, fixture.sdk.electrum_url());
-    restored.sync().unwrap();
-
-    let recovered = recover_orders(&restored, &params).unwrap();
-    let matches: Vec<&RecoveredOwnOrder> = recovered
-        .iter()
-        .filter(|r| r.order_nonce == Some(create_result.order_nonce))
-        .collect();
-    assert!(
-        !matches.is_empty(),
-        "expected at least one recovered record for partially filled order",
-    );
-
-    let active = matches
-        .iter()
-        .copied()
-        .find(|r| r.status == RecoveredOwnOrderStatus::ActiveConfirmed)
-        .expect("expected active remainder after partial fill");
-    assert_eq!(active.offered_amount, 2);
-    assert!(active.is_cancelable());
-
-    let spent = matches
-        .iter()
-        .copied()
-        .find(|r| r.status == RecoveredOwnOrderStatus::SpentOrFilled)
-        .expect("expected spent original output after partial fill");
-    assert_eq!(spent.offered_amount, 5);
-    assert!(
-        matches
-            .iter()
-            .all(|r| r.offered_asset_id == params.yes_token_asset),
-        "recovery should only include order covenant outputs, not maker-receive proceeds",
-    );
-
-    let active_params = active.params.expect("active entry missing params");
-    let active_pubkey = active
-        .maker_base_pubkey
-        .expect("active entry missing maker pubkey");
-    let resolved = restored
-        .resolve_order_index(
-            &active_params,
-            active_pubkey,
-            active.offered_amount,
-            Some(active.outpoint),
-        )
-        .unwrap();
-    assert_eq!(resolved, Some(create_result.order_index));
-}
-
-#[test]
-fn test_recover_fully_filled_limit_order_after_restore() {
-    let mut fixture = TestFixture::new();
-    fixture.fund_and_sync(25, 500_000);
-
-    let (_creation_txid, params) = issue_market_tokens(&mut fixture, 10);
-    let lbtc = regtest_policy_asset();
-    let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
-
-    let create_result = fixture
-        .sdk
-        .create_limit_order(
-            params.yes_token_asset,
-            lbtc_bytes,
-            10,
-            5,
-            OrderDirection::SellBase,
-            1,
-            1,
-            500,
-        )
-        .unwrap();
-    fixture.mine_and_sync(1);
-
-    let fill = fixture
-        .sdk
-        .fill_limit_order(
-            &create_result.order_params,
-            create_result.maker_base_pubkey,
-            create_result.order_nonce,
-            5,
-            500,
-        )
-        .unwrap();
-    assert!(!fill.is_partial);
-    fixture.mine_and_sync(1);
-
-    let (mut restored, _restored_dir) =
-        restore_sdk_from_mnemonic(TEST_MNEMONIC, fixture.sdk.electrum_url());
-    restored.sync().unwrap();
-
-    let recovered = recover_orders(&restored, &params).unwrap();
-    let matches: Vec<&RecoveredOwnOrder> = recovered
-        .iter()
-        .filter(|r| r.order_nonce == Some(create_result.order_nonce))
-        .collect();
-    assert_eq!(
-        matches.len(),
-        1,
-        "fully-filled order should only leave a spent record",
-    );
-    assert_eq!(matches[0].status, RecoveredOwnOrderStatus::SpentOrFilled);
-    assert!(!matches[0].is_cancelable());
-    assert_eq!(matches[0].offered_amount, 5);
-}
-
-#[test]
-fn test_recover_unfilled_sell_quote_limit_order_after_restore() {
-    let mut fixture = TestFixture::new();
-    fixture.fund_and_sync(20, 500_000);
-
-    let (_creation_txid, params) = issue_market_tokens(&mut fixture, 10);
-    let lbtc = regtest_policy_asset();
-    let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
-
-    let create_result = fixture
-        .sdk
-        .create_limit_order(
-            params.yes_token_asset,
-            lbtc_bytes,
-            10,
-            50,
-            OrderDirection::SellQuote,
-            1,
-            1,
-            500,
-        )
-        .unwrap();
-    fixture.mine_and_sync(1);
-
-    let (mut restored, _restored_dir) =
-        restore_sdk_from_mnemonic(TEST_MNEMONIC, fixture.sdk.electrum_url());
-    restored.sync().unwrap();
-
-    let recovered = recover_orders(&restored, &params).unwrap();
-    let recovered_order = recovered
-        .iter()
-        .find(|r| r.order_nonce == Some(create_result.order_nonce))
-        .expect("expected recovery for unfilled sell-quote order");
-
-    assert_eq!(
-        recovered_order.status,
-        RecoveredOwnOrderStatus::ActiveConfirmed
-    );
-    assert!(recovered_order.is_cancelable());
-    assert_eq!(recovered_order.order_index, Some(create_result.order_index));
-    assert_eq!(recovered_order.offered_amount, 50);
-    assert_eq!(recovered_order.offered_asset_id, lbtc_bytes);
-}
-
-#[test]
-fn test_recover_partial_fill_sell_quote_limit_order_after_restore() {
-    let mut fixture = TestFixture::new();
-    fixture.fund_and_sync(25, 500_000);
-
-    let (_creation_txid, params) = issue_market_tokens(&mut fixture, 10);
-    let lbtc = regtest_policy_asset();
-    let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
-
-    let create_result = fixture
-        .sdk
-        .create_limit_order(
-            params.yes_token_asset,
-            lbtc_bytes,
-            10,
-            50,
-            OrderDirection::SellQuote,
-            1,
-            1,
-            500,
-        )
-        .unwrap();
-    fixture.mine_and_sync(1);
-
-    let fill = fixture
-        .sdk
-        .fill_limit_order(
-            &create_result.order_params,
-            create_result.maker_base_pubkey,
-            create_result.order_nonce,
-            3,
-            500,
-        )
-        .unwrap();
-    assert!(fill.is_partial);
-    fixture.mine_and_sync(1);
-
-    let (mut restored, _restored_dir) =
-        restore_sdk_from_mnemonic(TEST_MNEMONIC, fixture.sdk.electrum_url());
-    restored.sync().unwrap();
-
-    let recovered = recover_orders(&restored, &params).unwrap();
-    let matches: Vec<&RecoveredOwnOrder> = recovered
-        .iter()
-        .filter(|r| r.order_nonce == Some(create_result.order_nonce))
-        .collect();
-    assert!(
-        !matches.is_empty(),
-        "expected at least one recovered record for partially filled sell-quote order",
-    );
-
-    let active = matches
-        .iter()
-        .copied()
-        .find(|r| r.status == RecoveredOwnOrderStatus::ActiveConfirmed)
-        .expect("expected active remainder after partial sell-quote fill");
-    assert_eq!(active.offered_amount, 20);
-    assert!(active.is_cancelable());
-
-    let spent = matches
-        .iter()
-        .copied()
-        .find(|r| r.status == RecoveredOwnOrderStatus::SpentOrFilled)
-        .expect("expected spent original output after partial sell-quote fill");
-    assert_eq!(spent.offered_amount, 50);
-    assert!(
-        matches.iter().all(|r| r.offered_asset_id == lbtc_bytes),
-        "sell-quote recovery should include only policy-asset covenant outputs",
-    );
-
-    let active_params = active.params.expect("active entry missing params");
-    let active_pubkey = active
-        .maker_base_pubkey
-        .expect("active entry missing maker pubkey");
-    let resolved = restored
-        .resolve_order_index(
-            &active_params,
-            active_pubkey,
-            active.offered_amount,
-            Some(active.outpoint),
-        )
-        .unwrap();
-    assert_eq!(resolved, Some(create_result.order_index));
-}
-
-#[test]
-fn test_recover_fully_filled_sell_quote_limit_order_after_restore() {
-    let mut fixture = TestFixture::new();
-    fixture.fund_and_sync(25, 500_000);
-
-    let (_creation_txid, params) = issue_market_tokens(&mut fixture, 10);
-    let lbtc = regtest_policy_asset();
-    let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
-
-    let create_result = fixture
-        .sdk
-        .create_limit_order(
-            params.yes_token_asset,
-            lbtc_bytes,
-            10,
-            50,
-            OrderDirection::SellQuote,
-            1,
-            1,
-            500,
-        )
-        .unwrap();
-    fixture.mine_and_sync(1);
-
-    let fill = fixture
-        .sdk
-        .fill_limit_order(
-            &create_result.order_params,
-            create_result.maker_base_pubkey,
-            create_result.order_nonce,
-            5,
-            500,
-        )
-        .unwrap();
-    assert!(!fill.is_partial);
-    fixture.mine_and_sync(1);
-
-    let (mut restored, _restored_dir) =
-        restore_sdk_from_mnemonic(TEST_MNEMONIC, fixture.sdk.electrum_url());
-    restored.sync().unwrap();
-
-    let recovered = recover_orders(&restored, &params).unwrap();
-    let matches: Vec<&RecoveredOwnOrder> = recovered
-        .iter()
-        .filter(|r| r.order_nonce == Some(create_result.order_nonce))
-        .collect();
-    assert_eq!(
-        matches.len(),
-        1,
-        "fully-filled sell-quote order should only leave a spent record",
-    );
-    assert_eq!(matches[0].status, RecoveredOwnOrderStatus::SpentOrFilled);
-    assert!(!matches[0].is_cancelable());
-    assert_eq!(matches[0].offered_amount, 50);
-    assert_eq!(matches[0].offered_asset_id, lbtc_bytes);
 }

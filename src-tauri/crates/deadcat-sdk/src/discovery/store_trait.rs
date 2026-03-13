@@ -1,11 +1,9 @@
-use crate::amm_pool::math::PoolReserves;
-use crate::amm_pool::params::{AmmPoolParams, PoolId};
 use crate::maker_order::params::MakerOrderParams;
-use crate::prediction_market::params::{MarketId, PredictionMarketParams};
+use crate::prediction_market::params::PredictionMarketParams;
 
-/// Metadata discovered alongside a market from Nostr announcements.
+/// Metadata passed alongside a market when persisting to the store.
 #[derive(Debug, Clone, Default)]
-pub struct DiscoveredMarketMetadata {
+pub struct ContractMetadataInput {
     pub question: Option<String>,
     pub description: Option<String>,
     pub category: Option<String>,
@@ -17,6 +15,62 @@ pub struct DiscoveredMarketMetadata {
     pub nostr_event_json: Option<String>,
 }
 
+/// Canonical LMSR pool metadata/state persisted by discovery ingestion.
+#[derive(Debug, Clone)]
+pub struct LmsrPoolIngestInput {
+    pub pool_id: String,
+    pub market_id: String,
+    pub yes_asset_id: [u8; 32],
+    pub no_asset_id: [u8; 32],
+    pub collateral_asset_id: [u8; 32],
+    pub fee_bps: u64,
+    pub cosigner_pubkey: [u8; 32],
+    pub lmsr_table_root: [u8; 32],
+    pub table_depth: u32,
+    pub q_step_lots: u64,
+    pub s_bias: u64,
+    pub s_max_index: u64,
+    pub half_payout_sats: u64,
+    pub creation_txid: String,
+    pub witness_schema_version: String,
+    pub current_s_index: u64,
+    pub reserve_outpoints: [String; 3],
+    pub reserve_yes: u64,
+    pub reserve_no: u64,
+    pub reserve_collateral: u64,
+    pub state_source: LmsrPoolStateSource,
+    pub last_transition_txid: Option<String>,
+    pub nostr_event_id: Option<String>,
+    pub nostr_event_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LmsrPoolStateSource {
+    Announcement,
+    CanonicalScan,
+}
+
+impl LmsrPoolStateSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LmsrPoolStateSource::Announcement => "announcement",
+            LmsrPoolStateSource::CanonicalScan => "canonical_scan",
+        }
+    }
+}
+
+/// Canonical LMSR live-state update produced by chain scan.
+#[derive(Debug, Clone)]
+pub struct LmsrPoolStateUpdateInput {
+    pub pool_id: String,
+    pub current_s_index: u64,
+    pub reserve_outpoints: [String; 3],
+    pub reserve_yes: u64,
+    pub reserve_no: u64,
+    pub reserve_collateral: u64,
+    pub last_transition_txid: Option<String>,
+}
+
 /// Trait abstracting store operations needed by `DiscoveryService`.
 ///
 /// This avoids a circular dependency between `deadcat-sdk` and `deadcat-store`.
@@ -26,7 +80,7 @@ pub trait DiscoveryStore: Send + 'static {
     fn ingest_market(
         &mut self,
         params: &PredictionMarketParams,
-        meta: Option<&DiscoveredMarketMetadata>,
+        meta: Option<&ContractMetadataInput>,
     ) -> Result<(), String>;
 
     /// Persist a discovered maker order. If it already exists, this should be a no-op.
@@ -39,95 +93,9 @@ pub trait DiscoveryStore: Send + 'static {
         nostr_event_json: Option<&str>,
     ) -> Result<(), String>;
 
-    /// Persist a discovered AMM pool. If it already exists, update state.
-    #[allow(clippy::too_many_arguments)]
-    fn ingest_amm_pool(
-        &mut self,
-        params: &AmmPoolParams,
-        issued_lp: u64,
-        nostr_event_id: Option<&str>,
-        nostr_event_json: Option<&str>,
-        market_id: Option<&[u8; 32]>,
-        creation_txid: Option<&[u8; 32]>,
-    ) -> Result<(), String>;
+    /// Persist a discovered LMSR pool/state snapshot.
+    fn ingest_lmsr_pool(&mut self, input: &LmsrPoolIngestInput) -> Result<(), String>;
 
-    /// Update pool state (issued_lp, covenant_spk).
-    /// Reserves are tracked exclusively in pool_state_snapshots.
-    fn update_pool_state(
-        &mut self,
-        pool_id: &crate::amm_pool::params::PoolId,
-        params: &AmmPoolParams,
-        issued_lp: u64,
-    ) -> Result<(), String>;
-
-    /// Get a pool's params, creation_txid, and pool_id by PoolId.
-    /// Returns (params, pool_id_bytes, creation_txid_bytes) or None.
-    fn get_pool_info(
-        &mut self,
-        pool_id: &crate::amm_pool::params::PoolId,
-    ) -> Result<Option<PoolInfo>, String>;
-
-    /// Get the latest pool snapshot (txid, issued_lp) for incremental sync.
-    fn get_latest_pool_snapshot_resume(
-        &mut self,
-        pool_id: &[u8; 32],
-    ) -> Result<Option<([u8; 32], u64)>, String>;
-
-    /// Insert a pool state snapshot (idempotent).
-    #[allow(clippy::too_many_arguments)]
-    fn insert_pool_snapshot(
-        &mut self,
-        pool_id: &[u8; 32],
-        txid: &[u8; 32],
-        r_yes: u64,
-        r_no: u64,
-        r_lbtc: u64,
-        issued_lp: u64,
-        block_height: Option<i32>,
-    ) -> Result<(), String>;
-
-    /// Find the active pool for a market.
-    fn get_pool_id_for_market(&mut self, market_id: &MarketId) -> Result<Option<PoolId>, String>;
-
-    /// Most recent pool state snapshot.
-    fn get_latest_pool_snapshot(
-        &mut self,
-        pool_id: &PoolId,
-    ) -> Result<Option<PoolSnapshot>, String>;
-
-    /// All pool state snapshots in chronological order.
-    fn get_pool_snapshot_history(&mut self, pool_id: &PoolId) -> Result<Vec<PoolSnapshot>, String>;
-
-    // ── Chain watcher bootstrap queries ──────────────────────────────
-
-    /// Return all markets with their cached non-empty scriptPubKeys (up to 5).
-    ///
-    /// Typical order is `[dormant_spk, unresolved_spk, resolved_yes_spk, resolved_no_spk, expired_spk]`.
-    #[allow(clippy::type_complexity)]
-    fn get_all_market_spks(&mut self) -> Result<Vec<([u8; 32], Vec<Vec<u8>>)>, String>;
-
-    /// Return all pools with their current covenant scriptPubKey for subscription.
-    ///
-    /// Each entry is `(pool_id, current_covenant_spk)`.
-    fn get_all_pool_watch_info(&mut self) -> Result<Vec<(PoolId, Vec<u8>)>, String>;
-
-    /// Return all stored Nostr event JSON strings for relay reconciliation.
-    /// Includes markets, orders, and pools (excludes attestations, which are not persisted).
-    fn get_all_nostr_events(&mut self) -> Result<Vec<String>, String>;
-}
-
-/// Lightweight pool info returned by `DiscoveryStore::get_pool_info`.
-#[derive(Debug, Clone)]
-pub struct PoolInfo {
-    pub params: AmmPoolParams,
-    pub pool_id: [u8; 32],
-    pub creation_txid: Option<[u8; 32]>,
-}
-
-/// A single pool state observation (reserves + LP supply at a point in time).
-#[derive(Debug, Clone)]
-pub struct PoolSnapshot {
-    pub reserves: PoolReserves,
-    pub issued_lp: u64,
-    pub block_height: Option<i32>,
+    /// Persist canonical LMSR live-state produced by chain scan.
+    fn upsert_lmsr_pool_state(&mut self, input: &LmsrPoolStateUpdateInput) -> Result<(), String>;
 }

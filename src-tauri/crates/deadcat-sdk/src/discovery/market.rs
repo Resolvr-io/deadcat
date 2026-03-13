@@ -2,8 +2,9 @@ use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement};
+use crate::network::Network;
 
-use super::{APP_EVENT_KIND, CONTRACT_TAG, DEFAULT_RELAYS, NETWORK_TAG, bytes_to_hex};
+use super::{APP_EVENT_KIND, CONTRACT_TAG, DEFAULT_RELAYS, bytes_to_hex};
 
 /// What the frontend receives — maps to existing Market type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,10 +30,10 @@ pub struct DiscoveredMarket {
     pub state: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nostr_event_json: Option<String>,
-    /// Live YES probability in basis points (0–10000) from AMM pool reserves, if available.
+    /// Live YES probability in basis points (0–10000) from pool reserves, if available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub yes_price_bps: Option<u16>,
-    /// Live NO probability in basis points (0–10000) from AMM pool reserves, if available.
+    /// Live NO probability in basis points (0–10000) from pool reserves, if available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_price_bps: Option<u16>,
 }
@@ -41,7 +42,11 @@ pub struct DiscoveredMarket {
 pub fn build_announcement_event(
     keys: &Keys,
     announcement: &ContractAnnouncement,
+    network_tag: &str,
 ) -> Result<Event, String> {
+    network_tag
+        .parse::<Network>()
+        .map_err(|e| format!("unsupported network tag '{network_tag}': {e}"))?;
     let market_id = announcement.contract_params.market_id();
     let market_id_hex = bytes_to_hex(market_id.as_bytes());
     let category_lower = announcement.metadata.category.to_lowercase();
@@ -53,7 +58,7 @@ pub fn build_announcement_event(
         Tag::identifier(&market_id_hex),
         Tag::hashtag(CONTRACT_TAG),
         Tag::hashtag(&category_lower),
-        Tag::custom(TagKind::custom("network"), vec![NETWORK_TAG.to_string()]),
+        Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
     ];
 
     let event = EventBuilder::new(APP_EVENT_KIND, &content)
@@ -64,13 +69,37 @@ pub fn build_announcement_event(
     Ok(event)
 }
 
+fn event_network_tag(event: &Event) -> Option<String> {
+    event.tags.iter().find_map(|tag| {
+        let fields = tag.as_slice();
+        if fields.len() >= 2 && fields[0] == "network" {
+            Some(fields[1].to_string())
+        } else {
+            None
+        }
+    })
+}
+
 /// Build a Nostr filter for fetching contract announcements.
 pub fn build_contract_filter() -> Filter {
     Filter::new().kind(APP_EVENT_KIND).hashtag(CONTRACT_TAG)
 }
 
 /// Parse a Nostr event into a DiscoveredMarket.
-pub fn parse_announcement_event(event: &Event) -> Result<DiscoveredMarket, String> {
+pub fn parse_announcement_event(
+    event: &Event,
+    expected_network_tag: &str,
+) -> Result<DiscoveredMarket, String> {
+    expected_network_tag
+        .parse::<Network>()
+        .map_err(|e| format!("unsupported network tag '{expected_network_tag}': {e}"))?;
+    let network_tag = event_network_tag(event)
+        .ok_or_else(|| "missing network tag for contract announcement event".to_string())?;
+    if network_tag != expected_network_tag {
+        return Err(format!(
+            "unsupported network tag for contract announcement event: {network_tag}"
+        ));
+    }
     let announcement: ContractAnnouncement = serde_json::from_str(&event.content)
         .map_err(|e| format!("failed to parse announcement: {e}"))?;
     if announcement.version != CONTRACT_ANNOUNCEMENT_VERSION {
@@ -175,12 +204,30 @@ mod tests {
             creation_txid: None,
         };
 
-        let event = build_announcement_event(&keys, &announcement).unwrap();
-        let market = parse_announcement_event(&event).unwrap();
+        let event = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
+        let market = parse_announcement_event(&event, "liquid-testnet").unwrap();
 
         assert_eq!(market.question, "Will BTC hit 100k?");
         assert_eq!(market.cpt_sats, 5000);
         assert_eq!(market.expiry_height, 3_650_000);
         assert_eq!(market.creator_pubkey, keys.public_key().to_hex());
+    }
+
+    #[test]
+    fn parse_announcement_event_rejects_network_mismatch() {
+        let keys = Keys::generate();
+        let announcement = ContractAnnouncement {
+            version: 1,
+            contract_params: test_params(),
+            metadata: test_metadata(),
+            creation_txid: None,
+        };
+
+        let event = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
+        let err = parse_announcement_event(&event, "liquid-regtest").unwrap_err();
+        assert!(
+            err.contains("unsupported network tag for contract announcement event"),
+            "unexpected error: {err}"
+        );
     }
 }

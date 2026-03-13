@@ -1,5 +1,6 @@
 use lwk_wollet::ElementsNetwork;
 use lwk_wollet::elements::AddressParams;
+use lwk_wollet::elements::hashes::Hash as _;
 use serde::Deserialize;
 
 /// Network variants for Liquid.
@@ -54,6 +55,18 @@ impl Network {
             Network::LiquidTestnet => "testnet",
             Network::LiquidRegtest => "regtest",
         }
+    }
+
+    pub fn discovery_tag(self) -> &'static str {
+        match self {
+            Network::Liquid => "liquid",
+            Network::LiquidTestnet => "liquid-testnet",
+            Network::LiquidRegtest => "liquid-regtest",
+        }
+    }
+
+    pub fn genesis_hash(self) -> [u8; 32] {
+        self.into_lwk().genesis_block_hash().to_byte_array()
     }
 }
 

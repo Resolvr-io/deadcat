@@ -12,6 +12,6 @@ pub enum DiscoveryEvent {
     OrderDiscovered(DiscoveredOrder),
     /// An oracle attestation was received.
     AttestationDiscovered(AttestationContent),
-    /// An AMM pool announcement was received.
+    /// A pool announcement was received.
     PoolDiscovered(DiscoveredPool),
 }

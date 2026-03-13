@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::amm_pool::math::{PoolReserves, SwapDirection, SwapPair};
-use crate::amm_pool::params::AmmPoolParams;
+use crate::lmsr_pool::math::LmsrTradeKind;
+use crate::lmsr_pool::params::LmsrPoolParams;
 use crate::maker_order::params::MakerOrderParams;
+use crate::pool::PoolReserves;
 use crate::pset::UnblindedUtxo;
 
 // ── Public trade request types ──────────────────────────────────────────
@@ -75,8 +76,10 @@ pub struct RouteLeg {
 /// Where a route leg sources its liquidity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LiquiditySource {
-    AmmPool {
+    LmsrPool {
         pool_id: String,
+        old_s_index: u64,
+        new_s_index: u64,
     },
     LimitOrder {
         order_id: String,
@@ -94,8 +97,8 @@ pub(crate) struct ExecutionPlan {
     /// Limit orders to fill, ordered by price (cheapest first for Buy,
     /// most-expensive first for Sell).
     pub order_legs: Vec<OrderFillLeg>,
-    /// AMM pool swap leg (None if the entire trade is filled by orders).
-    pub pool_leg: Option<PoolSwapLeg>,
+    /// LMSR pool swap leg (None if route does not include an LMSR pool).
+    pub lmsr_pool_leg: Option<LmsrPoolSwapLeg>,
     /// Asset the taker sends.
     pub taker_send_asset: [u8; 32],
     /// Asset the taker receives.
@@ -130,30 +133,47 @@ pub(crate) struct OrderFillLeg {
     pub remainder_value: u64,
 }
 
-/// The AMM pool swap leg of the execution plan.
+/// The LMSR pool swap leg of the execution plan.
 #[derive(Debug, Clone)]
-pub(crate) struct PoolSwapLeg {
-    pub pool_params: AmmPoolParams,
-    pub issued_lp: u64,
-    pub pool_utxos: PoolUtxos,
-    pub swap_pair: SwapPair,
-    #[allow(dead_code)] // kept for API completeness; not consumed by witness path
-    pub swap_direction: SwapDirection,
+#[allow(dead_code)]
+pub(crate) struct LmsrPoolSwapLeg {
+    pub primary_path: LmsrPrimaryPath,
+    pub pool_params: LmsrPoolParams,
+    pub pool_id: String,
+    pub old_s_index: u64,
+    pub new_s_index: u64,
+    pub old_path_bits: u64,
+    pub new_path_bits: u64,
+    pub old_siblings: Vec<[u8; 32]>,
+    pub new_siblings: Vec<[u8; 32]>,
+    pub in_base: u32,
+    pub out_base: u32,
+    pub pool_utxos: LmsrPoolUtxos,
+    pub trade_kind: LmsrTradeKind,
+    pub old_f: u64,
+    pub new_f: u64,
     /// Amount the taker deposits into the pool.
     pub delta_in: u64,
     /// Amount the taker receives from the pool.
     pub delta_out: u64,
-    /// Reserves after the swap.
-    pub new_reserves: PoolReserves,
+    /// BIP340 signature for PATH_PRIMARY=admin; ignored on swap path.
+    pub admin_signature: [u8; 64],
 }
 
-/// The four UTXOs that make up the AMM pool covenant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum LmsrPrimaryPath {
+    Swap,
+    AdminAdjust,
+}
+
+/// The three reserve UTXOs that make up an LMSR pool bundle.
 #[derive(Debug, Clone)]
-pub(crate) struct PoolUtxos {
+#[allow(dead_code)]
+pub(crate) struct LmsrPoolUtxos {
     pub yes: UnblindedUtxo,
     pub no: UnblindedUtxo,
-    pub lbtc: UnblindedUtxo,
-    pub rt: UnblindedUtxo,
+    pub collateral: UnblindedUtxo,
 }
 
 // ── Result types ────────────────────────────────────────────────────────
