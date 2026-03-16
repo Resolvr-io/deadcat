@@ -85,6 +85,10 @@ mod tests {
         }
     }
 
+    fn dummy_change_script() -> Script {
+        Script::from(vec![0x51])
+    }
+
     fn test_contract() -> CompiledPredictionMarket {
         let params = PredictionMarketParams {
             oracle_public_key: [0xaa; 32],
@@ -118,7 +122,7 @@ mod tests {
             yes_defining_utxo: test_utxo([0xdd; 32], 1000),
             no_defining_utxo: test_utxo([0xee; 32], 1000),
             fee_amount: 500,
-            change_destination: Some(Script::new()),
+            change_destination: Some(dummy_change_script()),
             lock_time: 100,
         };
         let pset = creation::build_creation_pset(&contract, &params).unwrap();
@@ -155,7 +159,7 @@ mod tests {
             yes_defining_utxo: test_utxo([0xdd; 32], 1000),
             no_defining_utxo: test_utxo([0xee; 32], 1000),
             fee_amount: 500,
-            change_destination: Some(Script::new()),
+            change_destination: Some(dummy_change_script()),
             lock_time: 100,
         };
         let pset = creation::build_creation_pset(&contract, &params).unwrap();

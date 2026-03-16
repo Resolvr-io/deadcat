@@ -380,43 +380,62 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
     let app_handle = app.clone();
     tokio::task::spawn_blocking(move || {
         let manager = app_handle.state::<Mutex<AppStateManager>>();
-        let mut mgr = manager
-            .lock()
-            .map_err(|_| "state lock failed".to_string())?;
+        let (store_arc, network) = {
+            let mgr = manager
+                .lock()
+                .map_err(|_| "state lock failed".to_string())?;
+            (
+                mgr.store().cloned(),
+                mgr.network().unwrap_or(Network::Testnet),
+            )
+        };
+
         // Sync store using the chain adapter
-        if let Some(store_arc) = mgr.store() {
-            let network = mgr.network().unwrap_or(Network::Testnet);
+        if let Some(store_arc) = store_arc {
             let sdk_network = state::to_sdk_network(network);
             let electrum_url = sdk_network.default_electrum_url();
             let chain = chain_adapter::ElectrumChainAdapter::new(electrum_url);
+            let now_unix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            let candidates = if let Ok(mut store) = store_arc.lock() {
+                store
+                    .list_unpromoted_prediction_market_candidates()
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let confirmed_candidates: Vec<_> = candidates
+                .into_iter()
+                .filter_map(|candidate| {
+                    let txid =
+                        deadcat_sdk::parse_market_creation_txid(&candidate.anchor.creation_txid)
+                            .ok()?;
+                    let (height, block_hash) = chain
+                        .irreversible_confirmation(txid.as_byte_array())
+                        .ok()
+                        .flatten()?;
+                    Some((candidate.candidate_id, height, block_hash))
+                })
+                .collect();
             if let Ok(mut store) = store_arc.lock() {
-                let now_unix = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_secs())
-                    .unwrap_or(0);
-                if let Ok(candidates) = store.list_unpromoted_prediction_market_candidates() {
-                    for candidate in candidates {
-                        let Ok(txid) = deadcat_sdk::parse_market_creation_txid(
-                            &candidate.anchor.creation_txid,
-                        ) else {
-                            continue;
-                        };
-                        if let Ok(Some((height, block_hash))) =
-                            chain.irreversible_confirmation(txid.as_byte_array())
-                        {
-                            let _ = store.promote_prediction_market_candidate(
-                                candidate.candidate_id,
-                                now_unix,
-                                height,
-                                block_hash,
-                            );
-                        }
-                    }
-                    let _ = store.purge_expired_prediction_market_candidates(now_unix);
+                for (candidate_id, height, block_hash) in confirmed_candidates {
+                    let _ = store.promote_prediction_market_candidate(
+                        candidate_id,
+                        now_unix,
+                        height,
+                        block_hash,
+                    );
                 }
+                let _ = store.purge_expired_prediction_market_candidates(now_unix);
                 let _ = store.sync(&chain);
             }
         }
+
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
         mgr.bump_revision();
         let state = mgr.snapshot_with_balance(wallet_balance);
         let _ = app_handle.emit(APP_STATE_UPDATED_EVENT, &state);

@@ -112,6 +112,17 @@ function formatTradeAmount(amount: number, unit: "sats" | "contracts"): string {
   return `${normalized.toLocaleString(undefined, { maximumFractionDigits: 2 })} contracts`;
 }
 
+function requireMarketAnchor(
+  market: Market,
+  action: string,
+): NonNullable<Market["anchor"]> | null {
+  if (!market.anchor) {
+    showToast(`Market has no canonical anchor — cannot ${action}`, "error");
+    return null;
+  }
+  return market.anchor;
+}
+
 export async function handleClick(
   e: MouseEvent,
   deps: ClickDeps,
@@ -1868,6 +1879,8 @@ export async function handleClick(
       showToast("No attestation available to execute", "error");
       return;
     }
+    const anchor = requireMarketAnchor(market, "resolve market");
+    if (!anchor) return;
     const outcomeYes = state.lastAttestationOutcome;
     const confirmed = window.confirm(
       `Execute on-chain resolution for "${market.question}"?\n\nOutcome: ${outcomeYes ? "YES" : "NO"}\nThis submits a Liquid transaction that transitions the covenant state.`,
@@ -1885,7 +1898,7 @@ export async function handleClick(
           outcome_yes: boolean;
         }>("resolve_market", {
           contractParamsJson: marketToContractParamsJson(market),
-          anchor: market.anchor,
+          anchor,
           outcomeYes,
           oracleSignatureHex: state.lastAttestationSig,
         });
@@ -1910,16 +1923,14 @@ export async function handleClick(
 
   if (action === "refresh-market-state") {
     const market = getSelectedMarket();
-    if (!market.creationTxid) {
-      showToast("Market has no on-chain creation tx", "error");
-      return;
-    }
+    const anchor = requireMarketAnchor(market, "query market state");
+    if (!anchor) return;
     showToast("Querying on-chain market state...", "info");
     (async () => {
       try {
         const result = await invoke<{ state: number }>("get_market_state", {
           contractParamsJson: marketToContractParamsJson(market),
-          anchor: market.anchor,
+          anchor,
         });
         market.state = result.state as CovenantState;
         showToast(`Market state: ${stateLabel(market.state)}`, "success");
@@ -2346,6 +2357,8 @@ export async function handleClick(
 
     if (action === "submit-cancel") {
       const pairs = Math.max(1, Math.floor(state.pairsInput));
+      const anchor = requireMarketAnchor(market, "cancel tokens");
+      if (!anchor) return;
       showToast(
         `Cancelling ${pairs} pair(s) for ${market.question.slice(0, 40)}...`,
         "info",
@@ -2360,7 +2373,7 @@ export async function handleClick(
             is_full_cancellation: boolean;
           }>("cancel_tokens", {
             contractParamsJson: marketToContractParamsJson(market),
-            anchor: market.anchor,
+            anchor,
             pairs,
           });
           showToast(
@@ -2380,6 +2393,8 @@ export async function handleClick(
       const paths = getPathAvailability(market);
 
       if (paths.redeem) {
+        const anchor = requireMarketAnchor(market, "redeem tokens");
+        if (!anchor) return;
         showToast(`Redeeming ${tokens} winning token(s)...`, "info");
         (async () => {
           try {
@@ -2390,7 +2405,7 @@ export async function handleClick(
               payout_sats: number;
             }>("redeem_tokens", {
               contractParamsJson: marketToContractParamsJson(market),
-              anchor: market.anchor,
+              anchor,
               tokens,
             });
             showToast(
@@ -2409,6 +2424,8 @@ export async function handleClick(
         // Use whichever side the user holds (prefer YES if both)
         const tokenAssetHex =
           yesBalance > 0 ? market.yesAssetId : market.noAssetId;
+        const anchor = requireMarketAnchor(market, "redeem expired tokens");
+        if (!anchor) return;
 
         showToast(`Redeeming ${tokens} expired token(s)...`, "info");
         (async () => {
@@ -2420,7 +2437,7 @@ export async function handleClick(
               payout_sats: number;
             }>("redeem_expired", {
               contractParamsJson: marketToContractParamsJson(market),
-              anchor: market.anchor,
+              anchor,
               tokenAssetHex: tokenAssetHex,
               tokens,
             });

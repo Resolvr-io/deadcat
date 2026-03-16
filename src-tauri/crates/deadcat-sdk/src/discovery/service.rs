@@ -522,8 +522,9 @@ pub(crate) fn persist_market_to_store<S: DiscoveryStore>(
     parsed: &ParsedDiscoveredMarketAnnouncement,
 ) {
     let Some(store) = store else { return };
+    let seen_at_unix = Timestamp::now().as_u64();
     if let Ok(mut s) = store.lock() {
-        let _ = s.ingest_prediction_market_candidate(&parsed.ingest, parsed.market.created_at);
+        let _ = s.ingest_prediction_market_candidate(&parsed.ingest, seen_at_unix);
     }
 }
 
@@ -633,6 +634,7 @@ fn dedup_latest_pools_by_id(pools: Vec<DiscoveredPool>) -> Vec<DiscoveredPool> {
 mod tests {
     use super::*;
     use crate::pool::PoolReserves;
+    use crate::testing::test_market_announcement;
 
     fn hex32(byte: u8) -> String {
         hex::encode([byte; 32])
@@ -695,5 +697,65 @@ mod tests {
         let b = sample_pool("evt-b", 0x22, 200);
         let deduped = dedup_latest_pools_by_id(vec![a, b]);
         assert_eq!(deduped.len(), 2);
+    }
+
+    #[derive(Default)]
+    struct SeenAtStore {
+        seen_at_unix: Vec<u64>,
+    }
+
+    impl DiscoveryStore for SeenAtStore {
+        fn ingest_prediction_market_candidate(
+            &mut self,
+            _input: &PredictionMarketCandidateIngestInput,
+            seen_at_unix: u64,
+        ) -> std::result::Result<(), String> {
+            self.seen_at_unix.push(seen_at_unix);
+            Ok(())
+        }
+
+        fn ingest_maker_order(
+            &mut self,
+            _params: &crate::maker_order::params::MakerOrderParams,
+            _maker_pubkey: Option<&[u8; 32]>,
+            _nonce: Option<&[u8; 32]>,
+            _nostr_event_id: Option<&str>,
+            _nostr_event_json: Option<&str>,
+        ) -> std::result::Result<(), String> {
+            Ok(())
+        }
+
+        fn ingest_lmsr_pool(
+            &mut self,
+            _input: &LmsrPoolIngestInput,
+        ) -> std::result::Result<(), String> {
+            Ok(())
+        }
+
+        fn upsert_lmsr_pool_state(
+            &mut self,
+            _input: &LmsrPoolStateUpdateInput,
+        ) -> std::result::Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn persist_market_uses_local_ingest_time() {
+        let keys = Keys::generate();
+        let (announcement, _params) = test_market_announcement([0xaa; 32], 0x19);
+        let event = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
+        let mut parsed = parse_announcement_event_with_ingest(&event, "liquid-testnet").unwrap();
+        parsed.market.created_at = 1;
+
+        let store = Arc::new(Mutex::new(SeenAtStore::default()));
+        let before = Timestamp::now().as_u64();
+        persist_market_to_store(&Some(store.clone()), &parsed);
+        let after = Timestamp::now().as_u64();
+
+        let seen_at = store.lock().unwrap().seen_at_unix[0];
+        assert_ne!(seen_at, parsed.market.created_at);
+        assert!(seen_at >= before);
+        assert!(seen_at <= after);
     }
 }
