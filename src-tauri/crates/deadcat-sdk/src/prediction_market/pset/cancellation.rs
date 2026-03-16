@@ -3,7 +3,7 @@ use simplicityhl::elements::pset::PartiallySignedTransaction;
 
 use crate::error::{Error, Result};
 use crate::prediction_market::contract::CompiledPredictionMarket;
-use crate::prediction_market::state::MarketState;
+use crate::prediction_market::state::MarketSlot;
 
 use super::{
     UnblindedUtxo, add_pset_input, add_pset_output, burn_txout, covenant_spk, explicit_txout,
@@ -52,7 +52,7 @@ pub fn build_cancellation_pset(
 
     if remaining > 0 {
         // Partial cancellation (1 → 1)
-        let unresolved_spk = covenant_spk(contract, MarketState::Unresolved);
+        let unresolved_spk = covenant_spk(contract, MarketSlot::UnresolvedCollateral);
 
         add_pset_input(&mut pset, &params.collateral_utxo);
         for utxo in &params.yes_token_utxos {
@@ -106,10 +106,6 @@ pub fn build_cancellation_pset(
                 );
             }
         }
-        add_pset_output(
-            &mut pset,
-            fee_txout(&contract.params().collateral_asset_id, params.fee_amount),
-        );
     } else {
         // Full cancellation (1 → 0): cycle reissuance tokens to Dormant
         let yes_reissuance = params
@@ -121,7 +117,8 @@ pub fn build_cancellation_pset(
             .as_ref()
             .ok_or(Error::MissingReissuanceUtxos)?;
 
-        let dormant_spk = covenant_spk(contract, MarketState::Dormant);
+        let dormant_yes_spk = covenant_spk(contract, MarketSlot::DormantYesRt);
+        let dormant_no_spk = covenant_spk(contract, MarketSlot::DormantNoRt);
 
         // Input 0: collateral
         add_pset_input(&mut pset, &params.collateral_utxo);
@@ -141,9 +138,9 @@ pub fn build_cancellation_pset(
         add_pset_input(&mut pset, &params.fee_utxo);
 
         // Output 0: YES reissuance token → Dormant
-        add_pset_output(&mut pset, reissuance_token_output(&dormant_spk));
+        add_pset_output(&mut pset, reissuance_token_output(&dormant_yes_spk));
         // Output 1: NO reissuance token → Dormant
-        add_pset_output(&mut pset, reissuance_token_output(&dormant_spk));
+        add_pset_output(&mut pset, reissuance_token_output(&dormant_no_spk));
         // Output 2: YES token burn
         add_pset_output(
             &mut pset,
@@ -163,11 +160,6 @@ pub fn build_cancellation_pset(
                 &params.refund_destination,
             ),
         );
-        // Output 5: fee
-        add_pset_output(
-            &mut pset,
-            fee_txout(&contract.params().collateral_asset_id, params.fee_amount),
-        );
     }
 
     let fee_change = params.fee_utxo.value.saturating_sub(params.fee_amount);
@@ -183,6 +175,11 @@ pub fn build_cancellation_pset(
             ),
         );
     }
+
+    add_pset_output(
+        &mut pset,
+        fee_txout(&contract.params().collateral_asset_id, params.fee_amount),
+    );
 
     Ok(pset)
 }

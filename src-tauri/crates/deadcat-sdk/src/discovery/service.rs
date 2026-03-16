@@ -14,14 +14,15 @@ use super::attestation::{
 use super::config::DiscoveryConfig;
 use super::events::DiscoveryEvent;
 use super::market::{
-    DiscoveredMarket, build_announcement_event, build_contract_filter, parse_announcement_event,
+    DiscoveredMarket, ParsedDiscoveredMarketAnnouncement, build_announcement_event,
+    build_contract_filter, parse_announcement_event_with_ingest,
 };
 use super::pool::{
     DiscoveredPool, PoolAnnouncement, build_pool_event, build_pool_filter, parse_pool_event,
 };
 use super::store_trait::{
-    ContractMetadataInput, DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource,
-    LmsrPoolStateUpdateInput,
+    DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource, LmsrPoolStateUpdateInput,
+    PredictionMarketCandidateIngestInput,
 };
 use super::{
     ATTESTATION_TAG, CONTRACT_TAG, DiscoveredOrder, ORDER_TAG, OrderAnnouncement, POOL_TAG,
@@ -44,10 +45,10 @@ pub struct DiscoveryService<S: DiscoveryStore = NoopStore> {
 pub struct NoopStore;
 
 impl DiscoveryStore for NoopStore {
-    fn ingest_market(
+    fn ingest_prediction_market_candidate(
         &mut self,
-        _params: &crate::prediction_market::params::PredictionMarketParams,
-        _meta: Option<&ContractMetadataInput>,
+        _input: &PredictionMarketCandidateIngestInput,
+        _seen_at_unix: u64,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -160,11 +161,10 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
 
         let mut markets = Vec::new();
         for event in events.iter() {
-            match parse_announcement_event(event, &self.config.network_tag) {
-                Ok(mut market) => {
-                    market.nostr_event_json = serde_json::to_string(event).ok();
-                    self.persist_market(&market);
-                    markets.push(market);
+            match parse_announcement_event_with_ingest(event, &self.config.network_tag) {
+                Ok(parsed) => {
+                    self.persist_market(&parsed);
+                    markets.push(parsed.market);
                 }
                 Err(e) => {
                     if e.contains("unsupported contract announcement version") {
@@ -377,8 +377,8 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
         Ok(())
     }
 
-    fn persist_market(&self, market: &DiscoveredMarket) {
-        persist_market_to_store(&self.store, market);
+    fn persist_market(&self, parsed: &ParsedDiscoveredMarketAnnouncement) {
+        persist_market_to_store(&self.store, parsed);
     }
 
     fn persist_order(&self, order: &DiscoveredOrder) {
@@ -487,11 +487,10 @@ async fn run_subscription_loop<S: DiscoveryStore>(
                 .collect();
 
             if hashtags.iter().any(|t| t == CONTRACT_TAG) {
-                match parse_announcement_event(&event, &network_tag) {
-                    Ok(mut market) => {
-                        market.nostr_event_json = serde_json::to_string(&*event).ok();
-                        persist_market_to_store(&store, &market);
-                        let _ = tx.send(DiscoveryEvent::MarketDiscovered(market));
+                match parse_announcement_event_with_ingest(&event, &network_tag) {
+                    Ok(parsed) => {
+                        persist_market_to_store(&store, &parsed);
+                        let _ = tx.send(DiscoveryEvent::MarketDiscovered(parsed.market));
                     }
                     Err(e) => {
                         log::warn!("skipping unparseable market announcement {}: {e}", event.id);
@@ -520,25 +519,11 @@ async fn run_subscription_loop<S: DiscoveryStore>(
 
 pub(crate) fn persist_market_to_store<S: DiscoveryStore>(
     store: &Option<Arc<Mutex<S>>>,
-    market: &DiscoveredMarket,
+    parsed: &ParsedDiscoveredMarketAnnouncement,
 ) {
     let Some(store) = store else { return };
-    let Ok(params) = discovered_market_to_contract_params(market) else {
-        return;
-    };
-    let meta = ContractMetadataInput {
-        question: Some(market.question.clone()),
-        description: Some(market.description.clone()),
-        category: Some(market.category.clone()),
-        resolution_source: Some(market.resolution_source.clone()),
-        creator_pubkey: hex::decode(&market.creator_pubkey).ok(),
-        creation_txid: market.creation_txid.clone(),
-        nevent: Some(market.nevent.clone()),
-        nostr_event_id: Some(market.id.clone()),
-        nostr_event_json: market.nostr_event_json.clone(),
-    };
     if let Ok(mut s) = store.lock() {
-        let _ = s.ingest_market(&params, Some(&meta));
+        let _ = s.ingest_prediction_market_candidate(&parsed.ingest, parsed.market.created_at);
     }
 }
 

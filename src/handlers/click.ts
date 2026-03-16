@@ -1885,6 +1885,7 @@ export async function handleClick(
           outcome_yes: boolean;
         }>("resolve_market", {
           contractParamsJson: marketToContractParamsJson(market),
+          anchor: market.anchor,
           outcomeYes,
           oracleSignatureHex: state.lastAttestationSig,
         });
@@ -1918,6 +1919,7 @@ export async function handleClick(
       try {
         const result = await invoke<{ state: number }>("get_market_state", {
           contractParamsJson: marketToContractParamsJson(market),
+          anchor: market.anchor,
         });
         market.state = result.state as CovenantState;
         showToast(`Market state: ${stateLabel(market.state)}`, "success");
@@ -2232,7 +2234,7 @@ export async function handleClick(
           state.createResolutionSource = "";
           state.createSettlementInput = defaultSettlementInput();
           showToast(
-            `Market created! txid: ${result.creation_txid ?? "unknown"}`,
+            `Market created! txid: ${result.anchor?.creation_txid ?? "unknown"}`,
             "success",
           );
         } catch (error) {
@@ -2317,8 +2319,11 @@ export async function handleClick(
 
     if (action === "submit-issue") {
       const pairs = Math.max(1, Math.floor(state.pairsInput));
-      if (!market.creationTxid) {
-        showToast("Market has no creation txid — cannot issue tokens", "error");
+      if (!market.anchor) {
+        showToast(
+          "Market has no canonical anchor — cannot issue tokens",
+          "error",
+        );
         return;
       }
       showToast(
@@ -2355,6 +2360,7 @@ export async function handleClick(
             is_full_cancellation: boolean;
           }>("cancel_tokens", {
             contractParamsJson: marketToContractParamsJson(market),
+            anchor: market.anchor,
             pairs,
           });
           showToast(
@@ -2384,6 +2390,7 @@ export async function handleClick(
               payout_sats: number;
             }>("redeem_tokens", {
               contractParamsJson: marketToContractParamsJson(market),
+              anchor: market.anchor,
               tokens,
             });
             showToast(
@@ -2413,6 +2420,7 @@ export async function handleClick(
               payout_sats: number;
             }>("redeem_expired", {
               contractParamsJson: marketToContractParamsJson(market),
+              anchor: market.anchor,
               tokenAssetHex: tokenAssetHex,
               tokens,
             });

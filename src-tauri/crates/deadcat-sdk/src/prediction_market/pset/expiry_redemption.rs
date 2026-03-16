@@ -3,7 +3,7 @@ use simplicityhl::elements::{LockTime, Script};
 
 use crate::error::{Error, Result};
 use crate::prediction_market::contract::CompiledPredictionMarket;
-use crate::prediction_market::state::MarketState;
+use crate::prediction_market::state::MarketSlot;
 
 use super::{
     UnblindedUtxo, add_pset_input, add_pset_output, burn_txout, covenant_spk, explicit_txout,
@@ -42,7 +42,7 @@ pub fn build_expiry_redemption_pset(
     }
 
     let remaining = params.collateral_utxo.value - payout;
-    let expired_spk = covenant_spk(contract, MarketState::Expired);
+    let expired_spk = covenant_spk(contract, MarketSlot::ExpiredCollateral);
 
     let mut pset = new_pset();
 
@@ -85,11 +85,6 @@ pub fn build_expiry_redemption_pset(
             );
         }
     }
-    add_pset_output(
-        &mut pset,
-        fee_txout(&contract.params().collateral_asset_id, params.fee_amount),
-    );
-
     let fee_change = params.fee_utxo.value.saturating_sub(params.fee_amount);
     if fee_change > 0
         && let Some(ref change_spk) = params.fee_change_destination
@@ -103,6 +98,11 @@ pub fn build_expiry_redemption_pset(
             ),
         );
     }
+
+    add_pset_output(
+        &mut pset,
+        fee_txout(&contract.params().collateral_asset_id, params.fee_amount),
+    );
 
     pset.global.tx_data.fallback_locktime = Some(LockTime::from_consensus(params.lock_time));
 

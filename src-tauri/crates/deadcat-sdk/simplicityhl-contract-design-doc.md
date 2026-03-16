@@ -2,405 +2,407 @@
 
 **Design Document**
 
-SimplicityHL on Liquid · Resolvr Inc. · February 2026
-
-**DRAFT**
+SimplicityHL on Liquid · Resolvr Inc. · March 2026
 
 ---
 
 ## 1. Overview
 
-This document specifies the design of a Polymarket-style binary prediction market smart contract implemented in SimplicityHL, targeting the Liquid sidechain. The contract enables permissionless creation of binary outcome markets where participants buy and sell YES and NO tokens backed by collateral (L-BTC). An off-chain oracle resolves the market by committing an outcome on-chain via a state transition, after which winning token holders redeem collateral.
+This document describes the current binary prediction market covenant implemented in `prediction_market.simf`.
 
-The design draws on two existing Blockstream reference contracts: the options contract (`options.simf`) for reissuance-based token minting and collateral management, and the Astrolabe contract for state commitment via taproot data embedding. It extends both with a five-state covenant model (including explicit `EXPIRED`), single-UTXO collateral consolidation, and oracle signature verification using FROST threshold keys.
+The contract uses:
 
-## 2. Design Goals and Constraints
+- a five-state lifecycle model for user-visible market status,
+- an eight-slot covenant identity model for on-chain UTXOs,
+- deterministic YES/NO asset issuance via Liquid reissuance tokens,
+- a single collateral UTXO while the market is unresolved or terminal,
+- explicit state transitions for oracle resolution, expiry, issuance, cancellation, and redemption.
 
-**Permissionless issuance.** Anyone who deposits collateral can mint YES/NO token pairs. There is no issuer key or privileged minter. The covenant constraints alone enforce correctness.
+The current design is slot-based. Lifecycle state still matters, but it is no longer sufficient to identify a covenant UTXO by itself. Every covenant UTXO is identified by a `MarketSlot`, and the Taproot address commits that slot directly.
 
-**Oracle equivocation protection.** A dishonest oracle that signs both YES and NO outcomes cannot cause catastrophic loss. The state-commit model ensures that once an outcome is recorded on-chain, all winners on that side are treated equally. This converts a potential race-to-drain failure into a legible, disputable one.
+## 2. Contract Parameters
 
-**Deterministic redemption value.** After resolution, each winning token is worth a fixed, known amount of collateral. This enables risk-free off-chain swap services that absorb the on-chain serialization bottleneck.
-
-**No division in contract arithmetic.** All collateral calculations use multiplication only, eliminating rounding bugs and integer division edge cases.
-
-**Explicit amounts for issuance.** YES tokens, NO tokens, and collateral are required to use explicit (non-confidential) amounts during issuance, keeping covenant verification simple. Reissuance tokens remain confidential per Elements protocol requirements.
-
-## 3. Contract Parameters
-
-The contract is parameterized at compile time with eight values. A ninth value, MARKET_ID, is derived deterministically from the token asset IDs rather than supplied independently.
+The contract is parameterized at compile time with eight values. A ninth value, `MARKET_ID`, is derived deterministically from the YES and NO asset IDs.
 
 | Parameter | Description |
 |-----------|-------------|
-| `ORACLE_PUBLIC_KEY` | X-only Schnorr pubkey. Aggregate key from 2-of-3 FROST threshold signing performed off-chain. |
-| `COLLATERAL_ASSET_ID` | Asset ID of the collateral (typically L-BTC). |
-| `YES_TOKEN_ASSET` | Deterministic asset ID for YES tokens, derived from the outpoint used in the creation transaction. |
-| `NO_TOKEN_ASSET` | Deterministic asset ID for NO tokens, derived from the outpoint used in the creation transaction. |
-| `YES_REISSUANCE_TOKEN` | Reissuance token for YES asset. Required for minting additional YES tokens after creation. |
-| `NO_REISSUANCE_TOKEN` | Reissuance token for NO asset. Required for minting additional NO tokens after creation. |
-| `COLLATERAL_PER_TOKEN` | Satoshis backing each individual token. The unit of account for all collateral arithmetic. |
-| `EXPIRY_TIME` | Block height used by expiry locktime checks. At or after this height, unresolved markets can transition to `EXPIRED` and redeem at expiry payout. |
+| `ORACLE_PUBLIC_KEY` | X-only Schnorr pubkey used for oracle attestation verification. |
+| `COLLATERAL_ASSET_ID` | Asset ID of the collateral asset, typically L-BTC. |
+| `YES_TOKEN_ASSET` | Deterministic asset ID for YES outcome tokens. |
+| `NO_TOKEN_ASSET` | Deterministic asset ID for NO outcome tokens. |
+| `YES_REISSUANCE_TOKEN` | Reissuance token required to mint additional YES tokens. |
+| `NO_REISSUANCE_TOKEN` | Reissuance token required to mint additional NO tokens. |
+| `COLLATERAL_PER_TOKEN` | Satoshis backing each individual token. |
+| `EXPIRY_TIME` | Block height used by expire-transition and expiry-redemption locktime checks. |
 
-**Derived value:** `MARKET_ID = SHA256(YES_TOKEN_ASSET || NO_TOKEN_ASSET)`. This provides unique per-market domain separation for oracle signatures without requiring an additional parameter. Since token asset IDs are deterministically derived from outpoints, MARKET_ID is globally unique and verifiable by anyone who knows the contract parameters.
+Derived value:
 
-### 3.1 Design Decision: Eliminating MARKET_ID as a Parameter
+- `MARKET_ID = SHA256(YES_TOKEN_ASSET || NO_TOKEN_ASSET)`
 
-Early designs included MARKET_ID as a standalone random 32-byte parameter. This was replaced with derivation from the token asset IDs because: (a) it eliminates a coordination step during bootstrapping—no need to generate and distribute a random value, (b) the oracle only needs to know which asset pair it is attesting for, which it already must know, and (c) it prevents stale pre-commitments since the oracle cannot pre-sign outcomes before the asset IDs exist. The constraint that the oracle cannot attest before asset creation is considered desirable, not limiting.
+## 3. Lifecycle State vs Covenant Slot
 
-## 4. Collateral Mechanics
+The implementation distinguishes between:
 
-`COLLATERAL_PER_TOKEN` is the unit of account. Every issuance mints one YES token and one NO token per pair. The collateral deposited per pair is `2 * COLLATERAL_PER_TOKEN`—one unit backing the YES token, one backing the NO token. This means the contract never performs division; all paths use multiplication against COLLATERAL_PER_TOKEN.
+- `MarketState`: the five user-visible lifecycle states,
+- `MarketSlot`: the eight concrete covenant identities that appear on chain.
 
-### 4.1 Collateral Flows by Path
-
-| Path | Formula | Rationale |
-|------|---------|-----------|
-| Initial issuance | `pairs * 2 * CPT` deposited | First issuance; no existing collateral. |
-| Subsequent issuance | `pairs * 2 * CPT` added to existing | Each pair needs collateral for both outcomes. |
-| Post-resolution redemption | `tokens * 2 * CPT` withdrawn | Winners collect full pair collateral; losers forfeit. |
-| Expiry redemption | `tokens * CPT` withdrawn | Both sides redeem at equal rate; pool drains exactly. |
-| Cancellation | `pairs * 2 * CPT` refunded | Matched pair burned; full deposit returned. |
-
-### 4.2 Design Decision: Winners Receive Full Pair Collateral
-
-An earlier design had winning tokens redeeming at `1 * COLLATERAL_PER_TOKEN`, which would leave the losing side's collateral permanently locked in the covenant. The revised design pays winners `2 * COLLATERAL_PER_TOKEN` per token, which correctly reflects prediction market economics: buying a YES token at 0.60 and winning pays out 1.00 (the combined collateral from both sides of the pair). This ensures the collateral pool drains exactly as all winners redeem, with no dead collateral.
-
-### 4.3 Design Decision: Naming COLLATERAL_PER_TOKEN (Not COLLATERAL_PER_PAIR)
-
-The parameter was initially considered as COLLATERAL_PER_PAIR with division by 2 for single-token operations. This was rejected because it would introduce integer division into the contract, creating potential for rounding errors (odd values of COLLATERAL_PER_PAIR would lose a satoshi). By defining the parameter as the per-token unit and multiplying by 2 for pair operations, the contract avoids division entirely. Wallet and UI software handles the conversion for display purposes.
-
-## 5. State Model
-
-The contract uses a five-state model encoded as a single `u64` value. State is committed via the tapdata-in-taproot pattern from the Astrolabe contract: the contract's tapleaf CMR and a state tapdata leaf are combined into a tapbranch, tweaked onto a NUMS (Nothing Up My Sleeve) key, producing a P2TR script hash. Each state value produces a different covenant address, yielding five possible addresses per market, all computable at compile time.
+### 3.1 Lifecycle States
 
 | Value | State | Description |
 |-------|-------|-------------|
-| 0 | DORMANT | Reissuance tokens deposited, no collateral. Awaiting initial issuance. |
-| 1 | UNRESOLVED | At least one issuance has occurred. Market is live. |
-| 2 | RESOLVED_YES | Oracle committed YES outcome. YES tokens are redeemable. |
-| 3 | RESOLVED_NO | Oracle committed NO outcome. NO tokens are redeemable. |
-| 4 | EXPIRED | Market was finalized as expired without oracle resolution. Both token sides redeem at `1 * CPT`. |
+| 0 | `Dormant` | Reissuance tokens exist, but no collateral has been deposited yet. |
+| 1 | `Unresolved` | The market is live. Collateral exists and new issuance/cancellation is possible. |
+| 2 | `ResolvedYes` | Oracle committed YES. Only resolved collateral remains. |
+| 3 | `ResolvedNo` | Oracle committed NO. Only resolved collateral remains. |
+| 4 | `Expired` | Oracle was not used; the market was finalized via expiry. |
 
-### 5.1 State Validation (Fraud Prevention)
+### 3.2 Slots
 
-The contract validates its own state by comparing the witness-provided state value against the actual input script hash. In `main()`, the contract computes `script_hash_for_input_script(witness::STATE)` and asserts it equals `input_script_hash(current_index)`. If the caller lies about the state (e.g., claims state 0 when the UTXO is at the state-1 address), the computed script hash will not match, and the assertion fails. This makes state spoofing cryptographically impossible.
+| Value | Slot | State | Role |
+|-------|------|-------|------|
+| 0 | `DormantYesRt` | `Dormant` | YES reissuance token |
+| 1 | `DormantNoRt` | `Dormant` | NO reissuance token |
+| 2 | `UnresolvedYesRt` | `Unresolved` | YES reissuance token |
+| 3 | `UnresolvedNoRt` | `Unresolved` | NO reissuance token |
+| 4 | `UnresolvedCollateral` | `Unresolved` | collateral |
+| 5 | `ResolvedYesCollateral` | `ResolvedYes` | collateral |
+| 6 | `ResolvedNoCollateral` | `ResolvedNo` | collateral |
+| 7 | `ExpiredCollateral` | `Expired` | collateral |
 
-### 5.2 State Transitions
+This means a market has eight covenant addresses, grouped as:
 
-State transitions are strictly controlled:
+- `Dormant`: YES RT + NO RT
+- `Unresolved`: YES RT + NO RT + collateral
+- `ResolvedYes`: collateral only
+- `ResolvedNo`: collateral only
+- `Expired`: collateral only
 
-- **0 → 1:** Initial issuance. First batch of tokens minted, collateral deposited, reissuance tokens move from Dormant to Unresolved.
-- **1 → 1:** Subsequent issuance, partial cancellation. Covenant UTXOs recycled at the same state-1 address.
-- **1 → 0:** Full cancellation. All collateral withdrawn, reissuance tokens cycle back to Dormant, enabling future issuance.
-- **1 → 2 or 1 → 3:** Oracle resolve. All covenant UTXOs move to state-2 or state-3 address.
-- **1 → 4:** Expire transition. Unresolved market is permissionlessly finalized as expired once locktime reaches `EXPIRY_TIME`.
-- **2 → 2 or 3 → 3:** Post-resolution redemption. Covenant UTXOs stay at resolved address, collateral decreases.
-- **4 → 4:** Expiry redemption. Covenant UTXO stays at expired address, collateral decreases.
+### 3.3 Why the Slot Model Exists
 
-### 5.3 Design Decision: Five States with Dormant + Expired
+The old state-address design allowed multiple roles to share the same covenant address inside one lifecycle state. That made it possible for the wrong covenant UTXO to masquerade as the right one on permissive multi-input paths.
 
-An earlier design used three states (UNRESOLVED=0, RESOLVED_YES=1, RESOLVED_NO=2) where market creation was a single plain Elements transaction that issued YES/NO tokens, deposited reissuance tokens and collateral to the UNRESOLVED covenant address, and sent minted tokens to the creator. This was simpler but had a critical flaw: full cancellation (burning all tokens and withdrawing all collateral) stranded the reissuance tokens at the Unresolved covenant address with no collateral companion, making future issuance impossible without manual "revival."
+The slot redesign fixes that class of problem by construction:
 
-The current design adds a Dormant state (state 0). Market creation is still a plain Elements transaction (no Simplicity validation), but it only deposits reissuance tokens to the Dormant covenant address—no tokens are minted and no collateral is deposited. A separate covenant-validated initial issuance transaction (0→1) mints the first batch of tokens and deposits collateral. Full cancellation (1→0) cycles reissuance tokens back to Dormant, enabling future issuance without workarounds.
+- the slot, not just the lifecycle state, is committed into Taproot metadata,
+- every covenant path validates the exact slot it is allowed to spend,
+- resolved and expired states do not carry reissuance-token covenant UTXOs at all.
 
-This revision also adds an explicit Expired state (state 4). Instead of attempting an unenforceable "pre-expiry" guard on issuance/resolve paths, expiry is modeled as an explicit transition (1→4) gated by `check_lock_height(EXPIRY_TIME)`. Once in state 4, only expiry redemption remains available.
+## 4. Taproot Commitment Model
 
-## 6. Single-UTXO Collateral Consolidation
+The covenant identity is committed via Taproot metadata.
 
-A critical design requirement is that all collateral for a given market exists in a single UTXO at all times. This is necessary for the state-commit model to work: the oracle resolve transaction must transition ALL market assets from the state-1 (UNRESOLVED) address to the state-2 or state-3 (resolved) address atomically.
+- `MarketState` is still exposed at the SDK/API level.
+- `MarketSlot` is what the contract commits and validates on chain.
+- TapData for prediction-market slots is versioned as `[0x01, slot]`.
 
-### 6.1 The Problem
+At address derivation time:
 
-The options contract (`options.simf`), which served as a reference implementation, does NOT consolidate collateral. Each funding operation creates a separate UTXO. This is acceptable for options (each position is independent), but breaks the prediction market's state model: if collateral is fragmented across N UTXOs, each with its own state commitment, the oracle resolve transaction would need to spend all N simultaneously, and any UTXO missed would remain in the UNRESOLVED state indefinitely.
+1. the Simplicity leaf is built from the program CMR,
+2. a TapData leaf is built from the versioned slot encoding,
+3. the two leaves are combined in a TapBranch,
+4. the branch is tweaked onto the NUMS internal key,
+5. the resulting P2TR output key defines the covenant address.
 
-### 6.2 The Solution
+Every slot therefore has a distinct address even when multiple slots belong to the same lifecycle state.
 
-The issuance paths enforce consolidation by requiring that the existing collateral UTXO be consumed as an input and a new consolidated UTXO be produced as output. The creation transaction (a plain Elements transaction, not covenant-validated) deposits only reissuance tokens at the state-0 (DORMANT) address. The initial issuance transaction (0→1, covenant-validated) establishes the first collateral UTXO at the state-1 (UNRESOLVED) address. On each subsequent issuance (state stays 1), the existing collateral UTXO must be consumed (verified via script hash matching the state-1 address), and the output collateral equals the old amount plus the new deposit.
+## 5. Collateral and Token Economics
 
-The reissuance tokens act as the enforcement mechanism: you cannot mint new YES or NO tokens without spending the reissuance token UTXOs, which only exist at the covenant address. The issuance paths that spend these tokens also require consuming and reconsolidating the collateral UTXO. Therefore, there is always exactly one collateral UTXO per active market (or zero when the market is in the Dormant state).
+`COLLATERAL_PER_TOKEN` is the unit of account. Every issued pair consists of one YES token and one NO token, so issuance deposits:
 
-### 6.3 Design Decision: Consolidation Over Fragmentation
+- `pairs * 2 * COLLATERAL_PER_TOKEN`
 
-The alternative—allowing fragmented collateral and having the oracle resolve path sweep all UTXOs—was rejected for several reasons. The oracle would need to know the exact UTXO set at resolution time, which creates a coordination problem. Any UTXO created between the oracle's UTXO snapshot and the resolution transaction's confirmation would be missed. The single-UTXO model eliminates this entirely: there is always exactly one collateral UTXO, one YES reissuance token UTXO, and one NO reissuance token UTXO at the covenant address.
+Path payouts:
 
-## 7. Spending Paths
+| Path | Formula |
+|------|---------|
+| Initial issuance | `pairs * 2 * CPT` deposited |
+| Subsequent issuance | `pairs * 2 * CPT` added |
+| Post-resolution redemption | `tokens * 2 * CPT` withdrawn |
+| Expiry redemption | `tokens * CPT` withdrawn |
+| Cancellation | `pairs * 2 * CPT` refunded |
 
-The contract has eight spending paths, selected via an 8-way nested `Either` type in the witness. Paths 1–2 handle initial and subsequent issuance. Path 3 handles oracle resolution. Path 4 handles post-resolution redemption. Paths 5–6 handle expiry transition and expiry redemption. Path 7 handles cancellation. Path 8 validates secondary covenant inputs when multiple covenant UTXOs are spent in the same transaction.
+Winning tokens redeem full pair collateral after resolution. Expiry redemption pays half that rate because both YES and NO sides redeem equally.
 
-### 7.1 Initial Issuance (State 0 → 1)
+## 6. Live Slot Invariants
 
-First covenant-validated issuance. Transitions from Dormant to Unresolved.
+The implementation validates the proof-carrying dormant anchor, then derives
+lifecycle state by walking canonical descendant transactions from that anchor.
 
-**Preconditions:** State is 0 (DORMANT). Current input index is 0 (this covenant input is the primary input).
+Valid live sets are:
 
-**Enforced constraints:**
+- `Dormant`: `DormantYesRt` + `DormantNoRt`
+- `Unresolved`: `UnresolvedYesRt` + `UnresolvedNoRt` + `UnresolvedCollateral`
+- `ResolvedYes`: `ResolvedYesCollateral`
+- `ResolvedNo`: `ResolvedNoCollateral`
+- `Expired`: `ExpiredCollateral`
 
-- Reissuance tokens consumed from Dormant covenant and cycled.
-- Collateral comes from an external input (not from the covenant—there is no existing collateral UTXO in the Dormant state).
-- YES and NO tokens minted in equal amounts.
-- Collateral output = `pairs_minted * 2 * COLLATERAL_PER_TOKEN`.
-- All covenant outputs go to state-1 (UNRESOLVED) address.
+Any partial or mixed live set is invalid. This rule is used by the SDK scan path and by `deadcat-store`.
 
-### 7.2 Subsequent Issuance (State Stays 1)
+## 7. Transaction Model
 
-Permissionless minting. Anyone depositing collateral can mint more pairs.
+### 7.1 Creation
 
-**Preconditions:** State is 1 (UNRESOLVED). Current input index is 0 (this covenant input is the primary input).
+Market creation is a plain Elements transaction, not a covenant-validated spend.
 
-**Enforced constraints:**
+It:
 
-- Existing collateral UTXO consumed as input 2 (script hash verified against state-1 address).
-- Reissuance tokens consumed and cycled.
-- YES and NO tokens minted in equal amounts.
-- New collateral output = old collateral + `pairs_minted * 2 * COLLATERAL_PER_TOKEN`.
-- All covenant outputs go to state-1 address.
+- consumes the two defining outpoints,
+- uses native issuance to create the YES and NO reissuance tokens,
+- deposits those reissuance tokens into `DormantYesRt` and `DormantNoRt`,
+- does not mint YES/NO outcome tokens,
+- does not deposit collateral.
 
-### 7.3 Oracle Resolve (State 1 → 2 or 1 → 3)
+### 7.2 Initial Issuance
 
-The state-commit transaction. Posts the oracle's outcome attestation on-chain.
+Initial issuance transitions the market from `Dormant` to `Unresolved`.
 
-**Preconditions:** State is 1 (UNRESOLVED). Current input index is 0 (this covenant input is the primary input).
+Inputs:
 
-**Enforced constraints:**
+- `DormantYesRt`
+- `DormantNoRt`
+- external collateral input
+- fee input
 
-- Witness provides outcome (true for YES, false for NO).
-- Oracle signature over `SHA256(MARKET_ID || outcome_byte)` verifies against ORACLE_PUBLIC_KEY. Outcome byte is 0x01 for YES, 0x00 for NO.
-- Existing collateral UTXO consumed as input 2 (script hash verified against state-1 address).
-- Collateral amount preserved exactly (no tokens minted or burned).
-- Reissuance tokens preserved.
-- All covenant outputs move to the new state address (state 2 or 3).
-- Transaction has exactly 4 outputs (3 covenant outputs + 1 fee).
+Outputs:
 
-### 7.4 Post-Resolution Redemption (State 2 or 3)
+- `UnresolvedYesRt`
+- `UnresolvedNoRt`
+- `UnresolvedCollateral`
+- minted YES tokens
+- minted NO tokens
+- fee output
 
-**Preconditions:** State is 2 or 3.
+The YES and NO issuance amounts must match, and collateral must equal `pairs * 2 * CPT`.
 
-- Burned token asset matches the winning side (YES if state 2, NO if state 3).
-- Tokens burned to an OP_RETURN output.
-- Collateral withdrawn equals `tokens_burned * 2 * COLLATERAL_PER_TOKEN`.
-- Remaining collateral stays at the resolved-state address. Reissuance tokens are not spent in this transaction and remain at the resolved-state address by Liquid consensus.
+### 7.3 Subsequent Issuance
 
-### 7.5 Expire Transition (State 1 → 4)
+Subsequent issuance keeps the market in `Unresolved`.
 
-**Preconditions:** State is 1 (UNRESOLVED), current input index is 0, and lock_time ≥ EXPIRY_TIME.
+Inputs:
 
-- Reissuance tokens consumed and re-emitted to the state-4 (EXPIRED) address.
-- Existing collateral UTXO consumed from state-1 and re-emitted to state-4 with the exact same amount.
-- Transaction has exactly 4 outputs (3 covenant outputs + 1 fee).
+- `UnresolvedYesRt`
+- `UnresolvedNoRt`
+- `UnresolvedCollateral`
+- external collateral input
+- fee input
 
-### 7.6 Expiry Redemption (State 4, Post-Expiry)
+Outputs:
 
-**Preconditions:** State is 4 (EXPIRED) and lock_time ≥ EXPIRY_TIME.
+- `UnresolvedYesRt`
+- `UnresolvedNoRt`
+- consolidated `UnresolvedCollateral`
+- newly minted YES tokens
+- newly minted NO tokens
+- fee output
 
-- Either YES or NO tokens accepted (both sides redeem equally).
-- Tokens burned to an OP_RETURN output.
-- Collateral withdrawn equals `tokens_burned * COLLATERAL_PER_TOKEN` (half the post-resolution rate, since both sides participate).
-- Remaining collateral stays at state-4 address. Reissuance tokens are not spent in this transaction and remain at state-4 by Liquid consensus.
+The unresolved collateral UTXO is consumed and recreated with the old collateral plus the new deposit.
 
-### 7.7 Cancellation (State 1 → 1 partial, State 1 → 0 full)
+### 7.4 Oracle Resolve
 
-**Preconditions:** State is 1 (UNRESOLVED). No time constraint.
+Oracle resolution transitions from `Unresolved` to either `ResolvedYes` or `ResolvedNo`.
 
-- Equal amounts of YES and NO tokens burned.
-- Collateral returned equals `pairs_burned * 2 * COLLATERAL_PER_TOKEN`.
+Inputs:
 
-**Partial cancellation** (remaining collateral > 0):
+- `UnresolvedYesRt`
+- `UnresolvedNoRt`
+- `UnresolvedCollateral`
+- fee input
 
-- Remaining collateral stays at state-1 address. Reissuance tokens are not spent in this transaction and remain at state-1 by Liquid consensus.
+Outputs:
 
-**Full cancellation** (remaining collateral == 0):
+- YES RT burn output
+- NO RT burn output
+- terminal collateral output at `ResolvedYesCollateral` or `ResolvedNoCollateral`
+- fee output
 
-- Reissuance token UTXOs consumed as inputs 1 (YES) and 2 (NO), verified via Pedersen commitment.
-- Reissuance tokens cycled to outputs 0 and 1 at the state-0 (DORMANT) address.
-- Token burns at outputs 2 and 3.
-- This returns the market to the Dormant state, enabling future initial issuance without workarounds.
+The oracle signs `SHA256(MARKET_ID || outcome_byte)`, where `outcome_byte` is `0x01` for YES and `0x00` for NO.
 
-### 7.8 Secondary Covenant Input
+Important property:
 
-**Preconditions:** None (works in any state).
+- reissuance tokens do **not** survive into terminal states,
+- resolved states carry only collateral.
 
-This path validates covenant UTXOs that are spent as secondary inputs in a transaction where another covenant UTXO is the primary input (index 0). It is used when multiple covenant UTXOs—reissuance tokens and collateral—must be consumed in the same transaction (e.g., issuance, oracle resolve).
+### 7.5 Expire Transition
 
-**Enforced constraints:**
+Expiry finalization transitions from `Unresolved` to `Expired`.
 
-- The current input's script hash matches input 0's script hash (same covenant address).
-- The current input index is not 0 (it is a secondary input, not the primary).
+Inputs:
 
-The primary input (index 0) runs one of paths 1–7 and enforces all transaction-level constraints. This path only ensures that the secondary input legitimately belongs to the same covenant instance.
+- `UnresolvedYesRt`
+- `UnresolvedNoRt`
+- `UnresolvedCollateral`
+- fee input
 
-## 8. Timelock Strategy
+Outputs:
 
-The contract uses `EXPIRY_TIME` (block height) only for post-threshold checks. It does not attempt to enforce "must be before expiry" in script, because `nLockTime = 0` remains consensus-valid at any height and bypasses such pseudo-guards. Instead, expiry is represented explicitly in state.
+- YES RT burn output
+- NO RT burn output
+- `ExpiredCollateral`
+- fee output
 
-### 8.1 Expire Transition Enforcement
+This path is gated by `check_lock_height(EXPIRY_TIME)`.
 
-Path 5 (`UNRESOLVED -> EXPIRED`) requires:
+### 7.6 Post-Resolution Redemption
 
-- `state == 1`
-- `current_index == 0`
-- `jet::check_lock_height(param::EXPIRY_TIME)`
+Post-resolution redemption spends terminal collateral only.
 
-This is a consensus-backed gate: the transition transaction cannot confirm before expiry height.
+Inputs:
 
-### 8.2 Expiry Redemption Enforcement
+- `ResolvedYesCollateral` or `ResolvedNoCollateral`
 
-Path 6 (`EXPIRED -> EXPIRED`) requires:
+Outputs:
 
-- `state == 4`
-- `jet::check_lock_height(param::EXPIRY_TIME)` (defense in depth and consensus-backed post-threshold check)
+- winning-token burn output
+- payout output(s)
+- remaining collateral at the same resolved collateral slot
+- fee output
 
-### 8.3 Summary by Path
+Reissuance-token covenant inputs are not part of this path.
 
-| Path | Time Check | Method |
-|------|-----------|--------|
-| Initial issuance | None | Governed by state (`0 -> 1`). |
-| Subsequent issuance | None | Governed by state (`1 -> 1`). |
-| Oracle resolve | None | Governed by state (`1 -> 2/3`). |
-| Post-resolution redemption | None | Governed by state (`2/3 -> 2/3`). |
-| Expire transition | Post-expiry | `jet::check_lock_height()` + `state == 1`. |
-| Expiry redemption | Post-expiry | `jet::check_lock_height()` + `state == 4`. |
-| Cancellation | None | Works at any time while unresolved. |
-| Secondary covenant input | None | Delegates time enforcement to the primary input's path. |
+### 7.7 Expiry Redemption
 
-## 9. Oracle Model
+Expiry redemption also spends terminal collateral only.
 
-The oracle is a 2-of-3 FROST threshold signing committee that operates entirely off-chain. On-chain, the contract sees a single Schnorr public key (the FROST aggregate key) and verifies a single Schnorr signature via `jet::bip_0340_verify`.
+Inputs:
 
-### 9.1 Signature Scheme
+- `ExpiredCollateral`
 
-The oracle signs the message `SHA256(MARKET_ID || outcome_byte)` where outcome_byte is 0x01 for YES or 0x00 for NO. The message is deterministic and independent of the transaction, meaning the oracle attestation can be produced off-chain and submitted by anyone. The oracle does not need to construct or sign the resolve transaction itself.
+Outputs:
 
-### 9.2 Equivocation Protection
+- YES or NO burn output
+- payout output(s)
+- remaining collateral at `ExpiredCollateral`
+- fee output
 
-The state-commit model provides the core equivocation protection. If the oracle signs both YES and NO (whether through collusion, key compromise, or operational failure), only the first attestation to be committed on-chain takes effect. The second attestation is useless because the covenant has already transitioned out of state 1 (UNRESOLVED), and there is no path between the two resolved states (2 and 3).
+This path is also gated by `check_lock_height(EXPIRY_TIME)`.
 
-Without state commitment, a double-signing oracle would create a race condition: whoever submits their redemption transaction first drains the collateral pool, and later redeemers get nothing. This is catastrophically unfair. The state-commit model converts this into a legible, disputable event: the outcome was committed to one side, and all winners on that side are treated equally.
+### 7.8 Cancellation
 
-Note: the oracle's state commitment transitions the covenant from state 1 to state 2 or 3, and there is no path from state 2 to state 3 or vice versa. There is also no path from expired state 4 back to unresolved/resolved states.
+Cancellation is available only while the market is unresolved.
 
-## 10. Serialization and the Swap Service
+Partial cancellation:
 
-### 10.1 The Serialization Bottleneck
+- spends `UnresolvedCollateral` only,
+- burns equal YES and NO amounts,
+- recreates `UnresolvedCollateral` with the remaining collateral.
 
-The single-UTXO covenant model means all spending paths that touch the covenant UTXO are serialized: only one transaction at a time can spend it. This is inherent to the design and is the cost of equivocation protection via state commitment.
+Full cancellation:
 
-Issuance serialization is unavoidable (the reissuance token constraint is fundamental). Oracle resolution happens once and is not a concern. Redemption is the bottleneck: N winners must sequentially spend the same covenant UTXO. In the worst case, 500 individual redemptions on Liquid (≈1-minute blocks) would take approximately 8 hours.
+- spends `UnresolvedCollateral`, `UnresolvedYesRt`, and `UnresolvedNoRt`,
+- burns equal YES and NO amounts,
+- returns the RTs to `DormantYesRt` and `DormantNoRt`,
+- returns collateral to external outputs,
+- leaves the market in `Dormant`.
 
-### 10.2 Swap Service Mitigation (Clearinghouse Pattern)
+## 8. Spend Kinds and Witness Model
 
-Once the oracle attestation is confirmed on-chain, the value of winning tokens is deterministic and risk-free: each winning token is worth exactly `2 * COLLATERAL_PER_TOKEN`. A swap service can offer to buy winning tokens at face value with zero market risk. Its only costs are operational (transaction fees, amortized across batched redemptions).
+The old generic “secondary covenant input” path no longer exists.
 
-The swap service accumulates winning tokens off-chain or via Liquid atomic swaps, then batch-redeems against the covenant in large transactions. This transforms the bottleneck from "N individual redemptions serialized on-chain" to "one sophisticated actor draining the pool in a few large transactions."
+Instead, each covenant input is satisfied with an explicit spend kind plus a `SLOT` witness. The current witness model includes the following path variants:
 
-This pattern mirrors traditional finance clearinghouses: net positions and settle in bulk. The on-chain covenant is the settlement layer; the swap service is the clearing layer. The service is a natural role for the market operator, a liquidity provider, or any arbitrageur.
+- initial issuance primary
+- initial issuance secondary no-RT
+- subsequent issuance primary
+- subsequent issuance secondary no-RT
+- subsequent issuance secondary collateral
+- oracle resolve primary
+- oracle resolve secondary no-RT
+- oracle resolve secondary collateral
+- post-resolution redemption
+- expire transition primary
+- expire transition secondary no-RT
+- expire transition secondary collateral
+- expiry redemption
+- cancellation partial
+- cancellation full primary
+- cancellation full secondary YES RT
+- cancellation full secondary NO RT
 
-### 10.3 Design Decision: State Commit Despite Serialization
+This design makes multi-input validation explicit:
 
-The serialization cost was weighed against the stateless alternative (verifying the oracle signature at redemption time with no state commitment). The stateless model allows parallel redemption but fails catastrophically under oracle equivocation: the oracle signs both sides, and a race to drain collateral begins. First redeemers win; later redeemers lose everything. The state-commit model's serialization cost, mitigated by the swap service, was judged far preferable to the stateless model's catastrophic failure mode.
+- primary paths assert the exact primary slot,
+- secondary paths assert both their own slot and the expected primary slot at input 0,
+- non-issuance paths explicitly reject issuance fields,
+- issuance is allowed only on the issuance paths.
 
-## 11. Contract Structure
+## 9. Locktime Strategy
 
-### 11.1 main() Entry Point
+The contract uses `EXPIRY_TIME` only for post-threshold checks.
 
-The contract's `main()` function reads all witness values, validates state, then dispatches to the appropriate spending path via an 8-way nested `Either` match. All witnesses are read unconditionally in `main()` before dispatch—this is a SimplicityHL requirement, as witness values must be bound at the top level even if only a subset is used by any given path.
+- `ExpireTransition` requires `lock_time >= EXPIRY_TIME`
+- `ExpiryRedemption` requires `lock_time >= EXPIRY_TIME`
 
-```rust
-fn main() {
-    let state: u64 = witness::STATE;
+Other behaviors are governed by slot/state, not by attempting pre-expiry script guards.
 
-    // Validate state commitment
-    assert!(jet::eq_256(
-        script_hash_for_input_script(state),
-        input_script_hash(current_index)
-    ));
+## 10. Single-Collateral-UTXO Model
 
-    // Read all witnesses (SimplicityHL requirement)
-    // ... blinding factors, oracle sig, tokens_burned, etc.
+While a market is unresolved or terminal, there is exactly one live collateral covenant UTXO.
 
-    match witness::PATH {
-        Left(path_1_to_4) => match path_1_to_4 {
-            Left(path_1_or_2) => match path_1_or_2 {
-                Left(_)  => { /* 1. Initial issuance            */ },
-                Right(_) => { /* 2. Subsequent issuance          */ },
-            },
-            Right(path_3_or_4) => match path_3_or_4 {
-                Left(_)  => { /* 3. Oracle resolve               */ },
-                Right(_) => { /* 4. Post-resolution redemption   */ },
-            },
-        },
-        Right(path_5_to_8) => match path_5_to_8 {
-            Left(path_5_or_6) => match path_5_or_6 {
-                Left(_)  => { /* 5. Expire transition            */ },
-                Right(_) => { /* 6. Expiry redemption            */ },
-            },
-            Right(path_7_or_8) => match path_7_or_8 {
-                Left(_)  => { /* 7. Cancellation                 */ },
-                Right(_) => { /* 8. Secondary covenant input     */ },
-            },
-        },
-    }
-}
-```
+This remains a core design requirement:
 
-### 11.2 Utility Functions
+- unresolved issuance must consume and recreate `UnresolvedCollateral`,
+- oracle resolve must consume the entire unresolved collateral position at once,
+- expire transition must consume the entire unresolved collateral position at once,
+- resolved and expired states each carry exactly one collateral slot.
 
-The contract reuses utility functions from the Astrolabe and options contracts:
+The slot redesign does not change this invariant; it strengthens the role separation around it.
 
-- `script_hash_for_input_script` — computes the P2TR script hash for a given state value.
-- `compute_p2tr_script_hash_from_output_key`, `covenant_nums_key` — taproot address computation.
-- `verify_token_commitment`, `verify_input_reissuance_token`, `verify_output_reissuance_token` — reissuance token validation.
-- `get_input_explicit_asset_amount`, `get_output_explicit_asset_amount` — explicit amount introspection.
-- `ensure_output_script_hash_eq`, `ensure_input_script_hash_eq` — address enforcement.
-- `ensure_output_is_op_return` — token burn verification.
+## 11. Bootstrapping Sequence
 
-**New function:** Oracle signature verification—constructs `SHA256(MARKET_ID || outcome_byte)` and calls `jet::bip_0340_verify`.
+1. Choose the YES and NO defining outpoints.
+2. Compile the contract parameters. This yields the program CMR and eight slot addresses.
+3. Build the creation transaction so the two RT UTXOs land at `DormantYesRt` and `DormantNoRt`.
+4. Build the initial issuance transaction to consume the dormant RT slots, mint YES/NO tokens, and create the unresolved slot set.
+5. While unresolved, anyone can issue more pairs, cancel, or wait for resolution/expiry.
+6. Oracle resolution or expiry finalization consumes the unresolved slot set and leaves exactly one terminal collateral slot.
+7. Redemption spends the terminal collateral slot until the market is fully drained.
 
-## 12. Bootstrapping Sequence
+## 12. Output Layout Notes
 
-1. Choose two UTXOs whose outpoints will define the deterministic YES and NO asset IDs and reissuance token IDs.
-2. Compile the contract with all eight parameters. This produces the CMR and five covenant addresses (one per state).
-3. Construct the creation transaction: a plain Elements transaction that spends the two asset-defining UTXOs (with native issuance). Issues reissuance tokens only (no YES/NO tokens, no collateral) and deposits them to the state-0 (DORMANT) covenant address. No Simplicity validation occurs on this transaction.
-4. Construct the initial issuance transaction (state 0 → 1): a covenant-validated transaction that consumes the reissuance tokens from the Dormant address, deposits collateral, mints the first batch of YES/NO tokens, and moves all covenant UTXOs to the state-1 (UNRESOLVED) address.
-5. Market is live at state 1. Anyone can mint more pairs, cancel, or wait for resolution.
-6. Oracle resolves by posting the state-commit transaction (state 1 → 2 or 1 → 3), or anyone can finalize expiry via state transition (state 1 → 4) once locktime reaches `EXPIRY_TIME`.
-7. Winning token holders redeem from resolved states (2/3) at `2 * CPT`. In expired state (4), either side redeems at `1 * CPT`.
+The key fixed layouts are:
 
-*Note: The creation transaction is not covenant-validated—a malformed creation would create unspendable UTXOs, but the SDK validates amounts and computes deterministic asset IDs. Anyone evaluating a market should verify the creation transaction to confirm correct reissuance token issuance and covenant address outputs. The covenant enforces correctness of all subsequent transactions starting from initial issuance.*
+- oracle resolve: 4 outputs = YES RT burn, NO RT burn, terminal collateral, fee
+- expire transition: 4 outputs = YES RT burn, NO RT burn, expired collateral, fee
 
-## 13. Explicit vs. Confidential Amounts
+Issuance and full cancellation also have fixed covenant-role layouts, but may have additional non-covenant outputs such as token recipients, collateral refund recipients, or change.
 
-Issuance transactions require explicit (non-confidential) amounts for YES tokens, NO tokens, and collateral. This simplifies covenant verification: the contract can directly read and compare amounts via `get_output_explicit_asset_amount` without needing to verify Pedersen commitment arithmetic or handle blinding factors.
+Redemption and partial cancellation have variable output counts; the fee output is the last output in those flows.
 
-Reissuance tokens remain confidential per Elements protocol requirements. The existing `verify_token_commitment` function from the options contract handles confidential reissuance token verification using asset/value blinding factors provided as witness data.
+## 13. Store and Scan Semantics
 
-### 13.1 Design Decision: Explicit Amounts
+The SDK and `deadcat-store` no longer derive market state from raw slot-address
+occupancy alone.
 
-The alternative—supporting confidential amounts for minted tokens and collateral—would require the SimplicityHL script to verify that confidential YES and NO token amounts are equal, and that the confidential collateral amount matches the expected deposit. This would involve Pedersen commitment arithmetic in the contract, significantly increasing complexity and program weight. Since issuance is a public operation (anyone can see that tokens are being minted), confidentiality provides limited benefit. The complexity cost of confidential verification was judged not worth the marginal privacy gain.
+Instead, they start from the proof-carrying dormant anchor:
 
-## 14. Resolved Implementation Details
+- `creation_txid`
+- YES dormant output opening
+- NO dormant output opening
 
-The following items were identified during design and have been resolved in the implementation.
+The creation tx is validated against that anchor, then the scanner walks only
+canonical descendant transactions of the validated dormant bundle.
 
-**Reissuance token input/output layout.** The creation transaction creates reissuance tokens at output indices 0 (YES) and 1 (NO) via native Liquid issuance from inputs 0 and 1 (reissuance tokens only, no asset value). The covenant-validated issuance paths consume existing reissuance tokens from inputs 0 and 1, and cycle them to outputs 0 and 1 via reissuance.
+This is important for correctness:
 
-**Fee output handling.** For paths with fixed transaction layouts (issuance, oracle resolve, expire transition), the fee output index is hardcoded (index 5 for issuance, index 3 for resolve/expire-transition). For paths with variable layouts (redemption, cancellation), the fee output is dynamically computed as `num_outputs - 1`. All fee outputs are verified to have an empty script hash (OP_RETURN).
+- foreign dust at slot scripts is ignored because it is not descended from the
+  validated anchor,
+- malformed or conflicting canonical transitions are rejected during the
+  lineage walk,
+- storage persists only canonical live slot outpoints and tags them by slot,
+  not only by lifecycle state.
 
-**Output count enforcement.** Oracle resolve and expire transition each enforce exactly 4 outputs (`num_outputs == 4`): three covenant outputs (YES reissuance token, NO reissuance token, collateral) plus one fee output. Other paths use flexible output counts to accommodate partial vs. full redemption scenarios.
+## 14. Summary
 
-## 15. Summary of Design Decisions
+The current prediction-market covenant is a slot-based redesign of the earlier state-address model.
 
-| Decision | Chosen | Rejected Alternative |
-|----------|--------|---------------------|
-| Collateral naming | COLLATERAL_PER_TOKEN with multiplication | COLLATERAL_PER_PAIR with division |
-| State model | Five states (0/1/2/3/4) with Dormant + explicit Expired state | Three states without Dormant/Expired |
-| Collateral structure | Single UTXO, consolidated on each issuance | Fragmented UTXOs (options contract pattern) |
-| Oracle state commitment | On-chain state transition (covenant) | Stateless oracle sig check at redemption |
-| Winning payout | 2 * CPT per token (full pair collateral) | 1 * CPT per token (dead collateral) |
-| MARKET_ID | Derived from token asset IDs | Standalone random parameter |
-| Issuance amounts | Explicit (non-confidential) | Confidential with Pedersen verification |
-| Expiry handling | Explicit `1 -> 4` transition + `check_lock_height` | Pseudo pre-expiry guards based on `lock_time` |
-| Serialization mitigation | Off-chain swap service (clearinghouse) | Fragmented collateral (breaks state model) |
+The important properties are:
 
----
+- five lifecycle states remain the user-facing model,
+- eight Taproot-committed slots identify concrete covenant UTXOs,
+- issuance and full cancellation move RTs between dormant and unresolved slots,
+- resolve/expire burn RTs and leave only terminal collateral,
+- redemption and partial cancellation are collateral-slot-only flows,
+- state is derived from canonical anchor lineage, not from loose address matching
+  or raw slot occupancy.
 
-*End of design document.*
+This is the canonical architecture implemented by the current SDK, contract, and store.

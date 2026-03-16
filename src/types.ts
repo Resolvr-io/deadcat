@@ -102,6 +102,17 @@ export type PaymentSwap = {
   updatedAt: string;
 };
 
+export type DormantOutputOpening = {
+  asset_blinding_factor: string;
+  value_blinding_factor: string;
+};
+
+export type PredictionMarketAnchor = {
+  creation_txid: string;
+  yes_dormant_opening: DormantOutputOpening;
+  no_dormant_opening: DormantOutputOpening;
+};
+
 export type DiscoveredMarket = {
   id: string;
   nevent: string;
@@ -120,7 +131,7 @@ export type DiscoveredMarket = {
   no_reissuance_token: string;
   creator_pubkey: string;
   created_at: number;
-  creation_txid: string | null;
+  anchor: PredictionMarketAnchor;
   state: CovenantState;
   nostr_event_json?: string | null;
   yes_price_bps?: number | null;
@@ -196,6 +207,7 @@ export type Market = {
   noAssetId: string;
   yesReissuanceToken: string;
   noReissuanceToken: string;
+  anchor: PredictionMarketAnchor | null;
   limitOrders: DiscoveredOrder[];
   creationTxid: string | null;
   collateralUtxos: CollateralUtxo[];

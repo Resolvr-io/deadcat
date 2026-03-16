@@ -4,7 +4,7 @@ use simplicityhl::elements::{LockTime, Script};
 
 use crate::error::{Error, Result};
 use crate::prediction_market::contract::CompiledPredictionMarket;
-use crate::prediction_market::state::MarketState;
+use crate::prediction_market::state::MarketSlot;
 
 use super::{
     UnblindedUtxo, add_pset_input, add_pset_output, covenant_spk, explicit_txout, fee_txout,
@@ -36,14 +36,14 @@ pub struct InitialIssuanceParams {
 
 /// Build the initial issuance PSET (state 0 → 1).
 ///
-/// Input 0: YES reissuance token (from Dormant covenant)
-/// Input 1: NO reissuance token (from Dormant covenant)
+/// Input 0: YES reissuance token (from Dormant YES RT slot)
+/// Input 1: NO reissuance token (from Dormant NO RT slot)
 /// Input 2: collateral (external — not from covenant)
 /// Input 3: fee
 ///
-/// Output 0: YES reissuance token → Unresolved covenant
-/// Output 1: NO reissuance token → Unresolved covenant
-/// Output 2: collateral → Unresolved covenant
+/// Output 0: YES reissuance token → Unresolved YES RT slot
+/// Output 1: NO reissuance token → Unresolved NO RT slot
+/// Output 2: collateral → Unresolved collateral slot
 /// Output 3: YES tokens → creator
 /// Output 4: NO tokens → creator
 /// Output 5: fee
@@ -64,7 +64,9 @@ pub fn build_initial_issuance_pset(
     }
 
     let mut pset = new_pset();
-    let unresolved_spk = covenant_spk(contract, MarketState::Unresolved);
+    let unresolved_yes_spk = covenant_spk(contract, MarketSlot::UnresolvedYesRt);
+    let unresolved_no_spk = covenant_spk(contract, MarketSlot::UnresolvedNoRt);
+    let unresolved_collateral_spk = covenant_spk(contract, MarketSlot::UnresolvedCollateral);
 
     // Input 0: YES reissuance token (from Dormant)
     add_pset_input(&mut pset, &params.yes_reissuance_utxo);
@@ -93,17 +95,17 @@ pub fn build_initial_issuance_pset(
         input.issuance_asset_entropy = Some(params.no_issuance_asset_entropy);
     }
 
-    // Output 0: YES reissuance token → Unresolved
-    add_pset_output(&mut pset, reissuance_token_output(&unresolved_spk));
-    // Output 1: NO reissuance token → Unresolved
-    add_pset_output(&mut pset, reissuance_token_output(&unresolved_spk));
-    // Output 2: collateral → Unresolved
+    // Output 0: YES reissuance token → Unresolved YES RT slot
+    add_pset_output(&mut pset, reissuance_token_output(&unresolved_yes_spk));
+    // Output 1: NO reissuance token → Unresolved NO RT slot
+    add_pset_output(&mut pset, reissuance_token_output(&unresolved_no_spk));
+    // Output 2: collateral → Unresolved collateral slot
     add_pset_output(
         &mut pset,
         explicit_txout(
             &contract.params().collateral_asset_id,
             required_collateral,
-            &unresolved_spk,
+            &unresolved_collateral_spk,
         ),
     );
     // Output 3: YES tokens → creator

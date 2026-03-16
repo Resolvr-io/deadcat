@@ -4,7 +4,7 @@ use simplicityhl::elements::{LockTime, Script};
 
 use crate::error::{Error, Result};
 use crate::prediction_market::contract::CompiledPredictionMarket;
-use crate::prediction_market::state::MarketState;
+use crate::prediction_market::state::MarketSlot;
 
 use super::{
     UnblindedUtxo, add_pset_input, add_pset_output, covenant_spk, explicit_txout, fee_txout,
@@ -54,7 +54,9 @@ pub fn build_subsequent_issuance_pset(
     }
 
     let mut pset = new_pset();
-    let unresolved_spk = covenant_spk(contract, MarketState::Unresolved);
+    let unresolved_yes_spk = covenant_spk(contract, MarketSlot::UnresolvedYesRt);
+    let unresolved_no_spk = covenant_spk(contract, MarketSlot::UnresolvedNoRt);
+    let unresolved_collateral_spk = covenant_spk(contract, MarketSlot::UnresolvedCollateral);
 
     add_pset_input(&mut pset, &params.yes_reissuance_utxo);
     add_pset_input(&mut pset, &params.no_reissuance_utxo);
@@ -80,14 +82,14 @@ pub fn build_subsequent_issuance_pset(
         input.issuance_asset_entropy = Some(params.no_issuance_asset_entropy);
     }
 
-    add_pset_output(&mut pset, reissuance_token_output(&unresolved_spk));
-    add_pset_output(&mut pset, reissuance_token_output(&unresolved_spk));
+    add_pset_output(&mut pset, reissuance_token_output(&unresolved_yes_spk));
+    add_pset_output(&mut pset, reissuance_token_output(&unresolved_no_spk));
     add_pset_output(
         &mut pset,
         explicit_txout(
             &contract.params().collateral_asset_id,
             total_collateral,
-            &unresolved_spk,
+            &unresolved_collateral_spk,
         ),
     );
     add_pset_output(

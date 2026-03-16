@@ -15,6 +15,8 @@ pub(crate) mod network;
 pub(crate) mod node;
 pub(crate) mod pool;
 pub(crate) mod prediction_market;
+#[doc(hidden)]
+pub mod prediction_market_scan;
 pub(crate) mod pset;
 pub(crate) mod sdk;
 #[cfg(any(test, feature = "testing"))]
@@ -26,13 +28,17 @@ pub mod testing;
 pub(crate) mod trade;
 
 // ── Core types ─────────────────────────────────────────────────────
-pub use announcement::{ContractAnnouncement, ContractMetadata};
+pub use announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement, ContractMetadata};
 pub use error::{Error, NodeError, Result};
 pub use network::Network;
 pub use node::DeadcatNode;
+pub use prediction_market::anchor::{
+    DormantOutputOpening, PredictionMarketAnchor, parse_market_creation_txid,
+    parse_prediction_market_anchor,
+};
 pub use prediction_market::contract::CompiledPredictionMarket;
 pub use prediction_market::params::{MarketId, PredictionMarketParams};
-pub use prediction_market::state::MarketState;
+pub use prediction_market::state::{MarketSlot, MarketState};
 pub use pset::UnblindedUtxo;
 pub use sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, FillOrderResult, IssuanceResult,
@@ -96,6 +102,7 @@ pub use discovery::{
     OrderAnnouncement,
     PoolAnnouncement,
     PoolParams,
+    PredictionMarketCandidateIngestInput,
     // Functions
     build_announcement_event,
     build_attestation_event,

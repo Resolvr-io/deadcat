@@ -3,12 +3,12 @@ use std::time::Duration;
 
 use deadcat_sdk::PoolParams;
 use deadcat_sdk::testing::{
-    TestStore, oracle_pubkey_from_keys, test_market_params, test_metadata, test_order_announcement,
+    TestStore, oracle_pubkey_from_keys, test_market_announcement, test_market_params,
+    test_order_announcement,
 };
 use deadcat_sdk::{
-    CompiledLmsrPool, ContractAnnouncement, DeadcatNode, DiscoveryConfig, DiscoveryEvent,
-    LmsrInitialOutpoint, LmsrPoolId, LmsrPoolIdInput, LmsrPoolParams, PoolAnnouncement,
-    PoolReserves,
+    CompiledLmsrPool, DeadcatNode, DiscoveryConfig, DiscoveryEvent, LmsrInitialOutpoint,
+    LmsrPoolId, LmsrPoolIdInput, LmsrPoolParams, PoolAnnouncement, PoolReserves,
 };
 use deadcat_sdk::{NodeError, TradeAmount, TradeDirection, TradeSide};
 use nostr_relay_builder::prelude::*;
@@ -123,13 +123,7 @@ async fn node_announce_and_fetch_market() {
     let (node, _rx, store, keys) = setup_node_with_store(&mock.url()).await;
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_market_params(oracle_pubkey);
-    let announcement = ContractAnnouncement {
-        version: 2,
-        contract_params: params,
-        metadata: test_metadata(),
-        creation_txid: Some("abc123def456".to_string()),
-    };
+    let (announcement, _params) = test_market_announcement(oracle_pubkey, 0x11);
 
     // Announce via node (Nostr-only, no on-chain)
     let event_id = node.announce_market(&announcement).await.unwrap();
@@ -191,16 +185,10 @@ async fn node_attestation() {
     let (node, _rx, _store, keys) = setup_node_with_store(&mock.url()).await;
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_market_params(oracle_pubkey);
+    let (announcement, params) = test_market_announcement(oracle_pubkey, 0x22);
     let market_id = params.market_id();
 
     // First publish the announcement
-    let announcement = ContractAnnouncement {
-        version: 2,
-        contract_params: params,
-        metadata: test_metadata(),
-        creation_txid: None,
-    };
     let ann_event_id = node.announce_market(&announcement).await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -240,13 +228,7 @@ async fn node_subscription_delivers_events() {
     publisher.connect().await;
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_market_params(oracle_pubkey);
-    let announcement = ContractAnnouncement {
-        version: 2,
-        contract_params: params,
-        metadata: test_metadata(),
-        creation_txid: None,
-    };
+    let (announcement, _params) = test_market_announcement(oracle_pubkey, 0x33);
 
     let event =
         deadcat_sdk::build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();

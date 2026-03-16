@@ -17,11 +17,13 @@ use tokio::task::JoinHandle;
 use crate::announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement, ContractMetadata};
 use crate::discovery::config::DiscoveryConfig;
 use crate::discovery::events::DiscoveryEvent;
-use crate::discovery::market::DiscoveredMarket;
+use crate::discovery::market::{DiscoveredMarket, ParsedDiscoveredMarketAnnouncement};
 use crate::discovery::service::{
     DiscoveryService, NoopStore, persist_canonical_lmsr_state_to_store, persist_market_to_store,
 };
-use crate::discovery::store_trait::DiscoveryStore;
+use crate::discovery::store_trait::{
+    ContractMetadataInput, DiscoveryStore, PredictionMarketCandidateIngestInput,
+};
 use crate::discovery::{
     AttestationContent, AttestationResult, DEFAULT_RELAYS, DiscoveredOrder, OrderAnnouncement,
     bytes_to_hex,
@@ -29,6 +31,7 @@ use crate::discovery::{
 use crate::error::{Error, NodeError};
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
 use crate::network::Network;
+use crate::prediction_market::anchor::PredictionMarketAnchor;
 use crate::prediction_market::contract::CompiledPredictionMarket;
 use crate::prediction_market::params::{MarketId, PredictionMarketParams};
 use crate::prediction_market::state::MarketState;
@@ -195,8 +198,8 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     // ── Internal: store persistence helpers ──────────────────────────────
 
-    fn persist_market(&self, market: &DiscoveredMarket) {
-        persist_market_to_store(&self.store, market);
+    fn persist_market(&self, parsed: &ParsedDiscoveredMarketAnnouncement) {
+        persist_market_to_store(&self.store, parsed);
     }
 
     // ── Combined on-chain + Nostr operations ────────────────────────────
@@ -218,9 +221,9 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         min_utxo_value: u64,
         fee_amount: u64,
         metadata: ContractMetadata,
-    ) -> Result<(DiscoveredMarket, Txid), NodeError> {
+    ) -> Result<DiscoveredMarket, NodeError> {
         // 1. On-chain via spawn_blocking
-        let (txid, params) = self
+        let (anchor, params) = self
             .with_sdk(move |sdk| {
                 sdk.create_contract_onchain(
                     oracle_pubkey,
@@ -232,12 +235,25 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             })
             .await?;
 
+        let creation_tx = self
+            .with_sdk({
+                let anchor = anchor.clone();
+                move |sdk| {
+                    let txid = crate::parse_market_creation_txid(&anchor.creation_txid)
+                        .map_err(Error::Query)?;
+                    sdk.fetch_transaction(&txid)
+                }
+            })
+            .await?;
+        let creation_tx_hex = hex::encode(crate::elements::encode::serialize(&creation_tx));
+
         // 2. Build and publish Nostr announcement
         let announcement = ContractAnnouncement {
             version: CONTRACT_ANNOUNCEMENT_VERSION,
             contract_params: params,
             metadata,
-            creation_txid: Some(txid.to_string()),
+            anchor: anchor.clone(),
+            creation_tx_hex: creation_tx_hex.clone(),
         };
 
         let event_id = self
@@ -256,10 +272,10 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             id: event_id.to_hex(),
             nevent,
             market_id: bytes_to_hex(market_id.as_bytes()),
-            question: announcement.metadata.question,
-            category: announcement.metadata.category,
-            description: announcement.metadata.description,
-            resolution_source: announcement.metadata.resolution_source,
+            question: announcement.metadata.question.clone(),
+            category: announcement.metadata.category.clone(),
+            description: announcement.metadata.description.clone(),
+            resolution_source: announcement.metadata.resolution_source.clone(),
             oracle_pubkey: bytes_to_hex(&params.oracle_public_key),
             expiry_height: params.expiry_time,
             cpt_sats: params.collateral_per_token,
@@ -270,17 +286,36 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             no_reissuance_token: bytes_to_hex(&params.no_reissuance_token),
             creator_pubkey: self.keys.public_key().to_hex(),
             created_at: nostr_sdk::Timestamp::now().as_u64(),
-            creation_txid: announcement.creation_txid,
+            anchor: announcement.anchor.clone(),
             state: 0,
             nostr_event_json: None,
             yes_price_bps: None,
             no_price_bps: None,
         };
 
-        // 4. Persist to store
-        self.persist_market(&market);
+        let parsed = ParsedDiscoveredMarketAnnouncement {
+            market: market.clone(),
+            ingest: PredictionMarketCandidateIngestInput {
+                params,
+                metadata: ContractMetadataInput {
+                    question: Some(announcement.metadata.question.clone()),
+                    description: Some(announcement.metadata.description.clone()),
+                    category: Some(announcement.metadata.category.clone()),
+                    resolution_source: Some(announcement.metadata.resolution_source.clone()),
+                    creator_pubkey: hex::decode(self.keys.public_key().to_hex()).ok(),
+                    anchor: announcement.anchor.clone(),
+                    nevent: Some(market.nevent.clone()),
+                    nostr_event_id: Some(market.id.clone()),
+                    nostr_event_json: None,
+                },
+                creation_tx: hex::decode(creation_tx_hex).expect("hex-encoded creation tx"),
+            },
+        };
 
-        Ok((market, txid))
+        // 4. Persist to store
+        self.persist_market(&parsed);
+
+        Ok(market)
     }
 
     /// Announce an existing market to Nostr (no on-chain operation).
@@ -298,11 +333,11 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     pub async fn issue_tokens(
         &self,
         params: PredictionMarketParams,
-        creation_txid: Txid,
+        anchor: PredictionMarketAnchor,
         pairs: u64,
         fee_amount: u64,
     ) -> Result<IssuanceResult, NodeError> {
-        self.with_sdk(move |sdk| sdk.issue_tokens(&params, &creation_txid, pairs, fee_amount))
+        self.with_sdk(move |sdk| sdk.issue_tokens(&params, &anchor, pairs, fee_amount))
             .await
     }
 
@@ -418,12 +453,15 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     pub async fn resolve_market(
         &self,
         params: PredictionMarketParams,
+        anchor: PredictionMarketAnchor,
         outcome_yes: bool,
         oracle_sig: [u8; 64],
         fee_amount: u64,
     ) -> Result<ResolutionResult, NodeError> {
-        self.with_sdk(move |sdk| sdk.resolve_market(&params, outcome_yes, oracle_sig, fee_amount))
-            .await
+        self.with_sdk(move |sdk| {
+            sdk.resolve_market(&params, &anchor, outcome_yes, oracle_sig, fee_amount)
+        })
+        .await
     }
 
     // ── Redemption ──────────────────────────────────────────────────────
@@ -432,10 +470,11 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     pub async fn redeem_tokens(
         &self,
         params: PredictionMarketParams,
+        anchor: PredictionMarketAnchor,
         tokens: u64,
         fee_amount: u64,
     ) -> Result<RedemptionResult, NodeError> {
-        self.with_sdk(move |sdk| sdk.redeem_tokens(&params, tokens, fee_amount))
+        self.with_sdk(move |sdk| sdk.redeem_tokens(&params, &anchor, tokens, fee_amount))
             .await
     }
 
@@ -443,22 +482,26 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     pub async fn redeem_expired(
         &self,
         params: PredictionMarketParams,
+        anchor: PredictionMarketAnchor,
         token_asset: [u8; 32],
         tokens: u64,
         fee_amount: u64,
     ) -> Result<RedemptionResult, NodeError> {
-        self.with_sdk(move |sdk| sdk.redeem_expired(&params, token_asset, tokens, fee_amount))
-            .await
+        self.with_sdk(move |sdk| {
+            sdk.redeem_expired(&params, &anchor, token_asset, tokens, fee_amount)
+        })
+        .await
     }
 
     /// Cancel token pairs by burning equal YES and NO tokens.
     pub async fn cancel_tokens(
         &self,
         params: PredictionMarketParams,
+        anchor: PredictionMarketAnchor,
         pairs: u64,
         fee_amount: u64,
     ) -> Result<CancellationResult, NodeError> {
-        self.with_sdk(move |sdk| sdk.cancel_tokens(&params, pairs, fee_amount))
+        self.with_sdk(move |sdk| sdk.cancel_tokens(&params, &anchor, pairs, fee_amount))
             .await
     }
 
@@ -790,14 +833,17 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         self.with_sdk(|sdk| Ok(sdk.policy_asset())).await
     }
 
-    /// Scan covenant addresses to determine the current on-chain state of a market.
+    /// Walk the canonical market lineage from the proof-carrying dormant anchor and return the
+    /// current lifecycle
+    /// state of the live canonical covenant bundle.
     pub async fn market_state(
         &self,
         params: PredictionMarketParams,
+        anchor: PredictionMarketAnchor,
     ) -> Result<MarketState, NodeError> {
         self.with_sdk(move |sdk| {
             let contract = CompiledPredictionMarket::new(params)?;
-            let (state, _utxos) = sdk.scan_market_state(&contract)?;
+            let (state, _utxos) = sdk.scan_market_state(&contract, &anchor)?;
             Ok(state)
         })
         .await
@@ -814,17 +860,13 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             .await
     }
 
-    /// Validate a market was created at its Dormant covenant address.
+    /// Validate a market was created with the canonical proof-carrying dormant bootstrap.
     pub async fn validate_market_creation(
         &self,
         params: PredictionMarketParams,
-        creation_txid: String,
+        anchor: PredictionMarketAnchor,
     ) -> Result<bool, NodeError> {
-        let txid: Txid = creation_txid
-            .parse()
-            .map_err(|e| NodeError::Discovery(format!("bad txid: {e}")))?;
-
-        self.with_sdk(move |sdk| sdk.validate_market_creation(&params, &txid))
+        self.with_sdk(move |sdk| sdk.validate_market_creation(&params, &anchor))
             .await
     }
 

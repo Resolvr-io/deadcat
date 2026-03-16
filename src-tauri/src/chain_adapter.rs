@@ -34,6 +34,43 @@ impl ElectrumChainAdapter {
         hash.reverse();
         hex::encode(&hash)
     }
+
+    /// Return `(confirmed_height, block_hash)` once a transaction is
+    /// irreversible under the app's no-reorg policy.
+    pub fn irreversible_confirmation(
+        &self,
+        txid: &[u8; 32],
+    ) -> Result<Option<(u32, [u8; 32])>, ChainAdapterError> {
+        use electrum_client::ElectrumApi;
+
+        let client = self.client()?;
+        let txid_hex = txid_to_display_hex(txid);
+        let resp = match client.raw_call(
+            "blockchain.transaction.get",
+            [
+                electrum_client::Param::String(txid_hex),
+                electrum_client::Param::Bool(true),
+            ],
+        ) {
+            Ok(resp) => resp,
+            Err(_) => return Ok(None),
+        };
+
+        let confirmations = resp["confirmations"].as_u64().unwrap_or(0) as u32;
+        if confirmations < deadcat_store::LIQUID_IRREVERSIBLE_CONFIRMATIONS {
+            return Ok(None);
+        }
+
+        let block_hash_hex = resp["blockhash"]
+            .as_str()
+            .ok_or_else(|| ChainAdapterError::Parse("missing blockhash".into()))?;
+        let block_hash = hex_to_txid_bytes(block_hash_hex)?;
+        let best_height = self.best_block_height()?;
+        let confirmed_height = best_height
+            .checked_sub(confirmations.saturating_sub(1))
+            .ok_or_else(|| ChainAdapterError::Parse("invalid confirmation height".into()))?;
+        Ok(Some((confirmed_height, block_hash)))
+    }
 }
 
 impl ChainSource for ElectrumChainAdapter {

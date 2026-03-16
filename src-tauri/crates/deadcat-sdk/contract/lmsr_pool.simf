@@ -339,9 +339,6 @@ fn lmsr_primary_main(
     assert!(jet::eq_64(scan_new_s_index, new_s_index));
     assert!(jet::eq_8(scan_path_tag, path_tag));
 
-    assert!(jet::le_64(f_old, f_old));
-    assert!(jet::le_64(f_new, f_new));
-
     let fee_denom: u64 = 10000;
     assert!(lt_64(param::FEE_BPS, fee_denom));
     let fee_c: u64 = safe_subtract(fee_denom, param::FEE_BPS);

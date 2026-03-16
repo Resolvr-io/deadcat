@@ -1460,6 +1460,7 @@ dependencies = [
 name = "deadcat-store"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "deadcat-sdk",
  "diesel",
  "diesel_migrations",

@@ -29,6 +29,7 @@ pub use deadcat_sdk::{
     // Constants
     APP_EVENT_KIND,
     ATTESTATION_TAG,
+    CONTRACT_ANNOUNCEMENT_VERSION,
     CONTRACT_TAG,
     DEFAULT_RELAYS,
     NETWORK_TAG,
@@ -338,44 +339,44 @@ mod tests {
     use deadcat_sdk::{MarketId, PredictionMarketParams};
     use nostr_sdk::secp256k1;
 
-    fn test_metadata() -> ContractMetadata {
-        ContractMetadata {
-            question: "Will BTC hit 100k?".to_string(),
-            description: "Resolves via exchange data.".to_string(),
-            category: "Bitcoin".to_string(),
-            resolution_source: "Exchange basket".to_string(),
-        }
-    }
-
-    fn test_params() -> PredictionMarketParams {
-        PredictionMarketParams {
-            oracle_public_key: [0xaa; 32],
-            collateral_asset_id: [0xbb; 32],
-            yes_token_asset: [0x01; 32],
-            no_token_asset: [0x02; 32],
-            yes_reissuance_token: [0x03; 32],
-            no_reissuance_token: [0x04; 32],
-            collateral_per_token: 5000,
-            expiry_time: 3_650_000,
-        }
-    }
-
     #[test]
     fn contract_announcement_serde_roundtrip() {
         let announcement = ContractAnnouncement {
-            version: 2,
-            contract_params: test_params(),
-            metadata: test_metadata(),
-            creation_txid: Some("abc123".to_string()),
+            version: CONTRACT_ANNOUNCEMENT_VERSION,
+            contract_params: PredictionMarketParams {
+                oracle_public_key: [0xaa; 32],
+                collateral_asset_id: [0xbb; 32],
+                yes_token_asset: [0x01; 32],
+                no_token_asset: [0x02; 32],
+                yes_reissuance_token: [0x03; 32],
+                no_reissuance_token: [0x04; 32],
+                collateral_per_token: 5000,
+                expiry_time: 3_650_000,
+            },
+            metadata: ContractMetadata {
+                question: "Will BTC hit 100k?".to_string(),
+                description: "Resolves via exchange data.".to_string(),
+                category: "Bitcoin".to_string(),
+                resolution_source: "Exchange basket".to_string(),
+            },
+            anchor: deadcat_sdk::PredictionMarketAnchor::from_openings(
+                hex::encode([0x11; 32]).parse().unwrap(),
+                [0x21; 32],
+                [0x31; 32],
+                [0x41; 32],
+                [0x51; 32],
+            ),
+            creation_tx_hex: "deadbeef".to_string(),
         };
 
         let json = serde_json::to_string(&announcement).unwrap();
         let parsed: ContractAnnouncement = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.version, 2);
+        assert_eq!(parsed.version, CONTRACT_ANNOUNCEMENT_VERSION);
         assert_eq!(parsed.contract_params, announcement.contract_params);
         assert_eq!(parsed.metadata.question, "Will BTC hit 100k?");
-        assert_eq!(parsed.creation_txid, Some("abc123".to_string()));
+        assert_eq!(parsed.anchor.creation_txid, hex::encode([0x11; 32]));
+        assert_eq!(parsed.creation_tx_hex, announcement.creation_tx_hex);
     }
 
     #[test]

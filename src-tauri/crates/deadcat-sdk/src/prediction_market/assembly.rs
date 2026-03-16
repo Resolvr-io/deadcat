@@ -21,7 +21,7 @@ use crate::prediction_market::pset::initial_issuance::{
 use crate::prediction_market::pset::issuance::{
     SubsequentIssuanceParams, build_subsequent_issuance_pset,
 };
-use crate::prediction_market::state::MarketState;
+use crate::prediction_market::state::{MarketSlot, MarketState};
 use crate::prediction_market::witness::{
     AllBlindingFactors, PredictionMarketSpendingPath, ReissuanceBlindingFactors,
     satisfy_contract_with_env, serialize_satisfied,
@@ -66,7 +66,8 @@ pub struct IssuanceAssemblyInputs {
 /// Compute issuance entropy from the creation transaction.
 ///
 /// Extracts the defining outpoints from the creation tx's first two inputs and
-/// computes the asset entropy for YES and NO reissuance tokens.
+/// computes the asset entropy for YES and NO reissuance tokens, assuming the
+/// canonical zero-contract-hash creation bootstrap produced by `build_creation_pset`.
 pub fn compute_issuance_entropy(
     creation_tx: &Transaction,
     yes_rt_abf: &[u8; 32],
@@ -88,16 +89,18 @@ pub fn compute_issuance_entropy(
     let zero_contract_hash = ContractHash::from_byte_array([0u8; 32]);
     let yes_entropy = AssetId::generate_asset_entropy(yes_defining_outpoint, zero_contract_hash);
     let no_entropy = AssetId::generate_asset_entropy(no_defining_outpoint, zero_contract_hash);
+    let yes_entropy_bytes = yes_entropy.to_byte_array();
+    let no_entropy_bytes = no_entropy.to_byte_array();
 
     Ok(IssuanceEntropy {
         yes_blinding_nonce: *yes_rt_abf,
-        yes_entropy: yes_entropy.to_byte_array(),
+        yes_entropy: yes_entropy_bytes,
         no_blinding_nonce: *no_rt_abf,
-        no_entropy: no_entropy.to_byte_array(),
+        no_entropy: no_entropy_bytes,
     })
 }
 
-/// Ensure the fee output (OP_RETURN, empty script_pubkey) is the last output.
+/// Ensure the fee output (empty script_pubkey) is the last output.
 ///
 /// The contract checks `ensure_fee_output(num_outputs - 1)`, meaning the fee
 /// must be the last output. PSET builders may place a fee change output after
@@ -130,6 +133,10 @@ fn blind_pset(
     input_utxos: &[(usize, &UnblindedUtxo)],
     blinding_pubkey: PublicKey,
 ) -> Result<()> {
+    if rt_setup.is_none() && wallet_output_indices.is_empty() {
+        return Ok(());
+    }
+
     let pset_blinding_key = lwk_wollet::elements::bitcoin::PublicKey {
         inner: blinding_pubkey,
         compressed: true,
@@ -175,26 +182,25 @@ fn blind_pset(
 }
 
 /// Identify wallet output indices: all outputs with non-empty script_pubkey
-/// that are NOT covenant addresses and NOT burn (OP_RETURN) outputs.
+/// that are NOT covenant addresses and NOT fixed burn-script outputs.
 fn find_wallet_output_indices(
     pset: &PartiallySignedTransaction,
     contract: &CompiledPredictionMarket,
 ) -> Vec<usize> {
-    let covenant_spks: Vec<Script> = [
-        MarketState::Dormant,
-        MarketState::Unresolved,
-        MarketState::ResolvedYes,
-        MarketState::ResolvedNo,
-        MarketState::Expired,
-    ]
-    .iter()
-    .map(|s| contract.script_pubkey(*s))
-    .collect();
+    let covenant_spks: Vec<Script> = MarketSlot::ALL
+        .iter()
+        .map(|slot| contract.script_pubkey(*slot))
+        .collect();
+    let burn_spk = crate::pset::burn_script_pubkey();
 
     pset.outputs()
         .iter()
         .enumerate()
-        .filter(|(_, o)| !o.script_pubkey.is_empty() && !covenant_spks.contains(&o.script_pubkey))
+        .filter(|(_, o)| {
+            !o.script_pubkey.is_empty()
+                && o.script_pubkey != burn_spk
+                && !covenant_spks.contains(&o.script_pubkey)
+        })
         .map(|(i, _)| i)
         .collect()
 }
@@ -288,7 +294,7 @@ pub(crate) fn build_issuance_pset(
 ///
 /// Sets up blinding keys on RT outputs and change outputs, provides input
 /// txout secrets, and calls `blind_last()`.
-fn blind_issuance_pset(
+pub(crate) fn blind_issuance_pset(
     pset: &mut PartiallySignedTransaction,
     inputs: &IssuanceAssemblyInputs,
     blinding_pubkey: PublicKey,
@@ -298,28 +304,26 @@ fn blind_issuance_pset(
     let no_rt_id = AssetId::from_slice(&inputs.contract.params().no_reissuance_token)
         .map_err(|e| Error::Blinding(format!("bad NO reissuance asset: {e}")))?;
 
-    let outputs = pset.outputs_mut();
-    outputs[0].amount = Some(1);
-    outputs[0].asset = Some(yes_rt_id);
-    outputs[1].amount = Some(1);
-    outputs[1].asset = Some(no_rt_id);
-
     let pset_blinding_key = lwk_wollet::elements::bitcoin::PublicKey {
         inner: blinding_pubkey,
         compressed: true,
     };
 
-    for idx in [0usize, 1] {
-        outputs[idx].blinding_key = Some(pset_blinding_key);
-        outputs[idx].blinder_index = Some(0);
+    {
+        let outputs = pset.outputs_mut();
+        outputs[0].amount = Some(1);
+        outputs[0].asset = Some(yes_rt_id);
+        outputs[1].amount = Some(1);
+        outputs[1].asset = Some(no_rt_id);
+
+        for idx in [0usize, 1] {
+            outputs[idx].blinding_key = Some(pset_blinding_key);
+            outputs[idx].blinder_index = Some(0);
+        }
     }
-    // Blind the token destination outputs (3, 4) so the wallet can detect them.
-    // Outputs 2 (collateral→covenant) and 5 (fee) stay explicit.
-    for idx in [3usize, 4] {
-        outputs[idx].blinding_key = Some(pset_blinding_key);
-        outputs[idx].blinder_index = Some(0);
-    }
-    for output in &mut outputs[6..] {
+
+    for idx in find_wallet_output_indices(pset, &inputs.contract) {
+        let output = &mut pset.outputs_mut()[idx];
         output.blinding_key = Some(pset_blinding_key);
         output.blinder_index = Some(0);
     }
@@ -462,9 +466,9 @@ fn build_pruning_env(
     utxos: &[ElementsUtxo],
     input_index: u32,
     contract: &CompiledPredictionMarket,
-    state: MarketState,
+    slot: MarketSlot,
 ) -> Result<ElementsEnv<Arc<Transaction>>> {
-    let cb_bytes = contract.control_block(state);
+    let cb_bytes = contract.control_block(slot);
     let control_block = ControlBlock::from_slice(&cb_bytes)
         .map_err(|e| Error::Witness(format!("control block: {e}")))?;
 
@@ -490,74 +494,41 @@ pub(crate) fn attach_witnesses(
     state: MarketState,
     blinding: AllBlindingFactors,
 ) -> Result<PredictionMarketSpendingPath> {
-    let spending_path = match state {
-        MarketState::Dormant => PredictionMarketSpendingPath::InitialIssuance { blinding },
-        MarketState::Unresolved => PredictionMarketSpendingPath::SubsequentIssuance { blinding },
+    let covenant_inputs: Vec<(usize, MarketSlot, PredictionMarketSpendingPath)> = match state {
+        MarketState::Dormant => vec![
+            (
+                0,
+                MarketSlot::DormantYesRt,
+                PredictionMarketSpendingPath::InitialIssuancePrimary { blinding },
+            ),
+            (
+                1,
+                MarketSlot::DormantNoRt,
+                PredictionMarketSpendingPath::InitialIssuanceSecondaryNoRt { blinding },
+            ),
+        ],
+        MarketState::Unresolved => vec![
+            (
+                0,
+                MarketSlot::UnresolvedYesRt,
+                PredictionMarketSpendingPath::SubsequentIssuancePrimary { blinding },
+            ),
+            (
+                1,
+                MarketSlot::UnresolvedNoRt,
+                PredictionMarketSpendingPath::SubsequentIssuanceSecondaryNoRt { blinding },
+            ),
+            (
+                2,
+                MarketSlot::UnresolvedCollateral,
+                PredictionMarketSpendingPath::SubsequentIssuanceSecondaryCollateral,
+            ),
+        ],
         other => return Err(Error::NotIssuable(other)),
     };
-
-    // Build a Transaction + UTXOs from the PSET for Simplicity pruning.
-    let tx = Arc::new(pset_to_pruning_transaction(pset)?);
-    let utxos: Vec<ElementsUtxo> = pset
-        .inputs()
-        .iter()
-        .enumerate()
-        .map(|(i, inp)| {
-            inp.witness_utxo
-                .as_ref()
-                .map(|u| ElementsUtxo::from(u.clone()))
-                .ok_or_else(|| Error::Pset(format!("input {i} missing witness_utxo")))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let control_block_bytes = contract.control_block(state);
-    let cmr_bytes = contract.cmr().to_byte_array().to_vec();
-
-    // Prune, serialize, and build the witness stack for a covenant input.
-    let build_witness_stack = |path: &PredictionMarketSpendingPath,
-                               input_index: u32|
-     -> Result<Vec<Vec<u8>>> {
-        let env = build_pruning_env(&tx, &utxos, input_index, contract, state)?;
-        let satisfied = satisfy_contract_with_env(contract, path, state, Some(&env))
-            .map_err(|e| Error::Witness(e.to_string()))?;
-        let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
-
-        let stack = vec![
-            witness_bytes,
-            program_bytes,
-            cmr_bytes.clone(),
-            control_block_bytes.clone(),
-        ];
-
-        let required_padding = satisfied
-            .redeem()
-            .bounds()
-            .cost
-            .get_padding(&stack)
-            .map(|padding| padding.len())
-            .unwrap_or(0);
-
-        debug_assert!(
-            satisfied.redeem().bounds().cost.is_budget_valid(&stack),
-            "input {input_index}: Simplicity program cost exceeds witness budget (required_padding_bytes={required_padding})"
-        );
-
-        Ok(stack)
-    };
-
-    // Primary covenant input (index 0)
-    pset.inputs_mut()[0].final_script_witness = Some(build_witness_stack(&spending_path, 0)?);
-
-    // Secondary covenant input (index 1)
-    let secondary_path = PredictionMarketSpendingPath::SecondaryCovenantInput;
-    pset.inputs_mut()[1].final_script_witness = Some(build_witness_stack(&secondary_path, 1)?);
-
-    // For SubsequentIssuance, input 2 is also a covenant input (collateral)
-    if state == MarketState::Unresolved {
-        pset.inputs_mut()[2].final_script_witness = Some(build_witness_stack(&secondary_path, 2)?);
-    }
-
-    Ok(spending_path)
+    let primary_path = covenant_inputs[0].2.clone();
+    attach_covenant_witnesses(pset, contract, &covenant_inputs)?;
+    Ok(primary_path)
 }
 
 /// Full production assembly pipeline: build → blind → recover → attach witnesses.
@@ -592,10 +563,7 @@ pub(crate) fn assemble_issuance(
 fn attach_covenant_witnesses(
     pset: &mut PartiallySignedTransaction,
     contract: &CompiledPredictionMarket,
-    state: MarketState,
-    primary_path: PredictionMarketSpendingPath,
-    primary_index: usize,
-    secondary_indices: &[usize],
+    covenant_inputs: &[(usize, MarketSlot, PredictionMarketSpendingPath)],
 ) -> Result<()> {
     let tx = Arc::new(pset_to_pruning_transaction(pset)?);
     let utxos: Vec<ElementsUtxo> = pset
@@ -610,15 +578,21 @@ fn attach_covenant_witnesses(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let control_block_bytes = contract.control_block(state);
     let cmr_bytes = contract.cmr().to_byte_array().to_vec();
 
     let build_witness_stack = |path: &PredictionMarketSpendingPath,
-                               input_index: u32|
+                               input_index: u32,
+                               slot: MarketSlot|
      -> Result<Vec<Vec<u8>>> {
-        let env = build_pruning_env(&tx, &utxos, input_index, contract, state)?;
-        let satisfied = satisfy_contract_with_env(contract, path, state, Some(&env))
-            .map_err(|e| Error::Witness(e.to_string()))?;
+        let control_block_bytes = contract.control_block(slot);
+        let env = build_pruning_env(&tx, &utxos, input_index, contract, slot)?;
+        let satisfied =
+            satisfy_contract_with_env(contract, path, slot, Some(&env)).map_err(|e| {
+                Error::Witness(format!(
+                    "input {input_index} slot {:?} path {:?}: {}",
+                    slot, path, e
+                ))
+            })?;
         let (program_bytes, witness_bytes) = serialize_satisfied(&satisfied);
 
         let stack = vec![
@@ -628,7 +602,7 @@ fn attach_covenant_witnesses(
             control_block_bytes.clone(),
         ];
 
-        let required_padding = satisfied
+        let required_padding_len = satisfied
             .redeem()
             .bounds()
             .cost
@@ -638,21 +612,15 @@ fn attach_covenant_witnesses(
 
         debug_assert!(
             satisfied.redeem().bounds().cost.is_budget_valid(&stack),
-            "input {input_index}: Simplicity program cost exceeds witness budget (required_padding_bytes={required_padding})"
+            "input {input_index}: Simplicity program cost exceeds witness budget (required_padding_bytes={required_padding_len})"
         );
 
         Ok(stack)
     };
 
-    // Primary covenant input
-    pset.inputs_mut()[primary_index].final_script_witness =
-        Some(build_witness_stack(&primary_path, primary_index as u32)?);
-
-    // Secondary covenant inputs
-    let secondary_path = PredictionMarketSpendingPath::SecondaryCovenantInput;
-    for &idx in secondary_indices {
-        pset.inputs_mut()[idx].final_script_witness =
-            Some(build_witness_stack(&secondary_path, idx as u32)?);
+    for (idx, slot, path) in covenant_inputs {
+        pset.inputs_mut()[*idx].final_script_witness =
+            Some(build_witness_stack(path, *idx as u32, *slot)?);
     }
 
     Ok(())
@@ -688,14 +656,11 @@ pub(crate) fn assemble_post_resolution_redemption(
         tokens_burned: params.tokens_burned,
     };
 
-    attach_covenant_witnesses(
-        &mut pset,
-        contract,
-        params.resolved_state,
-        spending_path,
-        0,
-        &[],
-    )?;
+    let collateral_slot = params
+        .resolved_state
+        .collateral_slot()
+        .ok_or(Error::InvalidState)?;
+    attach_covenant_witnesses(&mut pset, contract, &[(0, collateral_slot, spending_path)])?;
 
     Ok(pset)
 }
@@ -733,10 +698,7 @@ pub(crate) fn assemble_expiry_redemption(
     attach_covenant_witnesses(
         &mut pset,
         contract,
-        MarketState::Expired,
-        spending_path,
-        0,
-        &[],
+        &[(0, MarketSlot::ExpiredCollateral, spending_path)],
     )?;
 
     Ok(pset)
@@ -794,19 +756,28 @@ pub(crate) fn assemble_cancellation(
 
         let blinding = recover_blinding_factors(&pset, slip77_key, change_spk, yes_rt, no_rt)?;
 
-        let spending_path = PredictionMarketSpendingPath::Cancellation {
-            pairs_burned: params.pairs_burned,
-            blinding: Some(blinding),
-        };
+        let covenant_inputs = vec![
+            (
+                0,
+                MarketSlot::UnresolvedCollateral,
+                PredictionMarketSpendingPath::CancellationFullPrimary {
+                    pairs_burned: params.pairs_burned,
+                    blinding,
+                },
+            ),
+            (
+                1,
+                MarketSlot::UnresolvedYesRt,
+                PredictionMarketSpendingPath::CancellationFullSecondaryYesRt { blinding },
+            ),
+            (
+                2,
+                MarketSlot::UnresolvedNoRt,
+                PredictionMarketSpendingPath::CancellationFullSecondaryNoRt { blinding },
+            ),
+        ];
 
-        attach_covenant_witnesses(
-            &mut pset,
-            contract,
-            MarketState::Unresolved,
-            spending_path,
-            0,
-            &[1, 2],
-        )?;
+        attach_covenant_witnesses(&mut pset, contract, &covenant_inputs)?;
 
         Ok(pset)
     } else {
@@ -825,18 +796,16 @@ pub(crate) fn assemble_cancellation(
             blinding_pubkey,
         )?;
 
-        let spending_path = PredictionMarketSpendingPath::Cancellation {
-            pairs_burned: params.pairs_burned,
-            blinding: None,
-        };
-
         attach_covenant_witnesses(
             &mut pset,
             contract,
-            MarketState::Unresolved,
-            spending_path,
-            0,
-            &[],
+            &[(
+                0,
+                MarketSlot::UnresolvedCollateral,
+                PredictionMarketSpendingPath::CancellationPartial {
+                    pairs_burned: params.pairs_burned,
+                },
+            )],
         )?;
 
         Ok(pset)
@@ -856,7 +825,9 @@ pub(crate) fn assemble_expire_transition(
 ) -> Result<PartiallySignedTransaction> {
     let mut pset = build_expire_transition_pset(contract, params)?;
 
-    // Expire transition: 4 outputs (RT0, RT1, collateral, fee). Only RT outputs are blinded.
+    // Expire transition always blinds the RT burn outputs at 0 and 1.
+    // Outputs 0-3 are YES RT burn, NO RT burn, collateral, and fee.
+    // A wallet change output is optional, so exact-fee spends remain valid.
     // Inputs: yes_rt(0), no_rt(1), collateral(2), fee(3)
     let input_refs: Vec<(usize, &UnblindedUtxo)> = vec![
         (0, yes_rt_input),
@@ -864,10 +835,11 @@ pub(crate) fn assemble_expire_transition(
         (2, &params.collateral_utxo),
         (3, &params.fee_utxo),
     ];
+    let wallet_outputs = find_wallet_output_indices(&pset, contract);
     blind_pset(
         &mut pset,
         Some((yes_rt_input, no_rt_input)),
-        &[],
+        &wallet_outputs,
         &input_refs,
         blinding_pubkey,
     )?;
@@ -875,16 +847,25 @@ pub(crate) fn assemble_expire_transition(
     let blinding =
         recover_blinding_factors(&pset, slip77_key, change_spk, yes_rt_input, no_rt_input)?;
 
-    let spending_path = PredictionMarketSpendingPath::ExpireTransition { blinding };
+    let covenant_inputs = vec![
+        (
+            0,
+            MarketSlot::UnresolvedYesRt,
+            PredictionMarketSpendingPath::ExpireTransitionPrimary { blinding },
+        ),
+        (
+            1,
+            MarketSlot::UnresolvedNoRt,
+            PredictionMarketSpendingPath::ExpireTransitionSecondaryNoRt { blinding },
+        ),
+        (
+            2,
+            MarketSlot::UnresolvedCollateral,
+            PredictionMarketSpendingPath::ExpireTransitionSecondaryCollateral,
+        ),
+    ];
 
-    attach_covenant_witnesses(
-        &mut pset,
-        contract,
-        MarketState::Unresolved,
-        spending_path,
-        0,
-        &[1, 2],
-    )?;
+    attach_covenant_witnesses(&mut pset, contract, &covenant_inputs)?;
 
     Ok(pset)
 }
@@ -905,7 +886,9 @@ pub(crate) fn assemble_oracle_resolve(
         contract, params,
     )?;
 
-    // Oracle resolve: 4 outputs (RT0, RT1, collateral, fee). Only RT outputs are blinded.
+    // Oracle resolve always blinds the RT burn outputs at 0 and 1.
+    // Outputs 0-3 are YES RT burn, NO RT burn, collateral, and fee.
+    // A wallet change output is optional, so exact-fee spends remain valid.
     // Inputs: yes_rt(0), no_rt(1), collateral(2), fee(3)
     let input_refs: Vec<(usize, &UnblindedUtxo)> = vec![
         (0, yes_rt_input),
@@ -913,10 +896,11 @@ pub(crate) fn assemble_oracle_resolve(
         (2, &params.collateral_utxo),
         (3, &params.fee_utxo),
     ];
+    let wallet_outputs = find_wallet_output_indices(&pset, contract);
     blind_pset(
         &mut pset,
         Some((yes_rt_input, no_rt_input)),
-        &[],
+        &wallet_outputs,
         &input_refs,
         blinding_pubkey,
     )?;
@@ -924,20 +908,29 @@ pub(crate) fn assemble_oracle_resolve(
     let blinding =
         recover_blinding_factors(&pset, slip77_key, change_spk, yes_rt_input, no_rt_input)?;
 
-    let spending_path = PredictionMarketSpendingPath::OracleResolve {
-        outcome_yes: params.outcome_yes,
-        oracle_signature,
-        blinding,
-    };
+    let covenant_inputs = vec![
+        (
+            0,
+            MarketSlot::UnresolvedYesRt,
+            PredictionMarketSpendingPath::OracleResolvePrimary {
+                outcome_yes: params.outcome_yes,
+                oracle_signature,
+                blinding,
+            },
+        ),
+        (
+            1,
+            MarketSlot::UnresolvedNoRt,
+            PredictionMarketSpendingPath::OracleResolveSecondaryNoRt { blinding },
+        ),
+        (
+            2,
+            MarketSlot::UnresolvedCollateral,
+            PredictionMarketSpendingPath::OracleResolveSecondaryCollateral,
+        ),
+    ];
 
-    attach_covenant_witnesses(
-        &mut pset,
-        contract,
-        MarketState::Unresolved,
-        spending_path,
-        0,
-        &[1, 2],
-    )?;
+    attach_covenant_witnesses(&mut pset, contract, &covenant_inputs)?;
 
     Ok(pset)
 }

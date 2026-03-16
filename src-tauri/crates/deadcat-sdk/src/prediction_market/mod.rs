@@ -1,3 +1,4 @@
+pub mod anchor;
 pub(crate) mod assembly;
 pub mod contract;
 pub(crate) mod oracle;

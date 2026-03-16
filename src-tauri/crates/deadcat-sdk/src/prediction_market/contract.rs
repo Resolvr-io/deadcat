@@ -5,19 +5,34 @@ use simplicityhl::{CompiledProgram, TemplateProgram};
 
 use crate::error::{Error, Result};
 use crate::prediction_market::params::{PredictionMarketParams, compute_issuance_assets};
-use crate::prediction_market::state::MarketState;
+use crate::prediction_market::state::MarketSlot;
 use crate::taproot;
 
 const CONTRACT_SOURCE: &str = include_str!("../../contract/prediction_market.simf");
 
-/// All five covenant addresses for a market.
+/// Dormant slot addresses for a market.
+#[derive(Debug, Clone)]
+pub struct DormantMarketAddresses {
+    pub yes_rt: Address,
+    pub no_rt: Address,
+}
+
+/// Unresolved slot addresses for a market.
+#[derive(Debug, Clone)]
+pub struct UnresolvedMarketAddresses {
+    pub yes_rt: Address,
+    pub no_rt: Address,
+    pub collateral: Address,
+}
+
+/// Grouped prediction-market covenant addresses.
 #[derive(Debug, Clone)]
 pub struct MarketAddresses {
-    pub dormant: Address,
-    pub unresolved: Address,
-    pub resolved_yes: Address,
-    pub resolved_no: Address,
-    pub expired: Address,
+    pub dormant: DormantMarketAddresses,
+    pub unresolved: UnresolvedMarketAddresses,
+    pub resolved_yes_collateral: Address,
+    pub resolved_no_collateral: Address,
+    pub expired_collateral: Address,
 }
 
 /// A compiled prediction market contract, ready for address derivation and spending.
@@ -106,34 +121,41 @@ impl CompiledPredictionMarket {
         &self.params
     }
 
-    /// Compute the covenant script pubkey for a given state.
-    pub fn script_pubkey(&self, state: MarketState) -> Script {
-        taproot::covenant_script_pubkey(&self.cmr, state.as_u64())
+    /// Compute the covenant script pubkey for a specific slot.
+    pub fn script_pubkey(&self, slot: MarketSlot) -> Script {
+        taproot::prediction_market_script_pubkey(&self.cmr, slot.as_u8())
     }
 
-    /// Compute the covenant script hash for a given state.
-    pub fn script_hash(&self, state: MarketState) -> [u8; 32] {
-        taproot::covenant_script_hash(&self.cmr, state.as_u64())
+    /// Compute the covenant script hash for a specific slot.
+    pub fn script_hash(&self, slot: MarketSlot) -> [u8; 32] {
+        taproot::prediction_market_script_hash(&self.cmr, slot.as_u8())
     }
 
-    /// Compute the covenant address for a given state and network.
-    pub fn address(&self, state: MarketState, network: &'static AddressParams) -> Address {
-        taproot::covenant_address(&self.cmr, state.as_u64(), network)
+    /// Compute the covenant address for a specific slot and network.
+    pub fn address(&self, slot: MarketSlot, network: &'static AddressParams) -> Address {
+        taproot::prediction_market_address(&self.cmr, slot.as_u8(), network)
     }
 
-    /// Build the Simplicity control block for a given state.
-    pub fn control_block(&self, state: MarketState) -> Vec<u8> {
-        taproot::simplicity_control_block(&self.cmr, state.as_u64())
+    /// Build the Simplicity control block for a specific slot.
+    pub fn control_block(&self, slot: MarketSlot) -> Vec<u8> {
+        taproot::prediction_market_control_block(&self.cmr, slot.as_u8())
     }
 
-    /// Compute all five covenant addresses for this market.
+    /// Compute all slot addresses for this market.
     pub fn addresses(&self, network: &'static AddressParams) -> MarketAddresses {
         MarketAddresses {
-            dormant: self.address(MarketState::Dormant, network),
-            unresolved: self.address(MarketState::Unresolved, network),
-            resolved_yes: self.address(MarketState::ResolvedYes, network),
-            resolved_no: self.address(MarketState::ResolvedNo, network),
-            expired: self.address(MarketState::Expired, network),
+            dormant: DormantMarketAddresses {
+                yes_rt: self.address(MarketSlot::DormantYesRt, network),
+                no_rt: self.address(MarketSlot::DormantNoRt, network),
+            },
+            unresolved: UnresolvedMarketAddresses {
+                yes_rt: self.address(MarketSlot::UnresolvedYesRt, network),
+                no_rt: self.address(MarketSlot::UnresolvedNoRt, network),
+                collateral: self.address(MarketSlot::UnresolvedCollateral, network),
+            },
+            resolved_yes_collateral: self.address(MarketSlot::ResolvedYesCollateral, network),
+            resolved_no_collateral: self.address(MarketSlot::ResolvedNoCollateral, network),
+            expired_collateral: self.address(MarketSlot::ExpiredCollateral, network),
         }
     }
 }

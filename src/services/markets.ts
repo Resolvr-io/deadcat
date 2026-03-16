@@ -42,8 +42,9 @@ export function discoveredToMarket(d: DiscoveredMarket): Market {
     noAssetId: d.no_asset_id,
     yesReissuanceToken: d.yes_reissuance_token,
     noReissuanceToken: d.no_reissuance_token,
+    anchor: d.anchor,
     limitOrders: [],
-    creationTxid: d.creation_txid,
+    creationTxid: d.anchor?.creation_txid ?? null,
     collateralUtxos: [],
     nostrEventJson: d.nostr_event_json ?? null,
     yesPrice: d.yes_price_bps != null ? d.yes_price_bps / 10000 : null,
@@ -89,12 +90,12 @@ export async function issueTokens(
   market: Market,
   pairs: number,
 ): Promise<IssuanceResult> {
-  if (!market.creationTxid) {
-    throw new Error("Market has no creation txid — cannot issue tokens");
+  if (!market.anchor) {
+    throw new Error("Market has no canonical anchor — cannot issue tokens");
   }
   return invoke<IssuanceResult>("issue_tokens", {
     contractParamsJson: marketToContractParamsJson(market),
-    creationTxid: market.creationTxid,
+    anchor: market.anchor,
     pairs,
   });
 }

@@ -2,16 +2,18 @@ use deadcat_sdk::elements::encode::{deserialize as elements_deserialize, seriali
 use deadcat_sdk::elements::hashes::Hash;
 use deadcat_sdk::elements::{OutPoint, TxOut, Txid};
 use deadcat_sdk::{
-    CompiledMakerOrder, CompiledPredictionMarket, ContractMetadataInput, MakerOrderParams,
-    MarketId, MarketState, OrderDirection, PredictionMarketParams, UnblindedUtxo,
+    CompiledMakerOrder, CompiledPredictionMarket, DormantOutputOpening, MakerOrderParams, MarketId,
+    MarketSlot, MarketState, OrderDirection, PredictionMarketAnchor,
+    PredictionMarketCandidateIngestInput, PredictionMarketParams, UnblindedUtxo,
     derive_maker_receive, maker_receive_script_pubkey,
 };
 
 use crate::error::StoreError;
 use crate::models::{
-    MakerOrderRow, MarketRow, NewMakerOrderRow, NewMarketRow, NewUtxoRow, UtxoRow,
+    MakerOrderRow, MarketCandidateRow, MarketRow, NewMakerOrderRow, NewMarketCandidateRow,
+    NewUtxoRow, UtxoRow,
 };
-use crate::store::{IssuanceData, MakerOrderInfo, MarketInfo, OrderStatus};
+use crate::store::{IssuanceData, MakerOrderInfo, MarketCandidateInfo, MarketInfo, OrderStatus};
 
 pub fn vec_to_array32(v: &[u8], field: &str) -> std::result::Result<[u8; 32], StoreError> {
     v.try_into().map_err(|_| {
@@ -36,12 +38,12 @@ pub fn direction_from_i32(v: i32) -> std::result::Result<OrderDirection, StoreEr
     }
 }
 
-// --- MarketRow -> SDK types ---
+// --- MarketCandidateRow -> SDK types ---
 
-impl TryFrom<&MarketRow> for PredictionMarketParams {
+impl TryFrom<&MarketCandidateRow> for PredictionMarketParams {
     type Error = StoreError;
 
-    fn try_from(row: &MarketRow) -> std::result::Result<Self, Self::Error> {
+    fn try_from(row: &MarketCandidateRow) -> std::result::Result<Self, Self::Error> {
         Ok(PredictionMarketParams {
             oracle_public_key: vec_to_array32(&row.oracle_public_key, "oracle_public_key")?,
             collateral_asset_id: vec_to_array32(&row.collateral_asset_id, "collateral_asset_id")?,
@@ -60,28 +62,18 @@ impl TryFrom<&MarketRow> for PredictionMarketParams {
     }
 }
 
-impl TryFrom<&MarketRow> for MarketId {
+impl TryFrom<&MarketCandidateRow> for MarketId {
     type Error = StoreError;
 
-    fn try_from(row: &MarketRow) -> std::result::Result<Self, Self::Error> {
+    fn try_from(row: &MarketCandidateRow) -> std::result::Result<Self, Self::Error> {
         Ok(MarketId(vec_to_array32(&row.market_id, "market_id")?))
     }
 }
 
-impl TryFrom<&MarketRow> for MarketState {
+impl TryFrom<&MarketCandidateRow> for MarketCandidateInfo {
     type Error = StoreError;
 
-    fn try_from(row: &MarketRow) -> std::result::Result<Self, Self::Error> {
-        MarketState::from_u64(row.current_state as u64).ok_or_else(|| {
-            StoreError::InvalidData(format!("invalid market state: {}", row.current_state))
-        })
-    }
-}
-
-impl TryFrom<&MarketRow> for MarketInfo {
-    type Error = StoreError;
-
-    fn try_from(row: &MarketRow) -> std::result::Result<Self, Self::Error> {
+    fn try_from(row: &MarketCandidateRow) -> std::result::Result<Self, Self::Error> {
         let issuance = match (
             &row.yes_issuance_entropy,
             &row.no_issuance_entropy,
@@ -97,20 +89,43 @@ impl TryFrom<&MarketRow> for MarketInfo {
             _ => None,
         };
 
-        Ok(MarketInfo {
+        Ok(MarketCandidateInfo {
+            candidate_id: row.candidate_id,
             market_id: MarketId::try_from(row)?,
             params: PredictionMarketParams::try_from(row)?,
-            state: MarketState::try_from(row)?,
             cmr: vec_to_array32(&row.cmr, "cmr")?,
             issuance,
-            created_at: row.created_at.clone(),
-            updated_at: row.updated_at.clone(),
+            first_seen_at: row.first_seen_at.clone(),
+            last_seen_at: row.last_seen_at.clone(),
+            expires_at: row.expires_at.clone(),
             question: row.question.clone(),
             description: row.description.clone(),
             category: row.category.clone(),
             resolution_source: row.resolution_source.clone(),
             creator_pubkey: row.creator_pubkey.clone(),
-            creation_txid: row.creation_txid.clone(),
+            anchor: PredictionMarketAnchor {
+                creation_txid: row.creation_txid.clone(),
+                yes_dormant_opening: DormantOutputOpening::from_bytes(
+                    vec_to_array32(
+                        &row.yes_dormant_asset_blinding_factor,
+                        "yes_dormant_asset_blinding_factor",
+                    )?,
+                    vec_to_array32(
+                        &row.yes_dormant_value_blinding_factor,
+                        "yes_dormant_value_blinding_factor",
+                    )?,
+                ),
+                no_dormant_opening: DormantOutputOpening::from_bytes(
+                    vec_to_array32(
+                        &row.no_dormant_asset_blinding_factor,
+                        "no_dormant_asset_blinding_factor",
+                    )?,
+                    vec_to_array32(
+                        &row.no_dormant_value_blinding_factor,
+                        "no_dormant_value_blinding_factor",
+                    )?,
+                ),
+            },
             nevent: row.nevent.clone(),
             nostr_event_id: row.nostr_event_id.clone(),
             nostr_event_json: row.nostr_event_json.clone(),
@@ -118,15 +133,83 @@ impl TryFrom<&MarketRow> for MarketInfo {
     }
 }
 
-// --- PredictionMarketParams + CompiledPredictionMarket -> NewMarketRow ---
+pub fn market_info_from_rows(
+    market: &MarketRow,
+    candidate: &MarketCandidateRow,
+) -> std::result::Result<MarketInfo, StoreError> {
+    let issuance = match (
+        &candidate.yes_issuance_entropy,
+        &candidate.no_issuance_entropy,
+        &candidate.yes_issuance_blinding_nonce,
+        &candidate.no_issuance_blinding_nonce,
+    ) {
+        (Some(ye), Some(ne), Some(ybn), Some(nbn)) => Some(IssuanceData {
+            yes_entropy: vec_to_array32(ye, "yes_issuance_entropy")?,
+            no_entropy: vec_to_array32(ne, "no_issuance_entropy")?,
+            yes_blinding_nonce: vec_to_array32(ybn, "yes_issuance_blinding_nonce")?,
+            no_blinding_nonce: vec_to_array32(nbn, "no_issuance_blinding_nonce")?,
+        }),
+        _ => None,
+    };
 
-pub fn new_market_row(
-    params: &PredictionMarketParams,
+    let state = MarketState::from_u64(market.current_state as u64).ok_or_else(|| {
+        StoreError::InvalidData(format!("invalid market state: {}", market.current_state))
+    })?;
+
+    Ok(MarketInfo {
+        market_id: MarketId::try_from(candidate)?,
+        params: PredictionMarketParams::try_from(candidate)?,
+        state,
+        cmr: vec_to_array32(&candidate.cmr, "cmr")?,
+        issuance,
+        created_at: candidate.first_seen_at.clone(),
+        updated_at: market.updated_at.clone(),
+        question: candidate.question.clone(),
+        description: candidate.description.clone(),
+        category: candidate.category.clone(),
+        resolution_source: candidate.resolution_source.clone(),
+        creator_pubkey: candidate.creator_pubkey.clone(),
+        anchor: PredictionMarketAnchor {
+            creation_txid: candidate.creation_txid.clone(),
+            yes_dormant_opening: DormantOutputOpening::from_bytes(
+                vec_to_array32(
+                    &candidate.yes_dormant_asset_blinding_factor,
+                    "yes_dormant_asset_blinding_factor",
+                )?,
+                vec_to_array32(
+                    &candidate.yes_dormant_value_blinding_factor,
+                    "yes_dormant_value_blinding_factor",
+                )?,
+            ),
+            no_dormant_opening: DormantOutputOpening::from_bytes(
+                vec_to_array32(
+                    &candidate.no_dormant_asset_blinding_factor,
+                    "no_dormant_asset_blinding_factor",
+                )?,
+                vec_to_array32(
+                    &candidate.no_dormant_value_blinding_factor,
+                    "no_dormant_value_blinding_factor",
+                )?,
+            ),
+        },
+        nevent: candidate.nevent.clone(),
+        nostr_event_id: candidate.nostr_event_id.clone(),
+        nostr_event_json: candidate.nostr_event_json.clone(),
+    })
+}
+
+// --- PredictionMarketCandidateIngestInput + CompiledPredictionMarket -> NewMarketCandidateRow ---
+
+pub fn new_market_candidate_row(
+    input: &PredictionMarketCandidateIngestInput,
     compiled: &CompiledPredictionMarket,
-    metadata: Option<&ContractMetadataInput>,
-) -> NewMarketRow {
+    first_seen_at: &str,
+    expires_at: &str,
+) -> NewMarketCandidateRow {
+    let params = &input.params;
+    let metadata = &input.metadata;
     let market_id = params.market_id();
-    NewMarketRow {
+    NewMarketCandidateRow {
         market_id: market_id.as_bytes().to_vec(),
         oracle_public_key: params.oracle_public_key.to_vec(),
         collateral_asset_id: params.collateral_asset_id.to_vec(),
@@ -137,35 +220,67 @@ pub fn new_market_row(
         collateral_per_token: params.collateral_per_token as i64,
         expiry_time: params.expiry_time as i32,
         cmr: compiled.cmr().as_ref().to_vec(),
-        dormant_spk: compiled
-            .script_pubkey(MarketState::Dormant)
+        dormant_yes_rt_spk: compiled
+            .script_pubkey(MarketSlot::DormantYesRt)
             .as_bytes()
             .to_vec(),
-        unresolved_spk: compiled
-            .script_pubkey(MarketState::Unresolved)
+        dormant_no_rt_spk: compiled
+            .script_pubkey(MarketSlot::DormantNoRt)
             .as_bytes()
             .to_vec(),
-        resolved_yes_spk: compiled
-            .script_pubkey(MarketState::ResolvedYes)
+        unresolved_yes_rt_spk: compiled
+            .script_pubkey(MarketSlot::UnresolvedYesRt)
             .as_bytes()
             .to_vec(),
-        resolved_no_spk: compiled
-            .script_pubkey(MarketState::ResolvedNo)
+        unresolved_no_rt_spk: compiled
+            .script_pubkey(MarketSlot::UnresolvedNoRt)
             .as_bytes()
             .to_vec(),
-        expired_spk: compiled
-            .script_pubkey(MarketState::Expired)
+        unresolved_collateral_spk: compiled
+            .script_pubkey(MarketSlot::UnresolvedCollateral)
             .as_bytes()
             .to_vec(),
-        question: metadata.and_then(|m| m.question.clone()),
-        description: metadata.and_then(|m| m.description.clone()),
-        category: metadata.and_then(|m| m.category.clone()),
-        resolution_source: metadata.and_then(|m| m.resolution_source.clone()),
-        creator_pubkey: metadata.and_then(|m| m.creator_pubkey.clone()),
-        creation_txid: metadata.and_then(|m| m.creation_txid.clone()),
-        nevent: metadata.and_then(|m| m.nevent.clone()),
-        nostr_event_id: metadata.and_then(|m| m.nostr_event_id.clone()),
-        nostr_event_json: metadata.and_then(|m| m.nostr_event_json.clone()),
+        resolved_yes_collateral_spk: compiled
+            .script_pubkey(MarketSlot::ResolvedYesCollateral)
+            .as_bytes()
+            .to_vec(),
+        resolved_no_collateral_spk: compiled
+            .script_pubkey(MarketSlot::ResolvedNoCollateral)
+            .as_bytes()
+            .to_vec(),
+        expired_collateral_spk: compiled
+            .script_pubkey(MarketSlot::ExpiredCollateral)
+            .as_bytes()
+            .to_vec(),
+        question: metadata.question.clone(),
+        description: metadata.description.clone(),
+        category: metadata.category.clone(),
+        resolution_source: metadata.resolution_source.clone(),
+        creator_pubkey: metadata.creator_pubkey.clone(),
+        creation_txid: metadata.anchor.creation_txid.clone(),
+        yes_dormant_asset_blinding_factor: hex::decode(
+            &metadata.anchor.yes_dormant_opening.asset_blinding_factor,
+        )
+        .expect("validated yes_dormant_opening.asset_blinding_factor"),
+        yes_dormant_value_blinding_factor: hex::decode(
+            &metadata.anchor.yes_dormant_opening.value_blinding_factor,
+        )
+        .expect("validated yes_dormant_opening.value_blinding_factor"),
+        no_dormant_asset_blinding_factor: hex::decode(
+            &metadata.anchor.no_dormant_opening.asset_blinding_factor,
+        )
+        .expect("validated no_dormant_opening.asset_blinding_factor"),
+        no_dormant_value_blinding_factor: hex::decode(
+            &metadata.anchor.no_dormant_opening.value_blinding_factor,
+        )
+        .expect("validated no_dormant_opening.value_blinding_factor"),
+        creation_tx: input.creation_tx.clone(),
+        nevent: metadata.nevent.clone(),
+        nostr_event_id: metadata.nostr_event_id.clone(),
+        nostr_event_json: metadata.nostr_event_json.clone(),
+        first_seen_at: first_seen_at.to_string(),
+        last_seen_at: first_seen_at.to_string(),
+        expires_at: Some(expires_at.to_string()),
     }
 }
 
@@ -296,11 +411,11 @@ impl TryFrom<&UtxoRow> for UnblindedUtxo {
 // --- UnblindedUtxo -> NewUtxoRow ---
 
 /// Build a `NewUtxoRow` from an `UnblindedUtxo`, associating it with either
-/// a market (with state) or a maker order.
+/// a market (with slot) or a maker order.
 pub fn new_utxo_row(
     utxo: &UnblindedUtxo,
     market_id: Option<&MarketId>,
-    market_state: Option<MarketState>,
+    market_slot: Option<MarketSlot>,
     maker_order_id: Option<i32>,
     block_height: Option<u32>,
 ) -> NewUtxoRow {
@@ -315,7 +430,7 @@ pub fn new_utxo_row(
         raw_txout: serialize(&utxo.txout),
         market_id: market_id.map(|id| id.as_bytes().to_vec()),
         maker_order_id,
-        market_state: market_state.map(|s| s.as_u64() as i32),
+        market_slot: market_slot.map(|slot| slot.as_u8() as i32),
         block_height: block_height.map(|h| h as i32),
     }
 }

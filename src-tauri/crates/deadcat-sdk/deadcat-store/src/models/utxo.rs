@@ -15,7 +15,7 @@ pub struct UtxoRow {
     pub raw_txout: Vec<u8>,
     pub market_id: Option<Vec<u8>>,
     pub maker_order_id: Option<i32>,
-    pub market_state: Option<i32>,
+    pub market_slot: Option<i32>,
     pub spent: i32,
     pub spending_txid: Option<Vec<u8>>,
     pub block_height: Option<i32>,
@@ -35,6 +35,6 @@ pub struct NewUtxoRow {
     pub raw_txout: Vec<u8>,
     pub market_id: Option<Vec<u8>>,
     pub maker_order_id: Option<i32>,
-    pub market_state: Option<i32>,
+    pub market_slot: Option<i32>,
     pub block_height: Option<i32>,
 }

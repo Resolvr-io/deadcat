@@ -660,110 +660,13 @@ pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredM
 /// Publish a contract to Nostr (Nostr-only mode — no on-chain tx).
 #[tauri::command]
 pub async fn publish_contract(
-    request: CreateContractRequest,
-    app: tauri::AppHandle,
+    _request: CreateContractRequest,
+    _app: tauri::AppHandle,
 ) -> Result<DiscoveredMarket, String> {
-    validate_request(&request)?;
-
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard
-        .as_ref()
-        .ok_or("Node not initialized — call init_nostr_identity first")?;
-
-    let oracle_pubkey_bytes: [u8; 32] = {
-        let hex_str = node.keys().public_key().to_hex();
-        let bytes = hex::decode(&hex_str).map_err(|e| format!("hex decode error: {e}"))?;
-        bytes
-            .try_into()
-            .map_err(|_| "pubkey must be 32 bytes".to_string())?
-    };
-
-    let wallet_network: crate::WalletNetwork = {
-        let state_handle = app.state::<Mutex<AppStateManager>>();
-        let mgr = state_handle
-            .lock()
-            .map_err(|_| "state lock failed".to_string())?;
-        mgr.network()
-            .ok_or_else(|| "network not configured".to_string())?
-            .into()
-    };
-    let (tip, now_unix) = compute_tip_and_now(wallet_network).await?;
-
-    let expiry_time = if request.settlement_deadline_unix > now_unix {
-        let seconds_until = request.settlement_deadline_unix - now_unix;
-        let blocks_until = (seconds_until / 60) as u32;
-        tip.height + blocks_until
-    } else {
-        return Err("settlement deadline must be in the future".to_string());
-    };
-
-    // Asset IDs are zero — no on-chain issuance has occurred yet.
-    // They get populated when the market is created on-chain via create_contract_onchain.
-    let contract_params = deadcat_sdk::PredictionMarketParams {
-        oracle_public_key: oracle_pubkey_bytes,
-        collateral_asset_id: [0u8; 32],
-        yes_token_asset: [0u8; 32],
-        no_token_asset: [0u8; 32],
-        yes_reissuance_token: [0u8; 32],
-        no_reissuance_token: [0u8; 32],
-        collateral_per_token: request.collateral_per_token,
-        expiry_time,
-    };
-
-    let metadata = ContractMetadata {
-        question: request.question.clone(),
-        description: request.description.clone(),
-        category: request.category.clone(),
-        resolution_source: request.resolution_source.clone(),
-    };
-
-    let announcement = deadcat_sdk::ContractAnnouncement {
-        version: 2,
-        contract_params,
-        metadata: metadata.clone(),
-        creation_txid: None,
-    };
-
-    let event_id = node
-        .announce_market(&announcement)
-        .await
-        .map_err(|e| format!("{e}"))?;
-
-    let market_id = contract_params.market_id();
-    let nevent = nostr_sdk::nips::nip19::Nip19Event::new(
-        event_id,
-        discovery::DEFAULT_RELAYS.iter().map(|r| r.to_string()),
+    Err(
+        "publish_contract without an on-chain dormant anchor is no longer supported; use create_contract_onchain"
+            .to_string(),
     )
-    .to_bech32()
-    .unwrap_or_default();
-
-    let creator_pubkey = node.keys().public_key().to_hex();
-
-    Ok(DiscoveredMarket {
-        id: event_id.to_hex(),
-        nevent,
-        market_id: hex::encode(market_id.as_bytes()),
-        question: metadata.question,
-        category: metadata.category,
-        description: metadata.description,
-        resolution_source: metadata.resolution_source,
-        oracle_pubkey: hex::encode(oracle_pubkey_bytes),
-        expiry_height: expiry_time,
-        cpt_sats: request.collateral_per_token,
-        collateral_asset_id: hex::encode([0u8; 32]),
-        yes_asset_id: hex::encode([0u8; 32]),
-        no_asset_id: hex::encode([0u8; 32]),
-        yes_reissuance_token: hex::encode([0u8; 32]),
-        no_reissuance_token: hex::encode([0u8; 32]),
-        creator_pubkey,
-        created_at: nostr_sdk::Timestamp::now().as_u64(),
-        creation_txid: None,
-        state: 0,
-        nostr_event_json: None,
-        yes_price_bps: None,
-        no_price_bps: None,
-    })
 }
 
 #[tauri::command]
@@ -861,7 +764,7 @@ pub async fn create_contract_onchain(
         resolution_source: request.resolution_source,
     };
 
-    let (market, _txid) = node
+    let market = node
         .create_market(
             oracle_pubkey_bytes,
             request.collateral_per_token,
@@ -895,7 +798,7 @@ pub struct IssuanceResultResponse {
 #[tauri::command]
 pub async fn issue_tokens(
     contract_params_json: String,
-    creation_txid: String,
+    anchor: deadcat_sdk::PredictionMarketAnchor,
     pairs: u64,
     app: tauri::AppHandle,
 ) -> Result<IssuanceResultResponse, String> {
@@ -903,15 +806,11 @@ pub async fn issue_tokens(
         serde_json::from_str(&contract_params_json)
             .map_err(|e| format!("invalid contract params: {e}"))?;
 
-    let txid: lwk_wollet::elements::Txid = creation_txid
-        .parse()
-        .map_err(|e| format!("invalid txid: {e}"))?;
-
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let result = node
-        .issue_tokens(params, txid, pairs, 500)
+        .issue_tokens(params, anchor, pairs, 500)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -943,6 +842,7 @@ pub struct CancellationResultResponse {
 #[tauri::command]
 pub async fn cancel_tokens(
     contract_params_json: String,
+    anchor: deadcat_sdk::PredictionMarketAnchor,
     pairs: u64,
     app: tauri::AppHandle,
 ) -> Result<CancellationResultResponse, String> {
@@ -954,7 +854,7 @@ pub async fn cancel_tokens(
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let result = node
-        .cancel_tokens(params, pairs, 500)
+        .cancel_tokens(params, anchor, pairs, 500)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -986,6 +886,7 @@ pub struct ResolutionResultResponse {
 #[tauri::command]
 pub async fn resolve_market(
     contract_params_json: String,
+    anchor: deadcat_sdk::PredictionMarketAnchor,
     outcome_yes: bool,
     oracle_signature_hex: String,
     app: tauri::AppHandle,
@@ -1003,7 +904,7 @@ pub async fn resolve_market(
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let result = node
-        .resolve_market(params, outcome_yes, sig_bytes, 500)
+        .resolve_market(params, anchor, outcome_yes, sig_bytes, 500)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -1034,6 +935,7 @@ pub struct RedemptionResultResponse {
 #[tauri::command]
 pub async fn redeem_tokens(
     contract_params_json: String,
+    anchor: deadcat_sdk::PredictionMarketAnchor,
     tokens: u64,
     app: tauri::AppHandle,
 ) -> Result<RedemptionResultResponse, String> {
@@ -1045,7 +947,7 @@ pub async fn redeem_tokens(
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let result = node
-        .redeem_tokens(params, tokens, 500)
+        .redeem_tokens(params, anchor, tokens, 500)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -1068,6 +970,7 @@ pub async fn redeem_tokens(
 #[tauri::command]
 pub async fn redeem_expired(
     contract_params_json: String,
+    anchor: deadcat_sdk::PredictionMarketAnchor,
     token_asset_hex: String,
     tokens: u64,
     app: tauri::AppHandle,
@@ -1085,7 +988,7 @@ pub async fn redeem_expired(
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let result = node
-        .redeem_expired(params, token_asset, tokens, 500)
+        .redeem_expired(params, anchor, token_asset, tokens, 500)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -1112,6 +1015,7 @@ pub struct MarketStateResponse {
 #[tauri::command]
 pub async fn get_market_state(
     contract_params_json: String,
+    anchor: deadcat_sdk::PredictionMarketAnchor,
     app: tauri::AppHandle,
 ) -> Result<MarketStateResponse, String> {
     let params: deadcat_sdk::PredictionMarketParams =
@@ -1122,7 +1026,7 @@ pub async fn get_market_state(
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let state = node
-        .market_state(params)
+        .market_state(params, anchor)
         .await
         .map_err(|e| format!("{e}"))?;
 
@@ -1704,7 +1608,7 @@ fn market_info_to_discovered(
             .map(hex::encode)
             .unwrap_or_default(),
         created_at: parse_iso_datetime_to_unix(&info.created_at),
-        creation_txid: info.creation_txid.clone(),
+        anchor: info.anchor.clone(),
         state: info.state.as_u64() as u8,
         nostr_event_json: info.nostr_event_json.clone(),
         yes_price_bps,

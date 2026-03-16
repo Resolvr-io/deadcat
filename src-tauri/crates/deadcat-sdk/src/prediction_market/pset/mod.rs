@@ -10,7 +10,7 @@ pub mod post_resolution_redemption;
 use simplicityhl::elements::Script;
 
 use crate::prediction_market::contract::CompiledPredictionMarket;
-use crate::prediction_market::state::MarketState;
+use crate::prediction_market::state::MarketSlot;
 
 // Re-export shared PSET helpers so submodules can continue using `super::`.
 pub(crate) use crate::pset::{
@@ -18,9 +18,9 @@ pub(crate) use crate::pset::{
     new_pset, reissuance_token_output,
 };
 
-/// Get the covenant script pubkey for a given state.
-pub(crate) fn covenant_spk(contract: &CompiledPredictionMarket, state: MarketState) -> Script {
-    contract.script_pubkey(state)
+/// Get the covenant script pubkey for a given slot.
+pub(crate) fn covenant_spk(contract: &CompiledPredictionMarket, slot: MarketSlot) -> Script {
+    contract.script_pubkey(slot)
 }
 
 #[cfg(test)]
@@ -28,28 +28,29 @@ mod tests {
     use super::*;
     use crate::error::Error;
     use crate::prediction_market::params::PredictionMarketParams;
+    use crate::prediction_market::state::MarketState;
     use simplicityhl::elements::LockTime;
     use simplicityhl::elements::{AssetId, OutPoint};
 
     const TEST_ASSET: [u8; 32] = [0xaa; 32];
 
     #[test]
-    fn burn_txout_script_is_empty() {
+    fn burn_txout_uses_fixed_burn_script() {
         let txout = burn_txout(&TEST_ASSET, 1000);
-        assert!(txout.script_pubkey.is_empty());
+        assert_eq!(txout.script_pubkey, crate::pset::burn_script_pubkey());
     }
 
     #[test]
-    fn burn_txout_hash_matches_empty_script() {
+    fn burn_txout_hash_matches_burn_script() {
         use sha2::{Digest, Sha256};
 
         let txout = burn_txout(&TEST_ASSET, 1000);
         let hash: [u8; 32] = Sha256::digest(txout.script_pubkey.as_bytes()).into();
-        // SHA256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        // SHA256(0x0020 || 32 zero bytes)
         let expected = [
-            0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
-            0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
-            0x78, 0x52, 0xb8, 0x55,
+            0xcb, 0x87, 0xc4, 0xab, 0xf1, 0xab, 0x19, 0x68, 0xf1, 0x84, 0xf5, 0x5a, 0x0d, 0xdb,
+            0xbb, 0x54, 0xa4, 0xda, 0x81, 0x23, 0xc0, 0x54, 0x37, 0xa4, 0xfc, 0xc7, 0x1c, 0x5b,
+            0xc2, 0xca, 0xb8, 0xc9,
         ];
         assert_eq!(hash, expected);
     }
@@ -99,15 +100,13 @@ mod tests {
     }
 
     #[test]
-    fn covenant_state_spks_are_distinct_including_expired() {
+    fn covenant_slot_spks_are_distinct() {
         let contract = test_contract();
         let mut spks = std::collections::HashSet::<Vec<u8>>::new();
-        spks.insert(contract.script_pubkey(MarketState::Dormant).to_bytes());
-        spks.insert(contract.script_pubkey(MarketState::Unresolved).to_bytes());
-        spks.insert(contract.script_pubkey(MarketState::ResolvedYes).to_bytes());
-        spks.insert(contract.script_pubkey(MarketState::ResolvedNo).to_bytes());
-        spks.insert(contract.script_pubkey(MarketState::Expired).to_bytes());
-        assert_eq!(spks.len(), 5);
+        for slot in MarketSlot::ALL {
+            spks.insert(contract.script_pubkey(slot).to_bytes());
+        }
+        assert_eq!(spks.len(), MarketSlot::ALL.len());
     }
 
     // ===== build_creation_pset =====
@@ -119,14 +118,14 @@ mod tests {
             yes_defining_utxo: test_utxo([0xdd; 32], 1000),
             no_defining_utxo: test_utxo([0xee; 32], 1000),
             fee_amount: 500,
-            change_destination: None,
+            change_destination: Some(Script::new()),
             lock_time: 100,
         };
         let pset = creation::build_creation_pset(&contract, &params).unwrap();
         // 2 defining UTXOs
         assert_eq!(pset.inputs().len(), 2);
-        // 2 reissuance tokens + 1 fee = 3
-        assert_eq!(pset.outputs().len(), 3);
+        // 2 reissuance tokens + fee + wallet change = 4
+        assert_eq!(pset.outputs().len(), 4);
         assert_eq!(pset.inputs()[0].issuance_inflation_keys, Some(1));
         assert_eq!(pset.inputs()[1].issuance_inflation_keys, Some(1));
         assert_eq!(
@@ -136,18 +135,17 @@ mod tests {
     }
 
     #[test]
-    fn creation_with_change() {
+    fn creation_requires_change_destination_when_change_is_present() {
         let contract = test_contract();
         let params = creation::CreationParams {
             yes_defining_utxo: test_utxo([0xdd; 32], 1000),
             no_defining_utxo: test_utxo([0xee; 32], 1000),
             fee_amount: 500,
-            change_destination: Some(Script::new()),
+            change_destination: None,
             lock_time: 100,
         };
-        let pset = creation::build_creation_pset(&contract, &params).unwrap();
-        // 2 reissuance tokens + fee + change = 4
-        assert_eq!(pset.outputs().len(), 4);
+        let err = creation::build_creation_pset(&contract, &params).unwrap_err();
+        assert!(matches!(err, Error::Blinding(_)));
     }
 
     #[test]
@@ -157,13 +155,14 @@ mod tests {
             yes_defining_utxo: test_utxo([0xdd; 32], 1000),
             no_defining_utxo: test_utxo([0xee; 32], 1000),
             fee_amount: 500,
-            change_destination: None,
+            change_destination: Some(Script::new()),
             lock_time: 100,
         };
         let pset = creation::build_creation_pset(&contract, &params).unwrap();
-        let dormant_spk = contract.script_pubkey(MarketState::Dormant);
-        assert_eq!(pset.outputs()[0].script_pubkey, dormant_spk);
-        assert_eq!(pset.outputs()[1].script_pubkey, dormant_spk);
+        let dormant_yes_spk = contract.script_pubkey(MarketSlot::DormantYesRt);
+        let dormant_no_spk = contract.script_pubkey(MarketSlot::DormantNoRt);
+        assert_eq!(pset.outputs()[0].script_pubkey, dormant_yes_spk);
+        assert_eq!(pset.outputs()[1].script_pubkey, dormant_no_spk);
         // No asset issuance — only reissuance tokens
         assert_eq!(pset.inputs()[0].issuance_value_amount, None);
         assert_eq!(pset.inputs()[1].issuance_value_amount, None);
@@ -181,6 +180,20 @@ mod tests {
         };
         let result = creation::build_creation_pset(&contract, &params);
         assert!(matches!(result, Err(Error::InsufficientFee)));
+    }
+
+    #[test]
+    fn creation_allows_exact_fee_no_change() {
+        let contract = test_contract();
+        let params = creation::CreationParams {
+            yes_defining_utxo: test_utxo([0xdd; 32], 1000),
+            no_defining_utxo: test_utxo([0xee; 32], 1000),
+            fee_amount: 2000,
+            change_destination: None,
+            lock_time: 100,
+        };
+        let pset = creation::build_creation_pset(&contract, &params).unwrap();
+        assert_eq!(pset.outputs().len(), 3);
     }
 
     // ===== build_initial_issuance_pset =====
@@ -239,12 +252,12 @@ mod tests {
             lock_time: 100,
         };
         let pset = initial_issuance::build_initial_issuance_pset(&contract, &params).unwrap();
-        let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
-        // Reissuance token outputs → Unresolved
-        assert_eq!(pset.outputs()[0].script_pubkey, unresolved_spk);
-        assert_eq!(pset.outputs()[1].script_pubkey, unresolved_spk);
-        // Collateral output → Unresolved
-        assert_eq!(pset.outputs()[2].script_pubkey, unresolved_spk);
+        let unresolved_yes_spk = contract.script_pubkey(MarketSlot::UnresolvedYesRt);
+        let unresolved_no_spk = contract.script_pubkey(MarketSlot::UnresolvedNoRt);
+        let unresolved_collateral_spk = contract.script_pubkey(MarketSlot::UnresolvedCollateral);
+        assert_eq!(pset.outputs()[0].script_pubkey, unresolved_yes_spk);
+        assert_eq!(pset.outputs()[1].script_pubkey, unresolved_no_spk);
+        assert_eq!(pset.outputs()[2].script_pubkey, unresolved_collateral_spk);
     }
 
     #[test]
@@ -449,13 +462,17 @@ mod tests {
             fee_utxo: test_utxo(p.collateral_asset_id, 500),
             outcome_yes: true,
             fee_amount: 500,
+            fee_change_destination: None,
             lock_time: 300,
         };
         let pset = oracle_resolve::build_oracle_resolve_pset(&contract, &params).unwrap();
         assert_eq!(pset.inputs().len(), 4);
         assert_eq!(pset.outputs().len(), 4);
-        let yes_spk = contract.script_pubkey(MarketState::ResolvedYes);
-        assert_eq!(pset.outputs()[0].script_pubkey, yes_spk);
+        let yes_spk = contract.script_pubkey(MarketSlot::ResolvedYesCollateral);
+        assert_eq!(
+            pset.outputs()[0].script_pubkey,
+            crate::pset::burn_script_pubkey()
+        );
         assert_eq!(pset.outputs()[2].script_pubkey, yes_spk);
     }
 
@@ -470,12 +487,34 @@ mod tests {
             fee_utxo: test_utxo(p.collateral_asset_id, 500),
             outcome_yes: false,
             fee_amount: 500,
+            fee_change_destination: None,
             lock_time: 300,
         };
         let pset = oracle_resolve::build_oracle_resolve_pset(&contract, &params).unwrap();
-        let no_spk = contract.script_pubkey(MarketState::ResolvedNo);
-        assert_eq!(pset.outputs()[0].script_pubkey, no_spk);
+        let no_spk = contract.script_pubkey(MarketSlot::ResolvedNoCollateral);
+        assert_eq!(
+            pset.outputs()[0].script_pubkey,
+            crate::pset::burn_script_pubkey()
+        );
         assert_eq!(pset.outputs()[2].script_pubkey, no_spk);
+    }
+
+    #[test]
+    fn oracle_resolve_change_keeps_fee_last() {
+        let contract = test_contract();
+        let p = contract.params();
+        let params = oracle_resolve::OracleResolveParams {
+            yes_reissuance_utxo: test_utxo(p.yes_reissuance_token, 1),
+            no_reissuance_utxo: test_utxo(p.no_reissuance_token, 1),
+            collateral_utxo: test_utxo(p.collateral_asset_id, 5_000_000),
+            fee_utxo: test_utxo(p.collateral_asset_id, 500_000),
+            outcome_yes: true,
+            fee_amount: 500,
+            fee_change_destination: Some(Script::from(vec![0x53])),
+            lock_time: 300,
+        };
+        let pset = oracle_resolve::build_oracle_resolve_pset(&contract, &params).unwrap();
+        assert_eq!(pset.outputs().last().unwrap().script_pubkey, Script::new());
     }
 
     // ===== build_post_resolution_redemption_pset =====
@@ -524,6 +563,27 @@ mod tests {
                 .unwrap();
         // remaining == 0 → no covenant output: burn + payout + fee = 3
         assert_eq!(pset.outputs().len(), 3);
+    }
+
+    #[test]
+    fn post_res_redemption_change_keeps_fee_last() {
+        let contract = test_contract();
+        let p = contract.params();
+        let params = post_resolution_redemption::PostResolutionRedemptionParams {
+            collateral_utxo: test_utxo(p.collateral_asset_id, 1_000_000),
+            token_utxos: vec![test_utxo(p.yes_token_asset, 5)],
+            fee_utxo: test_utxo(p.collateral_asset_id, 500_000),
+            tokens_burned: 3,
+            resolved_state: MarketState::ResolvedYes,
+            fee_amount: 500,
+            payout_destination: Script::from(vec![0x51]),
+            fee_change_destination: Some(Script::from(vec![0x52])),
+            token_change_destination: Some(Script::from(vec![0x53])),
+        };
+        let pset =
+            post_resolution_redemption::build_post_resolution_redemption_pset(&contract, &params)
+                .unwrap();
+        assert_eq!(pset.outputs().last().unwrap().script_pubkey, Script::new());
     }
 
     #[test]
@@ -588,7 +648,7 @@ mod tests {
         assert_eq!(pset.inputs().len(), 3);
         // remaining > 0 → covenant + burn + payout + fee = 4
         assert_eq!(pset.outputs().len(), 4);
-        let expired_spk = contract.script_pubkey(MarketState::Expired);
+        let expired_spk = contract.script_pubkey(MarketSlot::ExpiredCollateral);
         assert_eq!(pset.outputs()[0].script_pubkey, expired_spk);
     }
 
@@ -611,6 +671,26 @@ mod tests {
         let pset = expiry_redemption::build_expiry_redemption_pset(&contract, &params).unwrap();
         // remaining == 0 → burn + payout + fee = 3
         assert_eq!(pset.outputs().len(), 3);
+    }
+
+    #[test]
+    fn expiry_redemption_change_keeps_fee_last() {
+        let contract = test_contract();
+        let p = contract.params();
+        let params = expiry_redemption::ExpiryRedemptionParams {
+            collateral_utxo: test_utxo(p.collateral_asset_id, 1_000_000),
+            token_utxos: vec![test_utxo(p.yes_token_asset, 5)],
+            fee_utxo: test_utxo(p.collateral_asset_id, 500_000),
+            tokens_burned: 3,
+            burn_token_asset: p.yes_token_asset,
+            fee_amount: 500,
+            payout_destination: Script::from(vec![0x54]),
+            fee_change_destination: Some(Script::from(vec![0x55])),
+            token_change_destination: Some(Script::from(vec![0x56])),
+            lock_time: 999_999,
+        };
+        let pset = expiry_redemption::build_expiry_redemption_pset(&contract, &params).unwrap();
+        assert_eq!(pset.outputs().last().unwrap().script_pubkey, Script::new());
     }
 
     #[test]
@@ -668,14 +748,21 @@ mod tests {
             collateral_utxo: test_utxo(p.collateral_asset_id, 5_000_000),
             fee_utxo: test_utxo(p.collateral_asset_id, 500),
             fee_amount: 500,
+            fee_change_destination: None,
             lock_time: p.expiry_time,
         };
         let pset = expire_transition::build_expire_transition_pset(&contract, &params).unwrap();
         assert_eq!(pset.inputs().len(), 4);
         assert_eq!(pset.outputs().len(), 4);
-        let expired_spk = contract.script_pubkey(MarketState::Expired);
-        assert_eq!(pset.outputs()[0].script_pubkey, expired_spk);
-        assert_eq!(pset.outputs()[1].script_pubkey, expired_spk);
+        let expired_spk = contract.script_pubkey(MarketSlot::ExpiredCollateral);
+        assert_eq!(
+            pset.outputs()[0].script_pubkey,
+            crate::pset::burn_script_pubkey()
+        );
+        assert_eq!(
+            pset.outputs()[1].script_pubkey,
+            crate::pset::burn_script_pubkey()
+        );
         assert_eq!(pset.outputs()[2].script_pubkey, expired_spk);
         assert_eq!(pset.outputs()[2].amount, Some(5_000_000));
     }
@@ -690,6 +777,7 @@ mod tests {
             collateral_utxo: test_utxo(p.collateral_asset_id, 5_000_000),
             fee_utxo: test_utxo(p.collateral_asset_id, 500),
             fee_amount: 500,
+            fee_change_destination: None,
             lock_time: 999_999,
         };
         let pset = expire_transition::build_expire_transition_pset(&contract, &params).unwrap();
@@ -697,6 +785,23 @@ mod tests {
             pset.global.tx_data.fallback_locktime,
             Some(LockTime::from_consensus(999_999))
         );
+    }
+
+    #[test]
+    fn expire_transition_change_keeps_fee_last() {
+        let contract = test_contract();
+        let p = contract.params();
+        let params = expire_transition::ExpireTransitionParams {
+            yes_reissuance_utxo: test_utxo(p.yes_reissuance_token, 1),
+            no_reissuance_utxo: test_utxo(p.no_reissuance_token, 1),
+            collateral_utxo: test_utxo(p.collateral_asset_id, 5_000_000),
+            fee_utxo: test_utxo(p.collateral_asset_id, 500_000),
+            fee_amount: 500,
+            fee_change_destination: Some(Script::from(vec![0x56])),
+            lock_time: p.expiry_time,
+        };
+        let pset = expire_transition::build_expire_transition_pset(&contract, &params).unwrap();
+        assert_eq!(pset.outputs().last().unwrap().script_pubkey, Script::new());
     }
 
     // ===== build_cancellation_pset =====
@@ -750,6 +855,27 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_partial_change_keeps_fee_last() {
+        let contract = test_contract();
+        let p = contract.params();
+        let params = cancellation::CancellationParams {
+            collateral_utxo: test_utxo(p.collateral_asset_id, 1_000_000),
+            yes_reissuance_utxo: None,
+            no_reissuance_utxo: None,
+            yes_token_utxos: vec![test_utxo(p.yes_token_asset, 5)],
+            no_token_utxos: vec![test_utxo(p.no_token_asset, 5)],
+            fee_utxo: test_utxo(p.collateral_asset_id, 500_000),
+            pairs_burned: 3,
+            fee_amount: 500,
+            refund_destination: Script::from(vec![0x57]),
+            fee_change_destination: Some(Script::from(vec![0x58])),
+            token_change_destination: Some(Script::from(vec![0x59])),
+        };
+        let pset = cancellation::build_cancellation_pset(&contract, &params).unwrap();
+        assert_eq!(pset.outputs().last().unwrap().script_pubkey, Script::new());
+    }
+
+    #[test]
     fn cancellation_partial_outputs_target_unresolved() {
         let contract = test_contract();
         let p = contract.params();
@@ -767,7 +893,7 @@ mod tests {
             token_change_destination: None,
         };
         let pset = cancellation::build_cancellation_pset(&contract, &params).unwrap();
-        let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
+        let unresolved_spk = contract.script_pubkey(MarketSlot::UnresolvedCollateral);
         // Output 0: remaining collateral → Unresolved
         assert_eq!(pset.outputs()[0].script_pubkey, unresolved_spk);
     }
@@ -790,10 +916,10 @@ mod tests {
             token_change_destination: None,
         };
         let pset = cancellation::build_cancellation_pset(&contract, &params).unwrap();
-        let dormant_spk = contract.script_pubkey(MarketState::Dormant);
-        // Outputs 0,1: reissuance tokens → Dormant
-        assert_eq!(pset.outputs()[0].script_pubkey, dormant_spk);
-        assert_eq!(pset.outputs()[1].script_pubkey, dormant_spk);
+        let dormant_yes_spk = contract.script_pubkey(MarketSlot::DormantYesRt);
+        let dormant_no_spk = contract.script_pubkey(MarketSlot::DormantNoRt);
+        assert_eq!(pset.outputs()[0].script_pubkey, dormant_yes_spk);
+        assert_eq!(pset.outputs()[1].script_pubkey, dormant_no_spk);
     }
 
     #[test]

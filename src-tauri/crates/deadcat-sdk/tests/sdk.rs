@@ -1,5 +1,5 @@
 use deadcat_sdk::PredictionMarketParams;
-use deadcat_sdk::{DeadcatSdk, MarketState, OrderDirection};
+use deadcat_sdk::{DeadcatSdk, MarketState, OrderDirection, PredictionMarketAnchor};
 use lwk_signer::SwSigner;
 use lwk_test_util::{
     TEST_MNEMONIC, TestEnv, TestEnvBuilder, generate_mnemonic, regtest_policy_asset,
@@ -98,6 +98,10 @@ pub fn wait_for_tx<S: BlockchainBackend>(wollet: &mut Wollet, client: &mut S, tx
 /// A dummy oracle pubkey for tests.
 fn test_oracle_pubkey() -> [u8; 32] {
     [0x02; 32]
+}
+
+fn anchor_txid(anchor: &PredictionMarketAnchor) -> Txid {
+    anchor.creation_txid.parse().unwrap()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -304,7 +308,7 @@ fn test_create_contract_onchain() {
     // Fund with several UTXOs.
     fixture.fund_and_sync(5, 100_000);
 
-    let (txid, params) = fixture
+    let (anchor, params) = fixture
         .sdk
         .create_contract_onchain(
             test_oracle_pubkey(),
@@ -314,6 +318,7 @@ fn test_create_contract_onchain() {
             500,     // fee_amount
         )
         .unwrap();
+    let txid = anchor_txid(&anchor);
 
     fixture.mine_and_sync(1);
 
@@ -335,6 +340,25 @@ fn test_create_contract_onchain() {
     assert_ne!(params.no_token_asset, [0u8; 32]);
     assert_ne!(params.yes_token_asset, params.no_token_asset);
     assert_ne!(params.yes_reissuance_token, params.no_reissuance_token);
+
+    let tx = fixture.sdk.fetch_transaction(&txid).unwrap();
+    let contract = deadcat_sdk::CompiledPredictionMarket::new(params).unwrap();
+    assert_eq!(
+        tx.output[0].script_pubkey,
+        contract.script_pubkey(deadcat_sdk::MarketSlot::DormantYesRt)
+    );
+    assert_eq!(
+        tx.output[1].script_pubkey,
+        contract.script_pubkey(deadcat_sdk::MarketSlot::DormantNoRt)
+    );
+    assert!(matches!(
+        tx.output[0].asset,
+        lwk_wollet::elements::confidential::Asset::Confidential(_)
+    ));
+    assert!(matches!(
+        tx.output[1].asset,
+        lwk_wollet::elements::confidential::Asset::Confidential(_)
+    ));
 }
 
 #[test]
@@ -478,14 +502,14 @@ fn oracle_sign(params: &PredictionMarketParams, outcome_yes: bool, keypair: &Key
 }
 
 /// Create a market with a real oracle keypair and issue tokens.
-/// Returns (creation_txid, params, oracle_keypair).
+/// Returns (anchor, params).
 fn create_and_issue(
     fixture: &mut TestFixture,
     oracle_pubkey: [u8; 32],
     cpt: u64,
     expiry_time: u32,
     pairs: u64,
-) -> (Txid, PredictionMarketParams) {
+) -> (PredictionMarketAnchor, PredictionMarketParams) {
     let (creation_txid, params) = fixture
         .sdk
         .create_contract_onchain(oracle_pubkey, cpt, expiry_time, 1_000, 500)
@@ -522,7 +546,10 @@ fn test_full_cancellation_and_reissuance() {
     assert_eq!(*balance.get(&no_asset).unwrap_or(&0), 5);
 
     // Full cancel: burn all 5 pairs → Unresolved → Dormant
-    let cancel = fixture.sdk.cancel_tokens(&params, 5, 500).unwrap();
+    let cancel = fixture
+        .sdk
+        .cancel_tokens(&params, &creation_txid, 5, 500)
+        .unwrap();
 
     assert_eq!(cancel.previous_state, MarketState::Unresolved);
     assert_eq!(cancel.new_state, MarketState::Dormant);
@@ -559,14 +586,17 @@ fn test_partial_cancellation() {
     fixture.fund_and_sync(20, 500_000);
 
     let (oracle_pubkey, _keypair) = generate_oracle_keypair();
-    let (_creation_txid, params) =
+    let (creation_txid, params) =
         create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 10);
 
     let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
     let no_asset = lwk_wollet::elements::AssetId::from_slice(&params.no_token_asset).unwrap();
 
     // Cancel 3 of 10 pairs
-    let cancel = fixture.sdk.cancel_tokens(&params, 3, 500).unwrap();
+    let cancel = fixture
+        .sdk
+        .cancel_tokens(&params, &creation_txid, 3, 500)
+        .unwrap();
 
     assert_eq!(cancel.previous_state, MarketState::Unresolved);
     assert_eq!(cancel.new_state, MarketState::Unresolved);
@@ -582,19 +612,63 @@ fn test_partial_cancellation() {
 }
 
 #[test]
+fn test_full_cancellation_with_exact_fee_utxo() {
+    let mut fixture = TestFixture::new();
+    fixture.fund_and_sync(20, 500_000);
+
+    let (oracle_pubkey, _keypair) = generate_oracle_keypair();
+    let (creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
+
+    fixture.fund_and_sync(1, 700);
+
+    let cancel = fixture
+        .sdk
+        .cancel_tokens(&params, &creation_txid, 5, 700)
+        .unwrap();
+
+    assert_eq!(cancel.previous_state, MarketState::Unresolved);
+    assert_eq!(cancel.new_state, MarketState::Dormant);
+    assert!(cancel.is_full_cancellation);
+
+    fixture.mine_and_sync(1);
+}
+
+#[test]
+fn test_partial_cancellation_with_exact_fee_utxo() {
+    let mut fixture = TestFixture::new();
+    fixture.fund_and_sync(20, 500_000);
+
+    let (oracle_pubkey, _keypair) = generate_oracle_keypair();
+    let (creation_txid, params) =
+        create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 10);
+
+    fixture.fund_and_sync(1, 700);
+
+    let cancel = fixture
+        .sdk
+        .cancel_tokens(&params, &creation_txid, 3, 700)
+        .unwrap();
+
+    assert_eq!(cancel.previous_state, MarketState::Unresolved);
+    assert_eq!(cancel.new_state, MarketState::Unresolved);
+    assert!(!cancel.is_full_cancellation);
+
+    fixture.mine_and_sync(1);
+}
+
+#[test]
 fn test_oracle_resolve_and_redeem_yes() {
     let mut fixture = TestFixture::new();
     fixture.fund_and_sync(20, 500_000);
 
     let (oracle_pubkey, keypair) = generate_oracle_keypair();
-    let (_creation_txid, params) =
-        create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
+    let (creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
 
     // Oracle resolves YES
     let signature = oracle_sign(&params, true, &keypair);
     let resolve = fixture
         .sdk
-        .resolve_market(&params, true, signature, 500)
+        .resolve_market(&params, &creation_txid, true, signature, 500)
         .unwrap();
 
     assert_eq!(resolve.previous_state, MarketState::Unresolved);
@@ -604,7 +678,10 @@ fn test_oracle_resolve_and_redeem_yes() {
     fixture.mine_and_sync(1);
 
     // Redeem YES tokens
-    let redeem = fixture.sdk.redeem_tokens(&params, 5, 500).unwrap();
+    let redeem = fixture
+        .sdk
+        .redeem_tokens(&params, &creation_txid, 5, 500)
+        .unwrap();
 
     assert_eq!(redeem.previous_state, MarketState::ResolvedYes);
     assert_eq!(redeem.tokens_redeemed, 5);
@@ -620,19 +697,70 @@ fn test_oracle_resolve_and_redeem_yes() {
 }
 
 #[test]
+fn test_post_resolution_redeem_with_exact_fee_utxo() {
+    let mut fixture = TestFixture::new();
+    fixture.fund_and_sync(20, 500_000);
+
+    let (oracle_pubkey, keypair) = generate_oracle_keypair();
+    let (creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
+
+    let signature = oracle_sign(&params, true, &keypair);
+    fixture
+        .sdk
+        .resolve_market(&params, &creation_txid, true, signature, 500)
+        .unwrap();
+
+    fixture.mine_and_sync(1);
+    fixture.fund_and_sync(1, 700);
+
+    let redeem = fixture
+        .sdk
+        .redeem_tokens(&params, &creation_txid, 5, 700)
+        .unwrap();
+
+    assert_eq!(redeem.previous_state, MarketState::ResolvedYes);
+    assert_eq!(redeem.tokens_redeemed, 5);
+    assert_eq!(redeem.payout_sats, 100_000);
+
+    fixture.mine_and_sync(1);
+}
+
+#[test]
+fn test_oracle_resolve_with_exact_fee_utxo() {
+    let mut fixture = TestFixture::new();
+    fixture.fund_and_sync(20, 500_000);
+
+    let (oracle_pubkey, keypair) = generate_oracle_keypair();
+    let (creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
+
+    // Add an exact-fee UTXO after issuance so resolve_market selects it.
+    fixture.fund_and_sync(1, 700);
+
+    let signature = oracle_sign(&params, true, &keypair);
+    let resolve = fixture
+        .sdk
+        .resolve_market(&params, &creation_txid, true, signature, 700)
+        .unwrap();
+
+    assert_eq!(resolve.previous_state, MarketState::Unresolved);
+    assert_eq!(resolve.new_state, MarketState::ResolvedYes);
+
+    fixture.mine_and_sync(1);
+}
+
+#[test]
 fn test_oracle_resolve_and_redeem_no() {
     let mut fixture = TestFixture::new();
     fixture.fund_and_sync(20, 500_000);
 
     let (oracle_pubkey, keypair) = generate_oracle_keypair();
-    let (_creation_txid, params) =
-        create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
+    let (creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
 
     // Oracle resolves NO
     let signature = oracle_sign(&params, false, &keypair);
     let resolve = fixture
         .sdk
-        .resolve_market(&params, false, signature, 500)
+        .resolve_market(&params, &creation_txid, false, signature, 500)
         .unwrap();
 
     assert_eq!(resolve.previous_state, MarketState::Unresolved);
@@ -642,7 +770,10 @@ fn test_oracle_resolve_and_redeem_no() {
     fixture.mine_and_sync(1);
 
     // Redeem NO tokens
-    let redeem = fixture.sdk.redeem_tokens(&params, 5, 500).unwrap();
+    let redeem = fixture
+        .sdk
+        .redeem_tokens(&params, &creation_txid, 5, 500)
+        .unwrap();
 
     assert_eq!(redeem.previous_state, MarketState::ResolvedNo);
     assert_eq!(redeem.tokens_redeemed, 5);
@@ -664,7 +795,7 @@ fn test_expiry_redemption() {
     let (oracle_pubkey, _keypair) = generate_oracle_keypair();
     let expiry_height = 200u32;
 
-    let (_creation_txid, params) =
+    let (creation_txid, params) =
         create_and_issue(&mut fixture, oracle_pubkey, 10_000, expiry_height, 5);
 
     // Generate blocks past expiry
@@ -673,7 +804,7 @@ fn test_expiry_redemption() {
     // Redeem YES tokens via expiry path
     let redeem = fixture
         .sdk
-        .redeem_expired(&params, params.yes_token_asset, 5, 500)
+        .redeem_expired(&params, &creation_txid, params.yes_token_asset, 5, 500)
         .unwrap();
 
     assert_eq!(redeem.previous_state, MarketState::Expired);
@@ -686,6 +817,33 @@ fn test_expiry_redemption() {
     let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
     let balance = fixture.sdk.balance().unwrap();
     assert_eq!(*balance.get(&yes_asset).unwrap_or(&0), 0);
+}
+
+#[test]
+fn test_expiry_redemption_with_exact_fee_auto_finalize() {
+    let mut fixture = TestFixture::new();
+    fixture.fund_and_sync(20, 500_000);
+
+    let (oracle_pubkey, _keypair) = generate_oracle_keypair();
+    let expiry_height = 200u32;
+    let (creation_txid, params) =
+        create_and_issue(&mut fixture, oracle_pubkey, 10_000, expiry_height, 5);
+
+    fixture.mine_and_sync(250);
+
+    // Add an exact-fee UTXO after expiry so the implicit expire_market path selects it.
+    fixture.fund_and_sync(1, 700);
+
+    let redeem = fixture
+        .sdk
+        .redeem_expired(&params, &creation_txid, params.yes_token_asset, 5, 700)
+        .unwrap();
+
+    assert_eq!(redeem.previous_state, MarketState::Expired);
+    assert_eq!(redeem.tokens_redeemed, 5);
+    assert_eq!(redeem.payout_sats, 50_000);
+
+    fixture.mine_and_sync(1);
 }
 
 #[test]
@@ -743,20 +901,22 @@ fn test_partial_post_resolution_redemption() {
     fixture.fund_and_sync(20, 500_000);
 
     let (oracle_pubkey, keypair) = generate_oracle_keypair();
-    let (_creation_txid, params) =
-        create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
+    let (creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
 
     // Oracle resolves YES
     let signature = oracle_sign(&params, true, &keypair);
     fixture
         .sdk
-        .resolve_market(&params, true, signature, 500)
+        .resolve_market(&params, &creation_txid, true, signature, 500)
         .unwrap();
 
     fixture.mine_and_sync(1);
 
     // Redeem only 3 of 5 YES tokens (partial redemption with token change)
-    let redeem = fixture.sdk.redeem_tokens(&params, 3, 500).unwrap();
+    let redeem = fixture
+        .sdk
+        .redeem_tokens(&params, &creation_txid, 3, 500)
+        .unwrap();
 
     assert_eq!(redeem.previous_state, MarketState::ResolvedYes);
     assert_eq!(redeem.tokens_redeemed, 3);
@@ -772,12 +932,45 @@ fn test_partial_post_resolution_redemption() {
 }
 
 #[test]
+fn test_partial_post_resolution_redemption_with_exact_fee_utxo() {
+    let mut fixture = TestFixture::new();
+    fixture.fund_and_sync(20, 500_000);
+
+    let (oracle_pubkey, keypair) = generate_oracle_keypair();
+    let (creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
+
+    let signature = oracle_sign(&params, true, &keypair);
+    fixture
+        .sdk
+        .resolve_market(&params, &creation_txid, true, signature, 500)
+        .unwrap();
+
+    fixture.mine_and_sync(1);
+    fixture.fund_and_sync(1, 700);
+
+    let redeem = fixture
+        .sdk
+        .redeem_tokens(&params, &creation_txid, 3, 700)
+        .unwrap();
+
+    assert_eq!(redeem.previous_state, MarketState::ResolvedYes);
+    assert_eq!(redeem.tokens_redeemed, 3);
+    assert_eq!(redeem.payout_sats, 60_000);
+
+    fixture.mine_and_sync(1);
+
+    let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
+    let balance = fixture.sdk.balance().unwrap();
+    assert_eq!(*balance.get(&yes_asset).unwrap_or(&0), 2);
+}
+
+#[test]
 fn test_cancel_wrong_state() {
     let mut fixture = TestFixture::new();
     fixture.fund_and_sync(10, 500_000);
 
     let (oracle_pubkey, _keypair) = generate_oracle_keypair();
-    let (_creation_txid, params) = fixture
+    let (creation_txid, params) = fixture
         .sdk
         .create_contract_onchain(oracle_pubkey, 10_000, 500_000, 1_000, 500)
         .unwrap();
@@ -785,7 +978,7 @@ fn test_cancel_wrong_state() {
     fixture.mine_and_sync(1);
 
     // Market is Dormant (no issuance) — cancellation should fail
-    let result = fixture.sdk.cancel_tokens(&params, 1, 500);
+    let result = fixture.sdk.cancel_tokens(&params, &creation_txid, 1, 500);
     assert!(result.is_err(), "cancel should fail in Dormant state");
 }
 
@@ -795,18 +988,20 @@ fn test_redeem_wrong_state() {
     fixture.fund_and_sync(20, 500_000);
 
     let (oracle_pubkey, _keypair) = generate_oracle_keypair();
-    let (_creation_txid, params) =
-        create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
+    let (creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
 
     // Market is Unresolved — post-resolution redemption should fail
-    let result = fixture.sdk.redeem_tokens(&params, 5, 500);
+    let result = fixture.sdk.redeem_tokens(&params, &creation_txid, 5, 500);
     assert!(result.is_err(), "redeem should fail in Unresolved state");
 }
 
 // ── Limit order integration tests ───────────────────────────────────────
 
 /// Helper: create a market, issue tokens, and return the params + asset IDs.
-fn issue_market_tokens(fixture: &mut TestFixture, pairs: u64) -> (Txid, PredictionMarketParams) {
+fn issue_market_tokens(
+    fixture: &mut TestFixture,
+    pairs: u64,
+) -> (PredictionMarketAnchor, PredictionMarketParams) {
     let (oracle_pubkey, _keypair) = generate_oracle_keypair();
     create_and_issue(fixture, oracle_pubkey, 10_000, 500_000, pairs)
 }

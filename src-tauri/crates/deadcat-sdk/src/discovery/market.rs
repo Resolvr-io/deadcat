@@ -2,7 +2,10 @@ use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement};
+use crate::discovery::store_trait::{ContractMetadataInput, PredictionMarketCandidateIngestInput};
 use crate::network::Network;
+use crate::prediction_market::anchor::{PredictionMarketAnchor, parse_prediction_market_anchor};
+use crate::prediction_market_scan::validate_prediction_market_creation_tx;
 
 use super::{APP_EVENT_KIND, CONTRACT_TAG, DEFAULT_RELAYS, bytes_to_hex};
 
@@ -26,7 +29,7 @@ pub struct DiscoveredMarket {
     pub no_reissuance_token: String,
     pub creator_pubkey: String,
     pub created_at: u64,
-    pub creation_txid: Option<String>,
+    pub anchor: PredictionMarketAnchor,
     pub state: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nostr_event_json: Option<String>,
@@ -38,12 +41,42 @@ pub struct DiscoveredMarket {
     pub no_price_bps: Option<u16>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ParsedDiscoveredMarketAnnouncement {
+    pub market: DiscoveredMarket,
+    pub ingest: PredictionMarketCandidateIngestInput,
+}
+
+fn validate_market_announcement(
+    announcement: &ContractAnnouncement,
+) -> Result<(PredictionMarketAnchor, Vec<u8>), String> {
+    let anchor = announcement.anchor.canonicalized()?;
+    let _parsed_anchor = parse_prediction_market_anchor(&anchor)?;
+    let raw_tx = hex::decode(&announcement.creation_tx_hex)
+        .map_err(|e| format!("invalid creation_tx_hex: {e}"))?;
+    let tx: crate::elements::Transaction = crate::elements::encode::deserialize(&raw_tx)
+        .map_err(|e| format!("invalid creation_tx_hex transaction: {e}"))?;
+
+    if tx.txid().to_string() != anchor.creation_txid {
+        return Err("creation_tx_hex txid must equal anchor.creation_txid".to_string());
+    }
+
+    if !validate_prediction_market_creation_tx(&announcement.contract_params, &tx, &anchor)? {
+        return Err(
+            "creation_tx_hex is not a canonical prediction-market creation bootstrap".into(),
+        );
+    }
+
+    Ok((anchor, raw_tx))
+}
+
 /// Build a Nostr event for a contract announcement.
 pub fn build_announcement_event(
     keys: &Keys,
     announcement: &ContractAnnouncement,
     network_tag: &str,
 ) -> Result<Event, String> {
+    let (anchor, raw_tx) = validate_market_announcement(announcement)?;
     network_tag
         .parse::<Network>()
         .map_err(|e| format!("unsupported network tag '{network_tag}': {e}"))?;
@@ -51,8 +84,12 @@ pub fn build_announcement_event(
     let market_id_hex = bytes_to_hex(market_id.as_bytes());
     let category_lower = announcement.metadata.category.to_lowercase();
 
-    let content =
-        serde_json::to_string(announcement).map_err(|e| format!("failed to serialize: {e}"))?;
+    let content = serde_json::to_string(&ContractAnnouncement {
+        anchor,
+        creation_tx_hex: hex::encode(raw_tx),
+        ..announcement.clone()
+    })
+    .map_err(|e| format!("failed to serialize: {e}"))?;
 
     let tags = vec![
         Tag::identifier(&market_id_hex),
@@ -90,6 +127,13 @@ pub fn parse_announcement_event(
     event: &Event,
     expected_network_tag: &str,
 ) -> Result<DiscoveredMarket, String> {
+    parse_announcement_event_with_ingest(event, expected_network_tag).map(|parsed| parsed.market)
+}
+
+pub(crate) fn parse_announcement_event_with_ingest(
+    event: &Event,
+    expected_network_tag: &str,
+) -> Result<ParsedDiscoveredMarketAnnouncement, String> {
     expected_network_tag
         .parse::<Network>()
         .map_err(|e| format!("unsupported network tag '{expected_network_tag}': {e}"))?;
@@ -108,6 +152,7 @@ pub fn parse_announcement_event(
             announcement.version, CONTRACT_ANNOUNCEMENT_VERSION
         ));
     }
+    let (anchor, raw_tx) = validate_market_announcement(&announcement)?;
 
     let params = &announcement.contract_params;
     let market_id = params.market_id();
@@ -116,76 +161,74 @@ pub fn parse_announcement_event(
         .to_bech32()
         .unwrap_or_default();
 
-    Ok(DiscoveredMarket {
-        id: event.id.to_hex(),
-        nevent,
-        market_id: bytes_to_hex(market_id.as_bytes()),
-        question: announcement.metadata.question,
-        category: announcement.metadata.category,
-        description: announcement.metadata.description,
-        resolution_source: announcement.metadata.resolution_source,
-        oracle_pubkey: bytes_to_hex(&params.oracle_public_key),
-        expiry_height: params.expiry_time,
-        cpt_sats: params.collateral_per_token,
-        collateral_asset_id: bytes_to_hex(&params.collateral_asset_id),
-        yes_asset_id: bytes_to_hex(&params.yes_token_asset),
-        no_asset_id: bytes_to_hex(&params.no_token_asset),
-        yes_reissuance_token: bytes_to_hex(&params.yes_reissuance_token),
-        no_reissuance_token: bytes_to_hex(&params.no_reissuance_token),
-        creator_pubkey: event.pubkey.to_hex(),
-        created_at: event.created_at.as_u64(),
-        creation_txid: announcement.creation_txid,
-        state: 0, // Default Dormant for discovered markets
+    let metadata = ContractMetadataInput {
+        question: Some(announcement.metadata.question.clone()),
+        description: Some(announcement.metadata.description.clone()),
+        category: Some(announcement.metadata.category.clone()),
+        resolution_source: Some(announcement.metadata.resolution_source.clone()),
+        creator_pubkey: hex::decode(event.pubkey.to_hex()).ok(),
+        anchor: anchor.clone(),
+        nevent: Some(nevent.clone()),
+        nostr_event_id: Some(event.id.to_hex()),
         nostr_event_json: serde_json::to_string(event).ok(),
-        yes_price_bps: None,
-        no_price_bps: None,
+    };
+
+    Ok(ParsedDiscoveredMarketAnnouncement {
+        market: DiscoveredMarket {
+            id: event.id.to_hex(),
+            nevent,
+            market_id: bytes_to_hex(market_id.as_bytes()),
+            question: announcement.metadata.question,
+            category: announcement.metadata.category,
+            description: announcement.metadata.description,
+            resolution_source: announcement.metadata.resolution_source,
+            oracle_pubkey: bytes_to_hex(&params.oracle_public_key),
+            expiry_height: params.expiry_time,
+            cpt_sats: params.collateral_per_token,
+            collateral_asset_id: bytes_to_hex(&params.collateral_asset_id),
+            yes_asset_id: bytes_to_hex(&params.yes_token_asset),
+            no_asset_id: bytes_to_hex(&params.no_token_asset),
+            yes_reissuance_token: bytes_to_hex(&params.yes_reissuance_token),
+            no_reissuance_token: bytes_to_hex(&params.no_reissuance_token),
+            creator_pubkey: event.pubkey.to_hex(),
+            created_at: event.created_at.as_u64(),
+            anchor,
+            state: 0, // Default Dormant for discovered markets
+            nostr_event_json: serde_json::to_string(event).ok(),
+            yes_price_bps: None,
+            no_price_bps: None,
+        },
+        ingest: PredictionMarketCandidateIngestInput {
+            params: *params,
+            metadata,
+            creation_tx: raw_tx,
+        },
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PredictionMarketParams;
-    use crate::announcement::ContractMetadata;
-
-    fn test_metadata() -> ContractMetadata {
-        ContractMetadata {
-            question: "Will BTC hit 100k?".to_string(),
-            description: "Resolves via exchange data.".to_string(),
-            category: "Bitcoin".to_string(),
-            resolution_source: "Exchange basket".to_string(),
-        }
-    }
-
-    fn test_params() -> PredictionMarketParams {
-        PredictionMarketParams {
-            oracle_public_key: [0xaa; 32],
-            collateral_asset_id: [0xbb; 32],
-            yes_token_asset: [0x01; 32],
-            no_token_asset: [0x02; 32],
-            yes_reissuance_token: [0x03; 32],
-            no_reissuance_token: [0x04; 32],
-            collateral_per_token: 5000,
-            expiry_time: 3_650_000,
-        }
-    }
+    use crate::testing::test_market_announcement;
 
     #[test]
     fn contract_announcement_serde_roundtrip() {
-        let announcement = ContractAnnouncement {
-            version: CONTRACT_ANNOUNCEMENT_VERSION,
-            contract_params: test_params(),
-            metadata: test_metadata(),
-            creation_txid: Some("abc123".to_string()),
-        };
+        let (announcement, _params) = test_market_announcement([0xaa; 32], 0x11);
 
         let json = serde_json::to_string(&announcement).unwrap();
         let parsed: ContractAnnouncement = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.version, CONTRACT_ANNOUNCEMENT_VERSION);
         assert_eq!(parsed.contract_params, announcement.contract_params);
-        assert_eq!(parsed.metadata.question, "Will BTC hit 100k?");
-        assert_eq!(parsed.creation_txid, Some("abc123".to_string()));
+        assert_eq!(
+            parsed.metadata.question,
+            "Will BTC close above $120k by Dec 2026?"
+        );
+        assert_eq!(
+            parsed.anchor.creation_txid,
+            announcement.anchor.creation_txid
+        );
+        assert_eq!(parsed.creation_tx_hex, announcement.creation_tx_hex);
     }
 
     #[test]
@@ -197,31 +240,25 @@ mod tests {
     #[test]
     fn build_and_parse_announcement_event() {
         let keys = Keys::generate();
-        let announcement = ContractAnnouncement {
-            version: CONTRACT_ANNOUNCEMENT_VERSION,
-            contract_params: test_params(),
-            metadata: test_metadata(),
-            creation_txid: None,
-        };
+        let (announcement, _params) = test_market_announcement([0xaa; 32], 0x12);
 
         let event = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
         let market = parse_announcement_event(&event, "liquid-testnet").unwrap();
 
-        assert_eq!(market.question, "Will BTC hit 100k?");
+        assert_eq!(market.question, "Will BTC close above $120k by Dec 2026?");
         assert_eq!(market.cpt_sats, 5000);
         assert_eq!(market.expiry_height, 3_650_000);
         assert_eq!(market.creator_pubkey, keys.public_key().to_hex());
+        assert_eq!(
+            market.anchor.creation_txid,
+            announcement.anchor.creation_txid
+        );
     }
 
     #[test]
     fn parse_announcement_event_rejects_network_mismatch() {
         let keys = Keys::generate();
-        let announcement = ContractAnnouncement {
-            version: 1,
-            contract_params: test_params(),
-            metadata: test_metadata(),
-            creation_txid: None,
-        };
+        let (announcement, _params) = test_market_announcement([0xaa; 32], 0x13);
 
         let event = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
         let err = parse_announcement_event(&event, "liquid-regtest").unwrap_err();
@@ -229,5 +266,74 @@ mod tests {
             err.contains("unsupported network tag for contract announcement event"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn build_announcement_event_rejects_invalid_anchor() {
+        let keys = Keys::generate();
+        let (mut announcement, _params) = test_market_announcement([0xaa; 32], 0x14);
+        announcement.anchor.creation_txid = "not-a-txid".to_string();
+
+        let err = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        assert!(err.contains("invalid creation_txid"));
+    }
+
+    #[test]
+    fn build_announcement_event_rejects_invalid_yes_opening() {
+        let keys = Keys::generate();
+        let (mut announcement, _params) = test_market_announcement([0xaa; 32], 0x16);
+        announcement
+            .anchor
+            .yes_dormant_opening
+            .asset_blinding_factor = "not-hex".to_string();
+
+        let err = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        assert!(err.contains("yes_dormant_opening.asset_blinding_factor"));
+    }
+
+    #[test]
+    fn parse_announcement_event_rejects_invalid_anchor() {
+        let keys = Keys::generate();
+        let (mut announcement, _params) = test_market_announcement([0xaa; 32], 0x15);
+        announcement.anchor.creation_txid = "zz".repeat(32);
+
+        let content = serde_json::to_string(&announcement).unwrap();
+        let event = EventBuilder::new(APP_EVENT_KIND, &content)
+            .tags(vec![
+                Tag::identifier("deadbeef"),
+                Tag::hashtag(CONTRACT_TAG),
+                Tag::custom(
+                    TagKind::custom("network"),
+                    vec!["liquid-testnet".to_string()],
+                ),
+            ])
+            .sign_with_keys(&keys)
+            .unwrap();
+
+        let err = parse_announcement_event(&event, "liquid-testnet").unwrap_err();
+        assert!(err.contains("invalid creation_txid"));
+    }
+
+    #[test]
+    fn parse_announcement_event_rejects_invalid_no_opening() {
+        let keys = Keys::generate();
+        let (mut announcement, _params) = test_market_announcement([0xaa; 32], 0x17);
+        announcement.anchor.no_dormant_opening.value_blinding_factor = "FF".repeat(32);
+
+        let content = serde_json::to_string(&announcement).unwrap();
+        let event = EventBuilder::new(APP_EVENT_KIND, &content)
+            .tags(vec![
+                Tag::identifier("deadbeef"),
+                Tag::hashtag(CONTRACT_TAG),
+                Tag::custom(
+                    TagKind::custom("network"),
+                    vec!["liquid-testnet".to_string()],
+                ),
+            ])
+            .sign_with_keys(&keys)
+            .unwrap();
+
+        let err = parse_announcement_event(&event, "liquid-testnet").unwrap_err();
+        assert!(err.contains("no_dormant_opening.value_blinding_factor"));
     }
 }

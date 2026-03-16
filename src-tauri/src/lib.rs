@@ -8,6 +8,7 @@ mod wallet_store;
 
 use std::sync::Mutex;
 
+use deadcat_sdk::elements::hashes::Hash as _;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -389,6 +390,30 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
             let electrum_url = sdk_network.default_electrum_url();
             let chain = chain_adapter::ElectrumChainAdapter::new(electrum_url);
             if let Ok(mut store) = store_arc.lock() {
+                let now_unix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                if let Ok(candidates) = store.list_unpromoted_prediction_market_candidates() {
+                    for candidate in candidates {
+                        let Ok(txid) = deadcat_sdk::parse_market_creation_txid(
+                            &candidate.anchor.creation_txid,
+                        ) else {
+                            continue;
+                        };
+                        if let Ok(Some((height, block_hash))) =
+                            chain.irreversible_confirmation(txid.as_byte_array())
+                        {
+                            let _ = store.promote_prediction_market_candidate(
+                                candidate.candidate_id,
+                                now_unix,
+                                height,
+                                block_hash,
+                            );
+                        }
+                    }
+                    let _ = store.purge_expired_prediction_market_candidates(now_unix);
+                }
                 let _ = store.sync(&chain);
             }
         }
