@@ -9,6 +9,7 @@ mod wallet_store;
 use std::sync::Mutex;
 
 use deadcat_sdk::elements::hashes::Hash as _;
+use deadcat_store::ChainSource;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -406,14 +407,16 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
             } else {
                 Vec::new()
             };
+            let best_height = chain.best_block_height().ok();
             let confirmed_candidates: Vec<_> = candidates
                 .into_iter()
                 .filter_map(|candidate| {
+                    let best_height = best_height?;
                     let txid =
                         deadcat_sdk::parse_market_creation_txid(&candidate.anchor.creation_txid)
                             .ok()?;
                     let (height, block_hash) = chain
-                        .irreversible_confirmation(txid.as_byte_array())
+                        .irreversible_confirmation_at(best_height, txid.as_byte_array())
                         .ok()
                         .flatten()?;
                     Some((candidate.candidate_id, height, block_hash))

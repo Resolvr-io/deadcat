@@ -37,8 +37,18 @@ impl ElectrumChainAdapter {
 
     /// Return `(confirmed_height, block_hash)` once a transaction is
     /// irreversible under the app's no-reorg policy.
+    #[allow(dead_code)]
     pub fn irreversible_confirmation(
         &self,
+        txid: &[u8; 32],
+    ) -> Result<Option<(u32, [u8; 32])>, ChainAdapterError> {
+        let best_height = self.best_block_height()?;
+        self.irreversible_confirmation_at(best_height, txid)
+    }
+
+    pub fn irreversible_confirmation_at(
+        &self,
+        best_height: u32,
         txid: &[u8; 32],
     ) -> Result<Option<(u32, [u8; 32])>, ChainAdapterError> {
         use electrum_client::ElectrumApi;
@@ -65,12 +75,23 @@ impl ElectrumChainAdapter {
             .as_str()
             .ok_or_else(|| ChainAdapterError::Parse("missing blockhash".into()))?;
         let block_hash = hex_to_txid_bytes(block_hash_hex)?;
-        let best_height = self.best_block_height()?;
-        let confirmed_height = best_height
-            .checked_sub(confirmations.saturating_sub(1))
-            .ok_or_else(|| ChainAdapterError::Parse("invalid confirmation height".into()))?;
-        Ok(Some((confirmed_height, block_hash)))
+        confirmation_height_at(best_height, confirmations, block_hash)
     }
+}
+
+fn confirmation_height_at(
+    best_height: u32,
+    confirmations: u32,
+    block_hash: [u8; 32],
+) -> Result<Option<(u32, [u8; 32])>, ChainAdapterError> {
+    if confirmations < deadcat_store::LIQUID_IRREVERSIBLE_CONFIRMATIONS {
+        return Ok(None);
+    }
+
+    let confirmed_height = best_height
+        .checked_sub(confirmations.saturating_sub(1))
+        .ok_or_else(|| ChainAdapterError::Parse("invalid confirmation height".into()))?;
+    Ok(Some((confirmed_height, block_hash)))
 }
 
 impl ChainSource for ElectrumChainAdapter {
@@ -363,5 +384,47 @@ mod tests {
         let mut expected = Sha256::digest(spk).to_vec();
         expected.reverse();
         assert_eq!(hash_bytes, expected);
+    }
+
+    #[test]
+    fn irreversible_confirmation_at_accepts_irreversible_transaction() {
+        let block_hash = [0x11; 32];
+
+        let result = confirmation_height_at(
+            200,
+            deadcat_store::LIQUID_IRREVERSIBLE_CONFIRMATIONS,
+            block_hash,
+        )
+        .unwrap();
+
+        assert_eq!(
+            result,
+            Some((
+                200 - deadcat_store::LIQUID_IRREVERSIBLE_CONFIRMATIONS + 1,
+                block_hash
+            ))
+        );
+    }
+
+    #[test]
+    fn irreversible_confirmation_at_rejects_non_irreversible_transaction() {
+        let block_hash = [0x22; 32];
+
+        let result = confirmation_height_at(
+            200,
+            deadcat_store::LIQUID_IRREVERSIBLE_CONFIRMATIONS - 1,
+            block_hash,
+        )
+        .unwrap();
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn irreversible_confirmation_at_rejects_invalid_confirmation_height() {
+        let err = confirmation_height_at(1, 3, [0x33; 32]).unwrap_err();
+
+        assert!(matches!(err, ChainAdapterError::Parse(_)));
+        assert_eq!(err.to_string(), "parse error: invalid confirmation height");
     }
 }
