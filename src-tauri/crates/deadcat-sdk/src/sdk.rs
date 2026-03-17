@@ -2371,10 +2371,9 @@ impl DeadcatSdk {
     /// bootstrap described by the proof-carrying anchor.
     ///
     /// The anchor includes the creation txid plus dormant YES/NO output
-    /// openings. For explicit dormant outputs the validator checks exact RT
-    /// asset/value directly. For confidential dormant outputs it recomputes the
-    /// asset generator and value commitment from the published openings and
-    /// requires an exact commitment match.
+    /// openings. The validator recomputes the confidential asset generators and
+    /// value commitments from the published openings and requires an exact
+    /// match for both dormant outputs.
     pub(crate) fn validate_market_creation(
         &self,
         params: &PredictionMarketParams,
@@ -2591,6 +2590,7 @@ mod tests {
     use crate::prediction_market::anchor::PredictionMarketAnchor;
     use crate::prediction_market::state::MarketSlot;
     use crate::prediction_market_scan::validate_prediction_market_creation_tx;
+    use crate::testing::confidential_dormant_creation_txout;
     use lwk_wollet::Chain;
     use lwk_wollet::elements::bitcoin::hashes::Hash;
     use lwk_wollet::elements::confidential::{AssetBlindingFactor, ValueBlindingFactor};
@@ -2832,6 +2832,10 @@ mod tests {
         }
     }
 
+    fn valid_creation_openings() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
+        ([0x21; 32], [0x31; 32], [0x41; 32], [0x51; 32])
+    }
+
     fn valid_creation_tx(params: &PredictionMarketParams) -> Transaction {
         use lwk_wollet::elements::confidential;
         use lwk_wollet::elements::{LockTime, TxOut, TxOutWitness};
@@ -2839,9 +2843,8 @@ mod tests {
         let compiled = CompiledPredictionMarket::new(*params).unwrap();
         let dormant_yes_spk = compiled.script_pubkey(MarketSlot::DormantYesRt);
         let dormant_no_spk = compiled.script_pubkey(MarketSlot::DormantNoRt);
-        let yes_rt_asset = AssetId::from_slice(&params.yes_reissuance_token).unwrap();
-        let no_rt_asset = AssetId::from_slice(&params.no_reissuance_token).unwrap();
         let collateral_asset = AssetId::from_slice(&params.collateral_asset_id).unwrap();
+        let (yes_abf, yes_vbf, no_abf, no_vbf) = valid_creation_openings();
 
         Transaction {
             version: 2,
@@ -2852,20 +2855,18 @@ mod tests {
                 creation_plain_input(OutPoint::new(Txid::from_byte_array([0xA3; 32]), 2)),
             ],
             output: vec![
-                TxOut {
-                    asset: confidential::Asset::Explicit(yes_rt_asset),
-                    value: confidential::Value::Explicit(1),
-                    nonce: confidential::Nonce::Null,
-                    script_pubkey: dormant_yes_spk,
-                    witness: TxOutWitness::default(),
-                },
-                TxOut {
-                    asset: confidential::Asset::Explicit(no_rt_asset),
-                    value: confidential::Value::Explicit(1),
-                    nonce: confidential::Nonce::Null,
-                    script_pubkey: dormant_no_spk,
-                    witness: TxOutWitness::default(),
-                },
+                confidential_dormant_creation_txout(
+                    &params.yes_reissuance_token,
+                    &yes_abf,
+                    &yes_vbf,
+                    &dormant_yes_spk,
+                ),
+                confidential_dormant_creation_txout(
+                    &params.no_reissuance_token,
+                    &no_abf,
+                    &no_vbf,
+                    &dormant_no_spk,
+                ),
                 TxOut {
                     asset: confidential::Asset::Explicit(collateral_asset),
                     value: confidential::Value::Explicit(50_000),
@@ -2877,13 +2878,31 @@ mod tests {
         }
     }
 
+    fn explicit_creation_tx(params: &PredictionMarketParams) -> Transaction {
+        use lwk_wollet::elements::confidential;
+
+        let mut tx = valid_creation_tx(params);
+        tx.output[0].asset = confidential::Asset::Explicit(
+            AssetId::from_slice(&params.yes_reissuance_token).unwrap(),
+        );
+        tx.output[0].value = confidential::Value::Explicit(1);
+        tx.output[0].nonce = confidential::Nonce::Null;
+        tx.output[1].asset = confidential::Asset::Explicit(
+            AssetId::from_slice(&params.no_reissuance_token).unwrap(),
+        );
+        tx.output[1].value = confidential::Value::Explicit(1);
+        tx.output[1].nonce = confidential::Nonce::Null;
+        tx
+    }
+
     fn valid_creation_anchor() -> PredictionMarketAnchor {
+        let (yes_abf, yes_vbf, no_abf, no_vbf) = valid_creation_openings();
         PredictionMarketAnchor::from_openings(
             Txid::from_byte_array([0xD1; 32]),
-            [0x21; 32],
-            [0x31; 32],
-            [0x41; 32],
-            [0x51; 32],
+            yes_abf,
+            yes_vbf,
+            no_abf,
+            no_vbf,
         )
     }
 
@@ -2903,6 +2922,15 @@ mod tests {
         let params = creation_test_params();
         let mut tx = valid_creation_tx(&params);
         tx.output[0].value = confidential::Value::Explicit(2);
+        let anchor = valid_creation_anchor();
+
+        assert!(!validate_prediction_market_creation_tx(&params, &tx, &anchor).unwrap());
+    }
+
+    #[test]
+    fn validate_market_creation_tx_rejects_explicit_dormant_outputs() {
+        let params = creation_test_params();
+        let tx = explicit_creation_tx(&params);
         let anchor = valid_creation_anchor();
 
         assert!(!validate_prediction_market_creation_tx(&params, &tx, &anchor).unwrap());
@@ -2992,33 +3020,9 @@ mod tests {
 
     #[test]
     fn validate_market_creation_tx_accepts_blinded_dormant_output_with_matching_opening() {
-        use lwk_wollet::elements::confidential;
-        use lwk_wollet::elements::secp256k1_zkp::{
-            Generator, PedersenCommitment, Secp256k1, Tag, Tweak,
-        };
-
         let params = creation_test_params();
-        let mut tx = valid_creation_tx(&params);
+        let tx = valid_creation_tx(&params);
         let anchor = valid_creation_anchor();
-        let expected_yes_asset = AssetId::from_slice(&params.yes_reissuance_token).unwrap();
-        let secp = Secp256k1::new();
-        let generator = Generator::new_blinded(
-            &secp,
-            Tag::from(expected_yes_asset.into_inner().to_byte_array()),
-            Tweak::from_slice(&[0x21; 32]).unwrap(),
-        );
-        let commitment =
-            PedersenCommitment::new(&secp, 1, Tweak::from_slice(&[0x31; 32]).unwrap(), generator);
-        tx.output[0].asset = confidential::Asset::Confidential(generator);
-        tx.output[0].value = confidential::Value::Confidential(commitment);
-        tx.output[0].nonce = confidential::Nonce::Confidential(
-            lwk_wollet::elements::secp256k1_zkp::PublicKey::from_slice(&[
-                0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce,
-                0x87, 0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81,
-                0x5b, 0x16, 0xf8, 0x17, 0x98,
-            ])
-            .unwrap(),
-        );
 
         assert!(validate_prediction_market_creation_tx(&params, &tx, &anchor).unwrap());
     }

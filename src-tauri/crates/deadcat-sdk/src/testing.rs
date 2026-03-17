@@ -94,6 +94,37 @@ pub fn confidential_rt_txout(
     }
 }
 
+/// Build a dormant creation TxOut with confidential commitments and a
+/// non-null nonce so it is valid for proof-carrying market bootstrap
+/// validation.
+pub fn confidential_dormant_creation_txout(
+    asset_bytes: &[u8; 32],
+    abf: &[u8; 32],
+    vbf: &[u8; 32],
+    spk: &Script,
+) -> TxOut {
+    let secp = Secp256k1::new();
+    let tag = Tag::from(*asset_bytes);
+    let abf_tweak = Tweak::from_slice(abf).expect("valid ABF");
+    let vbf_tweak = Tweak::from_slice(vbf).expect("valid VBF");
+    let generator = Generator::new_blinded(&secp, tag, abf_tweak);
+    let commitment = PedersenCommitment::new(&secp, 1, vbf_tweak, generator);
+    let nonce = PublicKey::from_slice(&[
+        0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87,
+        0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16,
+        0xf8, 0x17, 0x98,
+    ])
+    .expect("valid confidential nonce pubkey");
+
+    TxOut {
+        asset: Asset::Confidential(generator),
+        value: ConfValue::Confidential(commitment),
+        nonce: Nonce::Confidential(nonce),
+        script_pubkey: spk.clone(),
+        witness: TxOutWitness::default(),
+    }
+}
+
 /// Build a TxIn with asset issuance set (explicit amount = `pairs`).
 pub fn issuance_txin(outpoint: OutPoint, pairs: u64) -> TxIn {
     TxIn {
@@ -749,6 +780,10 @@ pub fn test_discovery_market_params(oracle_pubkey: [u8; 32], tag: u8) -> Predict
 
 pub fn test_discovery_creation_tx(params: &PredictionMarketParams, tag: u8) -> Transaction {
     let contract = CompiledPredictionMarket::new(*params).unwrap();
+    let yes_abf = [tag.wrapping_add(0x10); 32];
+    let yes_vbf = [tag.wrapping_add(0x20); 32];
+    let no_abf = [tag.wrapping_add(0x30); 32];
+    let no_vbf = [tag.wrapping_add(0x40); 32];
     let inputs = vec![
         TxIn {
             previous_output: OutPoint::new(Txid::from_byte_array([tag; 32]), 0),
@@ -783,14 +818,16 @@ pub fn test_discovery_creation_tx(params: &PredictionMarketParams, tag: u8) -> T
         lock_time: LockTime::ZERO,
         input: inputs,
         output: vec![
-            explicit_txout(
+            confidential_dormant_creation_txout(
                 &params.yes_reissuance_token,
-                1,
+                &yes_abf,
+                &yes_vbf,
                 &contract.script_pubkey(MarketSlot::DormantYesRt),
             ),
-            explicit_txout(
+            confidential_dormant_creation_txout(
                 &params.no_reissuance_token,
-                1,
+                &no_abf,
+                &no_vbf,
                 &contract.script_pubkey(MarketSlot::DormantNoRt),
             ),
         ],

@@ -8,7 +8,9 @@ use deadcat_sdk::{
 };
 use elements::confidential::{Asset, Nonce, Value};
 use elements::hashes::Hash as _;
-use elements::secp256k1_zkp::ZERO_TWEAK;
+use elements::secp256k1_zkp::{
+    Generator, PedersenCommitment, PublicKey, Secp256k1, Tag, Tweak, ZERO_TWEAK,
+};
 use elements::{
     AssetId, AssetIssuance, ContractHash, LockTime, OutPoint, Script, Sequence, Transaction, TxIn,
     TxInWitness, TxOut, TxOutWitness, Txid,
@@ -25,11 +27,35 @@ fn oracle_pubkey_from_keys(keys: &Keys) -> [u8; 32] {
     <[u8; 32]>::try_from(b.as_slice()).unwrap()
 }
 
-fn explicit_txout(asset_bytes: &[u8; 32], amount: u64, spk: &Script) -> TxOut {
+fn confidential_dormant_creation_txout(
+    asset_bytes: &[u8; 32],
+    abf: &[u8; 32],
+    vbf: &[u8; 32],
+    spk: &Script,
+) -> TxOut {
+    let secp = Secp256k1::new();
+    let generator = Generator::new_blinded(
+        &secp,
+        Tag::from(*asset_bytes),
+        Tweak::from_slice(abf).expect("valid ABF"),
+    );
+    let commitment = PedersenCommitment::new(
+        &secp,
+        1,
+        Tweak::from_slice(vbf).expect("valid VBF"),
+        generator,
+    );
+    let nonce = PublicKey::from_slice(&[
+        0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87,
+        0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16,
+        0xf8, 0x17, 0x98,
+    ])
+    .expect("valid confidential nonce pubkey");
+
     TxOut {
-        asset: Asset::Explicit(AssetId::from_slice(asset_bytes).expect("valid asset")),
-        value: Value::Explicit(amount),
-        nonce: Nonce::Null,
+        asset: Asset::Confidential(generator),
+        value: Value::Confidential(commitment),
+        nonce: Nonce::Confidential(nonce),
         script_pubkey: spk.clone(),
         witness: TxOutWitness::default(),
     }
@@ -63,6 +89,10 @@ fn test_market_announcement(
         expiry_time: 3_650_000,
     };
     let contract = CompiledPredictionMarket::new(params).unwrap();
+    let yes_abf = [tag.wrapping_add(0x10); 32];
+    let yes_vbf = [tag.wrapping_add(0x20); 32];
+    let no_abf = [tag.wrapping_add(0x30); 32];
+    let no_vbf = [tag.wrapping_add(0x40); 32];
     let tx = Transaction {
         version: 2,
         lock_time: LockTime::ZERO,
@@ -95,14 +125,16 @@ fn test_market_announcement(
             },
         ],
         output: vec![
-            explicit_txout(
+            confidential_dormant_creation_txout(
                 &params.yes_reissuance_token,
-                1,
+                &yes_abf,
+                &yes_vbf,
                 &contract.script_pubkey(MarketSlot::DormantYesRt),
             ),
-            explicit_txout(
+            confidential_dormant_creation_txout(
                 &params.no_reissuance_token,
-                1,
+                &no_abf,
+                &no_vbf,
                 &contract.script_pubkey(MarketSlot::DormantNoRt),
             ),
         ],

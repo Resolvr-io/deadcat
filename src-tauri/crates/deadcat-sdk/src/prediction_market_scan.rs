@@ -58,22 +58,6 @@ fn is_canonical_creation_input(txin: &elements::TxIn, expected_token: AssetId) -
     AssetId::reissuance_token_from_entropy(entropy, false) == expected_token
 }
 
-fn matches_dormant_creation_output(
-    txout: &TxOut,
-    expected_script: &Script,
-    expected_asset: AssetId,
-) -> bool {
-    if txout.script_pubkey != *expected_script {
-        return false;
-    }
-
-    matches!(
-        (&txout.asset, &txout.value, &txout.nonce),
-        (Asset::Explicit(asset), Value::Explicit(1), elements::confidential::Nonce::Null)
-            if *asset == expected_asset
-    )
-}
-
 fn matches_confidential_dormant_creation_output(
     txout: &TxOut,
     expected_script: &Script,
@@ -162,23 +146,19 @@ pub fn validate_prediction_market_creation_tx(
         return Ok(false);
     }
 
-    if !(matches_dormant_creation_output(dormant_yes_output, &dormant_yes_spk, expected_yes)
-        || matches_confidential_dormant_creation_output(
-            dormant_yes_output,
-            &dormant_yes_spk,
-            expected_yes,
-            parsed_anchor.yes_dormant_opening.asset_blinding_factor,
-            parsed_anchor.yes_dormant_opening.value_blinding_factor,
-        )?)
-        || !(matches_dormant_creation_output(dormant_no_output, &dormant_no_spk, expected_no)
-            || matches_confidential_dormant_creation_output(
-                dormant_no_output,
-                &dormant_no_spk,
-                expected_no,
-                parsed_anchor.no_dormant_opening.asset_blinding_factor,
-                parsed_anchor.no_dormant_opening.value_blinding_factor,
-            )?)
-    {
+    if !matches_confidential_dormant_creation_output(
+        dormant_yes_output,
+        &dormant_yes_spk,
+        expected_yes,
+        parsed_anchor.yes_dormant_opening.asset_blinding_factor,
+        parsed_anchor.yes_dormant_opening.value_blinding_factor,
+    )? || !matches_confidential_dormant_creation_output(
+        dormant_no_output,
+        &dormant_no_spk,
+        expected_no,
+        parsed_anchor.no_dormant_opening.asset_blinding_factor,
+        parsed_anchor.no_dormant_opening.value_blinding_factor,
+    )? {
         return Ok(false);
     }
 

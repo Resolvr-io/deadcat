@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use deadcat_sdk::elements::confidential::{Asset, Nonce, Value as ConfValue};
 use deadcat_sdk::elements::encode::serialize;
 use deadcat_sdk::elements::hashes::Hash;
-use deadcat_sdk::elements::secp256k1_zkp::ZERO_TWEAK;
+use deadcat_sdk::elements::secp256k1_zkp::{
+    Generator, PedersenCommitment, PublicKey, Secp256k1, Tag, Tweak, ZERO_TWEAK,
+};
 use deadcat_sdk::elements::{
     AssetId, AssetIssuance, ContractHash, LockTime, OutPoint, Script, Sequence, Transaction, TxIn,
     TxInWitness, TxOut, TxOutWitness, Txid,
@@ -145,6 +147,36 @@ fn build_canonical_creation_tx(
     params: &PredictionMarketParams,
     specs: [CreationInputSpec; 2],
 ) -> Transaction {
+    build_canonical_creation_tx_with_openings(
+        params, specs, [0x11; 32], [0x12; 32], [0x21; 32], [0x22; 32],
+    )
+}
+
+fn build_canonical_creation_tx_with_anchor(
+    params: &PredictionMarketParams,
+    specs: [CreationInputSpec; 2],
+    anchor: &PredictionMarketAnchor,
+) -> Transaction {
+    let parsed_anchor =
+        deadcat_sdk::parse_prediction_market_anchor(anchor).expect("valid test anchor");
+    build_canonical_creation_tx_with_openings(
+        params,
+        specs,
+        parsed_anchor.yes_dormant_opening.asset_blinding_factor,
+        parsed_anchor.yes_dormant_opening.value_blinding_factor,
+        parsed_anchor.no_dormant_opening.asset_blinding_factor,
+        parsed_anchor.no_dormant_opening.value_blinding_factor,
+    )
+}
+
+fn build_canonical_creation_tx_with_openings(
+    params: &PredictionMarketParams,
+    specs: [CreationInputSpec; 2],
+    yes_abf: [u8; 32],
+    yes_vbf: [u8; 32],
+    no_abf: [u8; 32],
+    no_vbf: [u8; 32],
+) -> Transaction {
     let inputs = specs
         .into_iter()
         .map(|spec| deadcat_sdk::elements::TxIn {
@@ -170,14 +202,16 @@ fn build_canonical_creation_tx(
         lock_time: LockTime::ZERO,
         input: inputs,
         output: vec![
-            explicit_txout(
+            confidential_dormant_creation_txout(
                 &params.yes_reissuance_token,
-                1,
+                &yes_abf,
+                &yes_vbf,
                 &get_market_script(params, MarketSlot::DormantYesRt),
             ),
-            explicit_txout(
+            confidential_dormant_creation_txout(
                 &params.no_reissuance_token,
-                1,
+                &no_abf,
+                &no_vbf,
                 &get_market_script(params, MarketSlot::DormantNoRt),
             ),
         ],
@@ -329,7 +363,7 @@ fn candidate_input(
     metadata: ContractMetadataInput,
 ) -> PredictionMarketCandidateIngestInput {
     let specs = creation_specs_for_params(params).expect("test params must map to creation specs");
-    let creation_tx = build_canonical_creation_tx(params, specs);
+    let creation_tx = build_canonical_creation_tx_with_anchor(params, specs, &metadata.anchor);
     candidate_input_with_creation_tx(params, metadata, &creation_tx)
 }
 
@@ -352,6 +386,21 @@ fn ingest_candidate(
     seen_at: u64,
 ) -> i32 {
     let input = candidate_input(params, metadata);
+    store
+        .ingest_prediction_market_candidate(&input, seen_at)
+        .unwrap()
+}
+
+fn ingest_candidate_with_matching_creation_tx(
+    store: &mut DeadcatStore,
+    params: &PredictionMarketParams,
+    mut metadata: ContractMetadataInput,
+    seen_at: u64,
+) -> i32 {
+    let specs = creation_specs_for_params(params).expect("test params must map to creation specs");
+    let creation_tx = build_canonical_creation_tx_with_anchor(params, specs, &metadata.anchor);
+    metadata.anchor.creation_txid = creation_tx.txid().to_string();
+    let input = candidate_input_with_creation_tx(params, metadata, &creation_tx);
     store
         .ingest_prediction_market_candidate(&input, seen_at)
         .unwrap()
@@ -425,6 +474,40 @@ fn explicit_txout(asset_id: &[u8; 32], amount: u64, script_pubkey: &Script) -> T
         asset: Asset::Explicit(AssetId::from_slice(asset_id).expect("valid asset id")),
         value: ConfValue::Explicit(amount),
         nonce: Nonce::Null,
+        script_pubkey: script_pubkey.clone(),
+        witness: TxOutWitness::default(),
+    }
+}
+
+fn confidential_dormant_creation_txout(
+    asset_id: &[u8; 32],
+    abf: &[u8; 32],
+    vbf: &[u8; 32],
+    script_pubkey: &Script,
+) -> TxOut {
+    let secp = Secp256k1::new();
+    let generator = Generator::new_blinded(
+        &secp,
+        Tag::from(*asset_id),
+        Tweak::from_slice(abf).expect("valid ABF"),
+    );
+    let commitment = PedersenCommitment::new(
+        &secp,
+        1,
+        Tweak::from_slice(vbf).expect("valid VBF"),
+        generator,
+    );
+    let nonce = PublicKey::from_slice(&[
+        0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87,
+        0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16,
+        0xf8, 0x17, 0x98,
+    ])
+    .expect("valid confidential nonce pubkey");
+
+    TxOut {
+        asset: Asset::Confidential(generator),
+        value: ConfValue::Confidential(commitment),
+        nonce: Nonce::Confidential(nonce),
         script_pubkey: script_pubkey.clone(),
         witness: TxOutWitness::default(),
     }
@@ -2865,8 +2948,12 @@ fn test_conflicting_candidate_same_market_id_creates_second_row() {
     metadata_2.anchor.yes_dormant_opening.value_blinding_factor = "33".repeat(32);
 
     let candidate_id_1 = ingest_candidate(&mut store, &params, metadata_1, TEST_CANDIDATE_SEEN_AT);
-    let candidate_id_2 =
-        ingest_candidate(&mut store, &params, metadata_2, TEST_CANDIDATE_SEEN_AT + 1);
+    let candidate_id_2 = ingest_candidate_with_matching_creation_tx(
+        &mut store,
+        &params,
+        metadata_2,
+        TEST_CANDIDATE_SEEN_AT + 1,
+    );
 
     assert_ne!(candidate_id_1, candidate_id_2);
     let listed = store
@@ -2934,8 +3021,12 @@ fn test_candidate_promotion_creates_canonical_market_and_deletes_siblings() {
         metadata_1.clone(),
         TEST_CANDIDATE_SEEN_AT,
     );
-    let _candidate_id_2 =
-        ingest_candidate(&mut store, &params, metadata_2, TEST_CANDIDATE_SEEN_AT + 1);
+    let _candidate_id_2 = ingest_candidate_with_matching_creation_tx(
+        &mut store,
+        &params,
+        metadata_2,
+        TEST_CANDIDATE_SEEN_AT + 1,
+    );
 
     promote_candidate(&mut store, candidate_id_1);
 
@@ -2960,8 +3051,12 @@ fn test_promoting_second_candidate_after_canonicalization_is_rejected() {
     let candidate_id_1 = ingest_candidate(&mut store, &params, metadata_1, TEST_CANDIDATE_SEEN_AT);
     promote_candidate(&mut store, candidate_id_1);
 
-    let candidate_id_2 =
-        ingest_candidate(&mut store, &params, metadata_2, TEST_CANDIDATE_SEEN_AT + 1);
+    let candidate_id_2 = ingest_candidate_with_matching_creation_tx(
+        &mut store,
+        &params,
+        metadata_2,
+        TEST_CANDIDATE_SEEN_AT + 1,
+    );
     let err = store
         .promote_prediction_market_candidate(candidate_id_2, TEST_PROMOTED_AT + 1, 3, [0x99; 32])
         .unwrap_err()

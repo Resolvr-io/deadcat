@@ -209,7 +209,30 @@ pub(crate) fn parse_announcement_event_with_ingest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::elements::confidential::{Asset, Nonce, Value};
+    use crate::elements::{AssetId, Transaction};
     use crate::testing::test_market_announcement;
+
+    fn explicit_bootstrap_announcement(tag: u8) -> ContractAnnouncement {
+        let (mut announcement, _params) = test_market_announcement([0xaa; 32], tag);
+        let raw_tx = hex::decode(&announcement.creation_tx_hex).unwrap();
+        let mut tx: Transaction = crate::elements::encode::deserialize(&raw_tx).unwrap();
+
+        tx.output[0].asset = Asset::Explicit(
+            AssetId::from_slice(&announcement.contract_params.yes_reissuance_token).unwrap(),
+        );
+        tx.output[0].value = Value::Explicit(1);
+        tx.output[0].nonce = Nonce::Null;
+        tx.output[1].asset = Asset::Explicit(
+            AssetId::from_slice(&announcement.contract_params.no_reissuance_token).unwrap(),
+        );
+        tx.output[1].value = Value::Explicit(1);
+        tx.output[1].nonce = Nonce::Null;
+
+        announcement.anchor.creation_txid = tx.txid().to_string();
+        announcement.creation_tx_hex = hex::encode(crate::elements::encode::serialize(&tx));
+        announcement
+    }
 
     #[test]
     fn contract_announcement_serde_roundtrip() {
@@ -292,6 +315,15 @@ mod tests {
     }
 
     #[test]
+    fn build_announcement_event_rejects_explicit_dormant_outputs() {
+        let keys = Keys::generate();
+        let announcement = explicit_bootstrap_announcement(0x18);
+
+        let err = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        assert!(err.contains("canonical prediction-market creation bootstrap"));
+    }
+
+    #[test]
     fn parse_announcement_event_rejects_invalid_anchor() {
         let keys = Keys::generate();
         let (mut announcement, _params) = test_market_announcement([0xaa; 32], 0x15);
@@ -335,5 +367,27 @@ mod tests {
 
         let err = parse_announcement_event(&event, "liquid-testnet").unwrap_err();
         assert!(err.contains("no_dormant_opening.value_blinding_factor"));
+    }
+
+    #[test]
+    fn parse_announcement_event_rejects_explicit_dormant_outputs() {
+        let keys = Keys::generate();
+        let announcement = explicit_bootstrap_announcement(0x19);
+
+        let content = serde_json::to_string(&announcement).unwrap();
+        let event = EventBuilder::new(APP_EVENT_KIND, &content)
+            .tags(vec![
+                Tag::identifier("deadbeef"),
+                Tag::hashtag(CONTRACT_TAG),
+                Tag::custom(
+                    TagKind::custom("network"),
+                    vec!["liquid-testnet".to_string()],
+                ),
+            ])
+            .sign_with_keys(&keys)
+            .unwrap();
+
+        let err = parse_announcement_event(&event, "liquid-testnet").unwrap_err();
+        assert!(err.contains("canonical prediction-market creation bootstrap"));
     }
 }
