@@ -15,6 +15,13 @@ use crate::models::{
 };
 use crate::store::{IssuanceData, MakerOrderInfo, MarketCandidateInfo, MarketInfo, OrderStatus};
 
+pub struct DecodedDormantOpenings {
+    pub yes_abf: Vec<u8>,
+    pub yes_vbf: Vec<u8>,
+    pub no_abf: Vec<u8>,
+    pub no_vbf: Vec<u8>,
+}
+
 pub fn vec_to_array32(v: &[u8], field: &str) -> std::result::Result<[u8; 32], StoreError> {
     v.try_into().map_err(|_| {
         StoreError::InvalidData(format!("{field}: expected 32 bytes, got {}", v.len()))
@@ -203,6 +210,7 @@ pub fn market_info_from_rows(
 pub fn new_market_candidate_row(
     input: &PredictionMarketCandidateIngestInput,
     compiled: &CompiledPredictionMarket,
+    openings: DecodedDormantOpenings,
     first_seen_at: &str,
     expires_at: &str,
 ) -> NewMarketCandidateRow {
@@ -258,22 +266,10 @@ pub fn new_market_candidate_row(
         resolution_source: metadata.resolution_source.clone(),
         creator_pubkey: metadata.creator_pubkey.clone(),
         creation_txid: metadata.anchor.creation_txid.clone(),
-        yes_dormant_asset_blinding_factor: hex::decode(
-            &metadata.anchor.yes_dormant_opening.asset_blinding_factor,
-        )
-        .expect("validated yes_dormant_opening.asset_blinding_factor"),
-        yes_dormant_value_blinding_factor: hex::decode(
-            &metadata.anchor.yes_dormant_opening.value_blinding_factor,
-        )
-        .expect("validated yes_dormant_opening.value_blinding_factor"),
-        no_dormant_asset_blinding_factor: hex::decode(
-            &metadata.anchor.no_dormant_opening.asset_blinding_factor,
-        )
-        .expect("validated no_dormant_opening.asset_blinding_factor"),
-        no_dormant_value_blinding_factor: hex::decode(
-            &metadata.anchor.no_dormant_opening.value_blinding_factor,
-        )
-        .expect("validated no_dormant_opening.value_blinding_factor"),
+        yes_dormant_asset_blinding_factor: openings.yes_abf,
+        yes_dormant_value_blinding_factor: openings.yes_vbf,
+        no_dormant_asset_blinding_factor: openings.no_abf,
+        no_dormant_value_blinding_factor: openings.no_vbf,
         creation_tx: input.creation_tx.clone(),
         nevent: metadata.nevent.clone(),
         nostr_event_id: metadata.nostr_event_id.clone(),

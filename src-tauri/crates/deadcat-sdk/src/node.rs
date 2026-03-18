@@ -207,7 +207,8 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Create a market on-chain and announce it via Nostr.
     ///
     /// Returns the parsed `DiscoveredMarket` (with Nostr event data) and the
-    /// on-chain creation `Txid`.
+    /// Returns the discovered market announcement persisted for the newly
+    /// created on-chain market.
     ///
     /// **Non-atomic:** If the on-chain transaction succeeds but the Nostr
     /// announcement fails, the caller receives an error even though on-chain
@@ -245,7 +246,8 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                 }
             })
             .await?;
-        let creation_tx_hex = hex::encode(crate::elements::encode::serialize(&creation_tx));
+        let creation_tx_bytes = crate::elements::encode::serialize(&creation_tx);
+        let creation_tx_hex = hex::encode(&creation_tx_bytes);
 
         // 2. Build and publish Nostr announcement
         let announcement = ContractAnnouncement {
@@ -308,7 +310,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                     nostr_event_id: Some(market.id.clone()),
                     nostr_event_json: None,
                 },
-                creation_tx: hex::decode(creation_tx_hex).expect("hex-encoded creation tx"),
+                creation_tx: creation_tx_bytes,
             },
         };
 

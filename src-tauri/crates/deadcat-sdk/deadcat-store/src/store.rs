@@ -16,7 +16,8 @@ use deadcat_sdk::{
 };
 
 use crate::conversions::{
-    direction_to_i32, new_maker_order_row, new_market_candidate_row, new_utxo_row, vec_to_array32,
+    DecodedDormantOpenings, direction_to_i32, new_maker_order_row, new_market_candidate_row,
+    new_utxo_row, vec_to_array32,
 };
 use crate::error::StoreError;
 use crate::models::{MakerOrderRow, MarketCandidateRow, MarketRow, NewUtxoRow, UtxoRow};
@@ -317,7 +318,18 @@ impl DeadcatStore {
         }
 
         let compiled = CompiledPredictionMarket::new(input.params)?;
-        let row = new_market_candidate_row(&input, &compiled, &seen_at, &expires_at);
+        let row = new_market_candidate_row(
+            &input,
+            &compiled,
+            DecodedDormantOpenings {
+                yes_abf,
+                yes_vbf,
+                no_abf,
+                no_vbf,
+            },
+            &seen_at,
+            &expires_at,
+        );
 
         diesel::insert_into(market_candidates::table)
             .values(&row)
