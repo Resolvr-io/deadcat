@@ -38,6 +38,7 @@ export const APP_ACTION_LIST = [
   "nostr-replace-back",
   "import-nostr-nsec",
   "generate-new-nostr-key",
+  "load-demo-markets",
   "dev-restart",
   "dev-reset-start",
   "dev-reset-cancel",

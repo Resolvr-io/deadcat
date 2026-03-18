@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { MOCK_MARKETS } from "../mock-markets.ts";
 import {
   discoveredToMarket,
   executeTrade,
@@ -19,6 +20,7 @@ import {
   defaultSettlementInput,
   markets,
   SATS_PER_FULL_CONTRACT,
+  setMarkets,
   state,
 } from "../state.ts";
 import type {
@@ -715,6 +717,17 @@ export async function handleClick(
       }
       render();
     })();
+    return;
+  }
+
+  if (action === "load-demo-markets") {
+    setMarkets(MOCK_MARKETS);
+    state.marketsLoading = false;
+    state.settingsOpen = false;
+    state.view = "home";
+    state.activeCategory = "Trending";
+    render();
+    showToast("Loaded 20 demo markets", "success");
     return;
   }
 
