@@ -51,19 +51,11 @@ impl ElectrumChainAdapter {
         best_height: u32,
         txid: &[u8; 32],
     ) -> Result<Option<(u32, [u8; 32])>, ChainAdapterError> {
-        use electrum_client::ElectrumApi;
-
         let client = self.client()?;
         let txid_hex = txid_to_display_hex(txid);
-        let resp = match client.raw_call(
-            "blockchain.transaction.get",
-            [
-                electrum_client::Param::String(txid_hex),
-                electrum_client::Param::Bool(true),
-            ],
-        ) {
-            Ok(resp) => resp,
-            Err(_) => return Ok(None),
+        let resp = match transaction_get_response(&client, &txid_hex, true)? {
+            Some(resp) => resp,
+            None => return Ok(None),
         };
 
         let confirmations = resp["confirmations"].as_u64().unwrap_or(0) as u32;
@@ -92,6 +84,54 @@ fn confirmation_height_at(
         .checked_sub(confirmations.saturating_sub(1))
         .ok_or_else(|| ChainAdapterError::Parse("invalid confirmation height".into()))?;
     Ok(Some((confirmed_height, block_hash)))
+}
+
+fn transaction_get_response(
+    client: &electrum_client::Client,
+    txid_hex: &str,
+    verbose: bool,
+) -> Result<Option<serde_json::Value>, ChainAdapterError> {
+    use electrum_client::ElectrumApi;
+
+    let response = if verbose {
+        client.raw_call(
+            "blockchain.transaction.get",
+            [
+                electrum_client::Param::String(txid_hex.to_string()),
+                electrum_client::Param::Bool(true),
+            ],
+        )
+    } else {
+        client.raw_call(
+            "blockchain.transaction.get",
+            [electrum_client::Param::String(txid_hex.to_string())],
+        )
+    };
+
+    match response {
+        Ok(resp) => Ok(Some(resp)),
+        Err(err) if is_transaction_get_not_found_error(&err) => Ok(None),
+        Err(err) => Err(ChainAdapterError::Electrum(format!(
+            "blockchain.transaction.get({txid_hex}) failed: {err}"
+        ))),
+    }
+}
+
+fn is_transaction_get_not_found_error(err: &electrum_client::Error) -> bool {
+    let electrum_client::Error::Protocol(payload) = err else {
+        return false;
+    };
+
+    let code = payload.get("code").and_then(|value| value.as_i64());
+    let message = payload
+        .get("message")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    message.contains("no such mempool or blockchain transaction")
+        || message.contains("transaction not found")
+        || (matches!(code, Some(-5)) && message.contains("transaction"))
 }
 
 impl ChainSource for ElectrumChainAdapter {
@@ -278,30 +318,17 @@ impl ChainSource for ElectrumChainAdapter {
     }
 
     fn get_transaction(&self, txid: &[u8; 32]) -> Result<Option<Vec<u8>>, Self::Error> {
-        use electrum_client::ElectrumApi;
-
         let client = self.client()?;
-
         let txid_hex = txid_to_display_hex(txid);
-
-        let resp = client
-            .raw_call(
-                "blockchain.transaction.get",
-                [electrum_client::Param::String(txid_hex)],
-            )
-            .map_err(|e| ChainAdapterError::Electrum(e.to_string()));
-
-        match resp {
-            Ok(val) => {
-                let hex_str = val
-                    .as_str()
-                    .ok_or_else(|| ChainAdapterError::Parse("expected string response".into()))?;
-                let bytes = hex::decode(hex_str)
-                    .map_err(|e| ChainAdapterError::Parse(format!("hex decode: {e}")))?;
-                Ok(Some(bytes))
-            }
-            Err(_) => Ok(None),
-        }
+        let Some(resp) = transaction_get_response(&client, &txid_hex, false)? else {
+            return Ok(None);
+        };
+        let hex_str = resp
+            .as_str()
+            .ok_or_else(|| ChainAdapterError::Parse("expected string response".into()))?;
+        let bytes = hex::decode(hex_str)
+            .map_err(|e| ChainAdapterError::Parse(format!("hex decode: {e}")))?;
+        Ok(Some(bytes))
     }
 }
 
@@ -426,5 +453,35 @@ mod tests {
 
         assert!(matches!(err, ChainAdapterError::Parse(_)));
         assert_eq!(err.to_string(), "parse error: invalid confirmation height");
+    }
+
+    #[test]
+    fn transaction_get_not_found_classifier_accepts_protocol_not_found() {
+        let err = electrum_client::Error::Protocol(serde_json::json!({
+            "code": -5,
+            "message": "No such mempool or blockchain transaction"
+        }));
+
+        assert!(is_transaction_get_not_found_error(&err));
+    }
+
+    #[test]
+    fn transaction_get_not_found_classifier_rejects_unexpected_protocol_error() {
+        let err = electrum_client::Error::Protocol(serde_json::json!({
+            "code": -32603,
+            "message": "internal server error"
+        }));
+
+        assert!(!is_transaction_get_not_found_error(&err));
+    }
+
+    #[test]
+    fn transaction_get_not_found_classifier_rejects_transport_error() {
+        let err = electrum_client::Error::IOError(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "connection reset",
+        ));
+
+        assert!(!is_transaction_get_not_found_error(&err));
     }
 }
