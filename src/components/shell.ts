@@ -392,6 +392,7 @@ export function renderTopShell(): string {
                   "Dev",
                   `
             <div class="space-y-2">
+              <button data-action="load-demo-markets" class="w-full rounded-lg border border-emerald-700/40 px-4 py-2 text-xs text-emerald-400 hover:bg-emerald-900/20 transition">Load Demo Markets</button>
               <button data-action="dev-restart" class="w-full rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-400 hover:bg-slate-800 transition">Restart App</button>
               ${
                 state.devResetPrompt
