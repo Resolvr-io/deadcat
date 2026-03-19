@@ -15,12 +15,20 @@ export type WalletSnapshot = {
   swaps: PaymentSwap[];
 };
 
+export function btcLabel(): string {
+  return state.showLbtcLabel ? "L-BTC" : "BTC";
+}
+
+export function satsLabel(): string {
+  return state.showLbtcLabel ? "L-sats" : "sats";
+}
+
 export function formatLbtc(sats: number): string {
   if (state.walletUnit === "sats") {
-    return `${sats.toLocaleString()} L-sats`;
+    return `${sats.toLocaleString()} ${satsLabel()}`;
   }
   const btc = sats / 100_000_000;
-  return `${btc.toFixed(8)} L-BTC`;
+  return `${btc.toFixed(8)} ${btcLabel()}`;
 }
 
 export function formatCompactSats(sats: number): string {

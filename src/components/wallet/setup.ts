@@ -33,7 +33,7 @@ export function renderWalletSetup(params: {
     <div class="phi-container py-8">
       <div class="mx-auto max-w-lg space-y-6">
         <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet ${networkBadge}</h2>
-        <p class="text-sm text-slate-400">Set up a Liquid (L-BTC) wallet to participate in markets.</p>
+        <p class="text-sm text-slate-400">Set up a Liquid Bitcoin wallet to participate in markets.</p>
         ${errorHtml}
 
         ${

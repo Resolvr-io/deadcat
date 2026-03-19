@@ -183,7 +183,7 @@ export function renderOnboarding(): string {
     <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-8">
       ${stepIndicator}
       <h2 class="text-xl font-medium text-slate-100">Set Up Your Wallet</h2>
-      <p class="mt-2 text-sm text-slate-400">Create a new Liquid (L-BTC) wallet or restore from an existing recovery phrase.</p>
+      <p class="mt-2 text-sm text-slate-400">Create a new Liquid Bitcoin wallet or restore from an existing recovery phrase.</p>
       ${errorHtml}
       ${scanningHtml}
       ${backupFoundHtml}
