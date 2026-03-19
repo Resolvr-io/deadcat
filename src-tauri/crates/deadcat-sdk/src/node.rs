@@ -22,13 +22,19 @@ use crate::discovery::service::{
     DiscoveryService, NoopStore, persist_canonical_lmsr_state_to_store, persist_market_to_store,
 };
 use crate::discovery::store_trait::{
-    ContractMetadataInput, DiscoveryStore, PredictionMarketCandidateIngestInput,
+    ContractMetadataInput, DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource,
+    PredictionMarketCandidateIngestInput,
 };
 use crate::discovery::{
     AttestationContent, AttestationResult, DEFAULT_RELAYS, DiscoveredOrder, OrderAnnouncement,
     bytes_to_hex,
 };
 use crate::error::{Error, NodeError};
+use crate::lmsr_pool::api::{
+    CreateLmsrPoolRequest, CreateLmsrPoolResult, LmsrPoolLocator, LmsrPoolSnapshot,
+    build_pool_announcement_from_snapshot, txid_to_canonical_bytes,
+};
+use crate::lmsr_pool::identity::{derive_lmsr_market_id, derive_lmsr_pool_id};
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
 use crate::network::Network;
 use crate::prediction_market::anchor::PredictionMarketAnchor;
@@ -200,6 +206,42 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     fn persist_market(&self, parsed: &ParsedDiscoveredMarketAnnouncement) {
         persist_market_to_store(&self.store, parsed);
+    }
+
+    fn persist_lmsr_pool_snapshot(&self, snapshot: &LmsrPoolSnapshot) {
+        let Some(store) = &self.store else { return };
+        let reserve_outpoints = snapshot
+            .current_reserve_outpoints
+            .map(|outpoint| outpoint.to_string());
+        let ingest = LmsrPoolIngestInput {
+            pool_id: snapshot.locator.pool_id.to_hex(),
+            market_id: snapshot.locator.market_id.to_string(),
+            yes_asset_id: snapshot.locator.params.yes_asset_id,
+            no_asset_id: snapshot.locator.params.no_asset_id,
+            collateral_asset_id: snapshot.locator.params.collateral_asset_id,
+            fee_bps: snapshot.locator.params.fee_bps,
+            cosigner_pubkey: snapshot.locator.params.cosigner_pubkey,
+            lmsr_table_root: snapshot.locator.params.lmsr_table_root,
+            table_depth: snapshot.locator.params.table_depth,
+            q_step_lots: snapshot.locator.params.q_step_lots,
+            s_bias: snapshot.locator.params.s_bias,
+            s_max_index: snapshot.locator.params.s_max_index,
+            half_payout_sats: snapshot.locator.params.half_payout_sats,
+            creation_txid: snapshot.locator.creation_txid.to_string(),
+            witness_schema_version: snapshot.locator.witness_schema_version.clone(),
+            current_s_index: snapshot.current_s_index,
+            reserve_outpoints,
+            reserve_yes: snapshot.reserves.r_yes,
+            reserve_no: snapshot.reserves.r_no,
+            reserve_collateral: snapshot.reserves.r_lbtc,
+            state_source: LmsrPoolStateSource::CanonicalScan,
+            last_transition_txid: snapshot.last_transition_txid.map(|txid| txid.to_string()),
+            nostr_event_id: None,
+            nostr_event_json: None,
+        };
+        if let Ok(mut store) = store.lock() {
+            let _ = store.ingest_lmsr_pool(&ingest);
+        }
     }
 
     // ── Combined on-chain + Nostr operations ────────────────────────────
@@ -720,6 +762,118 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         let plan = quote.plan;
         self.with_sdk(move |sdk| sdk.execute_trade_plan(&plan, fee_amount))
             .await
+    }
+
+    /// Bootstrap a new LMSR reserve bundle on-chain and return a publish-ready announcement.
+    pub async fn create_lmsr_pool(
+        &self,
+        request: CreateLmsrPoolRequest,
+    ) -> Result<CreateLmsrPoolResult, NodeError> {
+        let table_values = request.table_values.clone();
+        let snapshot = self
+            .with_sdk(move |sdk| sdk.create_lmsr_pool_bootstrap(&request))
+            .await?;
+        let announcement = build_pool_announcement_from_snapshot(&snapshot, table_values)
+            .map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?;
+        self.persist_lmsr_pool_snapshot(&snapshot);
+
+        Ok(CreateLmsrPoolResult {
+            txid: snapshot.locator.creation_txid,
+            snapshot,
+            announcement,
+        })
+    }
+
+    /// Re-scan canonical LMSR reserve state from a typed pool locator.
+    ///
+    /// This re-derives the canonical `market_id` plus the node-network-bound
+    /// canonical `pool_id` before scanning, and persists enough snapshot data
+    /// to bootstrap an empty store.
+    pub async fn scan_lmsr_pool(
+        &self,
+        locator: LmsrPoolLocator,
+    ) -> Result<LmsrPoolSnapshot, NodeError> {
+        if locator.hinted_s_index > locator.params.s_max_index {
+            return Err(NodeError::Sdk(Error::LmsrPool(format!(
+                "hinted_s_index {} exceeds s_max_index {}",
+                locator.hinted_s_index, locator.params.s_max_index
+            ))));
+        }
+        let creation_txid = locator.creation_txid;
+        let creation_txid_bytes = txid_to_canonical_bytes(&creation_txid)
+            .map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?;
+        let params = locator.params;
+        let expected_market_id = derive_lmsr_market_id(params);
+        if locator.market_id != expected_market_id {
+            return Err(NodeError::Sdk(Error::LmsrPool(format!(
+                "locator market_id {} does not match canonical market_id {}",
+                locator.market_id, expected_market_id
+            ))));
+        }
+        let expected_pool_id = derive_lmsr_pool_id(
+            self.network,
+            params,
+            creation_txid_bytes,
+            locator.initial_reserve_outpoints,
+        )
+        .map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?;
+        if locator.pool_id != expected_pool_id {
+            return Err(NodeError::Sdk(Error::LmsrPool(format!(
+                "locator pool_id {} does not match canonical pool_id {}",
+                locator.pool_id.to_hex(),
+                expected_pool_id.to_hex()
+            ))));
+        }
+        let initial_reserve_outpoints = locator.initial_reserve_outpoints;
+        let hinted_s_index = locator.hinted_s_index;
+        let witness_schema_version = locator.witness_schema_version.clone();
+
+        let scan = self
+            .with_sdk(move |sdk| {
+                sdk.scan_lmsr_pool_state(
+                    params,
+                    creation_txid_bytes,
+                    initial_reserve_outpoints,
+                    hinted_s_index,
+                    &witness_schema_version,
+                )
+            })
+            .await?;
+
+        let current_reserve_outpoints = [
+            scan.pool_utxos.yes.outpoint,
+            scan.pool_utxos.no.outpoint,
+            scan.pool_utxos.collateral.outpoint,
+        ];
+        let last_transition_txid = if current_reserve_outpoints[0].txid == creation_txid {
+            None
+        } else {
+            Some(current_reserve_outpoints[0].txid)
+        };
+        let snapshot = LmsrPoolSnapshot {
+            locator,
+            current_s_index: scan.current_s_index,
+            reserves: scan.reserves,
+            current_reserve_outpoints,
+            last_transition_txid,
+        };
+        self.persist_lmsr_pool_snapshot(&snapshot);
+        persist_canonical_lmsr_state_to_store(
+            &self.store,
+            &crate::discovery::LmsrPoolStateUpdateInput {
+                pool_id: snapshot.locator.pool_id.to_hex(),
+                current_s_index: snapshot.current_s_index,
+                reserve_outpoints: snapshot
+                    .current_reserve_outpoints
+                    .map(|outpoint| outpoint.to_string()),
+                reserve_yes: snapshot.reserves.r_yes,
+                reserve_no: snapshot.reserves.r_no,
+                reserve_collateral: snapshot.reserves.r_lbtc,
+                last_transition_txid: snapshot.last_transition_txid.map(|txid| txid.to_string()),
+            },
+        );
+
+        Ok(snapshot)
     }
 
     // ── Discovery (delegated to DiscoveryService) ───────────────────────

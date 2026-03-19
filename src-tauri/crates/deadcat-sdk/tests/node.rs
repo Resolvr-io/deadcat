@@ -347,6 +347,9 @@ async fn quote_trade_requires_chain_access_for_lmsr_pool_scan() {
     let table_values = vec![2_000, 2_010, 2_025, 2_045, 2_070, 2_100, 2_135, 2_175];
     let table_root = deadcat_sdk::lmsr_table_root(&table_values).unwrap();
     let creation_txid = hex::encode([0x88; 32]);
+    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
+    let params = test_market_params(oracle_pubkey);
+    let market_id = params.market_id().to_string();
 
     let mut announcement = PoolAnnouncement {
         version: 2,
@@ -360,7 +363,7 @@ async fn quote_trade_requires_chain_access_for_lmsr_pool_scan() {
             min_r_collateral: 1,
             cosigner_pubkey: [0x06; 32],
         },
-        market_id: "mkt1".to_string(),
+        market_id: market_id.clone(),
         reserves: PoolReserves {
             r_yes: 500,
             r_no: 500,
@@ -389,13 +392,10 @@ async fn quote_trade_requires_chain_access_for_lmsr_pool_scan() {
     node.announce_pool(&announcement).await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_market_params(oracle_pubkey);
-
     let result = node
         .quote_trade(
             params,
-            "mkt1",
+            &market_id,
             TradeSide::Yes,
             TradeDirection::Buy,
             TradeAmount::ExactInput(10_000),
@@ -425,6 +425,10 @@ async fn quote_trade_ignores_malformed_lmsr_pool_payload() {
     node.unlock_wallet(mnemonic, "tcp://127.0.0.1:1", datadir.path())
         .unwrap();
 
+    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
+    let params = test_market_params(oracle_pubkey);
+    let market_id = params.market_id().to_string();
+
     // Deliberately malformed LMSR payload: invalid reserve outpoint encoding.
     let announcement = PoolAnnouncement {
         version: 2,
@@ -438,7 +442,7 @@ async fn quote_trade_ignores_malformed_lmsr_pool_payload() {
             min_r_collateral: 1,
             cosigner_pubkey: [0x06; 32],
         },
-        market_id: "mkt1".to_string(),
+        market_id: market_id.clone(),
         reserves: PoolReserves {
             r_yes: 500,
             r_no: 500,
@@ -471,13 +475,10 @@ async fn quote_trade_ignores_malformed_lmsr_pool_payload() {
         other => panic!("expected malformed pool announcement rejection, got {other:?}"),
     }
 
-    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_market_params(oracle_pubkey);
-
     let result = node
         .quote_trade(
             params,
-            "mkt1",
+            &market_id,
             TradeSide::Yes,
             TradeDirection::Buy,
             TradeAmount::ExactInput(10_000),
@@ -503,6 +504,9 @@ async fn quote_trade_rejects_lmsr_pool_without_table_values() {
     let table_values = vec![2_000, 2_010, 2_025, 2_045, 2_070, 2_100, 2_135, 2_175];
     let table_root = deadcat_sdk::lmsr_table_root(&table_values).unwrap();
     let creation_txid = hex::encode([0x88; 32]);
+    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
+    let params = test_market_params(oracle_pubkey);
+    let market_id = params.market_id().to_string();
 
     let mut announcement = PoolAnnouncement {
         version: 2,
@@ -516,7 +520,7 @@ async fn quote_trade_rejects_lmsr_pool_without_table_values() {
             min_r_collateral: 1,
             cosigner_pubkey: [0x06; 32],
         },
-        market_id: "mkt1".to_string(),
+        market_id: market_id.clone(),
         reserves: PoolReserves {
             r_yes: 500,
             r_no: 500,
@@ -545,13 +549,10 @@ async fn quote_trade_rejects_lmsr_pool_without_table_values() {
     node.announce_pool(&announcement).await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_market_params(oracle_pubkey);
-
     let result = node
         .quote_trade(
             params,
-            "mkt1",
+            &market_id,
             TradeSide::Yes,
             TradeDirection::Buy,
             TradeAmount::ExactInput(10_000),

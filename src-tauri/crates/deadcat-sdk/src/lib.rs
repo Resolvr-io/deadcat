@@ -44,6 +44,7 @@ pub use sdk::{
     CancelOrderResult, CancellationResult, CreateOrderResult, FillOrderResult, IssuanceResult,
     RedemptionResult, ResolutionResult,
 };
+pub use taproot::NUMS_KEY_BYTES;
 
 // Re-export LWK for app-layer use
 pub use lwk_wollet;
@@ -58,6 +59,10 @@ pub use maker_order::params::{
 };
 
 // ── LMSR pools ─────────────────────────────────────────────────────
+pub use lmsr_pool::api::{
+    CreateLmsrPoolRequest, CreateLmsrPoolResult, LmsrPoolLocator, LmsrPoolSnapshot,
+    build_pool_announcement_from_snapshot,
+};
 pub use lmsr_pool::contract::CompiledLmsrPool;
 pub use lmsr_pool::math::{
     LmsrQuote, LmsrTradeKind, max_collateral_out, min_collateral_in,

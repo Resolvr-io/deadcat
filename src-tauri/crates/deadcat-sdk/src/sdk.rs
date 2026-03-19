@@ -18,11 +18,16 @@ use rand::thread_rng;
 use crate::assembly::{pset_to_pruning_transaction, txout_secrets_from_unblinded};
 use crate::chain::{ChainBackend, ElectrumBackend};
 use crate::error::{Error, Result};
+use crate::lmsr_pool::api::{
+    CreateLmsrPoolRequest, LmsrPoolLocator, LmsrPoolSnapshot, txid_to_canonical_bytes,
+};
 use crate::lmsr_pool::chain_walk::{
     decode_primary_witness_payload_from_spend_tx, extract_reserve_window,
 };
 use crate::lmsr_pool::contract::CompiledLmsrPool;
+use crate::lmsr_pool::identity::derive_lmsr_pool_id;
 use crate::lmsr_pool::params::{LmsrInitialOutpoint, LmsrPoolParams};
+use crate::lmsr_pool::table::LmsrTableManifest;
 use crate::maker_order::contract::CompiledMakerOrder;
 use crate::maker_order::params::{
     MakerOrderParams, OrderDirection, derive_maker_receive, maker_receive_script_pubkey,
@@ -54,8 +59,12 @@ use crate::prediction_market_scan::{
     PredictionMarketScanBackend, scan_prediction_market_canonical,
     validate_prediction_market_creation_tx,
 };
-use crate::pset::UnblindedUtxo;
+use crate::pset::{
+    UnblindedUtxo, add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset,
+};
 use crate::taproot::NUMS_KEY_BYTES;
+
+use crate::discovery::pool::LMSR_WITNESS_SCHEMA_V2;
 
 /// Result of a successful token issuance.
 #[derive(Debug, Clone)]
@@ -125,6 +134,12 @@ pub(crate) struct LmsrPoolScanResult {
     pub current_s_index: u64,
     pub pool_utxos: crate::trade::types::LmsrPoolUtxos,
     pub reserves: PoolReserves,
+}
+
+struct LmsrBootstrapPset {
+    pset: PartiallySignedTransaction,
+    wallet_inputs: Vec<UnblindedUtxo>,
+    blind_output_indices: Vec<usize>,
 }
 
 pub struct DeadcatSdk {
@@ -320,6 +335,147 @@ impl DeadcatSdk {
 
     pub fn policy_asset(&self) -> AssetId {
         self.network.into_lwk().policy_asset()
+    }
+
+    pub(crate) fn create_lmsr_pool_bootstrap(
+        &mut self,
+        request: &CreateLmsrPoolRequest,
+    ) -> Result<LmsrPoolSnapshot> {
+        self.sync()?;
+        validate_create_lmsr_pool_request(request)?;
+
+        let contract = CompiledLmsrPool::new(request.pool_params)?;
+        let change_addr: lwk_wollet::elements::Address = self
+            .address(None)?
+            .address()
+            .to_string()
+            .parse()
+            .map_err(|e| Error::Query(format!("bad change address: {e}")))?;
+
+        let mut exclude = Vec::new();
+        let reserve_yes_inputs = self.collect_wallet_utxos_for_asset(
+            &request.pool_params.yes_asset_id,
+            request.initial_reserves.r_yes,
+            &exclude,
+        )?;
+        exclude.extend(reserve_yes_inputs.iter().map(|utxo| utxo.outpoint));
+
+        let reserve_no_inputs = self.collect_wallet_utxos_for_asset(
+            &request.pool_params.no_asset_id,
+            request.initial_reserves.r_no,
+            &exclude,
+        )?;
+        exclude.extend(reserve_no_inputs.iter().map(|utxo| utxo.outpoint));
+
+        let policy_asset = self.policy_asset();
+        let policy_asset_bytes = policy_asset.into_inner().to_byte_array();
+        let collateral_is_policy_asset =
+            request.pool_params.collateral_asset_id == policy_asset_bytes;
+        let reserve_collateral_target = if collateral_is_policy_asset {
+            request
+                .initial_reserves
+                .r_lbtc
+                .checked_add(request.fee_amount)
+                .ok_or(Error::CollateralOverflow)?
+        } else {
+            request.initial_reserves.r_lbtc
+        };
+        let reserve_collateral_inputs = self.collect_wallet_utxos_for_asset(
+            &request.pool_params.collateral_asset_id,
+            reserve_collateral_target,
+            &exclude,
+        )?;
+        exclude.extend(reserve_collateral_inputs.iter().map(|utxo| utxo.outpoint));
+
+        let fee_inputs = if collateral_is_policy_asset {
+            Vec::new()
+        } else {
+            select_wallet_utxo_set(
+                &self.utxos()?,
+                policy_asset,
+                request.fee_amount,
+                &exclude,
+                &policy_asset_bytes,
+            )?
+            .into_iter()
+            .map(|wallet_utxo| {
+                let tx = self.fetch_transaction(&wallet_utxo.outpoint.txid)?;
+                let txout = tx
+                    .output
+                    .get(wallet_utxo.outpoint.vout as usize)
+                    .ok_or_else(|| Error::Query("fee UTXO vout out of range".into()))?
+                    .clone();
+                Ok(wallet_txout_to_unblinded(&wallet_utxo, &txout))
+            })
+            .collect::<Result<Vec<_>>>()?
+        };
+
+        let mut built = build_lmsr_bootstrap_pset(
+            &contract,
+            request.initial_s_index,
+            request.initial_reserves,
+            &reserve_yes_inputs,
+            &reserve_no_inputs,
+            &reserve_collateral_inputs,
+            &fee_inputs,
+            request.fee_amount,
+            &change_addr.script_pubkey(),
+            &policy_asset.into_inner().to_byte_array(),
+        )?;
+
+        if !built.blind_output_indices.is_empty() {
+            self.blind_order_pset(
+                &mut built.pset,
+                &built.wallet_inputs,
+                &built.blind_output_indices,
+                &change_addr,
+            )?;
+        }
+
+        let tx = self.sign_pset(built.pset)?;
+        let txid = self.broadcast_and_sync(&tx)?;
+        let creation_txid_bytes = txid_to_canonical_bytes(&txid).map_err(Error::LmsrPool)?;
+        let initial_reserve_outpoints = [
+            LmsrInitialOutpoint {
+                txid: creation_txid_bytes,
+                vout: 0,
+            },
+            LmsrInitialOutpoint {
+                txid: creation_txid_bytes,
+                vout: 1,
+            },
+            LmsrInitialOutpoint {
+                txid: creation_txid_bytes,
+                vout: 2,
+            },
+        ];
+        let pool_id = derive_lmsr_pool_id(
+            self.network,
+            request.pool_params,
+            creation_txid_bytes,
+            initial_reserve_outpoints,
+        )
+        .map_err(Error::LmsrPool)?;
+
+        Ok(LmsrPoolSnapshot {
+            locator: LmsrPoolLocator {
+                market_id: request.market_params.market_id(),
+                pool_id,
+                params: request.pool_params,
+                creation_txid: txid,
+                initial_reserve_outpoints,
+                hinted_s_index: request.initial_s_index,
+                witness_schema_version: LMSR_WITNESS_SCHEMA_V2.to_string(),
+            },
+            current_s_index: request.initial_s_index,
+            reserves: request.initial_reserves,
+            current_reserve_outpoints: [
+                OutPoint::new(txid, 0),
+                OutPoint::new(txid, 1),
+                OutPoint::new(txid, 2),
+            ],
+            last_transition_txid: None,
+        })
     }
 
     // ── Boltz key derivation ─────────────────────────────────────────────
@@ -1134,6 +1290,32 @@ impl DeadcatSdk {
         let secret = secp256k1_zkp::SecretKey::from_slice(&derived.private_key.secret_bytes())
             .map_err(|e| Error::Signer(format!("{}", e)))?;
         Ok(Keypair::from_secret_key(&secp, &secret))
+    }
+
+    fn collect_wallet_utxos_for_asset(
+        &self,
+        asset_id: &[u8; 32],
+        required_amount: u64,
+        exclude: &[OutPoint],
+    ) -> Result<Vec<UnblindedUtxo>> {
+        let target_asset = AssetId::from_slice(asset_id)
+            .map_err(|e| Error::Query(format!("bad asset id: {e}")))?;
+        let raw_utxos = self.utxos()?;
+        let selected =
+            select_wallet_utxo_set(&raw_utxos, target_asset, required_amount, exclude, asset_id)?;
+
+        selected
+            .into_iter()
+            .map(|wallet_utxo| {
+                let tx = self.fetch_transaction(&wallet_utxo.outpoint.txid)?;
+                let txout = tx
+                    .output
+                    .get(wallet_utxo.outpoint.vout as usize)
+                    .ok_or_else(|| Error::Query("funding UTXO vout out of range".into()))?
+                    .clone();
+                Ok(wallet_txout_to_unblinded(&wallet_utxo, &txout))
+            })
+            .collect()
     }
 
     /// Select a wallet UTXO for a specific asset with enough value, excluding certain outpoints.
@@ -2387,6 +2569,52 @@ impl DeadcatSdk {
 
 // ── Private helpers ──────────────────────────────────────────────────────
 
+fn validate_create_lmsr_pool_request(request: &CreateLmsrPoolRequest) -> Result<()> {
+    request
+        .pool_params
+        .validate()
+        .map_err(|e| Error::LmsrPool(e.to_string()))?;
+
+    if request.pool_params.cosigner_pubkey != NUMS_KEY_BYTES {
+        return Err(Error::LmsrPool(
+            "create_lmsr_pool only supports NUMS cosigner deployments in v1".into(),
+        ));
+    }
+    if request.pool_params.yes_asset_id != request.market_params.yes_token_asset {
+        return Err(Error::LmsrPool(
+            "pool yes_asset_id must match market yes_token_asset".into(),
+        ));
+    }
+    if request.pool_params.no_asset_id != request.market_params.no_token_asset {
+        return Err(Error::LmsrPool(
+            "pool no_asset_id must match market no_token_asset".into(),
+        ));
+    }
+    if request.pool_params.collateral_asset_id != request.market_params.collateral_asset_id {
+        return Err(Error::LmsrPool(
+            "pool collateral_asset_id must match market collateral_asset_id".into(),
+        ));
+    }
+    if request.pool_params.half_payout_sats != request.market_params.collateral_per_token {
+        return Err(Error::LmsrPool(
+            "pool half_payout_sats must match market collateral_per_token".into(),
+        ));
+    }
+    if request.initial_s_index > request.pool_params.s_max_index {
+        return Err(Error::LmsrPool(format!(
+            "initial_s_index {} exceeds s_max_index {}",
+            request.initial_s_index, request.pool_params.s_max_index
+        )));
+    }
+
+    let manifest = LmsrTableManifest::new(
+        request.pool_params.table_depth,
+        request.table_values.clone(),
+    )?;
+    manifest.verify_matches_pool_params(&request.pool_params)?;
+    Ok(())
+}
+
 fn find_lmsr_state_index_by_script(
     contract: &CompiledLmsrPool,
     hinted_s_index: u64,
@@ -2411,6 +2639,132 @@ fn find_lmsr_state_index_by_script(
     }
 
     found.ok_or_else(|| Error::TradeRouting("unable to derive LMSR S_INDEX from script".into()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_lmsr_bootstrap_pset(
+    contract: &CompiledLmsrPool,
+    initial_s_index: u64,
+    initial_reserves: PoolReserves,
+    reserve_yes_inputs: &[UnblindedUtxo],
+    reserve_no_inputs: &[UnblindedUtxo],
+    reserve_collateral_inputs: &[UnblindedUtxo],
+    fee_inputs: &[UnblindedUtxo],
+    fee_amount: u64,
+    change_destination: &Script,
+    fee_asset_id: &[u8; 32],
+) -> Result<LmsrBootstrapPset> {
+    let yes_total = sum_unblinded_values(reserve_yes_inputs)?;
+    let no_total = sum_unblinded_values(reserve_no_inputs)?;
+    let collateral_total = sum_unblinded_values(reserve_collateral_inputs)?;
+    let fee_total = sum_unblinded_values(fee_inputs)?;
+    let collateral_is_fee_asset = contract.params().collateral_asset_id == *fee_asset_id;
+
+    if yes_total < initial_reserves.r_yes || no_total < initial_reserves.r_no {
+        return Err(Error::InsufficientCollateral);
+    }
+    if collateral_is_fee_asset {
+        if collateral_total < initial_reserves.r_lbtc {
+            return Err(Error::InsufficientCollateral);
+        }
+        if collateral_total - initial_reserves.r_lbtc < fee_amount {
+            return Err(Error::InsufficientFee);
+        }
+    } else {
+        if collateral_total < initial_reserves.r_lbtc {
+            return Err(Error::InsufficientCollateral);
+        }
+        if fee_total < fee_amount {
+            return Err(Error::InsufficientFee);
+        }
+    }
+
+    let covenant_spk = contract.script_pubkey(initial_s_index);
+    let mut pset = new_pset();
+    let mut wallet_inputs = Vec::with_capacity(
+        reserve_yes_inputs.len()
+            + reserve_no_inputs.len()
+            + reserve_collateral_inputs.len()
+            + fee_inputs.len(),
+    );
+    for utxo in reserve_yes_inputs
+        .iter()
+        .chain(reserve_no_inputs)
+        .chain(reserve_collateral_inputs)
+        .chain(fee_inputs)
+    {
+        add_pset_input(&mut pset, utxo);
+        wallet_inputs.push(utxo.clone());
+    }
+
+    add_pset_output(
+        &mut pset,
+        explicit_txout(
+            &contract.params().yes_asset_id,
+            initial_reserves.r_yes,
+            &covenant_spk,
+        ),
+    );
+    add_pset_output(
+        &mut pset,
+        explicit_txout(
+            &contract.params().no_asset_id,
+            initial_reserves.r_no,
+            &covenant_spk,
+        ),
+    );
+    add_pset_output(
+        &mut pset,
+        explicit_txout(
+            &contract.params().collateral_asset_id,
+            initial_reserves.r_lbtc,
+            &covenant_spk,
+        ),
+    );
+    if fee_amount > 0 {
+        add_pset_output(&mut pset, fee_txout(fee_asset_id, fee_amount));
+    }
+
+    let mut blind_output_indices = Vec::new();
+    let mut changes = vec![
+        (
+            yes_total - initial_reserves.r_yes,
+            contract.params().yes_asset_id,
+        ),
+        (
+            no_total - initial_reserves.r_no,
+            contract.params().no_asset_id,
+        ),
+    ];
+    if collateral_is_fee_asset {
+        changes.push((
+            collateral_total - initial_reserves.r_lbtc - fee_amount,
+            contract.params().collateral_asset_id,
+        ));
+    } else {
+        changes.push((
+            collateral_total - initial_reserves.r_lbtc,
+            contract.params().collateral_asset_id,
+        ));
+        changes.push((fee_total - fee_amount, *fee_asset_id));
+    }
+    for (amount, asset_id) in changes {
+        if amount == 0 {
+            continue;
+        }
+        let output_index = pset.outputs().len();
+        add_pset_output(
+            &mut pset,
+            explicit_txout(&asset_id, amount, change_destination),
+        );
+        blind_output_indices.push(output_index);
+    }
+
+    Ok(LmsrBootstrapPset {
+        pset,
+        wallet_inputs,
+        blind_output_indices,
+    })
 }
 
 fn recover_creation_anchor(
@@ -2554,6 +2908,64 @@ fn wallet_txout_to_unblinded(
     }
 }
 
+fn sum_unblinded_values(utxos: &[UnblindedUtxo]) -> Result<u64> {
+    utxos.iter().try_fold(0u64, |acc, utxo| {
+        acc.checked_add(utxo.value).ok_or(Error::CollateralOverflow)
+    })
+}
+
+fn select_wallet_utxo_set(
+    raw_utxos: &[WalletTxOut],
+    target_asset: AssetId,
+    required_amount: u64,
+    exclude: &[OutPoint],
+    asset_bytes: &[u8; 32],
+) -> Result<Vec<WalletTxOut>> {
+    if required_amount == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut candidates: Vec<_> = raw_utxos
+        .iter()
+        .filter(|u| {
+            !u.is_spent && u.unblinded.asset == target_asset && !exclude.contains(&u.outpoint)
+        })
+        .cloned()
+        .collect();
+    candidates.sort_by(|a, b| {
+        b.unblinded
+            .value
+            .cmp(&a.unblinded.value)
+            .then_with(|| {
+                a.outpoint
+                    .txid
+                    .to_string()
+                    .cmp(&b.outpoint.txid.to_string())
+            })
+            .then_with(|| a.outpoint.vout.cmp(&b.outpoint.vout))
+    });
+
+    let mut selected = Vec::new();
+    let mut total = 0u64;
+    for utxo in candidates {
+        total = total
+            .checked_add(utxo.unblinded.value)
+            .ok_or(Error::CollateralOverflow)?;
+        selected.push(utxo);
+        if total >= required_amount {
+            return Ok(selected);
+        }
+    }
+
+    Err(Error::InsufficientUtxos(format!(
+        "need {} units of asset {}, found {} (excluding {} outpoints)",
+        required_amount,
+        hex::encode(asset_bytes),
+        total,
+        exclude.len()
+    )))
+}
+
 /// Select 2 unspent L-BTC UTXOs suitable as defining outpoints.
 fn select_defining_utxos(
     raw_utxos: &[WalletTxOut],
@@ -2590,7 +3002,7 @@ mod tests {
     use crate::prediction_market::anchor::PredictionMarketAnchor;
     use crate::prediction_market::state::MarketSlot;
     use crate::prediction_market_scan::validate_prediction_market_creation_tx;
-    use crate::testing::confidential_dormant_creation_txout;
+    use crate::testing::{confidential_dormant_creation_txout, test_explicit_utxo};
     use lwk_wollet::Chain;
     use lwk_wollet::elements::bitcoin::hashes::Hash;
     use lwk_wollet::elements::confidential::{AssetBlindingFactor, ValueBlindingFactor};
@@ -2629,6 +3041,57 @@ mod tests {
         "0000000000000000000000000000000000000000000000000000000000000002"
             .parse()
             .unwrap()
+    }
+
+    fn third_asset() -> AssetId {
+        "0000000000000000000000000000000000000000000000000000000000000003"
+            .parse()
+            .unwrap()
+    }
+
+    fn sample_lmsr_create_request() -> CreateLmsrPoolRequest {
+        let yes_asset = [0x11; 32];
+        let no_asset = [0x22; 32];
+        let collateral_asset = policy_asset().into_inner().to_byte_array();
+        let table_values = vec![2_000, 2_010, 2_025, 2_045, 2_070, 2_100, 2_135, 2_175];
+        let table_root = crate::lmsr_table_root(&table_values).unwrap();
+        let pool_params = LmsrPoolParams {
+            yes_asset_id: yes_asset,
+            no_asset_id: no_asset,
+            collateral_asset_id: collateral_asset,
+            lmsr_table_root: table_root,
+            table_depth: 3,
+            q_step_lots: 10,
+            s_bias: 4,
+            s_max_index: 7,
+            half_payout_sats: 100,
+            fee_bps: 30,
+            min_r_yes: 1,
+            min_r_no: 1,
+            min_r_collateral: 1,
+            cosigner_pubkey: NUMS_KEY_BYTES,
+        };
+        CreateLmsrPoolRequest {
+            market_params: PredictionMarketParams {
+                oracle_public_key: [0x44; 32],
+                collateral_asset_id: collateral_asset,
+                yes_token_asset: yes_asset,
+                no_token_asset: no_asset,
+                yes_reissuance_token: [0x55; 32],
+                no_reissuance_token: [0x66; 32],
+                collateral_per_token: 100,
+                expiry_time: 123,
+            },
+            pool_params,
+            initial_s_index: 4,
+            initial_reserves: PoolReserves {
+                r_yes: 700,
+                r_no: 600,
+                r_lbtc: 800,
+            },
+            table_values,
+            fee_amount: 25,
+        }
     }
 
     #[test]
@@ -2698,6 +3161,152 @@ mod tests {
         let pa = policy_asset();
         let result = select_defining_utxos(&[], pa, 300);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_create_lmsr_pool_request_rejects_market_asset_mismatch() {
+        let mut request = sample_lmsr_create_request();
+        request.market_params.yes_token_asset = [0x99; 32];
+        let err = validate_create_lmsr_pool_request(&request).unwrap_err();
+        assert!(err.to_string().contains("yes_asset_id"));
+    }
+
+    #[test]
+    fn validate_create_lmsr_pool_request_rejects_half_payout_mismatch() {
+        let mut request = sample_lmsr_create_request();
+        request.market_params.collateral_per_token = 101;
+        let err = validate_create_lmsr_pool_request(&request).unwrap_err();
+        assert!(err.to_string().contains("half_payout_sats"));
+    }
+
+    #[test]
+    fn validate_create_lmsr_pool_request_rejects_invalid_initial_s_index() {
+        let mut request = sample_lmsr_create_request();
+        request.initial_s_index = request.pool_params.s_max_index + 1;
+        let err = validate_create_lmsr_pool_request(&request).unwrap_err();
+        assert!(err.to_string().contains("initial_s_index"));
+    }
+
+    #[test]
+    fn validate_create_lmsr_pool_request_rejects_invalid_table_values() {
+        let mut request = sample_lmsr_create_request();
+        request.table_values[0] += 1;
+        let err = validate_create_lmsr_pool_request(&request).unwrap_err();
+        assert!(err.to_string().contains("manifest root"));
+    }
+
+    #[test]
+    fn select_wallet_utxo_set_aggregates_across_multiple_utxos() {
+        let asset = policy_asset();
+        let utxos = vec![
+            make_utxo(400, asset, 0, false),
+            make_utxo(350, asset, 1, false),
+            make_utxo(200, asset, 2, false),
+            make_utxo(1_000, third_asset(), 3, false),
+        ];
+        let selected =
+            select_wallet_utxo_set(&utxos, asset, 700, &[], &asset.into_inner().to_byte_array())
+                .unwrap();
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].unblinded.value, 400);
+        assert_eq!(selected[1].unblinded.value, 350);
+    }
+
+    #[test]
+    fn build_lmsr_bootstrap_pset_puts_reserves_first_and_tracks_change_blinding() {
+        let request = sample_lmsr_create_request();
+        let contract = CompiledLmsrPool::new(request.pool_params).unwrap();
+        let change_script = Script::new();
+        let yes_input =
+            test_explicit_utxo(&request.pool_params.yes_asset_id, 700, &change_script, 1);
+        let no_input = test_explicit_utxo(&request.pool_params.no_asset_id, 600, &change_script, 2);
+        let collateral_input = test_explicit_utxo(
+            &request.pool_params.collateral_asset_id,
+            1_000,
+            &change_script,
+            3,
+        );
+        let fee_input = test_explicit_utxo(
+            &request.pool_params.collateral_asset_id,
+            50,
+            &change_script,
+            4,
+        );
+
+        let built = build_lmsr_bootstrap_pset(
+            &contract,
+            request.initial_s_index,
+            request.initial_reserves,
+            &[yes_input],
+            &[no_input],
+            &[collateral_input],
+            &[fee_input],
+            request.fee_amount,
+            &change_script,
+            &request.pool_params.collateral_asset_id,
+        )
+        .unwrap();
+
+        let outputs = built.pset.outputs();
+        let reserve_script = contract.script_pubkey(request.initial_s_index);
+        assert_eq!(outputs[0].amount, Some(request.initial_reserves.r_yes));
+        assert_eq!(
+            outputs[0].asset,
+            Some(AssetId::from_slice(&request.pool_params.yes_asset_id).unwrap())
+        );
+        assert_eq!(outputs[0].script_pubkey, reserve_script);
+        assert_eq!(outputs[1].amount, Some(request.initial_reserves.r_no));
+        assert_eq!(
+            outputs[1].asset,
+            Some(AssetId::from_slice(&request.pool_params.no_asset_id).unwrap())
+        );
+        assert_eq!(outputs[1].script_pubkey, reserve_script);
+        assert_eq!(outputs[2].amount, Some(request.initial_reserves.r_lbtc));
+        assert_eq!(
+            outputs[2].asset,
+            Some(AssetId::from_slice(&request.pool_params.collateral_asset_id).unwrap())
+        );
+        assert_eq!(outputs[2].script_pubkey, reserve_script);
+        assert_eq!(built.blind_output_indices, vec![4]);
+    }
+
+    #[test]
+    fn build_lmsr_bootstrap_pset_allows_fee_from_collateral_inputs_when_assets_match() {
+        let request = sample_lmsr_create_request();
+        let contract = CompiledLmsrPool::new(request.pool_params).unwrap();
+        let change_script = Script::new();
+        let yes_input =
+            test_explicit_utxo(&request.pool_params.yes_asset_id, 700, &change_script, 1);
+        let no_input = test_explicit_utxo(&request.pool_params.no_asset_id, 600, &change_script, 2);
+        let collateral_input = test_explicit_utxo(
+            &request.pool_params.collateral_asset_id,
+            request.initial_reserves.r_lbtc + request.fee_amount + 200,
+            &change_script,
+            3,
+        );
+
+        let built = build_lmsr_bootstrap_pset(
+            &contract,
+            request.initial_s_index,
+            request.initial_reserves,
+            &[yes_input],
+            &[no_input],
+            &[collateral_input],
+            &[],
+            request.fee_amount,
+            &change_script,
+            &request.pool_params.collateral_asset_id,
+        )
+        .unwrap();
+
+        let outputs = built.pset.outputs();
+        assert_eq!(outputs[3].amount, Some(request.fee_amount));
+        assert_eq!(
+            outputs[3].asset,
+            Some(AssetId::from_slice(&request.pool_params.collateral_asset_id).unwrap())
+        );
+        assert_eq!(outputs[4].amount, Some(200));
+        assert_eq!(built.blind_output_indices, vec![4]);
     }
 
     /// Verify the cancel sighash byte-order conventions.

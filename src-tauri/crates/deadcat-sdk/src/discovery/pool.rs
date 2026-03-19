@@ -3,10 +3,11 @@ use std::collections::{HashMap, HashSet};
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::lmsr_pool::contract::CompiledLmsrPool;
-use crate::lmsr_pool::params::{LmsrInitialOutpoint, LmsrPoolId, LmsrPoolIdInput, LmsrPoolParams};
+use crate::lmsr_pool::identity::derive_lmsr_pool_id;
+use crate::lmsr_pool::params::{LmsrInitialOutpoint, LmsrPoolId, LmsrPoolParams};
 use crate::network::Network;
 use crate::pool::PoolReserves;
+use crate::prediction_market::params::derive_market_id_from_assets;
 
 use super::{APP_EVENT_KIND, POOL_TAG, bytes_to_hex};
 
@@ -47,6 +48,22 @@ fn canonical_lmsr_pool_id_hex(pool_id: &str) -> Result<String, String> {
         .map_err(|e| format!("invalid lmsr_pool_id: {e}"))
 }
 
+fn validate_market_id_hex(market_id: &str, params: &PoolParams) -> Result<String, String> {
+    let parsed = parse_hex32("market_id", market_id)?;
+    let canonical = hex::encode(parsed);
+    if market_id != canonical {
+        return Err("market_id must be canonical lowercase 32-byte hex".into());
+    }
+    let expected =
+        derive_market_id_from_assets(params.yes_asset_id, params.no_asset_id).to_string();
+    if market_id != expected {
+        return Err(format!(
+            "market_id does not match canonical derived ID: expected {expected}"
+        ));
+    }
+    Ok(expected)
+}
+
 fn parse_network_tag(network_tag: &str) -> Result<Network, String> {
     network_tag
         .parse::<Network>()
@@ -83,8 +100,6 @@ pub(crate) fn derive_lmsr_pool_id_hex(
     params
         .validate()
         .map_err(|e| format!("invalid LMSR params in pool announcement: {e}"))?;
-    let contract = CompiledLmsrPool::new(params)
-        .map_err(|e| format!("failed to compile LMSR covenant for ID derivation: {e}"))?;
     let network = parse_network_tag(network_tag)?;
     let initial_yes_outpoint = parse_outpoint(
         &announcement.initial_reserve_outpoints[0],
@@ -98,18 +113,18 @@ pub(crate) fn derive_lmsr_pool_id_hex(
         &announcement.initial_reserve_outpoints[2],
         "initial_reserve_outpoints[2]",
     )?;
-    let input = LmsrPoolIdInput {
-        chain_genesis_hash: network.genesis_hash(),
+    derive_lmsr_pool_id(
+        network,
         params,
-        covenant_cmr: contract.primary_cmr().to_byte_array(),
         creation_txid,
-        initial_yes_outpoint,
-        initial_no_outpoint,
-        initial_collateral_outpoint,
-    };
-    LmsrPoolId::derive_v1(&input)
-        .map(|id| id.to_hex())
-        .map_err(|e| format!("failed to derive LMSR pool ID: {e}"))
+        [
+            initial_yes_outpoint,
+            initial_no_outpoint,
+            initial_collateral_outpoint,
+        ],
+    )
+    .map(|id| id.to_hex())
+    .map_err(|e| format!("failed to derive LMSR pool ID: {e}"))
 }
 
 fn event_identifier_tag(event: &Event) -> Option<String> {
@@ -228,6 +243,8 @@ pub fn build_pool_event(
     if announcement.lmsr_pool_id != canonical_pool_id {
         return Err("lmsr_pool_id must be canonical lowercase 32-byte hex".into());
     }
+    let canonical_market_id =
+        validate_market_id_hex(&announcement.market_id, &announcement.params)?;
     let creation_txid = parse_hex32("creation_txid", &announcement.creation_txid)?;
     parse_hex32("lmsr_table_root", &announcement.lmsr_table_root)?;
     if announcement.initial_reserve_outpoints.len() != 3 {
@@ -275,7 +292,7 @@ pub fn build_pool_event(
     let tags = vec![
         Tag::identifier(&canonical_pool_id),
         Tag::hashtag(POOL_TAG),
-        Tag::hashtag(&announcement.market_id),
+        Tag::hashtag(&canonical_market_id),
         Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
     ];
 
@@ -319,6 +336,8 @@ pub fn parse_pool_event(
         return Err("missing required LMSR field: lmsr_pool_id".into());
     }
     let canonical_pool_id = canonical_lmsr_pool_id_hex(&announcement.lmsr_pool_id)?;
+    let canonical_market_id =
+        validate_market_id_hex(&announcement.market_id, &announcement.params)?;
     if announcement.creation_txid.trim().is_empty() {
         return Err("missing required LMSR field: creation_txid".into());
     }
@@ -378,7 +397,7 @@ pub fn parse_pool_event(
 
     Ok(DiscoveredPool {
         id: event.id.to_hex(),
-        market_id: announcement.market_id,
+        market_id: canonical_market_id,
         pool_id: derived_pool_id.clone(),
         yes_asset_id: bytes_to_hex(&announcement.params.yes_asset_id),
         no_asset_id: bytes_to_hex(&announcement.params.no_asset_id),
@@ -455,6 +474,7 @@ pub async fn fetch_pools(
 mod tests {
     use super::*;
     use crate::lmsr_pool::table::lmsr_table_root;
+    use crate::prediction_market::params::derive_market_id_from_assets;
     use crate::taproot::NUMS_KEY_BYTES;
 
     fn test_pool_params() -> PoolParams {
@@ -477,7 +497,7 @@ mod tests {
         let mut announcement = PoolAnnouncement {
             version: LMSR_POOL_ANNOUNCEMENT_VERSION,
             params: test_pool_params(),
-            market_id: "abcd1234".to_string(),
+            market_id: derive_market_id_from_assets([0x01; 32], [0x02; 32]).to_string(),
             reserves: PoolReserves {
                 r_yes: 500_000,
                 r_no: 500_000,
@@ -512,7 +532,7 @@ mod tests {
         let parsed: PoolAnnouncement = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.version, LMSR_POOL_ANNOUNCEMENT_VERSION);
         assert_eq!(parsed.params, announcement.params);
-        assert_eq!(parsed.market_id, "abcd1234");
+        assert_eq!(parsed.market_id, announcement.market_id);
         assert_eq!(parsed.lmsr_pool_id, announcement.lmsr_pool_id);
         assert_eq!(parsed.reserves.r_yes, 500_000);
     }
@@ -525,7 +545,7 @@ mod tests {
         let event = build_pool_event(&keys, &announcement, network_tag).unwrap();
 
         let discovered = parse_pool_event(&event, network_tag).unwrap();
-        assert_eq!(discovered.market_id, "abcd1234");
+        assert_eq!(discovered.market_id, announcement.market_id);
         assert_eq!(discovered.fee_bps, 30);
         assert_eq!(discovered.pool_id, announcement.lmsr_pool_id);
         assert_eq!(discovered.lmsr_pool_id, announcement.lmsr_pool_id);
@@ -552,6 +572,15 @@ mod tests {
         announcement.lmsr_pool_id = hex::encode([0xab; 32]).to_uppercase();
         let err = build_pool_event(&keys, &announcement, "liquid-testnet").unwrap_err();
         assert!(err.contains("canonical lowercase"));
+    }
+
+    #[test]
+    fn build_pool_event_rejects_mismatched_market_id() {
+        let keys = Keys::generate();
+        let mut announcement = test_announcement("liquid-testnet");
+        announcement.market_id = hex::encode([0xab; 32]);
+        let err = build_pool_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        assert!(err.contains("market_id does not match canonical derived ID"));
     }
 
     #[test]
@@ -667,6 +696,28 @@ mod tests {
             build_pool_event(&keys, &announcement, "liquid-testnet").expect("build pool event");
         let err = parse_pool_event(&event, "liquid-regtest").unwrap_err();
         assert!(err.contains("unsupported network tag"));
+    }
+
+    #[test]
+    fn parse_pool_event_rejects_mismatched_market_id() {
+        let keys = Keys::generate();
+        let mut announcement = test_announcement("liquid-testnet");
+        announcement.market_id = hex::encode([0xab; 32]);
+        let content = serde_json::to_string(&announcement).unwrap();
+        let event = EventBuilder::new(APP_EVENT_KIND, &content)
+            .tags(vec![
+                Tag::identifier(&announcement.lmsr_pool_id),
+                Tag::hashtag("deadcat-pool"),
+                Tag::hashtag(&announcement.market_id),
+                Tag::custom(
+                    TagKind::custom("network"),
+                    vec!["liquid-testnet".to_string()],
+                ),
+            ])
+            .sign_with_keys(&keys)
+            .unwrap();
+        let err = parse_pool_event(&event, "liquid-testnet").unwrap_err();
+        assert!(err.contains("market_id does not match canonical derived ID"));
     }
 
     #[test]

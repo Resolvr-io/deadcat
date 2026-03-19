@@ -25,7 +25,13 @@ pub struct PredictionMarketCandidateIngestInput {
     pub creation_tx: Vec<u8>,
 }
 
-/// Canonical LMSR pool metadata/state persisted by discovery ingestion.
+/// LMSR pool metadata plus the latest known state snapshot.
+///
+/// Announcement ingests may seed missing rows and attach discovery provenance,
+/// but they are advisory. Once a row has canonical scan state, later
+/// announcement ingests must not replace the canonical `current_s_index`,
+/// reserves, reserve outpoints, or transition provenance, and must not relabel
+/// immutable pool identity such as `market_id`.
 #[derive(Debug, Clone)]
 pub struct LmsrPoolIngestInput {
     pub pool_id: String,
@@ -104,6 +110,11 @@ pub trait DiscoveryStore: Send + 'static {
     ) -> Result<(), String>;
 
     /// Persist a discovered LMSR pool/state snapshot.
+    ///
+    /// Store implementations must treat announcement snapshots as advisory:
+    /// they may create a missing row and enrich provenance later, but they
+    /// must not overwrite canonical scan state or immutable pool identity once
+    /// present.
     fn ingest_lmsr_pool(&mut self, input: &LmsrPoolIngestInput) -> Result<(), String>;
 
     /// Persist canonical LMSR live-state produced by chain scan.

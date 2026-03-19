@@ -47,6 +47,11 @@ The SDK validates:
 
 Non-canonical or mismatched payloads are rejected (fail-closed).
 
+Public locator parsing is intentionally split:
+
+- `LmsrPoolLocator::try_from(&PoolAnnouncement)` validates canonical network-agnostic identity fields, including `market_id`,
+- `DeadcatNode::scan_lmsr_pool` re-derives canonical `market_id` plus network-bound `lmsr_pool_id` and rejects mismatches.
+
 ## Canonical LMSR State Tracking
 
 The pool scanner follows canonical reserve bundle lineage from creation anchors:
@@ -82,13 +87,19 @@ Ambiguity, malformed witness data, partial bundle spends, or unsupported schema 
 - LMSR immutable pool identity/params,
 - LMSR mutable canonical state (`s_index`, reserve outpoints, reserve balances, transition tx provenance).
 
-Announcement snapshots are not treated as canonical live state.
+Announcement snapshots are advisory, not canonical live state.
+They may seed a missing LMSR pool row and later enrich Nostr provenance.
+Once canonical scan state exists, later announcement ingests must not overwrite
+canonical `s_index`, reserve balances, reserve outpoints, transition provenance,
+or immutable pool identity such as `market_id`.
+Canonical LMSR scans bootstrap the pool row if missing and refresh canonical state
+without erasing previously stored Nostr provenance.
 
 ## API Surface
 
 Public API remains centered on:
 
-- `DeadcatNode` high-level methods (`quote_trade`, `execute_trade`, discovery fetch/publish),
+- `DeadcatNode` high-level methods (`quote_trade`, `execute_trade`, discovery fetch/publish, `create_lmsr_pool`, `scan_lmsr_pool`),
 - prediction market + maker order + LMSR typed models,
 - discovery DTOs and persistence trait contracts.
 

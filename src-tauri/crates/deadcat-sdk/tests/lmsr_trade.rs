@@ -19,8 +19,6 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const WITNESS_SCHEMA_V2: &str = "DEADCAT/LMSR_WITNESS_SCHEMA_V2";
-const MARKET_ID_PREFIX: &str = "lmsr-regtest-market";
-
 fn rpc_client(env: &TestEnv) -> RpcClient {
     let (user, pass) = env.elements_rpc_credentials();
     RpcClient::new(&env.elements_rpc_url(), Auth::UserPass(user, pass))
@@ -350,7 +348,8 @@ impl RegtestFixture {
         let collateral_vout = collateral_vout.expect("collateral reserve vout");
 
         let creation_txid_hex = creation_txid.to_string();
-        let market_id = format!("{MARKET_ID_PREFIX}-{creation_txid_hex}");
+        let market_params = test_market_params(yes_asset, no_asset, lbtc_asset);
+        let market_id = market_params.market_id().to_string();
         let mut announcement = PoolAnnouncement {
             version: 2,
             params: PoolParams {
@@ -393,8 +392,6 @@ impl RegtestFixture {
             .await
             .expect("announce LMSR pool");
         tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let market_params = test_market_params(yes_asset, no_asset, lbtc_asset);
 
         Self {
             env,
