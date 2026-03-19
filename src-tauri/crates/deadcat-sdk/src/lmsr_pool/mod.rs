@@ -1,6 +1,8 @@
+pub mod api;
 pub mod assembly;
 pub mod chain_walk;
 pub mod contract;
+pub(crate) mod identity;
 pub mod math;
 pub mod params;
 pub mod table;

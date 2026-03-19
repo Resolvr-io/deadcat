@@ -98,11 +98,7 @@ pub struct PredictionMarketParams {
 impl PredictionMarketParams {
     /// Derive the market ID: SHA256(yes_token_asset || no_token_asset).
     pub fn market_id(&self) -> MarketId {
-        let mut hasher = Sha256::new();
-        hasher.update(self.yes_token_asset);
-        hasher.update(self.no_token_asset);
-        let result: [u8; 32] = hasher.finalize().into();
-        MarketId(result)
+        derive_market_id_from_assets(self.yes_token_asset, self.no_token_asset)
     }
 
     /// Build SimplicityHL `Arguments` for contract compilation.
@@ -143,6 +139,17 @@ impl PredictionMarketParams {
         ]);
         Arguments::from(map)
     }
+}
+
+pub(crate) fn derive_market_id_from_assets(
+    yes_token_asset: [u8; 32],
+    no_token_asset: [u8; 32],
+) -> MarketId {
+    let mut hasher = Sha256::new();
+    hasher.update(yes_token_asset);
+    hasher.update(no_token_asset);
+    let result: [u8; 32] = hasher.finalize().into();
+    MarketId(result)
 }
 
 #[cfg(test)]

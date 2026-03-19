@@ -607,7 +607,7 @@ use nostr_sdk::Keys;
 use crate::announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement, ContractMetadata};
 use crate::discovery::OrderAnnouncement;
 use crate::discovery::store_trait::{
-    DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateUpdateInput,
+    DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource, LmsrPoolStateUpdateInput,
     PredictionMarketCandidateIngestInput,
 };
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
@@ -620,6 +620,110 @@ use crate::taproot::NUMS_KEY_BYTES;
 pub struct TestStore {
     pub markets: Vec<PredictionMarketCandidateIngestInput>,
     pub orders: Vec<(MakerOrderParams, Option<String>)>,
+    pub pools: Vec<LmsrPoolIngestInput>,
+    pub pool_states: Vec<LmsrPoolStateUpdateInput>,
+}
+
+fn should_preserve_canonical_lmsr_state(
+    existing: &LmsrPoolIngestInput,
+    incoming: &LmsrPoolIngestInput,
+) -> bool {
+    existing.state_source == LmsrPoolStateSource::CanonicalScan
+        && incoming.state_source == LmsrPoolStateSource::Announcement
+}
+
+fn merge_lmsr_pool_ingest(existing: &mut LmsrPoolIngestInput, incoming: &LmsrPoolIngestInput) {
+    let preserve_canonical_state = should_preserve_canonical_lmsr_state(existing, incoming);
+    let preserved_identity = (
+        existing.market_id.clone(),
+        existing.creation_txid.clone(),
+        existing.witness_schema_version.clone(),
+        existing.yes_asset_id,
+        existing.no_asset_id,
+        existing.collateral_asset_id,
+        existing.fee_bps,
+        existing.cosigner_pubkey,
+        existing.lmsr_table_root,
+        existing.table_depth,
+        existing.q_step_lots,
+        existing.s_bias,
+        existing.s_max_index,
+        existing.half_payout_sats,
+    );
+    let preserved_state = preserve_canonical_state.then(|| {
+        (
+            existing.current_s_index,
+            existing.reserve_outpoints.clone(),
+            existing.reserve_yes,
+            existing.reserve_no,
+            existing.reserve_collateral,
+            existing.state_source,
+            existing.last_transition_txid.clone(),
+        )
+    });
+    let merged_event_id = incoming
+        .nostr_event_id
+        .clone()
+        .or_else(|| existing.nostr_event_id.clone());
+    let merged_event_json = incoming
+        .nostr_event_json
+        .clone()
+        .or_else(|| existing.nostr_event_json.clone());
+
+    *existing = incoming.clone();
+
+    let (
+        market_id,
+        creation_txid,
+        witness_schema_version,
+        yes_asset_id,
+        no_asset_id,
+        collateral_asset_id,
+        fee_bps,
+        cosigner_pubkey,
+        lmsr_table_root,
+        table_depth,
+        q_step_lots,
+        s_bias,
+        s_max_index,
+        half_payout_sats,
+    ) = preserved_identity;
+    existing.market_id = market_id;
+    existing.creation_txid = creation_txid;
+    existing.witness_schema_version = witness_schema_version;
+    existing.yes_asset_id = yes_asset_id;
+    existing.no_asset_id = no_asset_id;
+    existing.collateral_asset_id = collateral_asset_id;
+    existing.fee_bps = fee_bps;
+    existing.cosigner_pubkey = cosigner_pubkey;
+    existing.lmsr_table_root = lmsr_table_root;
+    existing.table_depth = table_depth;
+    existing.q_step_lots = q_step_lots;
+    existing.s_bias = s_bias;
+    existing.s_max_index = s_max_index;
+    existing.half_payout_sats = half_payout_sats;
+
+    if let Some((
+        current_s_index,
+        reserve_outpoints,
+        reserve_yes,
+        reserve_no,
+        reserve_collateral,
+        state_source,
+        last_transition_txid,
+    )) = preserved_state
+    {
+        existing.current_s_index = current_s_index;
+        existing.reserve_outpoints = reserve_outpoints;
+        existing.reserve_yes = reserve_yes;
+        existing.reserve_no = reserve_no;
+        existing.reserve_collateral = reserve_collateral;
+        existing.state_source = state_source;
+        existing.last_transition_txid = last_transition_txid;
+    }
+
+    existing.nostr_event_id = merged_event_id;
+    existing.nostr_event_json = merged_event_json;
 }
 
 impl DiscoveryStore for TestStore {
@@ -651,18 +755,128 @@ impl DiscoveryStore for TestStore {
         Ok(())
     }
 
-    fn ingest_lmsr_pool(
-        &mut self,
-        _input: &LmsrPoolIngestInput,
-    ) -> std::result::Result<(), String> {
+    fn ingest_lmsr_pool(&mut self, input: &LmsrPoolIngestInput) -> std::result::Result<(), String> {
+        match self
+            .pools
+            .iter_mut()
+            .find(|existing| existing.pool_id == input.pool_id)
+        {
+            Some(existing) => merge_lmsr_pool_ingest(existing, input),
+            None => self.pools.push(input.clone()),
+        }
         Ok(())
     }
 
     fn upsert_lmsr_pool_state(
         &mut self,
-        _input: &LmsrPoolStateUpdateInput,
+        input: &LmsrPoolStateUpdateInput,
     ) -> std::result::Result<(), String> {
+        self.pool_states.push(input.clone());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_lmsr_pool_ingest() -> LmsrPoolIngestInput {
+        LmsrPoolIngestInput {
+            pool_id: "11".repeat(32),
+            market_id: "22".repeat(32),
+            yes_asset_id: [0x01; 32],
+            no_asset_id: [0x02; 32],
+            collateral_asset_id: [0x03; 32],
+            fee_bps: 30,
+            cosigner_pubkey: [0x04; 32],
+            lmsr_table_root: [0x05; 32],
+            table_depth: 3,
+            q_step_lots: 10,
+            s_bias: 4,
+            s_max_index: 7,
+            half_payout_sats: 100,
+            creation_txid: "aa".repeat(32),
+            witness_schema_version: "DEADCAT/LMSR_WITNESS_SCHEMA_V2".to_string(),
+            current_s_index: 4,
+            reserve_outpoints: [
+                format!("{}:0", "aa".repeat(32)),
+                format!("{}:1", "aa".repeat(32)),
+                format!("{}:2", "aa".repeat(32)),
+            ],
+            reserve_yes: 500,
+            reserve_no: 400,
+            reserve_collateral: 1_000,
+            state_source: LmsrPoolStateSource::Announcement,
+            last_transition_txid: None,
+            nostr_event_id: Some("evt-1".to_string()),
+            nostr_event_json: Some(r#"{"id":"evt-1"}"#.to_string()),
+        }
+    }
+
+    #[test]
+    fn merge_lmsr_pool_ingest_preserves_canonical_state_for_later_announcements() {
+        let mut existing = sample_lmsr_pool_ingest();
+        let transition_txid = "bb".repeat(32);
+        existing.current_s_index = 6;
+        existing.reserve_outpoints = [
+            format!("{}:0", "bb".repeat(32)),
+            format!("{}:1", "bb".repeat(32)),
+            format!("{}:2", "bb".repeat(32)),
+        ];
+        existing.reserve_yes = 450;
+        existing.reserve_no = 430;
+        existing.reserve_collateral = 1_020;
+        existing.state_source = LmsrPoolStateSource::CanonicalScan;
+        existing.last_transition_txid = Some(transition_txid.clone());
+        existing.nostr_event_id = None;
+        existing.nostr_event_json = None;
+
+        let mut incoming = sample_lmsr_pool_ingest();
+        incoming.market_id = "33".repeat(32);
+        incoming.nostr_event_id = Some("evt-2".to_string());
+        incoming.nostr_event_json = Some(r#"{"id":"evt-2"}"#.to_string());
+
+        merge_lmsr_pool_ingest(&mut existing, &incoming);
+
+        assert_eq!(existing.market_id, sample_lmsr_pool_ingest().market_id);
+        assert_eq!(existing.current_s_index, 6);
+        assert_eq!(existing.state_source, LmsrPoolStateSource::CanonicalScan);
+        assert_eq!(
+            existing.last_transition_txid.as_deref(),
+            Some(transition_txid.as_str())
+        );
+        assert_eq!(existing.reserve_yes, 450);
+        assert_eq!(existing.reserve_no, 430);
+        assert_eq!(existing.reserve_collateral, 1_020);
+        assert_eq!(existing.nostr_event_id.as_deref(), Some("evt-2"));
+        assert_eq!(
+            existing.nostr_event_json.as_deref(),
+            Some(r#"{"id":"evt-2"}"#)
+        );
+    }
+
+    #[test]
+    fn merge_lmsr_pool_ingest_preserves_identity_for_conflicting_market_id() {
+        let mut existing = sample_lmsr_pool_ingest();
+        let original_market_id = existing.market_id.clone();
+        let original_creation_txid = existing.creation_txid.clone();
+        let original_witness_schema_version = existing.witness_schema_version.clone();
+
+        let mut incoming = sample_lmsr_pool_ingest();
+        incoming.market_id = "33".repeat(32);
+        incoming.nostr_event_id = Some("evt-2".to_string());
+        incoming.nostr_event_json = Some(r#"{"id":"evt-2"}"#.to_string());
+
+        merge_lmsr_pool_ingest(&mut existing, &incoming);
+
+        assert_eq!(existing.market_id, original_market_id);
+        assert_eq!(existing.creation_txid, original_creation_txid);
+        assert_eq!(
+            existing.witness_schema_version,
+            original_witness_schema_version
+        );
+        assert_eq!(existing.current_s_index, incoming.current_s_index);
+        assert_eq!(existing.nostr_event_id.as_deref(), Some("evt-2"));
     }
 }
 

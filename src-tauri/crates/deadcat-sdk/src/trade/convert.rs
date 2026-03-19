@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 use crate::lmsr_pool::params::{LmsrInitialOutpoint, LmsrPoolId, LmsrPoolParams};
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
 use crate::pool::PoolReserves;
+use crate::prediction_market::params::derive_market_id_from_assets;
 
 /// Decode a hex string into a fixed 32-byte array.
 pub(crate) fn hex_to_bytes32(hex: &str) -> Result<[u8; 32]> {
@@ -178,6 +179,12 @@ pub(crate) fn parse_discovered_lmsr_pool(
             "lmsr_pool_id does not match canonical derived ID: expected {derived_pool_id}"
         )));
     }
+    let expected_market_id = derive_market_id_from_assets(params.yes_asset_id, params.no_asset_id);
+    if pool.market_id != expected_market_id.to_string() {
+        return Err(Error::TradeRouting(format!(
+            "market_id does not match canonical derived ID: expected {expected_market_id}"
+        )));
+    }
 
     Ok(ParsedLmsrDiscoveredPool {
         params,
@@ -243,6 +250,7 @@ pub(crate) fn parse_discovered_order(
 mod tests {
     use super::*;
     use crate::pool::PoolReserves;
+    use crate::prediction_market::params::derive_market_id_from_assets;
 
     fn hex32(byte: u8) -> String {
         hex::encode([byte; 32])
@@ -273,7 +281,7 @@ mod tests {
         let creation_txid = hex32(0xaa);
         let mut pool = DiscoveredPool {
             id: "evt1".into(),
-            market_id: "mkt1".into(),
+            market_id: derive_market_id_from_assets([0x01; 32], [0x02; 32]).to_string(),
             pool_id: "pool1".into(),
             yes_asset_id: hex32(0x01),
             no_asset_id: hex32(0x02),
@@ -433,6 +441,17 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("lmsr_pool_id does not match canonical derived ID")
+        );
+    }
+
+    #[test]
+    fn parse_lmsr_pool_rejects_mismatched_market_id() {
+        let mut pool = sample_pool();
+        pool.market_id = hex32(0xff);
+        let err = parse_discovered_lmsr_pool(&pool, "liquid-testnet").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("market_id does not match canonical derived ID")
         );
     }
 

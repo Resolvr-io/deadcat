@@ -418,8 +418,9 @@ impl DeadcatStore {
             "half_payout_sats": input.half_payout_sats
         })
         .to_string();
-
-        diesel::sql_query(
+        let canonical_state_source = deadcat_sdk::LmsrPoolStateSource::CanonicalScan.as_str();
+        let announcement_state_source = deadcat_sdk::LmsrPoolStateSource::Announcement.as_str();
+        let query = format!(
             "INSERT INTO lmsr_pools (
                 pool_id,
                 market_id,
@@ -443,40 +444,87 @@ impl DeadcatStore {
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')
             )
             ON CONFLICT(pool_id) DO UPDATE SET
-                market_id = excluded.market_id,
-                creation_txid = excluded.creation_txid,
-                witness_schema_version = excluded.witness_schema_version,
-                current_s_index = excluded.current_s_index,
-                reserve_yes = excluded.reserve_yes,
-                reserve_no = excluded.reserve_no,
-                reserve_collateral = excluded.reserve_collateral,
-                reserve_yes_outpoint = excluded.reserve_yes_outpoint,
-                reserve_no_outpoint = excluded.reserve_no_outpoint,
-                reserve_collateral_outpoint = excluded.reserve_collateral_outpoint,
-                state_source = excluded.state_source,
-                last_transition_txid = excluded.last_transition_txid,
-                params_json = excluded.params_json,
-                nostr_event_id = excluded.nostr_event_id,
-                nostr_event_json = excluded.nostr_event_json,
-                updated_at = datetime('now')",
-        )
-        .bind::<Text, _>(&input.pool_id)
-        .bind::<Text, _>(&input.market_id)
-        .bind::<Text, _>(&input.creation_txid)
-        .bind::<Text, _>(&input.witness_schema_version)
-        .bind::<BigInt, _>(input.current_s_index as i64)
-        .bind::<BigInt, _>(input.reserve_yes as i64)
-        .bind::<BigInt, _>(input.reserve_no as i64)
-        .bind::<BigInt, _>(input.reserve_collateral as i64)
-        .bind::<Text, _>(&input.reserve_outpoints[0])
-        .bind::<Text, _>(&input.reserve_outpoints[1])
-        .bind::<Text, _>(&input.reserve_outpoints[2])
-        .bind::<Text, _>(input.state_source.as_str())
-        .bind::<Nullable<Text>, _>(input.last_transition_txid.as_deref())
-        .bind::<Text, _>(&params_json)
-        .bind::<Nullable<Text>, _>(input.nostr_event_id.as_deref())
-        .bind::<Nullable<Text>, _>(input.nostr_event_json.as_deref())
-        .execute(&mut self.conn)?;
+                market_id = lmsr_pools.market_id,
+                creation_txid = lmsr_pools.creation_txid,
+                witness_schema_version = lmsr_pools.witness_schema_version,
+                current_s_index = CASE
+                    WHEN lmsr_pools.state_source = '{canonical_state_source}'
+                        AND excluded.state_source = '{announcement_state_source}'
+                    THEN lmsr_pools.current_s_index
+                    ELSE excluded.current_s_index
+                END,
+                reserve_yes = CASE
+                    WHEN lmsr_pools.state_source = '{canonical_state_source}'
+                        AND excluded.state_source = '{announcement_state_source}'
+                    THEN lmsr_pools.reserve_yes
+                    ELSE excluded.reserve_yes
+                END,
+                reserve_no = CASE
+                    WHEN lmsr_pools.state_source = '{canonical_state_source}'
+                        AND excluded.state_source = '{announcement_state_source}'
+                    THEN lmsr_pools.reserve_no
+                    ELSE excluded.reserve_no
+                END,
+                reserve_collateral = CASE
+                    WHEN lmsr_pools.state_source = '{canonical_state_source}'
+                        AND excluded.state_source = '{announcement_state_source}'
+                    THEN lmsr_pools.reserve_collateral
+                    ELSE excluded.reserve_collateral
+                END,
+                reserve_yes_outpoint = CASE
+                    WHEN lmsr_pools.state_source = '{canonical_state_source}'
+                        AND excluded.state_source = '{announcement_state_source}'
+                    THEN lmsr_pools.reserve_yes_outpoint
+                    ELSE excluded.reserve_yes_outpoint
+                END,
+                reserve_no_outpoint = CASE
+                    WHEN lmsr_pools.state_source = '{canonical_state_source}'
+                        AND excluded.state_source = '{announcement_state_source}'
+                    THEN lmsr_pools.reserve_no_outpoint
+                    ELSE excluded.reserve_no_outpoint
+                END,
+                reserve_collateral_outpoint = CASE
+                    WHEN lmsr_pools.state_source = '{canonical_state_source}'
+                        AND excluded.state_source = '{announcement_state_source}'
+                    THEN lmsr_pools.reserve_collateral_outpoint
+                    ELSE excluded.reserve_collateral_outpoint
+                END,
+                state_source = CASE
+                    WHEN lmsr_pools.state_source = '{canonical_state_source}'
+                        AND excluded.state_source = '{announcement_state_source}'
+                    THEN lmsr_pools.state_source
+                    ELSE excluded.state_source
+                END,
+                last_transition_txid = CASE
+                    WHEN lmsr_pools.state_source = '{canonical_state_source}'
+                        AND excluded.state_source = '{announcement_state_source}'
+                    THEN lmsr_pools.last_transition_txid
+                    ELSE excluded.last_transition_txid
+                END,
+                params_json = lmsr_pools.params_json,
+                nostr_event_id = COALESCE(excluded.nostr_event_id, lmsr_pools.nostr_event_id),
+                nostr_event_json = COALESCE(excluded.nostr_event_json, lmsr_pools.nostr_event_json),
+                updated_at = datetime('now')"
+        );
+
+        diesel::sql_query(query)
+            .bind::<Text, _>(&input.pool_id)
+            .bind::<Text, _>(&input.market_id)
+            .bind::<Text, _>(&input.creation_txid)
+            .bind::<Text, _>(&input.witness_schema_version)
+            .bind::<BigInt, _>(input.current_s_index as i64)
+            .bind::<BigInt, _>(input.reserve_yes as i64)
+            .bind::<BigInt, _>(input.reserve_no as i64)
+            .bind::<BigInt, _>(input.reserve_collateral as i64)
+            .bind::<Text, _>(&input.reserve_outpoints[0])
+            .bind::<Text, _>(&input.reserve_outpoints[1])
+            .bind::<Text, _>(&input.reserve_outpoints[2])
+            .bind::<Text, _>(input.state_source.as_str())
+            .bind::<Nullable<Text>, _>(input.last_transition_txid.as_deref())
+            .bind::<Text, _>(&params_json)
+            .bind::<Nullable<Text>, _>(input.nostr_event_id.as_deref())
+            .bind::<Nullable<Text>, _>(input.nostr_event_json.as_deref())
+            .execute(&mut self.conn)?;
 
         Ok(())
     }
@@ -1702,5 +1750,299 @@ fn insert_chain_utxo(
 mod hex {
     pub fn encode(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diesel::QueryableByName;
+    use diesel::sql_types::{BigInt, Nullable, Text};
+
+    #[derive(Debug, QueryableByName)]
+    struct PoolRow {
+        #[diesel(sql_type = Text)]
+        market_id: String,
+        #[diesel(sql_type = Text)]
+        creation_txid: String,
+        #[diesel(sql_type = Text)]
+        witness_schema_version: String,
+        #[diesel(sql_type = BigInt)]
+        current_s_index: i64,
+        #[diesel(sql_type = BigInt)]
+        reserve_yes: i64,
+        #[diesel(sql_type = BigInt)]
+        reserve_no: i64,
+        #[diesel(sql_type = BigInt)]
+        reserve_collateral: i64,
+        #[diesel(sql_type = Text)]
+        reserve_yes_outpoint: String,
+        #[diesel(sql_type = Text)]
+        reserve_no_outpoint: String,
+        #[diesel(sql_type = Text)]
+        reserve_collateral_outpoint: String,
+        #[diesel(sql_type = Text)]
+        state_source: String,
+        #[diesel(sql_type = Nullable<Text>)]
+        last_transition_txid: Option<String>,
+        #[diesel(sql_type = Nullable<Text>)]
+        nostr_event_id: Option<String>,
+        #[diesel(sql_type = Nullable<Text>)]
+        nostr_event_json: Option<String>,
+    }
+
+    fn sample_lmsr_pool_ingest() -> LmsrPoolIngestInput {
+        LmsrPoolIngestInput {
+            pool_id: "11".repeat(32),
+            market_id: "22".repeat(32),
+            yes_asset_id: [0x01; 32],
+            no_asset_id: [0x02; 32],
+            collateral_asset_id: [0x03; 32],
+            fee_bps: 30,
+            cosigner_pubkey: [0x04; 32],
+            lmsr_table_root: [0x05; 32],
+            table_depth: 3,
+            q_step_lots: 10,
+            s_bias: 4,
+            s_max_index: 7,
+            half_payout_sats: 100,
+            creation_txid: "aa".repeat(32),
+            witness_schema_version: "DEADCAT/LMSR_WITNESS_SCHEMA_V2".to_string(),
+            current_s_index: 4,
+            reserve_outpoints: [
+                format!("{}:0", "aa".repeat(32)),
+                format!("{}:1", "aa".repeat(32)),
+                format!("{}:2", "aa".repeat(32)),
+            ],
+            reserve_yes: 500,
+            reserve_no: 400,
+            reserve_collateral: 1_000,
+            state_source: deadcat_sdk::LmsrPoolStateSource::Announcement,
+            last_transition_txid: None,
+            nostr_event_id: Some("evt-1".to_string()),
+            nostr_event_json: Some(r#"{"id":"evt-1"}"#.to_string()),
+        }
+    }
+
+    fn sample_canonical_lmsr_pool_ingest() -> LmsrPoolIngestInput {
+        let mut canonical = sample_lmsr_pool_ingest();
+        canonical.current_s_index = 5;
+        canonical.reserve_outpoints = [
+            format!("{}:0", "bb".repeat(32)),
+            format!("{}:1", "bb".repeat(32)),
+            format!("{}:2", "bb".repeat(32)),
+        ];
+        canonical.reserve_yes = 450;
+        canonical.reserve_no = 430;
+        canonical.reserve_collateral = 1_020;
+        canonical.state_source = deadcat_sdk::LmsrPoolStateSource::CanonicalScan;
+        canonical.last_transition_txid = Some("bb".repeat(32));
+        canonical.nostr_event_id = None;
+        canonical.nostr_event_json = None;
+        canonical
+    }
+
+    fn fetch_pool_row(store: &mut DeadcatStore, pool_id: &str) -> PoolRow {
+        diesel::sql_query(
+            "SELECT
+                market_id,
+                creation_txid,
+                witness_schema_version,
+                current_s_index,
+                reserve_yes,
+                reserve_no,
+                reserve_collateral,
+                reserve_yes_outpoint,
+                reserve_no_outpoint,
+                reserve_collateral_outpoint,
+                state_source,
+                last_transition_txid,
+                nostr_event_id,
+                nostr_event_json
+             FROM lmsr_pools
+             WHERE pool_id = ?",
+        )
+        .bind::<Text, _>(pool_id)
+        .get_result(&mut store.conn)
+        .unwrap()
+    }
+
+    #[test]
+    fn ingest_lmsr_pool_preserves_existing_nostr_provenance_when_scan_omits_it() {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        let initial = sample_lmsr_pool_ingest();
+        store.ingest_lmsr_pool(&initial).unwrap();
+
+        let canonical_scan = sample_canonical_lmsr_pool_ingest();
+
+        store.ingest_lmsr_pool(&canonical_scan).unwrap();
+
+        let row = fetch_pool_row(&mut store, &initial.pool_id);
+
+        assert_eq!(row.market_id, initial.market_id);
+        assert_eq!(row.creation_txid, initial.creation_txid);
+        assert_eq!(row.witness_schema_version, initial.witness_schema_version);
+        assert_eq!(row.current_s_index, canonical_scan.current_s_index as i64);
+        assert_eq!(row.reserve_yes, canonical_scan.reserve_yes as i64);
+        assert_eq!(row.reserve_no, canonical_scan.reserve_no as i64);
+        assert_eq!(
+            row.reserve_collateral,
+            canonical_scan.reserve_collateral as i64
+        );
+        assert_eq!(
+            row.reserve_yes_outpoint,
+            canonical_scan.reserve_outpoints[0]
+        );
+        assert_eq!(row.reserve_no_outpoint, canonical_scan.reserve_outpoints[1]);
+        assert_eq!(
+            row.reserve_collateral_outpoint,
+            canonical_scan.reserve_outpoints[2]
+        );
+        assert_eq!(
+            row.state_source,
+            deadcat_sdk::LmsrPoolStateSource::CanonicalScan.as_str()
+        );
+        assert_eq!(
+            row.last_transition_txid.as_deref(),
+            canonical_scan.last_transition_txid.as_deref()
+        );
+        assert_eq!(row.nostr_event_id.as_deref(), Some("evt-1"));
+        assert_eq!(row.nostr_event_json.as_deref(), Some(r#"{"id":"evt-1"}"#));
+    }
+
+    #[test]
+    fn ingest_lmsr_pool_updates_announcement_snapshot_with_new_announcement_state() {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        let initial = sample_lmsr_pool_ingest();
+        store.ingest_lmsr_pool(&initial).unwrap();
+
+        let mut refreshed = sample_lmsr_pool_ingest();
+        refreshed.current_s_index = 6;
+        refreshed.reserve_yes = 490;
+        refreshed.reserve_no = 410;
+        refreshed.reserve_collateral = 1_010;
+        refreshed.reserve_outpoints = [
+            format!("{}:0", "cc".repeat(32)),
+            format!("{}:1", "cc".repeat(32)),
+            format!("{}:2", "cc".repeat(32)),
+        ];
+        refreshed.nostr_event_id = Some("evt-2".to_string());
+        refreshed.nostr_event_json = Some(r#"{"id":"evt-2"}"#.to_string());
+
+        store.ingest_lmsr_pool(&refreshed).unwrap();
+
+        let row = fetch_pool_row(&mut store, &initial.pool_id);
+        assert_eq!(row.market_id, initial.market_id);
+        assert_eq!(row.creation_txid, initial.creation_txid);
+        assert_eq!(row.witness_schema_version, initial.witness_schema_version);
+        assert_eq!(row.current_s_index, refreshed.current_s_index as i64);
+        assert_eq!(row.reserve_yes, refreshed.reserve_yes as i64);
+        assert_eq!(row.reserve_no, refreshed.reserve_no as i64);
+        assert_eq!(row.reserve_collateral, refreshed.reserve_collateral as i64);
+        assert_eq!(row.reserve_yes_outpoint, refreshed.reserve_outpoints[0]);
+        assert_eq!(row.reserve_no_outpoint, refreshed.reserve_outpoints[1]);
+        assert_eq!(
+            row.reserve_collateral_outpoint,
+            refreshed.reserve_outpoints[2]
+        );
+        assert_eq!(
+            row.state_source,
+            deadcat_sdk::LmsrPoolStateSource::Announcement.as_str()
+        );
+        assert_eq!(row.last_transition_txid, None);
+        assert_eq!(row.nostr_event_id.as_deref(), Some("evt-2"));
+        assert_eq!(row.nostr_event_json.as_deref(), Some(r#"{"id":"evt-2"}"#));
+    }
+
+    #[test]
+    fn ingest_lmsr_pool_preserves_canonical_state_when_later_announcement_arrives() {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        let initial = sample_lmsr_pool_ingest();
+        let canonical_scan = sample_canonical_lmsr_pool_ingest();
+        let mut later_announcement = sample_lmsr_pool_ingest();
+        later_announcement.nostr_event_id = Some("evt-2".to_string());
+        later_announcement.nostr_event_json = Some(r#"{"id":"evt-2"}"#.to_string());
+
+        store.ingest_lmsr_pool(&initial).unwrap();
+        store.ingest_lmsr_pool(&canonical_scan).unwrap();
+        store.ingest_lmsr_pool(&later_announcement).unwrap();
+
+        let row = fetch_pool_row(&mut store, &initial.pool_id);
+        assert_eq!(row.market_id, initial.market_id);
+        assert_eq!(row.creation_txid, initial.creation_txid);
+        assert_eq!(row.witness_schema_version, initial.witness_schema_version);
+        assert_eq!(row.current_s_index, canonical_scan.current_s_index as i64);
+        assert_eq!(row.reserve_yes, canonical_scan.reserve_yes as i64);
+        assert_eq!(row.reserve_no, canonical_scan.reserve_no as i64);
+        assert_eq!(
+            row.reserve_collateral,
+            canonical_scan.reserve_collateral as i64
+        );
+        assert_eq!(
+            row.reserve_yes_outpoint,
+            canonical_scan.reserve_outpoints[0]
+        );
+        assert_eq!(row.reserve_no_outpoint, canonical_scan.reserve_outpoints[1]);
+        assert_eq!(
+            row.reserve_collateral_outpoint,
+            canonical_scan.reserve_outpoints[2]
+        );
+        assert_eq!(
+            row.state_source,
+            deadcat_sdk::LmsrPoolStateSource::CanonicalScan.as_str()
+        );
+        assert_eq!(
+            row.last_transition_txid.as_deref(),
+            canonical_scan.last_transition_txid.as_deref()
+        );
+        assert_eq!(row.nostr_event_id.as_deref(), Some("evt-2"));
+        assert_eq!(row.nostr_event_json.as_deref(), Some(r#"{"id":"evt-2"}"#));
+    }
+
+    #[test]
+    fn ingest_lmsr_pool_preserves_identity_when_later_announcement_has_different_market_id() {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        let initial = sample_lmsr_pool_ingest();
+        let mut conflicting = sample_lmsr_pool_ingest();
+        conflicting.market_id = "33".repeat(32);
+        conflicting.nostr_event_id = Some("evt-3".to_string());
+        conflicting.nostr_event_json = Some(r#"{"id":"evt-3"}"#.to_string());
+
+        store.ingest_lmsr_pool(&initial).unwrap();
+        store.ingest_lmsr_pool(&conflicting).unwrap();
+
+        let row = fetch_pool_row(&mut store, &initial.pool_id);
+        assert_eq!(row.market_id, initial.market_id);
+        assert_eq!(row.creation_txid, initial.creation_txid);
+        assert_eq!(row.witness_schema_version, initial.witness_schema_version);
+        assert_eq!(row.current_s_index, conflicting.current_s_index as i64);
+        assert_eq!(row.nostr_event_id.as_deref(), Some("evt-3"));
+    }
+
+    #[test]
+    fn ingest_lmsr_pool_preserves_canonical_identity_when_later_announcement_has_different_market_id()
+     {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        let initial = sample_lmsr_pool_ingest();
+        let canonical_scan = sample_canonical_lmsr_pool_ingest();
+        let mut conflicting = sample_lmsr_pool_ingest();
+        conflicting.market_id = "33".repeat(32);
+        conflicting.nostr_event_id = Some("evt-3".to_string());
+        conflicting.nostr_event_json = Some(r#"{"id":"evt-3"}"#.to_string());
+
+        store.ingest_lmsr_pool(&initial).unwrap();
+        store.ingest_lmsr_pool(&canonical_scan).unwrap();
+        store.ingest_lmsr_pool(&conflicting).unwrap();
+
+        let row = fetch_pool_row(&mut store, &initial.pool_id);
+        assert_eq!(row.market_id, initial.market_id);
+        assert_eq!(row.creation_txid, initial.creation_txid);
+        assert_eq!(row.witness_schema_version, initial.witness_schema_version);
+        assert_eq!(row.current_s_index, canonical_scan.current_s_index as i64);
+        assert_eq!(
+            row.state_source,
+            deadcat_sdk::LmsrPoolStateSource::CanonicalScan.as_str()
+        );
+        assert_eq!(row.nostr_event_id.as_deref(), Some("evt-3"));
     }
 }
