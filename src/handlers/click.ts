@@ -1335,6 +1335,12 @@ export async function handleClick(
     return;
   }
 
+  if (action === "toggle-lbtc-label") {
+    state.showLbtcLabel = !state.showLbtcLabel;
+    render();
+    return;
+  }
+
   if (action === "set-wallet-unit") {
     const unit = actionEl?.getAttribute("data-unit") as "sats" | "btc" | null;
     if (unit) {

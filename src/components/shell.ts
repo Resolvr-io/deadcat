@@ -1,5 +1,5 @@
 import { renderBackupModal } from "../components/wallet-modals.ts";
-import { formatCompactSats } from "../services/wallet.ts";
+import { btcLabel, formatCompactSats } from "../services/wallet.ts";
 import { baseCurrencyOptions, categories, DEV_MODE, state } from "../state.ts";
 import type { RelayBackupResult, RelayEntry } from "../types.ts";
 import { escapeAttr, escapeHtml } from "../utils/html.ts";
@@ -263,6 +263,15 @@ export function renderTopShell(): string {
                   </div>
                   <button data-action="toggle-mini-wallet" class="relative h-5 w-9 rounded-full transition ${state.showMiniWallet ? "bg-emerald-400" : "bg-slate-700"}">
                     <span class="absolute top-0.5 ${state.showMiniWallet ? "left-[18px]" : "left-0.5"} h-4 w-4 rounded-full bg-white shadow transition-all"></span>
+                  </button>
+                </div>
+                <div class="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2.5">
+                  <div>
+                    <p class="text-xs text-slate-300">Show L-BTC asset label</p>
+                    <p class="text-[10px] text-slate-500">Display "${btcLabel()}" instead of "${state.showLbtcLabel ? "BTC" : "L-BTC"}" for Liquid Bitcoin</p>
+                  </div>
+                  <button data-action="toggle-lbtc-label" class="relative h-5 w-9 rounded-full transition ${state.showLbtcLabel ? "bg-emerald-400" : "bg-slate-700"}">
+                    <span class="absolute top-0.5 ${state.showLbtcLabel ? "left-[18px]" : "left-0.5"} h-4 w-4 rounded-full bg-white shadow transition-all"></span>
                   </button>
                 </div>
                 <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">

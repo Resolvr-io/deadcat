@@ -181,6 +181,7 @@ export const state: {
   walletUnit: "sats" | "btc";
   walletBalanceHidden: boolean;
   showMiniWallet: boolean;
+  showLbtcLabel: boolean;
   baseCurrency: BaseCurrency;
   helpOpen: boolean;
   settingsOpen: boolean;
@@ -325,6 +326,7 @@ export const state: {
   walletUnit: "sats",
   walletBalanceHidden: false,
   showMiniWallet: true,
+  showLbtcLabel: false,
   baseCurrency: "BTC" as BaseCurrency,
   marketCreating: false,
   helpOpen: false,

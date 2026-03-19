@@ -1,4 +1,4 @@
-import { formatLbtc } from "../../services/wallet.ts";
+import { btcLabel, formatLbtc } from "../../services/wallet.ts";
 import { state } from "../../state.ts";
 import type { WalletUtxo } from "../../types.ts";
 import { escapeAttr, escapeHtml } from "../../utils/html.ts";
@@ -60,7 +60,9 @@ export function renderWalletUtxoSection(params: {
     .map((u) =>
       utxoRow(
         u,
-        '<span class="rounded bg-slate-700 px-1.5 py-0.5 text-[10px] font-medium text-slate-300 shrink-0">L-BTC</span>',
+        '<span class="rounded bg-slate-700 px-1.5 py-0.5 text-[10px] font-medium text-slate-300 shrink-0">' +
+          btcLabel() +
+          "</span>",
       ),
     )
     .join("");
@@ -105,7 +107,9 @@ export function renderWalletUtxoSection(params: {
   const expandedContent = state.walletUtxosExpanded
     ? '<div class="mt-3">' +
       (lbtcUtxos.length > 0
-        ? '<div class="mb-1 text-[10px] font-medium uppercase tracking-wider text-slate-500">L-BTC</div>' +
+        ? '<div class="mb-1 text-[10px] font-medium uppercase tracking-wider text-slate-500">' +
+          btcLabel() +
+          "</div>" +
           lbtcRows
         : "") +
       (tokenUtxos.length > 0

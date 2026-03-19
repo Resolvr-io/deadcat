@@ -11,7 +11,7 @@ export function renderWalletLocked(params: {
   return `
     <div class="phi-container py-8">
       <div class="mx-auto max-w-lg space-y-6">
-        <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet ${networkBadge}</h2>
+        <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Wallet ${networkBadge}</h2>
         <p class="text-sm text-slate-400">Wallet locked. Enter your password to unlock.</p>
         ${errorHtml}
         <div class="space-y-4 rounded-lg border border-slate-700 bg-slate-900/50 p-6">

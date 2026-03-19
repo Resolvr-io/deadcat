@@ -1,4 +1,4 @@
-import { formatLbtc } from "../../services/wallet.ts";
+import { btcLabel, formatLbtc, satsLabel } from "../../services/wallet.ts";
 import { markets, state } from "../../state.ts";
 import { reverseHex } from "../../utils/crypto.ts";
 import { satsToFiatStr } from "../../utils/format.ts";
@@ -78,7 +78,7 @@ export function renderWalletUnlocked(params: {
     <div class="phi-container py-8">
       <div class="mx-auto max-w-2xl space-y-6">
         <div class="flex items-center justify-between">
-          <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Liquid Bitcoin Wallet ${networkBadge}</h2>
+          <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Wallet ${networkBadge}</h2>
           <div class="flex gap-2">
             <button data-action="sync-wallet" class="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800" ${loading ? "disabled" : ""}>Sync</button>
             <button data-action="show-backup" class="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">Backup</button>
@@ -104,8 +104,8 @@ export function renderWalletUnlocked(params: {
           <div class="mt-1 text-3xl font-medium tracking-tight text-slate-100">${state.walletBalanceHidden ? `<span class="inline-flex gap-1 text-slate-500">${PAW_ICON}${PAW_ICON}${PAW_ICON}${PAW_ICON}</span>` : formatLbtc(policyBalance)}</div>
           ${!state.walletBalanceHidden && state.baseCurrency !== "BTC" ? `<div class="mt-1 text-sm text-slate-400">${satsToFiatStr(policyBalance)}</div>` : ""}
           <div class="mt-3 flex items-center justify-center gap-1 rounded-full border border-slate-700 mx-auto w-fit text-xs">
-            <button data-action="set-wallet-unit" data-unit="sats" class="rounded-full px-3 py-1 transition ${state.walletUnit === "sats" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}">L-sats</button>
-            <button data-action="set-wallet-unit" data-unit="btc" class="rounded-full px-3 py-1 transition ${state.walletUnit === "btc" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}">L-BTC</button>
+            <button data-action="set-wallet-unit" data-unit="sats" class="rounded-full px-3 py-1 transition ${state.walletUnit === "sats" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}">${satsLabel()}</button>
+            <button data-action="set-wallet-unit" data-unit="btc" class="rounded-full px-3 py-1 transition ${state.walletUnit === "btc" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}">${btcLabel()}</button>
           </div>
         </div>
 
