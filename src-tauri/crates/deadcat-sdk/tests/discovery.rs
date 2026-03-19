@@ -2,9 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use deadcat_sdk::testing::{
-    TestStore, oracle_pubkey_from_keys, test_market_params, test_metadata, test_order_announcement,
+    TestStore, oracle_pubkey_from_keys, test_market_announcement, test_order_announcement,
 };
-use deadcat_sdk::{ContractAnnouncement, DiscoveryConfig, DiscoveryEvent, DiscoveryService};
+use deadcat_sdk::{DiscoveryConfig, DiscoveryEvent, DiscoveryService};
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
 
@@ -37,13 +37,7 @@ async fn market_announce_discover_roundtrip() {
     let (service, _rx, store, keys) = setup_service_with_store(&mock.url()).await;
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_market_params(oracle_pubkey);
-    let announcement = ContractAnnouncement {
-        version: 2,
-        contract_params: params,
-        metadata: test_metadata(),
-        creation_txid: Some("abc123def456".to_string()),
-    };
+    let (announcement, params) = test_market_announcement(oracle_pubkey, 0x11);
 
     // Publish
     let event_id = service.announce_market(&announcement).await.unwrap();
@@ -64,7 +58,10 @@ async fn market_announce_discover_roundtrip() {
     assert_eq!(market.cpt_sats, 5000);
     assert_eq!(market.expiry_height, 3_650_000);
     assert_eq!(market.oracle_pubkey, hex::encode(oracle_pubkey));
-    assert_eq!(market.creation_txid, Some("abc123def456".to_string()));
+    assert_eq!(
+        market.anchor.creation_txid,
+        announcement.anchor.creation_txid
+    );
 
     // Verify market_id is correct
     let expected_market_id = params.market_id();
@@ -73,7 +70,7 @@ async fn market_announce_discover_roundtrip() {
     // Verify persisted to store
     let s = store.lock().unwrap();
     assert_eq!(s.markets.len(), 1);
-    assert_eq!(s.markets[0].market_id(), expected_market_id);
+    assert_eq!(s.markets[0].params.market_id(), expected_market_id);
 }
 
 #[tokio::test]
@@ -124,13 +121,7 @@ async fn subscription_delivers_market_events() {
     publisher.connect().await;
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_market_params(oracle_pubkey);
-    let announcement = ContractAnnouncement {
-        version: 2,
-        contract_params: params,
-        metadata: test_metadata(),
-        creation_txid: None,
-    };
+    let (announcement, _params) = test_market_announcement(oracle_pubkey, 0x22);
 
     let event =
         deadcat_sdk::build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
@@ -198,13 +189,7 @@ async fn store_persistence_on_discovery() {
 
     // Publish a market
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_market_params(oracle_pubkey);
-    let announcement = ContractAnnouncement {
-        version: 2,
-        contract_params: params,
-        metadata: test_metadata(),
-        creation_txid: None,
-    };
+    let (announcement, _params) = test_market_announcement(oracle_pubkey, 0x33);
     let event =
         deadcat_sdk::build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
     publisher.send_event(event).await.unwrap();
@@ -237,16 +222,10 @@ async fn attestation_roundtrip() {
     let (service, _rx, _store, keys) = setup_service_with_store(&mock.url()).await;
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_market_params(oracle_pubkey);
+    let (announcement, params) = test_market_announcement(oracle_pubkey, 0x44);
     let market_id = params.market_id();
 
     // First publish the announcement
-    let announcement = ContractAnnouncement {
-        version: 2,
-        contract_params: params,
-        metadata: test_metadata(),
-        creation_txid: None,
-    };
     let ann_event_id = service.announce_market(&announcement).await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -294,13 +273,7 @@ async fn duplicate_markets_are_idempotent() {
     let (service, _rx, store, keys) = setup_service_with_store(&mock.url()).await;
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
-    let params = test_market_params(oracle_pubkey);
-    let announcement = ContractAnnouncement {
-        version: 2,
-        contract_params: params,
-        metadata: test_metadata(),
-        creation_txid: None,
-    };
+    let (announcement, _params) = test_market_announcement(oracle_pubkey, 0x55);
 
     // Publish the same market twice
     service.announce_market(&announcement).await.unwrap();

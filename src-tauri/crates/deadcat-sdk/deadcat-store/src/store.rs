@@ -1,20 +1,31 @@
+use chrono::{TimeZone, Utc};
 use diesel::prelude::*;
 use diesel::sql_types::Integer;
 use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 use deadcat_sdk::{
-    CompiledMakerOrder, CompiledPredictionMarket, ContractMetadataInput, LmsrPoolIngestInput,
-    MakerOrderParams, MarketId, MarketState, OrderDirection, PredictionMarketParams, UnblindedUtxo,
+    CompiledMakerOrder, CompiledPredictionMarket, LmsrPoolIngestInput, MakerOrderParams, MarketId,
+    MarketSlot, MarketState, OrderDirection, PredictionMarketAnchor,
+    PredictionMarketCandidateIngestInput, PredictionMarketParams, UnblindedUtxo,
+    parse_prediction_market_anchor,
+    prediction_market_scan::{
+        CanonicalMarketScan, PredictionMarketScanBackend, scan_prediction_market_canonical,
+        validate_prediction_market_creation_tx,
+    },
 };
 
 use crate::conversions::{
-    direction_to_i32, new_maker_order_row, new_market_row, new_utxo_row, vec_to_array32,
+    DecodedDormantOpenings, direction_to_i32, new_maker_order_row, new_market_candidate_row,
+    new_utxo_row, vec_to_array32,
 };
 use crate::error::StoreError;
-use crate::models::{MakerOrderRow, MarketRow, NewUtxoRow, UtxoRow};
-use crate::schema::{maker_orders, markets, sync_state, utxos};
+use crate::models::{MakerOrderRow, MarketCandidateRow, MarketRow, NewUtxoRow, UtxoRow};
+use crate::schema::{maker_orders, market_candidates, markets, sync_state, utxos};
 use crate::sync::{ChainSource, ChainUtxo, MarketStateChange, OrderStatusChange, SyncReport};
+
+use deadcat_sdk::elements::Txid;
+use deadcat_sdk::elements::hashes::Hash as _;
 
 // Keep this const near migration changes so deadcat-store rebuilds when
 // embedded migration sets are updated.
@@ -22,6 +33,17 @@ pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
 /// SQL expression for SQLite's `datetime('now')`.
 const DATETIME_NOW: &str = "datetime('now')";
+const CANDIDATE_TTL_SECS: u64 = 6 * 60 * 60;
+
+fn sqlite_datetime_from_unix(now_unix: u64) -> crate::Result<String> {
+    let ts = i64::try_from(now_unix)
+        .map_err(|_| StoreError::InvalidData(format!("timestamp out of range: {now_unix}")))?;
+    let dt = Utc
+        .timestamp_opt(ts, 0)
+        .single()
+        .ok_or_else(|| StoreError::InvalidData(format!("invalid timestamp: {now_unix}")))?;
+    Ok(dt.format("%Y-%m-%d %H:%M:%S").to_string())
+}
 
 // --- Public types ---
 
@@ -77,10 +99,38 @@ pub struct MarketInfo {
     pub category: Option<String>,
     pub resolution_source: Option<String>,
     pub creator_pubkey: Option<Vec<u8>>,
-    pub creation_txid: Option<String>,
+    pub anchor: PredictionMarketAnchor,
     pub nevent: Option<String>,
     pub nostr_event_id: Option<String>,
     pub nostr_event_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MarketCandidateInfo {
+    pub candidate_id: i32,
+    pub market_id: MarketId,
+    pub params: PredictionMarketParams,
+    pub cmr: [u8; 32],
+    pub issuance: Option<IssuanceData>,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+    pub expires_at: Option<String>,
+    pub question: Option<String>,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    pub resolution_source: Option<String>,
+    pub creator_pubkey: Option<Vec<u8>>,
+    pub anchor: PredictionMarketAnchor,
+    pub nevent: Option<String>,
+    pub nostr_event_id: Option<String>,
+    pub nostr_event_json: Option<String>,
+}
+
+fn issuance_data_complete(row: &MarketCandidateRow) -> bool {
+    row.yes_issuance_entropy.is_some()
+        && row.no_issuance_entropy.is_some()
+        && row.yes_issuance_blinding_nonce.is_some()
+        && row.no_issuance_blinding_nonce.is_some()
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +152,16 @@ pub struct MarketFilter {
     pub oracle_public_key: Option<[u8; 32]>,
     pub collateral_asset_id: Option<[u8; 32]>,
     pub current_state: Option<MarketState>,
+    pub expiry_before: Option<u32>,
+    pub expiry_after: Option<u32>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MarketCandidateFilter {
+    pub market_id: Option<MarketId>,
+    pub oracle_public_key: Option<[u8; 32]>,
+    pub collateral_asset_id: Option<[u8; 32]>,
     pub expiry_before: Option<u32>,
     pub expiry_after: Option<u32>,
     pub limit: Option<i64>,
@@ -150,42 +210,134 @@ impl DeadcatStore {
 
     // ==================== Ingest ====================
 
-    /// Ingest a market from its contract parameters. Compiles the contract to derive
-    /// the CMR and 4 state scriptPubKeys. Returns the MarketId.
-    /// If the market already exists, this is a no-op returning the existing ID.
-    pub fn ingest_market(
+    /// Ingest a level-2-valid prediction-market candidate discovered off-chain.
+    ///
+    /// This crate does not treat ingestion as chain validation. Candidates remain
+    /// off-chain until a higher-level sync service promotes them after 2 confirmations.
+    pub fn ingest_prediction_market_candidate(
         &mut self,
-        params: &PredictionMarketParams,
-        metadata: Option<&ContractMetadataInput>,
-    ) -> crate::Result<MarketId> {
-        let mid = params.market_id();
-        let mid_bytes = mid.as_bytes().to_vec();
-
-        let exists: bool = diesel::select(diesel::dsl::exists(
-            markets::table.filter(markets::market_id.eq(&mid_bytes)),
-        ))
-        .get_result(&mut self.conn)?;
-
-        if exists {
-            // Update nostr_event_json if it was previously missing
-            if let Some(meta) = metadata
-                && let Some(ref json) = meta.nostr_event_json
-            {
-                diesel::update(markets::table.filter(markets::market_id.eq(&mid_bytes)))
-                    .set(markets::nostr_event_json.eq(json))
-                    .execute(&mut self.conn)?;
-            }
-            return Ok(mid);
+        input: &PredictionMarketCandidateIngestInput,
+        seen_at_unix: u64,
+    ) -> crate::Result<i32> {
+        let mut input = input.clone();
+        input.metadata.anchor = input
+            .metadata
+            .anchor
+            .canonicalized()
+            .map_err(StoreError::InvalidData)?;
+        let creation_tx: deadcat_sdk::elements::Transaction =
+            deadcat_sdk::elements::encode::deserialize(&input.creation_tx)
+                .map_err(|e| StoreError::InvalidData(format!("invalid creation_tx bytes: {e}")))?;
+        if creation_tx.txid().to_string() != input.metadata.anchor.creation_txid {
+            return Err(StoreError::InvalidData(
+                "creation_tx bytes txid must equal anchor.creation_txid".to_string(),
+            ));
+        }
+        if !validate_prediction_market_creation_tx(
+            &input.params,
+            &creation_tx,
+            &input.metadata.anchor,
+        )
+        .map_err(StoreError::InvalidData)?
+        {
+            return Err(StoreError::InvalidData(
+                "creation_tx is not a canonical prediction-market creation bootstrap".into(),
+            ));
         }
 
-        let compiled = CompiledPredictionMarket::new(*params)?;
-        let row = new_market_row(params, &compiled, metadata);
+        let seen_at = sqlite_datetime_from_unix(seen_at_unix)?;
+        let expires_at = sqlite_datetime_from_unix(seen_at_unix + CANDIDATE_TTL_SECS)?;
 
-        diesel::insert_into(markets::table)
+        let mid = input.params.market_id();
+        let mid_bytes = mid.as_bytes().to_vec();
+        let yes_abf = ::hex::decode(
+            &input
+                .metadata
+                .anchor
+                .yes_dormant_opening
+                .asset_blinding_factor,
+        )
+        .map_err(|e| StoreError::InvalidData(format!("invalid yes dormant ABF: {e}")))?;
+        let yes_vbf = ::hex::decode(
+            &input
+                .metadata
+                .anchor
+                .yes_dormant_opening
+                .value_blinding_factor,
+        )
+        .map_err(|e| StoreError::InvalidData(format!("invalid yes dormant VBF: {e}")))?;
+        let no_abf = ::hex::decode(
+            &input
+                .metadata
+                .anchor
+                .no_dormant_opening
+                .asset_blinding_factor,
+        )
+        .map_err(|e| StoreError::InvalidData(format!("invalid no dormant ABF: {e}")))?;
+        let no_vbf = ::hex::decode(
+            &input
+                .metadata
+                .anchor
+                .no_dormant_opening
+                .value_blinding_factor,
+        )
+        .map_err(|e| StoreError::InvalidData(format!("invalid no dormant VBF: {e}")))?;
+
+        let existing: Option<MarketCandidateRow> = market_candidates::table
+            .filter(
+                market_candidates::market_id
+                    .eq(&mid_bytes)
+                    .and(market_candidates::creation_txid.eq(&input.metadata.anchor.creation_txid))
+                    .and(market_candidates::yes_dormant_asset_blinding_factor.eq(&yes_abf))
+                    .and(market_candidates::yes_dormant_value_blinding_factor.eq(&yes_vbf))
+                    .and(market_candidates::no_dormant_asset_blinding_factor.eq(&no_abf))
+                    .and(market_candidates::no_dormant_value_blinding_factor.eq(&no_vbf)),
+            )
+            .first(&mut self.conn)
+            .optional()?;
+
+        if let Some(existing) = existing {
+            let expires_value = if existing.promoted_at.is_none() {
+                Some(expires_at.clone())
+            } else {
+                None
+            };
+            diesel::update(
+                market_candidates::table
+                    .filter(market_candidates::candidate_id.eq(existing.candidate_id)),
+            )
+            .set((
+                market_candidates::last_seen_at.eq(&seen_at),
+                market_candidates::expires_at.eq(expires_value),
+                market_candidates::nevent.eq(input.metadata.nevent.clone()),
+                market_candidates::nostr_event_id.eq(input.metadata.nostr_event_id.clone()),
+                market_candidates::nostr_event_json.eq(input.metadata.nostr_event_json.clone()),
+            ))
+            .execute(&mut self.conn)?;
+            return Ok(existing.candidate_id);
+        }
+
+        let compiled = CompiledPredictionMarket::new(input.params)?;
+        let row = new_market_candidate_row(
+            &input,
+            &compiled,
+            DecodedDormantOpenings {
+                yes_abf,
+                yes_vbf,
+                no_abf,
+                no_vbf,
+            },
+            &seen_at,
+            &expires_at,
+        );
+
+        diesel::insert_into(market_candidates::table)
             .values(&row)
             .execute(&mut self.conn)?;
 
-        Ok(mid)
+        let row_id: i32 = diesel::select(diesel::dsl::sql::<Integer>("last_insert_rowid()"))
+            .get_result(&mut self.conn)?;
+        Ok(row_id)
     }
 
     /// Ingest a maker order. Compiles the covenant to derive the CMR and optionally
@@ -373,39 +525,226 @@ impl DeadcatStore {
 
     // ==================== Market Queries ====================
 
+    fn load_candidate(&mut self, candidate_id: i32) -> crate::Result<MarketCandidateRow> {
+        market_candidates::table
+            .filter(market_candidates::candidate_id.eq(candidate_id))
+            .first(&mut self.conn)
+            .map_err(Into::into)
+    }
+
     pub fn get_market(&mut self, mid: &MarketId) -> crate::Result<Option<MarketInfo>> {
-        let row: Option<MarketRow> = markets::table
+        let market: Option<MarketRow> = markets::table
             .filter(markets::market_id.eq(mid.as_bytes().to_vec()))
             .first(&mut self.conn)
             .optional()?;
 
-        row.as_ref().map(MarketInfo::try_from).transpose()
+        let Some(market) = market else {
+            return Ok(None);
+        };
+        let candidate = self.load_candidate(market.candidate_id)?;
+        Ok(Some(crate::conversions::market_info_from_rows(
+            &market, &candidate,
+        )?))
     }
 
     pub fn list_markets(&mut self, filter: &MarketFilter) -> crate::Result<Vec<MarketInfo>> {
         let mut query = markets::table.into_boxed();
 
-        if let Some(ref opk) = filter.oracle_public_key {
-            query = query.filter(markets::oracle_public_key.eq(opk.to_vec()));
-        }
-        if let Some(ref caid) = filter.collateral_asset_id {
-            query = query.filter(markets::collateral_asset_id.eq(caid.to_vec()));
-        }
         if let Some(state) = filter.current_state {
             query = query.filter(markets::current_state.eq(state.as_u64() as i32));
-        }
-        if let Some(before) = filter.expiry_before {
-            query = query.filter(markets::expiry_time.lt(before as i32));
-        }
-        if let Some(after) = filter.expiry_after {
-            query = query.filter(markets::expiry_time.gt(after as i32));
         }
         if let Some(lim) = filter.limit {
             query = query.limit(lim);
         }
 
         let rows: Vec<MarketRow> = query.load(&mut self.conn)?;
-        rows.iter().map(MarketInfo::try_from).collect()
+        let mut markets_info = Vec::new();
+        for market in rows {
+            let candidate = self.load_candidate(market.candidate_id)?;
+            if let Some(ref opk) = filter.oracle_public_key
+                && candidate.oracle_public_key != opk.to_vec()
+            {
+                continue;
+            }
+            if let Some(ref caid) = filter.collateral_asset_id
+                && candidate.collateral_asset_id != caid.to_vec()
+            {
+                continue;
+            }
+            if let Some(before) = filter.expiry_before
+                && candidate.expiry_time >= before as i32
+            {
+                continue;
+            }
+            if let Some(after) = filter.expiry_after
+                && candidate.expiry_time <= after as i32
+            {
+                continue;
+            }
+            markets_info.push(crate::conversions::market_info_from_rows(
+                &market, &candidate,
+            )?);
+        }
+        Ok(markets_info)
+    }
+
+    /// Return a visible, unpromoted candidate if it has not yet hit its TTL.
+    ///
+    /// Callers pass `now_unix` explicitly so candidate visibility flips exactly
+    /// at the requested read time; the background cleanup pass is separate.
+    pub fn get_prediction_market_candidate(
+        &mut self,
+        candidate_id: i32,
+        now_unix: u64,
+    ) -> crate::Result<Option<MarketCandidateInfo>> {
+        let now = sqlite_datetime_from_unix(now_unix)?;
+        let row: Option<MarketCandidateRow> = market_candidates::table
+            .filter(
+                market_candidates::candidate_id
+                    .eq(candidate_id)
+                    .and(market_candidates::promoted_at.is_null())
+                    .and(market_candidates::expires_at.gt(now)),
+            )
+            .first(&mut self.conn)
+            .optional()?;
+        row.as_ref().map(MarketCandidateInfo::try_from).transpose()
+    }
+
+    /// List visible, unpromoted candidates that have not yet expired at
+    /// `now_unix`.
+    pub fn list_prediction_market_candidates(
+        &mut self,
+        filter: &MarketCandidateFilter,
+        now_unix: u64,
+    ) -> crate::Result<Vec<MarketCandidateInfo>> {
+        let now = sqlite_datetime_from_unix(now_unix)?;
+        let mut query = market_candidates::table
+            .filter(
+                market_candidates::promoted_at
+                    .is_null()
+                    .and(market_candidates::expires_at.gt(now)),
+            )
+            .into_boxed();
+
+        if let Some(ref mid) = filter.market_id {
+            query = query.filter(market_candidates::market_id.eq(mid.as_bytes().to_vec()));
+        }
+        if let Some(ref opk) = filter.oracle_public_key {
+            query = query.filter(market_candidates::oracle_public_key.eq(opk.to_vec()));
+        }
+        if let Some(ref caid) = filter.collateral_asset_id {
+            query = query.filter(market_candidates::collateral_asset_id.eq(caid.to_vec()));
+        }
+        if let Some(before) = filter.expiry_before {
+            query = query.filter(market_candidates::expiry_time.lt(before as i32));
+        }
+        if let Some(after) = filter.expiry_after {
+            query = query.filter(market_candidates::expiry_time.gt(after as i32));
+        }
+        if let Some(lim) = filter.limit {
+            query = query.limit(lim);
+        }
+
+        let rows: Vec<MarketCandidateRow> = query.load(&mut self.conn)?;
+        rows.iter().map(MarketCandidateInfo::try_from).collect()
+    }
+
+    /// List all unpromoted candidates, including rows whose TTL has passed but
+    /// have not yet been purged.
+    ///
+    /// This is intended for higher-level promotion/cleanup services rather than
+    /// public candidate views.
+    pub fn list_unpromoted_prediction_market_candidates(
+        &mut self,
+    ) -> crate::Result<Vec<MarketCandidateInfo>> {
+        let rows: Vec<MarketCandidateRow> = market_candidates::table
+            .filter(market_candidates::promoted_at.is_null())
+            .load(&mut self.conn)?;
+        rows.iter().map(MarketCandidateInfo::try_from).collect()
+    }
+
+    /// Delete unpromoted candidates whose TTL has expired at `now_unix`.
+    ///
+    /// Cleanup is explicit; the store never schedules purge work on its own.
+    pub fn purge_expired_prediction_market_candidates(
+        &mut self,
+        now_unix: u64,
+    ) -> crate::Result<usize> {
+        let now = sqlite_datetime_from_unix(now_unix)?;
+        diesel::delete(
+            market_candidates::table.filter(
+                market_candidates::promoted_at
+                    .is_null()
+                    .and(market_candidates::expires_at.le(now)),
+            ),
+        )
+        .execute(&mut self.conn)
+        .map_err(Into::into)
+    }
+
+    /// Promote a candidate into the canonical `markets` table.
+    ///
+    /// The caller is responsible for ensuring the candidate's anchor tx is
+    /// irreversible on Liquid before calling this method. `deadcat-store`
+    /// treats promotion as one-way and does not handle reorgs.
+    pub fn promote_prediction_market_candidate(
+        &mut self,
+        candidate_id: i32,
+        promoted_at_unix: u64,
+        promotion_height: u32,
+        promotion_block_hash: [u8; 32],
+    ) -> crate::Result<()> {
+        let promoted_at = sqlite_datetime_from_unix(promoted_at_unix)?;
+        self.conn.transaction(|conn| {
+            let candidate: MarketCandidateRow = market_candidates::table
+                .filter(market_candidates::candidate_id.eq(candidate_id))
+                .first(conn)?;
+
+            let existing: Option<MarketRow> = markets::table
+                .filter(markets::market_id.eq(&candidate.market_id))
+                .first(conn)
+                .optional()?;
+
+            if let Some(existing) = existing {
+                if existing.candidate_id == candidate_id {
+                    return Ok(());
+                }
+                return Err(StoreError::InvalidData(format!(
+                    "market_id {} already has a canonical candidate",
+                    hex::encode(&candidate.market_id)
+                )));
+            }
+
+            diesel::update(
+                market_candidates::table.filter(market_candidates::candidate_id.eq(candidate_id)),
+            )
+            .set((
+                market_candidates::expires_at.eq(Option::<String>::None),
+                market_candidates::promoted_at.eq(Some(promoted_at.clone())),
+                market_candidates::promotion_height.eq(Some(promotion_height as i32)),
+                market_candidates::promotion_block_hash.eq(Some(promotion_block_hash.to_vec())),
+            ))
+            .execute(conn)?;
+
+            diesel::insert_into(markets::table)
+                .values((
+                    markets::market_id.eq(candidate.market_id.clone()),
+                    markets::candidate_id.eq(candidate_id),
+                    markets::current_state.eq(MarketState::Dormant.as_u64() as i32),
+                ))
+                .execute(conn)?;
+
+            diesel::delete(
+                market_candidates::table.filter(
+                    market_candidates::market_id
+                        .eq(&candidate.market_id)
+                        .and(market_candidates::candidate_id.ne(candidate_id)),
+                ),
+            )
+            .execute(conn)?;
+
+            Ok(())
+        })
     }
 
     // ==================== Maker Order Queries ====================
@@ -467,10 +806,32 @@ impl DeadcatStore {
             .into_boxed();
 
         if let Some(s) = state {
-            query = query.filter(utxos::market_state.eq(s.as_u64() as i32));
+            let slots: Vec<i32> = s
+                .live_slots()
+                .iter()
+                .map(|slot| slot.as_u8() as i32)
+                .collect();
+            query = query.filter(utxos::market_slot.eq_any(slots));
         }
 
         let rows: Vec<UtxoRow> = query.load(&mut self.conn)?;
+        rows.iter().map(UnblindedUtxo::try_from).collect()
+    }
+
+    pub fn get_market_slot_utxos(
+        &mut self,
+        mid: &MarketId,
+        slot: MarketSlot,
+    ) -> crate::Result<Vec<UnblindedUtxo>> {
+        let rows: Vec<UtxoRow> = utxos::table
+            .filter(
+                utxos::market_id
+                    .eq(mid.as_bytes().to_vec())
+                    .and(utxos::spent.eq(0))
+                    .and(utxos::market_slot.eq(slot.as_u8() as i32)),
+            )
+            .load(&mut self.conn)?;
+
         rows.iter().map(UnblindedUtxo::try_from).collect()
     }
 
@@ -484,14 +845,14 @@ impl DeadcatStore {
 
     // ==================== Manual UTXO Management ====================
 
-    pub fn add_market_utxo(
+    pub fn add_market_slot_utxo(
         &mut self,
         mid: &MarketId,
-        state: MarketState,
+        slot: MarketSlot,
         utxo: &UnblindedUtxo,
         height: Option<u32>,
     ) -> crate::Result<()> {
-        let row = new_utxo_row(utxo, Some(mid), Some(state), None, height);
+        let row = new_utxo_row(utxo, Some(mid), Some(slot), None, height);
 
         diesel::insert_or_ignore_into(utxos::table)
             .values(&row)
@@ -576,15 +937,20 @@ impl DeadcatStore {
         mid: &MarketId,
         data: &IssuanceData,
     ) -> crate::Result<()> {
-        diesel::update(markets::table.filter(markets::market_id.eq(mid.as_bytes().to_vec())))
-            .set((
-                markets::yes_issuance_entropy.eq(data.yes_entropy.to_vec()),
-                markets::no_issuance_entropy.eq(data.no_entropy.to_vec()),
-                markets::yes_issuance_blinding_nonce.eq(data.yes_blinding_nonce.to_vec()),
-                markets::no_issuance_blinding_nonce.eq(data.no_blinding_nonce.to_vec()),
-                markets::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
-            ))
-            .execute(&mut self.conn)?;
+        let canonical: MarketRow = markets::table
+            .filter(markets::market_id.eq(mid.as_bytes().to_vec()))
+            .first(&mut self.conn)?;
+        diesel::update(
+            market_candidates::table
+                .filter(market_candidates::candidate_id.eq(canonical.candidate_id)),
+        )
+        .set((
+            market_candidates::yes_issuance_entropy.eq(data.yes_entropy.to_vec()),
+            market_candidates::no_issuance_entropy.eq(data.no_entropy.to_vec()),
+            market_candidates::yes_issuance_blinding_nonce.eq(data.yes_blinding_nonce.to_vec()),
+            market_candidates::no_issuance_blinding_nonce.eq(data.no_blinding_nonce.to_vec()),
+        ))
+        .execute(&mut self.conn)?;
 
         Ok(())
     }
@@ -606,27 +972,22 @@ impl DeadcatStore {
 
     // ==================== Chain Sync ====================
 
-    /// Collect all watched scriptPubKeys: 5 per market, 1 per maker order with known pubkey.
+    /// Collect all watched scriptPubKeys: 8 per market, 1 per maker order with known pubkey.
     pub fn watched_script_pubkeys(&mut self) -> crate::Result<Vec<Vec<u8>>> {
         let mut spks = Vec::new();
 
-        #[allow(clippy::type_complexity)]
-        let market_rows: Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = markets::table
-            .select((
-                markets::dormant_spk,
-                markets::unresolved_spk,
-                markets::resolved_yes_spk,
-                markets::resolved_no_spk,
-                markets::expired_spk,
-            ))
-            .load(&mut self.conn)?;
+        let market_rows: Vec<MarketRow> = markets::table.load(&mut self.conn)?;
 
-        for (d, u, ry, rn, e) in market_rows {
-            spks.push(d);
-            spks.push(u);
-            spks.push(ry);
-            spks.push(rn);
-            spks.push(e);
+        for row in market_rows {
+            let candidate = self.load_candidate(row.candidate_id)?;
+            spks.push(candidate.dormant_yes_rt_spk);
+            spks.push(candidate.dormant_no_rt_spk);
+            spks.push(candidate.unresolved_yes_rt_spk);
+            spks.push(candidate.unresolved_no_rt_spk);
+            spks.push(candidate.unresolved_collateral_spk);
+            spks.push(candidate.resolved_yes_collateral_spk);
+            spks.push(candidate.resolved_no_collateral_spk);
+            spks.push(candidate.expired_collateral_spk);
         }
 
         let order_spks: Vec<Vec<u8>> = maker_orders::table
@@ -650,11 +1011,13 @@ impl DeadcatStore {
         Ok(height as u32)
     }
 
-    /// Run the sync algorithm against a chain source.
+    /// Run canonical market/order sync against a chain source.
     ///
-    /// 1. For each watched SPK, discover new UTXOs via `chain.list_unspent`
-    /// 2. For each existing unspent UTXO, check if spent via `chain.is_spent`
-    /// 3. Derive market states (highest-state address with unspent UTXOs)
+    /// Only promoted canonical markets participate in this sync.
+    ///
+    /// 1. Rebuild each market's canonical live slot bundle from its promoted anchor
+    /// 2. For each watched order SPK, discover new UTXOs via `chain.list_unspent`
+    /// 3. For each existing unspent UTXO, check if spent via `chain.is_spent`
     /// 4. Derive order statuses from UTXO presence/absence
     /// 5. Update sync_state with block height
     pub fn sync<C: ChainSource>(&mut self, chain: &C) -> crate::Result<SyncReport> {
@@ -669,7 +1032,6 @@ impl DeadcatStore {
             sync_market_utxos(conn, chain, &mut report)?;
             sync_order_utxos(conn, chain, &mut report)?;
             sync_spent_utxos(conn, chain, &mut report)?;
-            derive_market_states(conn, &mut report)?;
             derive_order_statuses(conn, &mut report)?;
 
             diesel::update(sync_state::table.filter(sync_state::id.eq(1)))
@@ -722,12 +1084,12 @@ impl DeadcatStore {
 // ==================== DiscoveryStore trait impl ====================
 
 impl deadcat_sdk::DiscoveryStore for DeadcatStore {
-    fn ingest_market(
+    fn ingest_prediction_market_candidate(
         &mut self,
-        params: &PredictionMarketParams,
-        meta: Option<&ContractMetadataInput>,
+        input: &PredictionMarketCandidateIngestInput,
+        seen_at_unix: u64,
     ) -> Result<(), String> {
-        self.ingest_market(params, meta)
+        self.ingest_prediction_market_candidate(input, seen_at_unix)
             .map(|_| ())
             .map_err(|e| format!("{e}"))
     }
@@ -766,85 +1128,282 @@ impl deadcat_sdk::DiscoveryStore for DeadcatStore {
 
 // ==================== Sync internals (free functions taking &mut conn) ====================
 
+struct StorePredictionMarketScanBackend<'a, C> {
+    chain: &'a C,
+}
+
+impl<C: ChainSource> PredictionMarketScanBackend for StorePredictionMarketScanBackend<'_, C> {
+    fn fetch_transaction(
+        &self,
+        txid: &Txid,
+    ) -> std::result::Result<deadcat_sdk::elements::Transaction, String> {
+        let raw = self
+            .chain
+            .get_transaction(&txid.to_byte_array())
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("transaction {txid} not found"))?;
+        deadcat_sdk::elements::encode::deserialize(&raw)
+            .map_err(|e| format!("failed to decode transaction {txid}: {e}"))
+    }
+
+    fn spending_txid(
+        &self,
+        outpoint: &deadcat_sdk::elements::OutPoint,
+        _script_pubkey: &deadcat_sdk::elements::Script,
+    ) -> std::result::Result<Option<Txid>, String> {
+        self.chain
+            .is_spent(&outpoint.txid.to_byte_array(), outpoint.vout)
+            .map(|spent| spent.map(Txid::from_byte_array))
+            .map_err(|e| e.to_string())
+    }
+}
+
+fn market_slot_script_pubkey(row: &MarketCandidateRow, slot: MarketSlot) -> &[u8] {
+    match slot {
+        MarketSlot::DormantYesRt => &row.dormant_yes_rt_spk,
+        MarketSlot::DormantNoRt => &row.dormant_no_rt_spk,
+        MarketSlot::UnresolvedYesRt => &row.unresolved_yes_rt_spk,
+        MarketSlot::UnresolvedNoRt => &row.unresolved_no_rt_spk,
+        MarketSlot::UnresolvedCollateral => &row.unresolved_collateral_spk,
+        MarketSlot::ResolvedYesCollateral => &row.resolved_yes_collateral_spk,
+        MarketSlot::ResolvedNoCollateral => &row.resolved_no_collateral_spk,
+        MarketSlot::ExpiredCollateral => &row.expired_collateral_spk,
+    }
+}
+
+fn clear_market_utxo_tags(conn: &mut SqliteConnection, market_id: &[u8]) -> crate::Result<()> {
+    diesel::update(utxos::table.filter(utxos::market_id.eq(market_id)))
+        .set((
+            utxos::market_id.eq(Option::<Vec<u8>>::None),
+            utxos::market_slot.eq(Option::<i32>::None),
+        ))
+        .execute(conn)?;
+    Ok(())
+}
+
+fn upsert_market_chain_utxo(
+    conn: &mut SqliteConnection,
+    cu: &ChainUtxo,
+    spk: &[u8],
+    market_id_bytes: &[u8],
+    market_slot: MarketSlot,
+) -> crate::Result<bool> {
+    let inserted = insert_chain_utxo(
+        conn,
+        cu,
+        spk,
+        Some(market_id_bytes),
+        Some(market_slot),
+        None,
+    )?;
+
+    if !inserted {
+        diesel::update(
+            utxos::table.filter(
+                utxos::txid
+                    .eq(cu.txid.to_vec())
+                    .and(utxos::vout.eq(cu.vout as i32)),
+            ),
+        )
+        .set((
+            utxos::script_pubkey.eq(spk.to_vec()),
+            utxos::asset_id.eq(cu.asset_id.to_vec()),
+            utxos::value.eq(cu.value as i64),
+            utxos::asset_blinding_factor.eq([0u8; 32].to_vec()),
+            utxos::value_blinding_factor.eq([0u8; 32].to_vec()),
+            utxos::raw_txout.eq(cu.raw_txout.clone()),
+            utxos::market_id.eq(Some(market_id_bytes.to_vec())),
+            utxos::maker_order_id.eq(Option::<i32>::None),
+            utxos::market_slot.eq(Some(market_slot.as_u8() as i32)),
+            utxos::spent.eq(0),
+            utxos::spending_txid.eq(Option::<Vec<u8>>::None),
+            utxos::block_height.eq(cu.block_height.map(|height| height as i32)),
+            utxos::spent_block_height.eq(Option::<i32>::None),
+        ))
+        .execute(conn)?;
+    }
+
+    Ok(inserted)
+}
+
+fn update_market_state_from_scan(
+    conn: &mut SqliteConnection,
+    row: &MarketRow,
+    scan: &CanonicalMarketScan,
+    report: &mut SyncReport,
+) -> crate::Result<()> {
+    let new_state = scan.state;
+    let new_state_i32 = new_state.as_u64() as i32;
+    let old_state = MarketState::from_u64(row.current_state as u64).ok_or_else(|| {
+        StoreError::InvalidData(format!("invalid market state: {}", row.current_state))
+    })?;
+
+    if scan.utxos.is_empty() {
+        diesel::update(markets::table.filter(markets::market_id.eq(&row.market_id)))
+            .set((
+                markets::current_state.eq(new_state_i32),
+                markets::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+            ))
+            .execute(conn)?;
+    } else {
+        let transition_txid = scan.last_transition_txid.to_string();
+        match new_state {
+            MarketState::Dormant => {
+                diesel::update(markets::table.filter(markets::market_id.eq(&row.market_id)))
+                    .set((
+                        markets::current_state.eq(new_state_i32),
+                        markets::dormant_txid.eq(Some(transition_txid)),
+                        markets::updated_at
+                            .eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+                    ))
+                    .execute(conn)?;
+            }
+            MarketState::Unresolved => {
+                diesel::update(markets::table.filter(markets::market_id.eq(&row.market_id)))
+                    .set((
+                        markets::current_state.eq(new_state_i32),
+                        markets::unresolved_txid.eq(Some(transition_txid)),
+                        markets::updated_at
+                            .eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+                    ))
+                    .execute(conn)?;
+            }
+            MarketState::ResolvedYes => {
+                diesel::update(markets::table.filter(markets::market_id.eq(&row.market_id)))
+                    .set((
+                        markets::current_state.eq(new_state_i32),
+                        markets::resolved_yes_txid.eq(Some(transition_txid)),
+                        markets::updated_at
+                            .eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+                    ))
+                    .execute(conn)?;
+            }
+            MarketState::ResolvedNo => {
+                diesel::update(markets::table.filter(markets::market_id.eq(&row.market_id)))
+                    .set((
+                        markets::current_state.eq(new_state_i32),
+                        markets::resolved_no_txid.eq(Some(transition_txid)),
+                        markets::updated_at
+                            .eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+                    ))
+                    .execute(conn)?;
+            }
+            MarketState::Expired => {
+                diesel::update(markets::table.filter(markets::market_id.eq(&row.market_id)))
+                    .set((
+                        markets::current_state.eq(new_state_i32),
+                        markets::expired_txid.eq(Some(transition_txid)),
+                        markets::updated_at
+                            .eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+                    ))
+                    .execute(conn)?;
+            }
+        }
+    }
+
+    if old_state != new_state {
+        report.market_state_changes.push(MarketStateChange {
+            market_id: MarketId(vec_to_array32(&row.market_id, "market_id")?),
+            old_state,
+            new_state,
+        });
+    }
+
+    Ok(())
+}
+
 fn sync_market_utxos<C: ChainSource>(
     conn: &mut SqliteConnection,
     chain: &C,
     report: &mut SyncReport,
 ) -> crate::Result<()> {
-    #[allow(clippy::type_complexity)]
-    let rows: Vec<(
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Option<Vec<u8>>,
-    )> = markets::table
-        .select((
-            markets::market_id,
-            markets::dormant_spk,
-            markets::unresolved_spk,
-            markets::resolved_yes_spk,
-            markets::resolved_no_spk,
-            markets::expired_spk,
-            markets::yes_reissuance_token,
-            markets::no_reissuance_token,
-            markets::yes_issuance_entropy,
-        ))
-        .load(conn)?;
+    let rows: Vec<MarketRow> = markets::table.load(conn)?;
+    let backend = StorePredictionMarketScanBackend { chain };
 
-    for (
-        mid_bytes,
-        dormant,
-        unresolved,
-        resolved_yes,
-        resolved_no,
-        expired,
-        yes_reissuance_token,
-        no_reissuance_token,
-        yes_entropy_existing,
-    ) in &rows
-    {
-        let spks_with_state = [
-            (dormant, MarketState::Dormant),
-            (unresolved, MarketState::Unresolved),
-            (resolved_yes, MarketState::ResolvedYes),
-            (resolved_no, MarketState::ResolvedNo),
-            (expired, MarketState::Expired),
-        ];
+    for row in &rows {
+        let candidate: MarketCandidateRow = market_candidates::table
+            .filter(market_candidates::candidate_id.eq(row.candidate_id))
+            .first(conn)?;
+        let params = PredictionMarketParams::try_from(&candidate)?;
+        let anchor = PredictionMarketAnchor {
+            creation_txid: candidate.creation_txid.clone(),
+            yes_dormant_opening: deadcat_sdk::DormantOutputOpening::from_bytes(
+                vec_to_array32(
+                    &candidate.yes_dormant_asset_blinding_factor,
+                    "yes_dormant_asset_blinding_factor",
+                )?,
+                vec_to_array32(
+                    &candidate.yes_dormant_value_blinding_factor,
+                    "yes_dormant_value_blinding_factor",
+                )?,
+            ),
+            no_dormant_opening: deadcat_sdk::DormantOutputOpening::from_bytes(
+                vec_to_array32(
+                    &candidate.no_dormant_asset_blinding_factor,
+                    "no_dormant_asset_blinding_factor",
+                )?,
+                vec_to_array32(
+                    &candidate.no_dormant_value_blinding_factor,
+                    "no_dormant_value_blinding_factor",
+                )?,
+            ),
+        };
+        let parsed_anchor =
+            parse_prediction_market_anchor(&anchor).map_err(StoreError::InvalidData)?;
+        let scan = scan_prediction_market_canonical(&backend, &params, &anchor)
+            .map_err(StoreError::Sync)?;
 
-        let mut needs_entropy = yes_entropy_existing.is_none();
+        let needs_entropy = !issuance_data_complete(&candidate);
+        let mut candidate_txids = vec![parsed_anchor.creation_txid.to_byte_array()];
 
-        for (spk, state) in &spks_with_state {
-            if spk.is_empty() {
-                continue;
-            }
-            let chain_utxos = chain
+        clear_market_utxo_tags(conn, &row.market_id)?;
+
+        for canonical_utxo in &scan.utxos {
+            let spk = market_slot_script_pubkey(&candidate, canonical_utxo.slot);
+            let chain_utxo = chain
                 .list_unspent(spk)
-                .map_err(|e| StoreError::Sync(e.to_string()))?;
+                .map_err(|e| StoreError::Sync(e.to_string()))?
+                .into_iter()
+                .find(|cu| {
+                    cu.txid == canonical_utxo.outpoint.txid.to_byte_array()
+                        && cu.vout == canonical_utxo.outpoint.vout
+                })
+                .ok_or_else(|| {
+                    StoreError::Sync(format!(
+                        "canonical market outpoint {}:{} missing from chain view",
+                        canonical_utxo.outpoint.txid, canonical_utxo.outpoint.vout
+                    ))
+                })?;
 
-            for cu in chain_utxos {
-                let inserted =
-                    insert_chain_utxo(conn, &cu, spk, Some(mid_bytes), Some(*state), None)?;
-                if inserted {
-                    report.new_utxos += 1;
+            if needs_entropy && !candidate_txids.contains(&chain_utxo.txid) {
+                candidate_txids.push(chain_utxo.txid);
+            }
 
-                    // Try to extract issuance entropy from this UTXO's tx
-                    if needs_entropy
-                        && try_extract_issuance_entropy(
-                            conn,
-                            chain,
-                            &cu.txid,
-                            mid_bytes,
-                            yes_reissuance_token,
-                            no_reissuance_token,
-                        )?
-                    {
-                        needs_entropy = false;
-                    }
+            let inserted = upsert_market_chain_utxo(
+                conn,
+                &chain_utxo,
+                spk,
+                &row.market_id,
+                canonical_utxo.slot,
+            )?;
+            if inserted {
+                report.new_utxos += 1;
+            }
+        }
+
+        update_market_state_from_scan(conn, row, &scan, report)?;
+
+        if needs_entropy {
+            for txid in candidate_txids {
+                if try_extract_issuance_entropy(
+                    conn,
+                    chain,
+                    &txid,
+                    &row.market_id,
+                    &candidate.yes_reissuance_token,
+                    &candidate.no_reissuance_token,
+                )? {
+                    break;
                 }
             }
         }
@@ -854,7 +1413,7 @@ fn sync_market_utxos<C: ChainSource>(
 }
 
 /// Try to extract issuance entropy from a transaction and store it in the market row.
-/// Returns true if entropy was successfully extracted and stored.
+/// Returns true if the full YES/NO issuance tuple is present after this call.
 fn try_extract_issuance_entropy<C: ChainSource>(
     conn: &mut SqliteConnection,
     chain: &C,
@@ -927,6 +1486,10 @@ fn try_extract_issuance_entropy<C: ChainSource>(
         }
     }
 
+    let canonical: MarketRow = markets::table
+        .filter(markets::market_id.eq(mid_bytes))
+        .first(conn)?;
+
     // Only store if we found both YES and NO
     if let (Some(ye), Some(ne), Some(ybn), Some(nbn)) = (
         yes_entropy,
@@ -934,34 +1497,43 @@ fn try_extract_issuance_entropy<C: ChainSource>(
         yes_blinding_nonce,
         no_blinding_nonce,
     ) {
-        diesel::update(markets::table.filter(markets::market_id.eq(mid_bytes)))
-            .set((
-                markets::yes_issuance_entropy.eq(ye.to_vec()),
-                markets::no_issuance_entropy.eq(ne.to_vec()),
-                markets::yes_issuance_blinding_nonce.eq(ybn.to_vec()),
-                markets::no_issuance_blinding_nonce.eq(nbn.to_vec()),
-            ))
-            .execute(conn)?;
+        diesel::update(
+            market_candidates::table
+                .filter(market_candidates::candidate_id.eq(canonical.candidate_id)),
+        )
+        .set((
+            market_candidates::yes_issuance_entropy.eq(ye.to_vec()),
+            market_candidates::no_issuance_entropy.eq(ne.to_vec()),
+            market_candidates::yes_issuance_blinding_nonce.eq(ybn.to_vec()),
+            market_candidates::no_issuance_blinding_nonce.eq(nbn.to_vec()),
+        ))
+        .execute(conn)?;
         return Ok(true);
     }
 
     // Also accept partial: store what we found (might find the other in a different tx)
     if yes_entropy.is_some() || no_entropy.is_some() {
         if let (Some(ye), Some(ybn)) = (yes_entropy, yes_blinding_nonce) {
-            diesel::update(markets::table.filter(markets::market_id.eq(mid_bytes)))
-                .set((
-                    markets::yes_issuance_entropy.eq(ye.to_vec()),
-                    markets::yes_issuance_blinding_nonce.eq(ybn.to_vec()),
-                ))
-                .execute(conn)?;
+            diesel::update(
+                market_candidates::table
+                    .filter(market_candidates::candidate_id.eq(canonical.candidate_id)),
+            )
+            .set((
+                market_candidates::yes_issuance_entropy.eq(ye.to_vec()),
+                market_candidates::yes_issuance_blinding_nonce.eq(ybn.to_vec()),
+            ))
+            .execute(conn)?;
         }
         if let (Some(ne), Some(nbn)) = (no_entropy, no_blinding_nonce) {
-            diesel::update(markets::table.filter(markets::market_id.eq(mid_bytes)))
-                .set((
-                    markets::no_issuance_entropy.eq(ne.to_vec()),
-                    markets::no_issuance_blinding_nonce.eq(nbn.to_vec()),
-                ))
-                .execute(conn)?;
+            diesel::update(
+                market_candidates::table
+                    .filter(market_candidates::candidate_id.eq(canonical.candidate_id)),
+            )
+            .set((
+                market_candidates::no_issuance_entropy.eq(ne.to_vec()),
+                market_candidates::no_issuance_blinding_nonce.eq(nbn.to_vec()),
+            ))
+            .execute(conn)?;
         }
     }
 
@@ -1029,78 +1601,10 @@ fn sync_spent_utxos<C: ChainSource>(
     Ok(())
 }
 
-/// Derive market state from UTXOs.
+/// Derive market state from the exact live slot set.
 ///
-/// The lifecycle is monotonic: Dormant(0) -> Unresolved(1) -> ResolvedYes(2) or ResolvedNo(3).
-/// ResolvedYes and ResolvedNo are alternative terminal states, not ordered by progression.
-/// If unspent UTXOs exist at a resolved state, that state wins. If UTXOs exist at multiple
-/// resolved states simultaneously (should not happen), we report an error. If no unspent
-/// UTXOs exist, the state is left unchanged (resolution is final, and a temporarily empty
-/// Dormant/Unresolved market may be mid-transaction).
-fn derive_market_states(conn: &mut SqliteConnection, report: &mut SyncReport) -> crate::Result<()> {
-    let market_rows: Vec<(Vec<u8>, i32)> = markets::table
-        .select((markets::market_id, markets::current_state))
-        .load(conn)?;
-
-    for (mid_bytes, old_state) in &market_rows {
-        // Get all distinct market_state values with unspent UTXOs for this market
-        let live_states: Vec<i32> = utxos::table
-            .select(utxos::market_state)
-            .filter(
-                utxos::market_id
-                    .eq(mid_bytes)
-                    .and(utxos::spent.eq(0))
-                    .and(utxos::market_state.is_not_null()),
-            )
-            .distinct()
-            .load::<Option<i32>>(conn)?
-            .into_iter()
-            .flatten()
-            .collect();
-
-        if live_states.is_empty() {
-            continue;
-        }
-
-        // Check for conflicting resolved states
-        let has_resolved_yes = live_states.contains(&(MarketState::ResolvedYes.as_u64() as i32));
-        let has_resolved_no = live_states.contains(&(MarketState::ResolvedNo.as_u64() as i32));
-        if has_resolved_yes && has_resolved_no {
-            return Err(StoreError::InvalidData(format!(
-                "market {} has unspent UTXOs at both ResolvedYes and ResolvedNo",
-                hex::encode(mid_bytes)
-            )));
-        }
-
-        // Pick the highest live state (safe now that we've excluded the Yes/No conflict)
-        let new_state = *live_states.iter().max().unwrap();
-
-        if new_state != *old_state {
-            diesel::update(markets::table.filter(markets::market_id.eq(mid_bytes)))
-                .set((
-                    markets::current_state.eq(new_state),
-                    markets::updated_at
-                        .eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
-                ))
-                .execute(conn)?;
-
-            let old = MarketState::from_u64(*old_state as u64).ok_or_else(|| {
-                StoreError::InvalidData(format!("invalid market state: {old_state}"))
-            })?;
-            let new = MarketState::from_u64(new_state as u64).ok_or_else(|| {
-                StoreError::InvalidData(format!("invalid market state: {new_state}"))
-            })?;
-            report.market_state_changes.push(MarketStateChange {
-                market_id: MarketId(vec_to_array32(mid_bytes, "market_id")?),
-                old_state: old,
-                new_state: new,
-            });
-        }
-    }
-
-    Ok(())
-}
-
+/// If no unspent market UTXOs exist, the stored state is left unchanged because
+/// a market may be temporarily empty mid-transaction.
 /// Derive order statuses from UTXO presence:
 /// - No UTXOs at all -> Pending
 /// - Unspent UTXOs exist, no spent -> Active
@@ -1169,7 +1673,7 @@ fn insert_chain_utxo(
     cu: &ChainUtxo,
     spk: &[u8],
     market_id_bytes: Option<&[u8]>,
-    market_state: Option<MarketState>,
+    market_slot: Option<MarketSlot>,
     maker_order_id: Option<i32>,
 ) -> crate::Result<bool> {
     let row = NewUtxoRow {
@@ -1183,7 +1687,7 @@ fn insert_chain_utxo(
         raw_txout: cu.raw_txout.clone(),
         market_id: market_id_bytes.map(|b| b.to_vec()),
         maker_order_id,
-        market_state: market_state.map(|s| s.as_u64() as i32),
+        market_slot: market_slot.map(|slot| slot.as_u8() as i32),
         block_height: cu.block_height.map(|h| h as i32),
     };
 

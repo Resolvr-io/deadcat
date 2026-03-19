@@ -8,6 +8,20 @@ type DetailModule = typeof import("./detail.ts");
 let stateModule: StateModule;
 let detailModule: DetailModule;
 
+function sampleAnchor() {
+  return {
+    creation_txid: "77".repeat(32),
+    yes_dormant_opening: {
+      asset_blinding_factor: "88".repeat(32),
+      value_blinding_factor: "99".repeat(32),
+    },
+    no_dormant_opening: {
+      asset_blinding_factor: "aa".repeat(32),
+      value_blinding_factor: "bb".repeat(32),
+    },
+  };
+}
+
 beforeAll(async () => {
   (globalThis as { document?: unknown }).document = {
     querySelector: () => ({}),
@@ -36,6 +50,7 @@ function mockMarket(): Market {
     noAssetId: "44".repeat(32),
     yesReissuanceToken: "55".repeat(32),
     noReissuanceToken: "66".repeat(32),
+    anchor: sampleAnchor(),
     creationTxid: "00".repeat(32),
     collateralUtxos: [],
     nostrEventJson: null,
@@ -67,7 +82,7 @@ function setWalletLotsForMarket(
   };
 }
 
-describe("detail sell helper text", () => {
+describe("detail sell ticket rendering", () => {
   beforeEach(() => {
     const market = mockMarket();
     stateModule.setMarkets([market]);
@@ -81,64 +96,84 @@ describe("detail sell helper text", () => {
     stateModule.state.walletData = null;
   });
 
-  it("shows no-holdings helper when balance is zero and size is zero", () => {
+  it("shows zero holdings when balance is empty", () => {
     const market = mockMarket();
     const html = detailModule.renderActionTicket(market);
 
-    expect(html).toContain("No contracts available on this side.");
-    expect(html).not.toContain("Enter contracts to sell.");
+    expect(html).toContain("You hold: YES 0.00 · NO 0.00");
+    expect(html).toContain('value="0"');
   });
 
-  it("shows enter-size helper when balance exists and size is zero", () => {
+  it("shows the full sellable position when holdings exist and size is zero", () => {
     const market = mockMarket();
     setWalletLotsForMarket(market, 5, 0);
     const html = detailModule.renderActionTicket(market);
 
-    expect(html).toContain("Enter contracts to sell.");
-    expect(html).not.toContain("No contracts available on this side.");
+    expect(html).toContain("You hold: YES 5.00 · NO 0.00");
+    expect(html).toContain(
+      "Position remaining (if filled)</span><span>5.00 contracts",
+    );
   });
 
-  it("shows no helper when balance exists and size is non-zero", () => {
+  it("shows the remaining position when balance exists and size is non-zero", () => {
     const market = mockMarket();
     setWalletLotsForMarket(market, 5, 0);
     stateModule.state.tradeContracts = 2;
     stateModule.state.tradeContractsDraft = "2";
     const html = detailModule.renderActionTicket(market);
 
-    expect(html).not.toContain("Enter contracts to sell.");
-    expect(html).not.toContain("No contracts available on this side.");
+    expect(html).toContain(
+      "Position remaining (if filled)</span><span>3.00 contracts",
+    );
   });
 
-  it("uses draft input (empty) over committed contracts for helper + CTA state", () => {
+  it("renders an empty draft input even when committed contracts are non-zero", () => {
     const market = mockMarket();
     setWalletLotsForMarket(market, 5, 0);
     stateModule.state.tradeContracts = 3;
     stateModule.state.tradeContractsDraft = "";
     const html = detailModule.renderActionTicket(market);
 
-    expect(html).toContain("Enter contracts to sell.");
-    expect(html).toMatch(/data-action="request-trade-quote"[^>]*disabled/);
+    expect(html).toContain('value=""');
+    expect(html).toContain('data-action="submit-trade"');
   });
 
-  it("uses draft input (zero) over committed contracts for helper + CTA state", () => {
+  it("renders a zero draft input even when committed contracts are non-zero", () => {
     const market = mockMarket();
     setWalletLotsForMarket(market, 5, 0);
     stateModule.state.tradeContracts = 4;
     stateModule.state.tradeContractsDraft = "0";
     const html = detailModule.renderActionTicket(market);
 
-    expect(html).toContain("Enter contracts to sell.");
-    expect(html).toMatch(/data-action="request-trade-quote"[^>]*disabled/);
+    expect(html).toContain('value="0"');
+    expect(html).toContain('data-action="submit-trade"');
   });
 
-  it("enables sell CTA when draft has lots even if committed value is zero", () => {
+  it("renders the draft contract value when committed size is zero", () => {
     const market = mockMarket();
     setWalletLotsForMarket(market, 5, 0);
     stateModule.state.tradeContracts = 0;
     stateModule.state.tradeContractsDraft = "2";
     const html = detailModule.renderActionTicket(market);
 
-    expect(html).not.toContain("Enter contracts to sell.");
-    expect(html).not.toMatch(/data-action="request-trade-quote"[^>]*disabled/);
+    expect(html).toContain('value="2"');
+    expect(html).toContain('data-action="submit-trade"');
+  });
+
+  it("shows refresh-state only when a canonical anchor is present", () => {
+    const market = mockMarket();
+    const htmlWithAnchor = detailModule.renderDetail();
+
+    expect(htmlWithAnchor).toContain('data-action="refresh-market-state"');
+    expect(htmlWithAnchor).toContain("Creation TX");
+
+    market.anchor = null;
+    stateModule.setMarkets([market]);
+    const htmlWithoutAnchor = detailModule.renderDetail();
+
+    expect(htmlWithoutAnchor).not.toContain(
+      'data-action="refresh-market-state"',
+    );
+    expect(htmlWithoutAnchor).toContain("Creation TX");
   });
 });

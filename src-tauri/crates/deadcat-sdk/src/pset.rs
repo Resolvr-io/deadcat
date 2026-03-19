@@ -40,6 +40,17 @@ pub(crate) fn fee_txout(asset_id: &[u8; 32], amount: u64) -> TxOut {
     }
 }
 
+/// Script used for token/RT burn outputs.
+///
+/// This is a fixed P2WSH program whose witness script hash is all zeros. It is
+/// standard for relay, supports multiple burn outputs per transaction, and is
+/// computationally unspendable without a SHA256 preimage.
+pub(crate) fn burn_script_pubkey() -> Script {
+    let mut script = vec![0x00, 0x20];
+    script.extend_from_slice(&[0u8; 32]);
+    Script::from(script)
+}
+
 /// Add a standard input to a PSET.
 pub(crate) fn add_pset_input(pset: &mut PartiallySignedTransaction, utxo: &UnblindedUtxo) {
     let input = simplicityhl::elements::pset::Input {
@@ -69,13 +80,13 @@ pub(crate) fn add_pset_output(pset: &mut PartiallySignedTransaction, txout: TxOu
     pset.add_output(output);
 }
 
-/// Build a burn TxOut (empty script) for token burning.
+/// Build a burn TxOut for token burning.
 pub(crate) fn burn_txout(asset_id: &[u8; 32], amount: u64) -> TxOut {
     TxOut {
         asset: Asset::Explicit(AssetId::from_slice(asset_id).expect("valid asset id")),
         value: ConfValue::Explicit(amount),
         nonce: Nonce::Null,
-        script_pubkey: Script::new(),
+        script_pubkey: burn_script_pubkey(),
         witness: TxOutWitness::default(),
     }
 }

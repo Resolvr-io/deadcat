@@ -51,7 +51,13 @@ pub fn build_post_resolution_redemption_pset(
         .winning_token_asset(contract.params())
         .ok_or(Error::InvalidState)?;
 
-    let state_spk = covenant_spk(contract, params.resolved_state);
+    let state_spk = covenant_spk(
+        contract,
+        params
+            .resolved_state
+            .collateral_slot()
+            .ok_or(Error::InvalidState)?,
+    );
 
     let mut pset = new_pset();
 
@@ -91,11 +97,6 @@ pub fn build_post_resolution_redemption_pset(
             );
         }
     }
-    add_pset_output(
-        &mut pset,
-        fee_txout(&contract.params().collateral_asset_id, params.fee_amount),
-    );
-
     let fee_change = params.fee_utxo.value.saturating_sub(params.fee_amount);
     if fee_change > 0
         && let Some(ref change_spk) = params.fee_change_destination
@@ -109,6 +110,11 @@ pub fn build_post_resolution_redemption_pset(
             ),
         );
     }
+
+    add_pset_output(
+        &mut pset,
+        fee_txout(&contract.params().collateral_asset_id, params.fee_amount),
+    );
 
     Ok(pset)
 }

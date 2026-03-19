@@ -48,7 +48,8 @@ diesel::table! {
 }
 
 diesel::table! {
-    markets (market_id) {
+    market_candidates (candidate_id) {
+        candidate_id -> Integer,
         market_id -> Binary,
         oracle_public_key -> Binary,
         collateral_asset_id -> Binary,
@@ -59,14 +60,14 @@ diesel::table! {
         collateral_per_token -> BigInt,
         expiry_time -> Integer,
         cmr -> Binary,
-        dormant_spk -> Binary,
-        unresolved_spk -> Binary,
-        resolved_yes_spk -> Binary,
-        resolved_no_spk -> Binary,
-        expired_spk -> Binary,
-        current_state -> Integer,
-        created_at -> Text,
-        updated_at -> Text,
+        dormant_yes_rt_spk -> Binary,
+        dormant_no_rt_spk -> Binary,
+        unresolved_yes_rt_spk -> Binary,
+        unresolved_no_rt_spk -> Binary,
+        unresolved_collateral_spk -> Binary,
+        resolved_yes_collateral_spk -> Binary,
+        resolved_no_collateral_spk -> Binary,
+        expired_collateral_spk -> Binary,
         yes_issuance_entropy -> Nullable<Binary>,
         no_issuance_entropy -> Nullable<Binary>,
         yes_issuance_blinding_nonce -> Nullable<Binary>,
@@ -76,10 +77,31 @@ diesel::table! {
         category -> Nullable<Text>,
         resolution_source -> Nullable<Text>,
         creator_pubkey -> Nullable<Binary>,
-        creation_txid -> Nullable<Text>,
+        creation_txid -> Text,
+        yes_dormant_asset_blinding_factor -> Binary,
+        yes_dormant_value_blinding_factor -> Binary,
+        no_dormant_asset_blinding_factor -> Binary,
+        no_dormant_value_blinding_factor -> Binary,
+        creation_tx -> Binary,
         nevent -> Nullable<Text>,
         nostr_event_id -> Nullable<Text>,
         nostr_event_json -> Nullable<Text>,
+        first_seen_at -> Text,
+        last_seen_at -> Text,
+        expires_at -> Nullable<Text>,
+        promoted_at -> Nullable<Text>,
+        promotion_height -> Nullable<Integer>,
+        promotion_block_hash -> Nullable<Binary>,
+    }
+}
+
+diesel::table! {
+    markets (market_id) {
+        market_id -> Binary,
+        candidate_id -> Integer,
+        current_state -> Integer,
+        created_at -> Text,
+        updated_at -> Text,
         dormant_txid -> Nullable<Text>,
         unresolved_txid -> Nullable<Text>,
         resolved_yes_txid -> Nullable<Text>,
@@ -109,7 +131,7 @@ diesel::table! {
         raw_txout -> Binary,
         market_id -> Nullable<Binary>,
         maker_order_id -> Nullable<Integer>,
-        market_state -> Nullable<Integer>,
+        market_slot -> Nullable<Integer>,
         spent -> Integer,
         spending_txid -> Nullable<Binary>,
         block_height -> Nullable<Integer>,
@@ -117,7 +139,15 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(markets -> market_candidates (candidate_id));
 diesel::joinable!(utxos -> maker_orders (maker_order_id));
 diesel::joinable!(utxos -> markets (market_id));
 
-diesel::allow_tables_to_appear_in_same_query!(lmsr_pools, maker_orders, markets, sync_state, utxos,);
+diesel::allow_tables_to_appear_in_same_query!(
+    lmsr_pools,
+    maker_orders,
+    market_candidates,
+    markets,
+    sync_state,
+    utxos,
+);

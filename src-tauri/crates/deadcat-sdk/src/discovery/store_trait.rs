@@ -1,18 +1,28 @@
 use crate::maker_order::params::MakerOrderParams;
+use crate::prediction_market::anchor::PredictionMarketAnchor;
 use crate::prediction_market::params::PredictionMarketParams;
 
-/// Metadata passed alongside a market when persisting to the store.
-#[derive(Debug, Clone, Default)]
+/// Human/provenance metadata passed alongside a prediction-market candidate.
+#[derive(Debug, Clone)]
 pub struct ContractMetadataInput {
     pub question: Option<String>,
     pub description: Option<String>,
     pub category: Option<String>,
     pub resolution_source: Option<String>,
     pub creator_pubkey: Option<Vec<u8>>,
-    pub creation_txid: Option<String>,
+    /// Canonical dormant-anchor tuple for the market bootstrap.
+    pub anchor: PredictionMarketAnchor,
     pub nevent: Option<String>,
     pub nostr_event_id: Option<String>,
     pub nostr_event_json: Option<String>,
+}
+
+/// Level-2-valid prediction-market candidate persisted by discovery ingestion.
+#[derive(Debug, Clone)]
+pub struct PredictionMarketCandidateIngestInput {
+    pub params: PredictionMarketParams,
+    pub metadata: ContractMetadataInput,
+    pub creation_tx: Vec<u8>,
 }
 
 /// Canonical LMSR pool metadata/state persisted by discovery ingestion.
@@ -76,11 +86,11 @@ pub struct LmsrPoolStateUpdateInput {
 /// This avoids a circular dependency between `deadcat-sdk` and `deadcat-store`.
 /// The `deadcat-store` crate implements this trait for `DeadcatStore`.
 pub trait DiscoveryStore: Send + 'static {
-    /// Persist a discovered market. If it already exists, this should be a no-op.
-    fn ingest_market(
+    /// Persist a level-2-valid prediction-market candidate.
+    fn ingest_prediction_market_candidate(
         &mut self,
-        params: &PredictionMarketParams,
-        meta: Option<&ContractMetadataInput>,
+        input: &PredictionMarketCandidateIngestInput,
+        seen_at_unix: u64,
     ) -> Result<(), String>;
 
     /// Persist a discovered maker order. If it already exists, this should be a no-op.

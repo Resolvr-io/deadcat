@@ -2,8 +2,18 @@ use std::time::Duration;
 
 use deadcat_sdk::{
     build_announcement_event, build_attestation_event, build_attestation_filter,
-    build_contract_filter, parse_announcement_event, sign_attestation, AttestationContent,
-    ContractAnnouncement, ContractMetadata, MarketId, PredictionMarketParams,
+    build_contract_filter, elements, parse_announcement_event, sign_attestation,
+    AttestationContent, CompiledPredictionMarket, ContractAnnouncement, ContractMetadata, MarketId,
+    MarketSlot, PredictionMarketAnchor, PredictionMarketParams,
+};
+use elements::confidential::{Asset, Nonce, Value};
+use elements::hashes::Hash as _;
+use elements::secp256k1_zkp::{
+    Generator, PedersenCommitment, PublicKey, Secp256k1, Tag, Tweak, ZERO_TWEAK,
+};
+use elements::{
+    AssetId, AssetIssuance, ContractHash, LockTime, OutPoint, Script, Sequence, Transaction, TxIn,
+    TxInWitness, TxOut, TxOutWitness, Txid,
 };
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
@@ -11,26 +21,146 @@ use nostr_sdk::secp256k1;
 
 const NETWORK_TAG: &str = "liquid-testnet";
 
-fn test_metadata() -> ContractMetadata {
-    ContractMetadata {
-        question: "Will BTC close above $120k by Dec 2026?".to_string(),
-        description: "Resolved using median close basket.".to_string(),
-        category: "Bitcoin".to_string(),
-        resolution_source: "Exchange close basket".to_string(),
+fn oracle_pubkey_from_keys(keys: &Keys) -> [u8; 32] {
+    let h = keys.public_key().to_hex();
+    let b = hex::decode(&h).unwrap();
+    <[u8; 32]>::try_from(b.as_slice()).unwrap()
+}
+
+fn confidential_dormant_creation_txout(
+    asset_bytes: &[u8; 32],
+    abf: &[u8; 32],
+    vbf: &[u8; 32],
+    spk: &Script,
+) -> TxOut {
+    let secp = Secp256k1::new();
+    let generator = Generator::new_blinded(
+        &secp,
+        Tag::from(*asset_bytes),
+        Tweak::from_slice(abf).expect("valid ABF"),
+    );
+    let commitment = PedersenCommitment::new(
+        &secp,
+        1,
+        Tweak::from_slice(vbf).expect("valid VBF"),
+        generator,
+    );
+    let nonce = PublicKey::from_slice(&[
+        0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87,
+        0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16,
+        0xf8, 0x17, 0x98,
+    ])
+    .expect("valid confidential nonce pubkey");
+
+    TxOut {
+        asset: Asset::Confidential(generator),
+        value: Value::Confidential(commitment),
+        nonce: Nonce::Confidential(nonce),
+        script_pubkey: spk.clone(),
+        witness: TxOutWitness::default(),
     }
 }
 
-fn test_params(oracle_pubkey: [u8; 32]) -> PredictionMarketParams {
-    PredictionMarketParams {
+fn test_market_announcement(
+    oracle_pubkey: [u8; 32],
+    tag: u8,
+) -> (ContractAnnouncement, PredictionMarketParams) {
+    let yes_outpoint = OutPoint::new(Txid::from_byte_array([tag; 32]), 0);
+    let no_outpoint = OutPoint::new(Txid::from_byte_array([tag.wrapping_add(1); 32]), 1);
+    let zero_hash = ContractHash::from_byte_array([0u8; 32]);
+    let yes_entropy = AssetId::generate_asset_entropy(yes_outpoint, zero_hash);
+    let no_entropy = AssetId::generate_asset_entropy(no_outpoint, zero_hash);
+    let params = PredictionMarketParams {
         oracle_public_key: oracle_pubkey,
         collateral_asset_id: [0xbb; 32],
-        yes_token_asset: [0x01; 32],
-        no_token_asset: [0x02; 32],
-        yes_reissuance_token: [0x03; 32],
-        no_reissuance_token: [0x04; 32],
+        yes_token_asset: AssetId::from_entropy(yes_entropy)
+            .into_inner()
+            .to_byte_array(),
+        no_token_asset: AssetId::from_entropy(no_entropy)
+            .into_inner()
+            .to_byte_array(),
+        yes_reissuance_token: AssetId::reissuance_token_from_entropy(yes_entropy, false)
+            .into_inner()
+            .to_byte_array(),
+        no_reissuance_token: AssetId::reissuance_token_from_entropy(no_entropy, false)
+            .into_inner()
+            .to_byte_array(),
         collateral_per_token: 5000,
         expiry_time: 3_650_000,
-    }
+    };
+    let contract = CompiledPredictionMarket::new(params).unwrap();
+    let yes_abf = [tag.wrapping_add(0x10); 32];
+    let yes_vbf = [tag.wrapping_add(0x20); 32];
+    let no_abf = [tag.wrapping_add(0x30); 32];
+    let no_vbf = [tag.wrapping_add(0x40); 32];
+    let tx = Transaction {
+        version: 2,
+        lock_time: LockTime::ZERO,
+        input: vec![
+            TxIn {
+                previous_output: yes_outpoint,
+                is_pegin: false,
+                script_sig: Script::new(),
+                sequence: Sequence::MAX,
+                asset_issuance: AssetIssuance {
+                    asset_blinding_nonce: ZERO_TWEAK,
+                    asset_entropy: [0u8; 32],
+                    amount: Value::Null,
+                    inflation_keys: Value::Explicit(1),
+                },
+                witness: TxInWitness::default(),
+            },
+            TxIn {
+                previous_output: no_outpoint,
+                is_pegin: false,
+                script_sig: Script::new(),
+                sequence: Sequence::MAX,
+                asset_issuance: AssetIssuance {
+                    asset_blinding_nonce: ZERO_TWEAK,
+                    asset_entropy: [0u8; 32],
+                    amount: Value::Null,
+                    inflation_keys: Value::Explicit(1),
+                },
+                witness: TxInWitness::default(),
+            },
+        ],
+        output: vec![
+            confidential_dormant_creation_txout(
+                &params.yes_reissuance_token,
+                &yes_abf,
+                &yes_vbf,
+                &contract.script_pubkey(MarketSlot::DormantYesRt),
+            ),
+            confidential_dormant_creation_txout(
+                &params.no_reissuance_token,
+                &no_abf,
+                &no_vbf,
+                &contract.script_pubkey(MarketSlot::DormantNoRt),
+            ),
+        ],
+    };
+
+    (
+        ContractAnnouncement {
+            version: deadcat_sdk::CONTRACT_ANNOUNCEMENT_VERSION,
+            contract_params: params,
+            metadata: ContractMetadata {
+                question: "Will BTC close above $120k by Dec 2026?".to_string(),
+                description: "Resolved using median close basket.".to_string(),
+                category: "Bitcoin".to_string(),
+                resolution_source: "Exchange close basket".to_string(),
+            },
+            anchor: PredictionMarketAnchor::from_openings(
+                tx.txid(),
+                [tag.wrapping_add(0x10); 32],
+                [tag.wrapping_add(0x20); 32],
+                [tag.wrapping_add(0x30); 32],
+                [tag.wrapping_add(0x40); 32],
+            ),
+            creation_tx_hex: hex::encode(elements::encode::serialize(&tx)),
+        },
+        params,
+    )
 }
 
 #[tokio::test]
@@ -41,20 +171,10 @@ async fn publish_discover_roundtrip() {
 
     // Generate keys
     let keys = Keys::generate();
-    let oracle_pubkey: [u8; 32] = {
-        let h = keys.public_key().to_hex();
-        let b = hex::decode(&h).unwrap();
-        <[u8; 32]>::try_from(b.as_slice()).unwrap()
-    };
+    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
 
     // Build announcement
-    let params = test_params(oracle_pubkey);
-    let announcement = ContractAnnouncement {
-        version: 2,
-        contract_params: params,
-        metadata: test_metadata(),
-        creation_txid: Some("abc123def456".to_string()),
-    };
+    let (announcement, params) = test_market_announcement(oracle_pubkey, 0x11);
 
     let event = build_announcement_event(&keys, &announcement, NETWORK_TAG).unwrap();
 
@@ -89,7 +209,10 @@ async fn publish_discover_roundtrip() {
     assert_eq!(market.cpt_sats, 5000);
     assert_eq!(market.oracle_pubkey, hex::encode(oracle_pubkey));
     assert_eq!(market.creator_pubkey, keys.public_key().to_hex());
-    assert_eq!(market.creation_txid, Some("abc123def456".to_string()));
+    assert_eq!(
+        market.anchor.creation_txid,
+        announcement.anchor.creation_txid
+    );
 
     // Verify market_id is correct
     let expected_market_id = params.market_id();
@@ -104,23 +227,12 @@ async fn oracle_attestation_roundtrip() {
     let relay_url = mock.url();
 
     let keys = Keys::generate();
-    let oracle_pubkey: [u8; 32] = {
-        let h = keys.public_key().to_hex();
-        let b = hex::decode(&h).unwrap();
-        <[u8; 32]>::try_from(b.as_slice()).unwrap()
-    };
-    let params = test_params(oracle_pubkey);
+    let oracle_pubkey = oracle_pubkey_from_keys(&keys);
+    let (announcement, params) = test_market_announcement(oracle_pubkey, 0x22);
     let market_id = params.market_id();
     let market_id_hex = hex::encode(market_id.as_bytes());
 
     // First publish the announcement
-    let announcement = ContractAnnouncement {
-        version: 2,
-        contract_params: params,
-        metadata: test_metadata(),
-        creation_txid: None,
-    };
-
     let ann_event = build_announcement_event(&keys, &announcement, NETWORK_TAG).unwrap();
     let ann_event_id = ann_event.id.to_hex();
 

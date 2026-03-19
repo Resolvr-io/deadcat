@@ -8,6 +8,8 @@ mod wallet_store;
 
 use std::sync::Mutex;
 
+use deadcat_sdk::elements::hashes::Hash as _;
+use deadcat_store::ChainSource;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -379,19 +381,113 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
     let app_handle = app.clone();
     tokio::task::spawn_blocking(move || {
         let manager = app_handle.state::<Mutex<AppStateManager>>();
-        let mut mgr = manager
-            .lock()
-            .map_err(|_| "state lock failed".to_string())?;
+        let (store_arc, network) = {
+            let mgr = manager
+                .lock()
+                .map_err(|_| "state lock failed".to_string())?;
+            (
+                mgr.store().cloned(),
+                mgr.network().unwrap_or(Network::Testnet),
+            )
+        };
+
         // Sync store using the chain adapter
-        if let Some(store_arc) = mgr.store() {
-            let network = mgr.network().unwrap_or(Network::Testnet);
+        if let Some(store_arc) = store_arc {
             let sdk_network = state::to_sdk_network(network);
             let electrum_url = sdk_network.default_electrum_url();
             let chain = chain_adapter::ElectrumChainAdapter::new(electrum_url);
-            if let Ok(mut store) = store_arc.lock() {
-                let _ = store.sync(&chain);
+            let now_unix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            let candidates = match store_arc.lock() {
+                Ok(mut store) => match store.list_unpromoted_prediction_market_candidates() {
+                    Ok(candidates) => candidates,
+                    Err(e) => {
+                        log::warn!(
+                            "failed to list unpromoted prediction market candidates: {e}"
+                        );
+                        Vec::new()
+                    }
+                },
+                Err(_) => {
+                    log::warn!("failed to lock store for candidate listing");
+                    Vec::new()
+                }
+            };
+            let confirmed_candidates: Vec<_> = match chain.best_block_height() {
+                Ok(best_height) => candidates
+                    .into_iter()
+                    .filter_map(|candidate| {
+                        let txid = match deadcat_sdk::parse_market_creation_txid(
+                            &candidate.anchor.creation_txid,
+                        ) {
+                            Ok(txid) => txid,
+                            Err(e) => {
+                                log::warn!(
+                                    "failed to parse creation txid for candidate {} ({}): {e}",
+                                    candidate.candidate_id,
+                                    candidate.anchor.creation_txid,
+                                );
+                                return None;
+                            }
+                        };
+                        match chain.irreversible_confirmation_at(best_height, txid.as_byte_array()) {
+                            Ok(Some((height, block_hash))) => {
+                                Some((candidate.candidate_id, height, block_hash))
+                            }
+                            Ok(None) => None,
+                            Err(e) => {
+                                log::warn!(
+                                    "failed to check irreversible confirmation for candidate {} ({}): {e}",
+                                    candidate.candidate_id,
+                                    candidate.anchor.creation_txid,
+                                );
+                                None
+                            }
+                        }
+                    })
+                    .collect(),
+                Err(e) => {
+                    log::warn!(
+                        "failed to fetch best block height from {} for candidate promotion: {e}",
+                        electrum_url
+                    );
+                    Vec::new()
+                }
+            };
+            match store_arc.lock() {
+                Ok(mut store) => {
+                    for (candidate_id, height, block_hash) in confirmed_candidates {
+                        if let Err(e) = store.promote_prediction_market_candidate(
+                            candidate_id,
+                            now_unix,
+                            height,
+                            block_hash,
+                        ) {
+                            log::warn!(
+                                "failed to promote prediction market candidate {}: {e}",
+                                candidate_id
+                            );
+                        }
+                    }
+                    if let Err(e) = store.purge_expired_prediction_market_candidates(now_unix) {
+                        log::warn!(
+                            "failed to purge expired prediction market candidates at {}: {e}",
+                            now_unix
+                        );
+                    }
+                    if let Err(e) = store.sync(&chain) {
+                        log::warn!("failed to sync store from {}: {e}", electrum_url);
+                    }
+                }
+                Err(_) => log::warn!("failed to lock store for candidate promotion and sync"),
             }
         }
+
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
         mgr.bump_revision();
         let state = mgr.snapshot_with_balance(wallet_balance);
         let _ = app_handle.emit(APP_STATE_UPDATED_EVENT, &state);

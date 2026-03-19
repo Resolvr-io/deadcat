@@ -1,368 +1,513 @@
-/// Integration tests that execute the Simplicity program against an ElementsEnv
-/// to validate PSET builder output against the contract's runtime assertions.
-///
-/// These tests catch "Assertion failed inside jet" errors locally — the same class
-/// of bug that causes broadcast failures on the Liquid network.
 use std::sync::Arc;
 
-use deadcat_sdk::elements::confidential::{Asset, Nonce, Value as ConfValue};
+use deadcat_sdk::elements::confidential::Value as ConfValue;
 use deadcat_sdk::elements::hashes::Hash;
-use deadcat_sdk::elements::secp256k1_zkp::{Generator, PedersenCommitment, Secp256k1, Tag, Tweak};
-use deadcat_sdk::elements::taproot::ControlBlock;
+use deadcat_sdk::elements::secp256k1_zkp::ZERO_TWEAK;
 use deadcat_sdk::elements::{
-    AssetId, AssetIssuance, BlockHash, LockTime, OutPoint, Script, Sequence, Transaction, TxIn,
-    TxOut, TxOutWitness, Txid,
+    AssetIssuance, LockTime, OutPoint, Script, Sequence, Transaction, TxIn, Txid,
 };
-use deadcat_sdk::simplicity::bit_machine::BitMachine;
-use deadcat_sdk::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
-use deadcat_sdk::testing::test_contract_params;
+use deadcat_sdk::simplicity::jet::elements::ElementsUtxo;
+use deadcat_sdk::testing::{
+    AssembledEnvTx, TestCancellationParams, TestExpireTransitionParams, TestExpiryRedemptionParams,
+    TestOracleResolveParams, TestPostResolutionRedemptionParams, assemble_cancellation_for_env,
+    assemble_expire_transition_for_env, assemble_expiry_redemption_for_env,
+    assemble_issuance_for_env, assemble_oracle_resolve_for_env,
+    assemble_post_resolution_redemption_for_env, confidential_rt_txout, execute_against_env,
+    explicit_txout, issuance_txin, simple_txin, test_blinding, test_change_script,
+    test_confidential_rt_utxo, test_contract_params, test_contract_params_with_defining_outpoints,
+    test_contract_params_with_oracle_pubkey, test_explicit_utxo, test_issuance_entropy,
+    test_oracle_keypair, test_oracle_signature, test_outpoint, test_script,
+};
 use deadcat_sdk::{
-    AllBlindingFactors, CompiledPredictionMarket, MarketState, PredictionMarketSpendingPath,
-    ReissuanceBlindingFactors, satisfy_contract,
+    AllBlindingFactors, CollateralSource, CompiledPredictionMarket, IssuanceAssemblyInputs,
+    MarketSlot, MarketState, PredictionMarketSpendingPath,
 };
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
-fn explicit_txout(asset_bytes: &[u8; 32], amount: u64, spk: &Script) -> TxOut {
-    TxOut {
-        asset: Asset::Explicit(AssetId::from_slice(asset_bytes).expect("valid asset")),
-        value: ConfValue::Explicit(amount),
-        nonce: Nonce::Null,
-        script_pubkey: spk.clone(),
-        witness: TxOutWitness::default(),
-    }
+fn fee_output(asset: &[u8; 32], amount: u64) -> deadcat_sdk::elements::TxOut {
+    explicit_txout(asset, amount, &Script::new())
 }
 
-fn simple_txin(outpoint: OutPoint) -> TxIn {
-    TxIn {
-        previous_output: outpoint,
-        is_pegin: false,
-        script_sig: Script::new(),
-        sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
-        asset_issuance: Default::default(),
-        witness: Default::default(),
-    }
-}
-
-/// Build a TxOut with confidential (Pedersen committed) asset and value for a
-/// reissuance token. The commitments are constructed to match the given blinding
-/// factors so the contract's `verify_token_commitment` passes.
-fn confidential_rt_txout(
-    asset_bytes: &[u8; 32],
-    abf: &[u8; 32],
-    vbf: &[u8; 32],
-    spk: &Script,
-) -> TxOut {
-    let secp = Secp256k1::new();
-    let tag = Tag::from(*asset_bytes);
-    let abf_tweak = Tweak::from_slice(abf).expect("valid ABF");
-    let vbf_tweak = Tweak::from_slice(vbf).expect("valid VBF");
-    let generator = Generator::new_blinded(&secp, tag, abf_tweak);
-    let commitment = PedersenCommitment::new(&secp, 1, vbf_tweak, generator);
-    TxOut {
-        asset: Asset::Confidential(generator),
-        value: ConfValue::Confidential(commitment),
-        nonce: Nonce::Null,
-        script_pubkey: spk.clone(),
-        witness: TxOutWitness::default(),
-    }
-}
-
-/// Build a TxIn with asset issuance set (explicit amount = `pairs`).
-fn issuance_txin(outpoint: OutPoint, pairs: u64) -> TxIn {
+fn inflation_keys_txin(outpoint: OutPoint, inflation_keys: u64) -> TxIn {
     TxIn {
         previous_output: outpoint,
         is_pegin: false,
         script_sig: Script::new(),
         sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
         asset_issuance: AssetIssuance {
-            asset_blinding_nonce: Tweak::from_slice(&[0x10; 32]).expect("valid nonce"),
-            asset_entropy: [0x20; 32],
-            amount: ConfValue::Explicit(pairs),
-            inflation_keys: ConfValue::Null,
+            asset_blinding_nonce: ZERO_TWEAK,
+            asset_entropy: [0x30; 32],
+            amount: ConfValue::Null,
+            inflation_keys: ConfValue::Explicit(inflation_keys),
         },
         witness: Default::default(),
     }
 }
 
-/// Blinding factors used across all issuance tests.
-fn test_blinding() -> AllBlindingFactors {
-    AllBlindingFactors {
-        yes: ReissuanceBlindingFactors {
-            input_abf: [0x01; 32],
-            input_vbf: [0x02; 32],
-            output_abf: [0x03; 32],
-            output_vbf: [0x04; 32],
-        },
-        no: ReissuanceBlindingFactors {
-            input_abf: [0x05; 32],
-            input_vbf: [0x06; 32],
-            output_abf: [0x07; 32],
-            output_vbf: [0x08; 32],
-        },
-    }
-}
-
-/// Execute a satisfied Simplicity program against a mock ElementsEnv.
-///
-/// Returns Ok(()) on success, or an error description on failure.
-fn execute_contract(
+fn assert_case_input_executes(
     contract: &CompiledPredictionMarket,
-    state: MarketState,
-    path: &PredictionMarketSpendingPath,
-    tx: Arc<Transaction>,
-    utxos: Vec<ElementsUtxo>,
-    input_index: u32,
-) -> Result<(), String> {
-    let satisfied = satisfy_contract(contract, path, state).map_err(|e| format!("satisfy: {e}"))?;
-    let redeem = satisfied.redeem();
-
-    let cb_bytes = contract.control_block(state);
-    let control_block =
-        ControlBlock::from_slice(&cb_bytes).map_err(|e| format!("control block: {e}"))?;
-
-    let env = ElementsEnv::new(
-        tx,
-        utxos,
-        input_index,
-        *contract.cmr(),
-        control_block,
-        None,
-        BlockHash::all_zeros(),
+    case: AssembledEnvTx,
+    case_input_index: usize,
+) {
+    let spend = case.covenant_inputs[case_input_index].clone();
+    let result = execute_against_env(
+        contract,
+        spend.slot,
+        &spend.path,
+        case.tx,
+        case.utxos,
+        spend.input_index,
     );
 
-    let mut machine = BitMachine::for_program(redeem).map_err(|e| format!("bit machine: {e}"))?;
-
-    machine
-        .exec(redeem, &env)
-        .map(|_| ())
-        .map_err(|e| format!("execution failed: {e}"))
+    assert!(result.is_ok(), "{result:?}");
 }
 
-// ---------------------------------------------------------------------------
-// Path 8: SecondaryCovenantInput
-// ---------------------------------------------------------------------------
-
-#[test]
-fn secondary_covenant_input_dormant() {
-    let params = test_contract_params();
+fn build_subsequent_issuance_case() -> (CompiledPredictionMarket, AssembledEnvTx) {
+    let yes_defining_outpoint = test_outpoint(0xa1);
+    let no_defining_outpoint = test_outpoint(0xa2);
+    let params = test_contract_params_with_defining_outpoints(
+        [0xaa; 32],
+        yes_defining_outpoint,
+        no_defining_outpoint,
+    );
     let contract = CompiledPredictionMarket::new(params).expect("compile");
-    let state = MarketState::Dormant;
-    let covenant_spk = contract.script_pubkey(state);
-    let utxo_txout = explicit_txout(&params.collateral_asset_id, 100_000, &covenant_spk);
-
-    let tx = Arc::new(Transaction {
-        version: 2,
-        lock_time: LockTime::ZERO,
-        input: vec![
-            simple_txin(OutPoint::new(Txid::all_zeros(), 0)),
-            simple_txin(OutPoint::new(Txid::all_zeros(), 1)),
-        ],
-        output: vec![explicit_txout(
-            &params.collateral_asset_id,
-            100_000,
-            &Script::new(),
-        )],
-    });
-
-    let utxos = vec![
-        ElementsUtxo::from(utxo_txout.clone()),
-        ElementsUtxo::from(utxo_txout),
-    ];
-
-    let result = execute_contract(
-        &contract,
-        state,
-        &PredictionMarketSpendingPath::SecondaryCovenantInput,
-        tx,
-        utxos,
-        1, // Execute at input index 1
-    );
-
-    assert!(
-        result.is_ok(),
-        "SecondaryCovenantInput at Dormant should succeed: {:?}",
-        result.err()
-    );
-}
-
-#[test]
-fn secondary_covenant_input_unresolved() {
-    let params = test_contract_params();
-    let contract = CompiledPredictionMarket::new(params).expect("compile");
-    let state = MarketState::Unresolved;
-    let covenant_spk = contract.script_pubkey(state);
-    let utxo_txout = explicit_txout(&params.collateral_asset_id, 100_000, &covenant_spk);
-
-    let tx = Arc::new(Transaction {
-        version: 2,
-        lock_time: LockTime::ZERO,
-        input: vec![
-            simple_txin(OutPoint::new(Txid::all_zeros(), 0)),
-            simple_txin(OutPoint::new(Txid::all_zeros(), 1)),
-        ],
-        output: vec![explicit_txout(
-            &params.collateral_asset_id,
-            100_000,
-            &Script::new(),
-        )],
-    });
-
-    let utxos = vec![
-        ElementsUtxo::from(utxo_txout.clone()),
-        ElementsUtxo::from(utxo_txout),
-    ];
-
-    let result = execute_contract(
-        &contract,
-        state,
-        &PredictionMarketSpendingPath::SecondaryCovenantInput,
-        tx,
-        utxos,
-        1,
-    );
-
-    assert!(
-        result.is_ok(),
-        "SecondaryCovenantInput at Unresolved should succeed: {:?}",
-        result.err()
-    );
-}
-
-/// SecondaryCovenantInput must fail at input index 0 (contract requires index != 0).
-#[test]
-fn secondary_covenant_input_fails_at_index_zero() {
-    let params = test_contract_params();
-    let contract = CompiledPredictionMarket::new(params).expect("compile");
-    let state = MarketState::Dormant;
-    let covenant_spk = contract.script_pubkey(state);
-    let utxo_txout = explicit_txout(&params.collateral_asset_id, 100_000, &covenant_spk);
-
-    let tx = Arc::new(Transaction {
-        version: 2,
-        lock_time: LockTime::ZERO,
-        input: vec![
-            simple_txin(OutPoint::new(Txid::all_zeros(), 0)),
-            simple_txin(OutPoint::new(Txid::all_zeros(), 1)),
-        ],
-        output: vec![explicit_txout(
-            &params.collateral_asset_id,
-            100_000,
-            &Script::new(),
-        )],
-    });
-
-    let utxos = vec![
-        ElementsUtxo::from(utxo_txout.clone()),
-        ElementsUtxo::from(utxo_txout),
-    ];
-
-    let result = execute_contract(
-        &contract,
-        state,
-        &PredictionMarketSpendingPath::SecondaryCovenantInput,
-        tx,
-        utxos,
-        0, // Index 0 — should fail
-    );
-
-    assert!(
-        result.is_err(),
-        "SecondaryCovenantInput at index 0 should fail"
-    );
-}
-
-/// SecondaryCovenantInput must fail when the script hashes don't match.
-#[test]
-fn secondary_covenant_input_fails_with_mismatched_scripts() {
-    let params = test_contract_params();
-    let contract = CompiledPredictionMarket::new(params).expect("compile");
-    let state = MarketState::Dormant;
-    let covenant_spk = contract.script_pubkey(state);
-
-    // Input 0 at covenant address, input 1 at a different script
-    let utxo0 = explicit_txout(&params.collateral_asset_id, 100_000, &covenant_spk);
-    let utxo1 = explicit_txout(&params.collateral_asset_id, 100_000, &Script::new());
-
-    let tx = Arc::new(Transaction {
-        version: 2,
-        lock_time: LockTime::ZERO,
-        input: vec![
-            simple_txin(OutPoint::new(Txid::all_zeros(), 0)),
-            simple_txin(OutPoint::new(Txid::all_zeros(), 1)),
-        ],
-        output: vec![explicit_txout(
-            &params.collateral_asset_id,
-            100_000,
-            &Script::new(),
-        )],
-    });
-
-    let utxos = vec![
-        ElementsUtxo::from(utxo0),
-        ElementsUtxo::from(utxo1), // different script than input 0
-    ];
-
-    // The main() check `expected_hash == actual_hash` should fail because
-    // input 1's script_pubkey doesn't match the covenant for Dormant state.
-    let result = execute_contract(
-        &contract,
-        state,
-        &PredictionMarketSpendingPath::SecondaryCovenantInput,
-        tx,
-        utxos,
-        1,
-    );
-
-    assert!(
-        result.is_err(),
-        "SecondaryCovenantInput with mismatched scripts should fail"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Path 1: InitialIssuance
-// ---------------------------------------------------------------------------
-
-#[test]
-fn initial_issuance_execution() {
-    let params = test_contract_params();
-    let contract = CompiledPredictionMarket::new(params).expect("compile");
-    let dormant_spk = contract.script_pubkey(MarketState::Dormant);
-    let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
+    let assembly_contract = CompiledPredictionMarket::new(params).expect("compile");
     let blinding = test_blinding();
+    let pairs = 5;
+    let input_yes_spk = contract.script_pubkey(MarketSlot::UnresolvedYesRt);
+    let input_no_spk = contract.script_pubkey(MarketSlot::UnresolvedNoRt);
+    let collateral_spk = contract.script_pubkey(MarketSlot::UnresolvedCollateral);
 
-    let pairs: u64 = 10;
+    let inputs = IssuanceAssemblyInputs {
+        contract: assembly_contract,
+        current_state: MarketState::Unresolved,
+        yes_reissuance_utxo: test_confidential_rt_utxo(
+            &params.yes_reissuance_token,
+            &input_yes_spk,
+            &blinding.yes.input_abf,
+            &blinding.yes.input_vbf,
+            0x11,
+        ),
+        no_reissuance_utxo: test_confidential_rt_utxo(
+            &params.no_reissuance_token,
+            &input_no_spk,
+            &blinding.no.input_abf,
+            &blinding.no.input_vbf,
+            0x12,
+        ),
+        collateral_source: CollateralSource::Subsequent {
+            covenant_collateral: test_explicit_utxo(
+                &params.collateral_asset_id,
+                2_000_000,
+                &collateral_spk,
+                0x13,
+            ),
+            new_wallet_utxo: test_explicit_utxo(
+                &params.collateral_asset_id,
+                pairs * 2 * params.collateral_per_token,
+                &test_script(1),
+                0x14,
+            ),
+        },
+        fee_utxo: test_explicit_utxo(&params.collateral_asset_id, 1_000, &test_script(2), 0x15),
+        pairs,
+        fee_amount: 1_000,
+        token_destination: test_script(3),
+        change_destination: None,
+        issuance_entropy: test_issuance_entropy(
+            yes_defining_outpoint,
+            no_defining_outpoint,
+            blinding.yes.input_abf,
+            blinding.no.input_abf,
+        ),
+        lock_time: 0,
+    };
+
+    let case = assemble_issuance_for_env(inputs).expect("assemble issuance");
+    (contract, case)
+}
+
+fn build_oracle_resolve_case(outcome_yes: bool) -> (CompiledPredictionMarket, AssembledEnvTx) {
+    let (oracle_pubkey, oracle_keypair) = test_oracle_keypair();
+    let params = test_contract_params_with_oracle_pubkey(oracle_pubkey);
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
+    let blinding = test_blinding();
+    let signature = test_oracle_signature(contract.params(), outcome_yes, &oracle_keypair);
+    let unresolved_yes_spk = contract.script_pubkey(MarketSlot::UnresolvedYesRt);
+    let unresolved_no_spk = contract.script_pubkey(MarketSlot::UnresolvedNoRt);
+    let unresolved_collateral_spk = contract.script_pubkey(MarketSlot::UnresolvedCollateral);
+
+    let case = assemble_oracle_resolve_for_env(
+        &contract,
+        TestOracleResolveParams {
+            yes_reissuance_utxo: test_confidential_rt_utxo(
+                &params.yes_reissuance_token,
+                &unresolved_yes_spk,
+                &blinding.yes.input_abf,
+                &blinding.yes.input_vbf,
+                0x21,
+            ),
+            no_reissuance_utxo: test_confidential_rt_utxo(
+                &params.no_reissuance_token,
+                &unresolved_no_spk,
+                &blinding.no.input_abf,
+                &blinding.no.input_vbf,
+                0x22,
+            ),
+            collateral_utxo: test_explicit_utxo(
+                &params.collateral_asset_id,
+                2_000_000,
+                &unresolved_collateral_spk,
+                0x23,
+            ),
+            fee_utxo: test_explicit_utxo(&params.collateral_asset_id, 2_000, &test_script(4), 0x24),
+            outcome_yes,
+            fee_amount: 1_000,
+            fee_change_destination: Some(test_change_script()),
+            lock_time: 0,
+        },
+        signature,
+    )
+    .expect("assemble resolve");
+
+    (contract, case)
+}
+
+fn build_oracle_resolve_no_change_case(
+    outcome_yes: bool,
+) -> (CompiledPredictionMarket, AssembledEnvTx) {
+    let (oracle_pubkey, oracle_keypair) = test_oracle_keypair();
+    let params = test_contract_params_with_oracle_pubkey(oracle_pubkey);
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
+    let blinding = test_blinding();
+    let signature = test_oracle_signature(contract.params(), outcome_yes, &oracle_keypair);
+    let unresolved_yes_spk = contract.script_pubkey(MarketSlot::UnresolvedYesRt);
+    let unresolved_no_spk = contract.script_pubkey(MarketSlot::UnresolvedNoRt);
+    let unresolved_collateral_spk = contract.script_pubkey(MarketSlot::UnresolvedCollateral);
+
+    let case = assemble_oracle_resolve_for_env(
+        &contract,
+        TestOracleResolveParams {
+            yes_reissuance_utxo: test_confidential_rt_utxo(
+                &params.yes_reissuance_token,
+                &unresolved_yes_spk,
+                &blinding.yes.input_abf,
+                &blinding.yes.input_vbf,
+                0x25,
+            ),
+            no_reissuance_utxo: test_confidential_rt_utxo(
+                &params.no_reissuance_token,
+                &unresolved_no_spk,
+                &blinding.no.input_abf,
+                &blinding.no.input_vbf,
+                0x26,
+            ),
+            collateral_utxo: test_explicit_utxo(
+                &params.collateral_asset_id,
+                2_000_000,
+                &unresolved_collateral_spk,
+                0x27,
+            ),
+            fee_utxo: test_explicit_utxo(&params.collateral_asset_id, 1_000, &test_script(6), 0x28),
+            outcome_yes,
+            fee_amount: 1_000,
+            fee_change_destination: None,
+            lock_time: 0,
+        },
+        signature,
+    )
+    .expect("assemble resolve without change");
+
+    (contract, case)
+}
+
+fn build_expire_transition_case() -> (CompiledPredictionMarket, AssembledEnvTx) {
+    let params = test_contract_params();
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
+    let blinding = test_blinding();
+    let case = assemble_expire_transition_for_env(
+        &contract,
+        TestExpireTransitionParams {
+            yes_reissuance_utxo: test_confidential_rt_utxo(
+                &params.yes_reissuance_token,
+                &contract.script_pubkey(MarketSlot::UnresolvedYesRt),
+                &blinding.yes.input_abf,
+                &blinding.yes.input_vbf,
+                0x31,
+            ),
+            no_reissuance_utxo: test_confidential_rt_utxo(
+                &params.no_reissuance_token,
+                &contract.script_pubkey(MarketSlot::UnresolvedNoRt),
+                &blinding.no.input_abf,
+                &blinding.no.input_vbf,
+                0x32,
+            ),
+            collateral_utxo: test_explicit_utxo(
+                &params.collateral_asset_id,
+                2_000_000,
+                &contract.script_pubkey(MarketSlot::UnresolvedCollateral),
+                0x33,
+            ),
+            fee_utxo: test_explicit_utxo(&params.collateral_asset_id, 2_000, &test_script(5), 0x34),
+            fee_amount: 1_000,
+            fee_change_destination: Some(test_change_script()),
+            lock_time: params.expiry_time,
+        },
+    )
+    .expect("assemble expire");
+
+    (contract, case)
+}
+
+fn build_expire_transition_no_change_case() -> (CompiledPredictionMarket, AssembledEnvTx) {
+    let params = test_contract_params();
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
+    let blinding = test_blinding();
+    let case = assemble_expire_transition_for_env(
+        &contract,
+        TestExpireTransitionParams {
+            yes_reissuance_utxo: test_confidential_rt_utxo(
+                &params.yes_reissuance_token,
+                &contract.script_pubkey(MarketSlot::UnresolvedYesRt),
+                &blinding.yes.input_abf,
+                &blinding.yes.input_vbf,
+                0x35,
+            ),
+            no_reissuance_utxo: test_confidential_rt_utxo(
+                &params.no_reissuance_token,
+                &contract.script_pubkey(MarketSlot::UnresolvedNoRt),
+                &blinding.no.input_abf,
+                &blinding.no.input_vbf,
+                0x36,
+            ),
+            collateral_utxo: test_explicit_utxo(
+                &params.collateral_asset_id,
+                2_000_000,
+                &contract.script_pubkey(MarketSlot::UnresolvedCollateral),
+                0x37,
+            ),
+            fee_utxo: test_explicit_utxo(&params.collateral_asset_id, 1_000, &test_script(7), 0x38),
+            fee_amount: 1_000,
+            fee_change_destination: None,
+            lock_time: params.expiry_time,
+        },
+    )
+    .expect("assemble expire without change");
+
+    (contract, case)
+}
+
+fn build_post_resolution_redemption_case(
+    outcome_yes: bool,
+) -> (CompiledPredictionMarket, AssembledEnvTx) {
+    let params = test_contract_params();
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
+    let resolved_state = if outcome_yes {
+        MarketState::ResolvedYes
+    } else {
+        MarketState::ResolvedNo
+    };
+    let burn_asset = if outcome_yes {
+        params.yes_token_asset
+    } else {
+        params.no_token_asset
+    };
+    let collateral_slot = resolved_state
+        .collateral_slot()
+        .expect("resolved collateral slot");
+
+    let case = assemble_post_resolution_redemption_for_env(
+        &contract,
+        TestPostResolutionRedemptionParams {
+            collateral_utxo: test_explicit_utxo(
+                &params.collateral_asset_id,
+                2_000_000,
+                &contract.script_pubkey(collateral_slot),
+                0x41,
+            ),
+            token_utxos: vec![test_explicit_utxo(&burn_asset, 5, &test_script(6), 0x42)],
+            fee_utxo: test_explicit_utxo(&params.collateral_asset_id, 1_000, &test_script(7), 0x43),
+            tokens_burned: 5,
+            resolved_state,
+            fee_amount: 1_000,
+            payout_destination: test_script(8),
+            fee_change_destination: None,
+            token_change_destination: None,
+        },
+    )
+    .expect("assemble resolved redemption");
+
+    (contract, case)
+}
+
+fn build_expiry_redemption_case(burn_yes: bool) -> (CompiledPredictionMarket, AssembledEnvTx) {
+    let params = test_contract_params();
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
+    let burn_token_asset = if burn_yes {
+        params.yes_token_asset
+    } else {
+        params.no_token_asset
+    };
+
+    let case = assemble_expiry_redemption_for_env(
+        &contract,
+        TestExpiryRedemptionParams {
+            collateral_utxo: test_explicit_utxo(
+                &params.collateral_asset_id,
+                2_000_000,
+                &contract.script_pubkey(MarketSlot::ExpiredCollateral),
+                0x51,
+            ),
+            token_utxos: vec![test_explicit_utxo(
+                &burn_token_asset,
+                5,
+                &test_script(9),
+                0x52,
+            )],
+            fee_utxo: test_explicit_utxo(
+                &params.collateral_asset_id,
+                1_000,
+                &test_script(10),
+                0x53,
+            ),
+            tokens_burned: 5,
+            burn_token_asset,
+            fee_amount: 1_000,
+            payout_destination: test_script(11),
+            fee_change_destination: None,
+            token_change_destination: None,
+            lock_time: params.expiry_time,
+        },
+    )
+    .expect("assemble expiry redemption");
+
+    (contract, case)
+}
+
+fn build_partial_cancellation_case() -> (CompiledPredictionMarket, AssembledEnvTx) {
+    let params = test_contract_params();
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
+    let case = assemble_cancellation_for_env(
+        &contract,
+        TestCancellationParams {
+            collateral_utxo: test_explicit_utxo(
+                &params.collateral_asset_id,
+                2_000_000,
+                &contract.script_pubkey(MarketSlot::UnresolvedCollateral),
+                0x61,
+            ),
+            yes_reissuance_utxo: None,
+            no_reissuance_utxo: None,
+            yes_token_utxos: vec![test_explicit_utxo(
+                &params.yes_token_asset,
+                5,
+                &test_script(12),
+                0x62,
+            )],
+            no_token_utxos: vec![test_explicit_utxo(
+                &params.no_token_asset,
+                5,
+                &test_script(13),
+                0x63,
+            )],
+            fee_utxo: test_explicit_utxo(
+                &params.collateral_asset_id,
+                1_000,
+                &test_script(14),
+                0x64,
+            ),
+            pairs_burned: 5,
+            fee_amount: 1_000,
+            refund_destination: test_script(15),
+            fee_change_destination: None,
+            token_change_destination: None,
+        },
+    )
+    .expect("assemble partial cancel");
+
+    (contract, case)
+}
+
+fn build_full_cancellation_case() -> (CompiledPredictionMarket, AssembledEnvTx) {
+    let params = test_contract_params();
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
+    let blinding = test_blinding();
+    let case = assemble_cancellation_for_env(
+        &contract,
+        TestCancellationParams {
+            collateral_utxo: test_explicit_utxo(
+                &params.collateral_asset_id,
+                2_000_000,
+                &contract.script_pubkey(MarketSlot::UnresolvedCollateral),
+                0x71,
+            ),
+            yes_reissuance_utxo: Some(test_confidential_rt_utxo(
+                &params.yes_reissuance_token,
+                &contract.script_pubkey(MarketSlot::UnresolvedYesRt),
+                &blinding.yes.input_abf,
+                &blinding.yes.input_vbf,
+                0x72,
+            )),
+            no_reissuance_utxo: Some(test_confidential_rt_utxo(
+                &params.no_reissuance_token,
+                &contract.script_pubkey(MarketSlot::UnresolvedNoRt),
+                &blinding.no.input_abf,
+                &blinding.no.input_vbf,
+                0x73,
+            )),
+            yes_token_utxos: vec![test_explicit_utxo(
+                &params.yes_token_asset,
+                10,
+                &test_script(1),
+                0x74,
+            )],
+            no_token_utxos: vec![test_explicit_utxo(
+                &params.no_token_asset,
+                10,
+                &test_script(2),
+                0x75,
+            )],
+            fee_utxo: test_explicit_utxo(&params.collateral_asset_id, 1_000, &test_script(3), 0x76),
+            pairs_burned: 10,
+            fee_amount: 1_000,
+            refund_destination: test_script(4),
+            fee_change_destination: None,
+            token_change_destination: None,
+        },
+    )
+    .expect("assemble full cancel");
+
+    (contract, case)
+}
+
+#[test]
+fn initial_issuance_primary_executes() {
+    let params = test_contract_params();
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
+    let blinding = test_blinding();
+    let pairs = 10;
     let total_collateral = pairs * 2 * params.collateral_per_token;
 
-    // UTXOs backing each input
     let utxos = vec![
-        // [0] YES RT (confidential, Dormant covenant)
         ElementsUtxo::from(confidential_rt_txout(
             &params.yes_reissuance_token,
             &blinding.yes.input_abf,
             &blinding.yes.input_vbf,
-            &dormant_spk,
+            &contract.script_pubkey(MarketSlot::DormantYesRt),
         )),
-        // [1] NO RT (confidential, Dormant covenant)
         ElementsUtxo::from(confidential_rt_txout(
             &params.no_reissuance_token,
             &blinding.no.input_abf,
             &blinding.no.input_vbf,
-            &dormant_spk,
+            &contract.script_pubkey(MarketSlot::DormantNoRt),
         )),
-        // [2] Collateral funding (explicit, wallet)
         ElementsUtxo::from(explicit_txout(
             &params.collateral_asset_id,
             total_collateral,
             &Script::new(),
         )),
-        // [3] Fee funding (explicit, wallet)
         ElementsUtxo::from(explicit_txout(
             &params.collateral_asset_id,
-            1000,
+            1_000,
             &Script::new(),
         )),
     ];
@@ -377,76 +522,61 @@ fn initial_issuance_execution() {
             simple_txin(OutPoint::new(Txid::all_zeros(), 3)),
         ],
         output: vec![
-            // [0] YES RT → Unresolved
             confidential_rt_txout(
                 &params.yes_reissuance_token,
                 &blinding.yes.output_abf,
                 &blinding.yes.output_vbf,
-                &unresolved_spk,
+                &contract.script_pubkey(MarketSlot::UnresolvedYesRt),
             ),
-            // [1] NO RT → Unresolved
             confidential_rt_txout(
                 &params.no_reissuance_token,
                 &blinding.no.output_abf,
                 &blinding.no.output_vbf,
-                &unresolved_spk,
+                &contract.script_pubkey(MarketSlot::UnresolvedNoRt),
             ),
-            // [2] Collateral → Unresolved
             explicit_txout(
                 &params.collateral_asset_id,
                 total_collateral,
-                &unresolved_spk,
+                &contract.script_pubkey(MarketSlot::UnresolvedCollateral),
             ),
-            // [3] YES tokens (not checked by contract)
             explicit_txout(&params.yes_token_asset, pairs, &Script::new()),
-            // [4] NO tokens (not checked by contract)
             explicit_txout(&params.no_token_asset, pairs, &Script::new()),
-            // [5] Fee
-            explicit_txout(&params.collateral_asset_id, 1000, &Script::new()),
+            fee_output(&params.collateral_asset_id, 1_000),
         ],
     });
 
-    let result = execute_contract(
+    let result = execute_against_env(
         &contract,
-        MarketState::Dormant,
-        &PredictionMarketSpendingPath::InitialIssuance { blinding },
+        MarketSlot::DormantYesRt,
+        &PredictionMarketSpendingPath::InitialIssuancePrimary { blinding },
         tx,
         utxos,
         0,
     );
 
-    assert!(
-        result.is_ok(),
-        "InitialIssuance should succeed: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "{result:?}");
 }
 
-/// InitialIssuance must fail when the collateral output amount is wrong.
 #[test]
-fn initial_issuance_fails_with_wrong_collateral() {
+fn initial_issuance_secondary_no_rt_executes() {
     let params = test_contract_params();
     let contract = CompiledPredictionMarket::new(params).expect("compile");
-    let dormant_spk = contract.script_pubkey(MarketState::Dormant);
-    let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
     let blinding = test_blinding();
-
-    let pairs: u64 = 10;
+    let pairs = 10;
     let total_collateral = pairs * 2 * params.collateral_per_token;
-    let wrong_collateral = total_collateral - 1;
 
     let utxos = vec![
         ElementsUtxo::from(confidential_rt_txout(
             &params.yes_reissuance_token,
             &blinding.yes.input_abf,
             &blinding.yes.input_vbf,
-            &dormant_spk,
+            &contract.script_pubkey(MarketSlot::DormantYesRt),
         )),
         ElementsUtxo::from(confidential_rt_txout(
             &params.no_reissuance_token,
             &blinding.no.input_abf,
             &blinding.no.input_vbf,
-            &dormant_spk,
+            &contract.script_pubkey(MarketSlot::DormantNoRt),
         )),
         ElementsUtxo::from(explicit_txout(
             &params.collateral_asset_id,
@@ -455,7 +585,7 @@ fn initial_issuance_fails_with_wrong_collateral() {
         )),
         ElementsUtxo::from(explicit_txout(
             &params.collateral_asset_id,
-            1000,
+            1_000,
             &Script::new(),
         )),
     ];
@@ -474,174 +604,446 @@ fn initial_issuance_fails_with_wrong_collateral() {
                 &params.yes_reissuance_token,
                 &blinding.yes.output_abf,
                 &blinding.yes.output_vbf,
-                &unresolved_spk,
+                &contract.script_pubkey(MarketSlot::UnresolvedYesRt),
             ),
             confidential_rt_txout(
                 &params.no_reissuance_token,
                 &blinding.no.output_abf,
                 &blinding.no.output_vbf,
-                &unresolved_spk,
+                &contract.script_pubkey(MarketSlot::UnresolvedNoRt),
             ),
-            // Wrong collateral amount
             explicit_txout(
                 &params.collateral_asset_id,
-                wrong_collateral,
-                &unresolved_spk,
+                total_collateral,
+                &contract.script_pubkey(MarketSlot::UnresolvedCollateral),
             ),
             explicit_txout(&params.yes_token_asset, pairs, &Script::new()),
             explicit_txout(&params.no_token_asset, pairs, &Script::new()),
-            explicit_txout(&params.collateral_asset_id, 1000, &Script::new()),
+            fee_output(&params.collateral_asset_id, 1_000),
         ],
     });
 
-    let result = execute_contract(
+    let result = execute_against_env(
         &contract,
-        MarketState::Dormant,
-        &PredictionMarketSpendingPath::InitialIssuance { blinding },
+        MarketSlot::DormantNoRt,
+        &PredictionMarketSpendingPath::InitialIssuanceSecondaryNoRt { blinding },
+        tx,
+        utxos,
+        1,
+    );
+
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn expire_transition_primary_executes_with_rt_burns() {
+    let (contract, case) = build_expire_transition_case();
+    assert_case_input_executes(&contract, case, 0);
+}
+
+#[test]
+fn subsequent_issuance_primary_executes() {
+    let (contract, case) = build_subsequent_issuance_case();
+    assert_case_input_executes(&contract, case, 0);
+}
+
+#[test]
+fn subsequent_issuance_secondary_no_rt_executes() {
+    let (contract, case) = build_subsequent_issuance_case();
+    assert_case_input_executes(&contract, case, 1);
+}
+
+#[test]
+fn subsequent_issuance_secondary_collateral_executes() {
+    let (contract, case) = build_subsequent_issuance_case();
+    assert_case_input_executes(&contract, case, 2);
+}
+
+#[test]
+fn oracle_resolve_primary_yes_executes() {
+    let (contract, case) = build_oracle_resolve_case(true);
+    assert_case_input_executes(&contract, case, 0);
+}
+
+#[test]
+fn oracle_resolve_secondary_no_rt_yes_executes() {
+    let (contract, case) = build_oracle_resolve_case(true);
+    assert_case_input_executes(&contract, case, 1);
+}
+
+#[test]
+fn oracle_resolve_secondary_collateral_yes_executes() {
+    let (contract, case) = build_oracle_resolve_case(true);
+    assert_case_input_executes(&contract, case, 2);
+}
+
+#[test]
+fn oracle_resolve_primary_yes_executes_without_change() {
+    let (contract, case) = build_oracle_resolve_no_change_case(true);
+    assert_case_input_executes(&contract, case, 0);
+}
+
+#[test]
+fn oracle_resolve_secondary_no_rt_yes_executes_without_change() {
+    let (contract, case) = build_oracle_resolve_no_change_case(true);
+    assert_case_input_executes(&contract, case, 1);
+}
+
+#[test]
+fn oracle_resolve_secondary_collateral_yes_executes_without_change() {
+    let (contract, case) = build_oracle_resolve_no_change_case(true);
+    assert_case_input_executes(&contract, case, 2);
+}
+
+#[test]
+fn oracle_resolve_primary_no_executes() {
+    let (contract, case) = build_oracle_resolve_case(false);
+    assert_case_input_executes(&contract, case, 0);
+}
+
+#[test]
+fn oracle_resolve_secondary_no_rt_no_executes() {
+    let (contract, case) = build_oracle_resolve_case(false);
+    assert_case_input_executes(&contract, case, 1);
+}
+
+#[test]
+fn oracle_resolve_secondary_collateral_no_executes() {
+    let (contract, case) = build_oracle_resolve_case(false);
+    assert_case_input_executes(&contract, case, 2);
+}
+
+#[test]
+fn expire_transition_secondary_no_rt_executes() {
+    let (contract, case) = build_expire_transition_case();
+    assert_case_input_executes(&contract, case, 1);
+}
+
+#[test]
+fn expire_transition_secondary_collateral_executes() {
+    let (contract, case) = build_expire_transition_case();
+    assert_case_input_executes(&contract, case, 2);
+}
+
+#[test]
+fn expire_transition_primary_executes_without_change() {
+    let (contract, case) = build_expire_transition_no_change_case();
+    assert_case_input_executes(&contract, case, 0);
+}
+
+#[test]
+fn expire_transition_secondary_no_rt_executes_without_change() {
+    let (contract, case) = build_expire_transition_no_change_case();
+    assert_case_input_executes(&contract, case, 1);
+}
+
+#[test]
+fn expire_transition_secondary_collateral_executes_without_change() {
+    let (contract, case) = build_expire_transition_no_change_case();
+    assert_case_input_executes(&contract, case, 2);
+}
+
+#[test]
+fn post_resolution_redemption_resolved_yes_executes() {
+    let (contract, case) = build_post_resolution_redemption_case(true);
+    assert_case_input_executes(&contract, case, 0);
+}
+
+#[test]
+fn post_resolution_redemption_resolved_no_executes() {
+    let (contract, case) = build_post_resolution_redemption_case(false);
+    assert_case_input_executes(&contract, case, 0);
+}
+
+#[test]
+fn expiry_redemption_yes_executes() {
+    let (contract, case) = build_expiry_redemption_case(true);
+    assert_case_input_executes(&contract, case, 0);
+}
+
+#[test]
+fn expiry_redemption_no_executes() {
+    let (contract, case) = build_expiry_redemption_case(false);
+    assert_case_input_executes(&contract, case, 0);
+}
+
+#[test]
+fn cancellation_partial_executes() {
+    let (contract, case) = build_partial_cancellation_case();
+    assert_case_input_executes(&contract, case, 0);
+}
+
+#[test]
+fn cancellation_full_primary_executes() {
+    let (contract, case) = build_full_cancellation_case();
+    assert_case_input_executes(&contract, case, 0);
+}
+
+#[test]
+fn cancellation_full_secondary_yes_rt_executes() {
+    let (contract, case) = build_full_cancellation_case();
+    assert_case_input_executes(&contract, case, 1);
+}
+
+#[test]
+fn cancellation_full_secondary_no_rt_executes() {
+    let (contract, case) = build_full_cancellation_case();
+    assert_case_input_executes(&contract, case, 2);
+}
+
+#[test]
+fn post_resolution_redemption_rejects_unresolved_rt_slot() {
+    let params = test_contract_params();
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
+
+    let utxos = vec![ElementsUtxo::from(explicit_txout(
+        &params.collateral_asset_id,
+        2_000_000,
+        &contract.script_pubkey(MarketSlot::UnresolvedYesRt),
+    ))];
+
+    let tx = Arc::new(Transaction {
+        version: 2,
+        lock_time: LockTime::ZERO,
+        input: vec![simple_txin(OutPoint::new(Txid::all_zeros(), 0))],
+        output: vec![fee_output(&params.collateral_asset_id, 1_000)],
+    });
+
+    let result = execute_against_env(
+        &contract,
+        MarketSlot::UnresolvedYesRt,
+        &PredictionMarketSpendingPath::PostResolutionRedemption { tokens_burned: 1 },
         tx,
         utxos,
         0,
     );
 
-    assert!(
-        result.is_err(),
-        "InitialIssuance with wrong collateral should fail"
-    );
+    assert!(result.is_err());
 }
 
-/// InitialIssuance must fail when executed at input index != 0.
 #[test]
-fn initial_issuance_fails_at_wrong_index() {
+fn post_resolution_redemption_rejects_asset_issuance_on_collateral() {
     let params = test_contract_params();
     let contract = CompiledPredictionMarket::new(params).expect("compile");
-    let dormant_spk = contract.script_pubkey(MarketState::Dormant);
-    let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
+    let tokens_burned = 1;
+    let payout = tokens_burned * 2 * params.collateral_per_token;
+    let collateral = 2_000_000;
+
+    let utxos = vec![ElementsUtxo::from(explicit_txout(
+        &params.collateral_asset_id,
+        collateral,
+        &contract.script_pubkey(MarketSlot::ResolvedYesCollateral),
+    ))];
+
+    let tx = Arc::new(Transaction {
+        version: 2,
+        lock_time: LockTime::ZERO,
+        input: vec![issuance_txin(
+            OutPoint::new(Txid::all_zeros(), 0),
+            tokens_burned,
+        )],
+        output: vec![
+            explicit_txout(
+                &params.collateral_asset_id,
+                collateral - payout,
+                &contract.script_pubkey(MarketSlot::ResolvedYesCollateral),
+            ),
+            explicit_txout(&params.yes_token_asset, tokens_burned, &Script::new()),
+            fee_output(&params.collateral_asset_id, 1_000),
+        ],
+    });
+
+    let result = execute_against_env(
+        &contract,
+        MarketSlot::ResolvedYesCollateral,
+        &PredictionMarketSpendingPath::PostResolutionRedemption { tokens_burned },
+        tx,
+        utxos,
+        0,
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn post_resolution_redemption_rejects_inflation_keys_on_collateral() {
+    let params = test_contract_params();
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
+    let tokens_burned = 1;
+    let payout = tokens_burned * 2 * params.collateral_per_token;
+    let collateral = 2_000_000;
+
+    let utxos = vec![ElementsUtxo::from(explicit_txout(
+        &params.collateral_asset_id,
+        collateral,
+        &contract.script_pubkey(MarketSlot::ResolvedYesCollateral),
+    ))];
+
+    let tx = Arc::new(Transaction {
+        version: 2,
+        lock_time: LockTime::ZERO,
+        input: vec![inflation_keys_txin(
+            OutPoint::new(Txid::all_zeros(), 0),
+            tokens_burned,
+        )],
+        output: vec![
+            explicit_txout(
+                &params.collateral_asset_id,
+                collateral - payout,
+                &contract.script_pubkey(MarketSlot::ResolvedYesCollateral),
+            ),
+            explicit_txout(&params.yes_token_asset, tokens_burned, &Script::new()),
+            fee_output(&params.collateral_asset_id, 1_000),
+        ],
+    });
+
+    let result = execute_against_env(
+        &contract,
+        MarketSlot::ResolvedYesCollateral,
+        &PredictionMarketSpendingPath::PostResolutionRedemption { tokens_burned },
+        tx,
+        utxos,
+        0,
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn cancellation_partial_rejects_inflation_keys_on_collateral() {
+    let params = test_contract_params();
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
+    let pairs_burned = 1;
+    let refund = pairs_burned * 2 * params.collateral_per_token;
+    let collateral = 2_000_000;
+
+    let utxos = vec![ElementsUtxo::from(explicit_txout(
+        &params.collateral_asset_id,
+        collateral,
+        &contract.script_pubkey(MarketSlot::UnresolvedCollateral),
+    ))];
+
+    let tx = Arc::new(Transaction {
+        version: 2,
+        lock_time: LockTime::ZERO,
+        input: vec![inflation_keys_txin(
+            OutPoint::new(Txid::all_zeros(), 0),
+            pairs_burned,
+        )],
+        output: vec![
+            explicit_txout(
+                &params.collateral_asset_id,
+                collateral - refund,
+                &contract.script_pubkey(MarketSlot::UnresolvedCollateral),
+            ),
+            explicit_txout(&params.yes_token_asset, pairs_burned, &Script::new()),
+            explicit_txout(&params.no_token_asset, pairs_burned, &Script::new()),
+            fee_output(&params.collateral_asset_id, 1_000),
+        ],
+    });
+
+    let result = execute_against_env(
+        &contract,
+        MarketSlot::UnresolvedCollateral,
+        &PredictionMarketSpendingPath::CancellationPartial { pairs_burned },
+        tx,
+        utxos,
+        0,
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn expire_transition_secondary_collateral_rejects_inflation_keys() {
+    let params = test_contract_params();
+    let contract = CompiledPredictionMarket::new(params).expect("compile");
     let blinding = test_blinding();
 
-    let pairs: u64 = 10;
-    let total_collateral = pairs * 2 * params.collateral_per_token;
-
-    // Both RT UTXOs use the Dormant spk so the main() script hash check
-    // passes at any index — the path-specific current_index == 0 check fails.
     let utxos = vec![
         ElementsUtxo::from(confidential_rt_txout(
             &params.yes_reissuance_token,
             &blinding.yes.input_abf,
             &blinding.yes.input_vbf,
-            &dormant_spk,
+            &contract.script_pubkey(MarketSlot::UnresolvedYesRt),
         )),
         ElementsUtxo::from(confidential_rt_txout(
             &params.no_reissuance_token,
             &blinding.no.input_abf,
             &blinding.no.input_vbf,
-            &dormant_spk,
+            &contract.script_pubkey(MarketSlot::UnresolvedNoRt),
         )),
         ElementsUtxo::from(explicit_txout(
             &params.collateral_asset_id,
-            total_collateral,
-            &Script::new(),
+            2_000_000,
+            &contract.script_pubkey(MarketSlot::UnresolvedCollateral),
         )),
         ElementsUtxo::from(explicit_txout(
             &params.collateral_asset_id,
-            1000,
+            1_000,
             &Script::new(),
         )),
     ];
 
     let tx = Arc::new(Transaction {
         version: 2,
-        lock_time: LockTime::ZERO,
+        lock_time: LockTime::from_consensus(params.expiry_time),
         input: vec![
-            issuance_txin(OutPoint::new(Txid::all_zeros(), 0), pairs),
-            issuance_txin(OutPoint::new(Txid::all_zeros(), 1), pairs),
-            simple_txin(OutPoint::new(Txid::all_zeros(), 2)),
+            simple_txin(OutPoint::new(Txid::all_zeros(), 0)),
+            simple_txin(OutPoint::new(Txid::all_zeros(), 1)),
+            inflation_keys_txin(OutPoint::new(Txid::all_zeros(), 2), 1),
             simple_txin(OutPoint::new(Txid::all_zeros(), 3)),
         ],
         output: vec![
-            confidential_rt_txout(
-                &params.yes_reissuance_token,
-                &blinding.yes.output_abf,
-                &blinding.yes.output_vbf,
-                &unresolved_spk,
-            ),
-            confidential_rt_txout(
-                &params.no_reissuance_token,
-                &blinding.no.output_abf,
-                &blinding.no.output_vbf,
-                &unresolved_spk,
-            ),
+            explicit_txout(&params.yes_reissuance_token, 1, &Script::new()),
+            explicit_txout(&params.no_reissuance_token, 1, &Script::new()),
             explicit_txout(
                 &params.collateral_asset_id,
-                total_collateral,
-                &unresolved_spk,
+                2_000_000,
+                &contract.script_pubkey(MarketSlot::ExpiredCollateral),
             ),
-            explicit_txout(&params.yes_token_asset, pairs, &Script::new()),
-            explicit_txout(&params.no_token_asset, pairs, &Script::new()),
-            explicit_txout(&params.collateral_asset_id, 1000, &Script::new()),
+            fee_output(&params.collateral_asset_id, 1_000),
         ],
     });
 
-    let result = execute_contract(
+    let result = execute_against_env(
         &contract,
-        MarketState::Dormant,
-        &PredictionMarketSpendingPath::InitialIssuance { blinding },
+        MarketSlot::UnresolvedCollateral,
+        &PredictionMarketSpendingPath::ExpireTransitionSecondaryCollateral,
         tx,
         utxos,
-        1, // Wrong index — should fail
+        2,
     );
 
-    assert!(result.is_err(), "InitialIssuance at index 1 should fail");
+    assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Path 2: SubsequentIssuance
-// ---------------------------------------------------------------------------
-
 #[test]
-fn subsequent_issuance_execution() {
+fn subsequent_issuance_secondary_collateral_rejects_issuance_metadata() {
     let params = test_contract_params();
     let contract = CompiledPredictionMarket::new(params).expect("compile");
-    let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
     let blinding = test_blinding();
-
-    let pairs: u64 = 10;
+    let pairs = 10;
+    let old_collateral = 2_000_000;
     let new_collateral = pairs * 2 * params.collateral_per_token;
-    let old_collateral: u64 = 1_000_000;
-    let total_collateral = old_collateral + new_collateral;
 
-    // UTXOs backing each input
     let utxos = vec![
-        // [0] YES RT (confidential, Unresolved covenant)
         ElementsUtxo::from(confidential_rt_txout(
             &params.yes_reissuance_token,
             &blinding.yes.input_abf,
             &blinding.yes.input_vbf,
-            &unresolved_spk,
+            &contract.script_pubkey(MarketSlot::UnresolvedYesRt),
         )),
-        // [1] NO RT (confidential, Unresolved covenant)
         ElementsUtxo::from(confidential_rt_txout(
             &params.no_reissuance_token,
             &blinding.no.input_abf,
             &blinding.no.input_vbf,
-            &unresolved_spk,
+            &contract.script_pubkey(MarketSlot::UnresolvedNoRt),
         )),
-        // [2] Old collateral (explicit, Unresolved covenant)
         ElementsUtxo::from(explicit_txout(
             &params.collateral_asset_id,
             old_collateral,
-            &unresolved_spk,
-        )),
-        // [3] New collateral funding (explicit, wallet)
-        ElementsUtxo::from(explicit_txout(
-            &params.collateral_asset_id,
-            new_collateral,
-            &Script::new(),
-        )),
-        // [4] Fee funding (explicit, wallet)
-        ElementsUtxo::from(explicit_txout(
-            &params.collateral_asset_id,
-            1000,
-            &Script::new(),
+            &contract.script_pubkey(MarketSlot::UnresolvedCollateral),
         )),
     ];
 
@@ -651,290 +1053,108 @@ fn subsequent_issuance_execution() {
         input: vec![
             issuance_txin(OutPoint::new(Txid::all_zeros(), 0), pairs),
             issuance_txin(OutPoint::new(Txid::all_zeros(), 1), pairs),
-            simple_txin(OutPoint::new(Txid::all_zeros(), 2)),
-            simple_txin(OutPoint::new(Txid::all_zeros(), 3)),
-            simple_txin(OutPoint::new(Txid::all_zeros(), 4)),
+            issuance_txin(OutPoint::new(Txid::all_zeros(), 2), pairs),
         ],
         output: vec![
-            // [0] YES RT → Unresolved
             confidential_rt_txout(
                 &params.yes_reissuance_token,
                 &blinding.yes.output_abf,
                 &blinding.yes.output_vbf,
-                &unresolved_spk,
+                &contract.script_pubkey(MarketSlot::UnresolvedYesRt),
             ),
-            // [1] NO RT → Unresolved
             confidential_rt_txout(
                 &params.no_reissuance_token,
                 &blinding.no.output_abf,
                 &blinding.no.output_vbf,
-                &unresolved_spk,
+                &contract.script_pubkey(MarketSlot::UnresolvedNoRt),
             ),
-            // [2] Total collateral → Unresolved
             explicit_txout(
                 &params.collateral_asset_id,
-                total_collateral,
-                &unresolved_spk,
+                old_collateral + new_collateral,
+                &contract.script_pubkey(MarketSlot::UnresolvedCollateral),
             ),
-            // [3] YES tokens (not checked by contract)
             explicit_txout(&params.yes_token_asset, pairs, &Script::new()),
-            // [4] NO tokens (not checked by contract)
             explicit_txout(&params.no_token_asset, pairs, &Script::new()),
-            // [5] Fee
-            explicit_txout(&params.collateral_asset_id, 1000, &Script::new()),
+            fee_output(&params.collateral_asset_id, 1_000),
         ],
     });
 
-    let result = execute_contract(
+    let result = execute_against_env(
         &contract,
-        MarketState::Unresolved,
-        &PredictionMarketSpendingPath::SubsequentIssuance { blinding },
+        MarketSlot::UnresolvedCollateral,
+        &PredictionMarketSpendingPath::SubsequentIssuanceSecondaryCollateral,
         tx,
         utxos,
-        0,
+        2,
     );
 
-    assert!(
-        result.is_ok(),
-        "SubsequentIssuance should succeed: {:?}",
-        result.err()
-    );
+    assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Pipeline integration tests (PSET builder → witness → ElementsEnv)
-//
-// These use assemble_issuance_for_env() to exercise the full assembly pipeline
-// against the Simplicity execution environment, closing the gap between PSET
-// construction and contract execution.
-// ---------------------------------------------------------------------------
-
-use deadcat_sdk::testing::{
-    assemble_issuance_for_env, execute_against_env, test_blinding as shared_test_blinding,
-};
-use deadcat_sdk::{CollateralSource, IssuanceAssemblyInputs, IssuanceEntropy, UnblindedUtxo};
-
-fn test_unblinded_utxo(asset_id: [u8; 32], value: u64, spk: &Script) -> UnblindedUtxo {
-    UnblindedUtxo {
-        outpoint: OutPoint::new(Txid::all_zeros(), 0),
-        txout: explicit_txout(&asset_id, value, spk),
-        asset_id,
-        value,
-        asset_blinding_factor: [0u8; 32],
-        value_blinding_factor: [0u8; 32],
-    }
-}
-
-fn test_rt_utxo(asset_id: [u8; 32], abf: [u8; 32], vbf: [u8; 32], spk: &Script) -> UnblindedUtxo {
-    UnblindedUtxo {
-        outpoint: OutPoint::new(Txid::all_zeros(), 0),
-        txout: confidential_rt_txout(&asset_id, &abf, &vbf, spk),
-        asset_id,
-        value: 1,
-        asset_blinding_factor: abf,
-        value_blinding_factor: vbf,
-    }
-}
-
-/// Test the full PSET builder → witness → ElementsEnv pipeline for initial issuance.
 #[test]
-#[ignore = "pruned-branch failure under investigation"]
-fn initial_issuance_assembly_to_env() {
+fn full_cancel_secondary_no_rt_rejects_issuance() {
     let params = test_contract_params();
     let contract = CompiledPredictionMarket::new(params).expect("compile");
-    let blinding = shared_test_blinding();
-    let dormant_spk = contract.script_pubkey(MarketState::Dormant);
+    let blinding: AllBlindingFactors = test_blinding();
+    let pairs = 10;
+    let refund = pairs * 2 * params.collateral_per_token;
 
-    let pairs: u64 = 10;
-    let total_collateral = pairs * 2 * params.collateral_per_token;
-    let fee_amount: u64 = 1000;
+    let utxos = vec![
+        ElementsUtxo::from(explicit_txout(
+            &params.collateral_asset_id,
+            refund,
+            &contract.script_pubkey(MarketSlot::UnresolvedCollateral),
+        )),
+        ElementsUtxo::from(confidential_rt_txout(
+            &params.yes_reissuance_token,
+            &blinding.yes.input_abf,
+            &blinding.yes.input_vbf,
+            &contract.script_pubkey(MarketSlot::UnresolvedYesRt),
+        )),
+        ElementsUtxo::from(confidential_rt_txout(
+            &params.no_reissuance_token,
+            &blinding.no.input_abf,
+            &blinding.no.input_vbf,
+            &contract.script_pubkey(MarketSlot::UnresolvedNoRt),
+        )),
+    ];
 
-    let inputs = IssuanceAssemblyInputs {
-        contract,
-        current_state: MarketState::Dormant,
-        yes_reissuance_utxo: test_rt_utxo(
-            params.yes_reissuance_token,
-            blinding.yes.input_abf,
-            blinding.yes.input_vbf,
-            &dormant_spk,
-        ),
-        no_reissuance_utxo: test_rt_utxo(
-            params.no_reissuance_token,
-            blinding.no.input_abf,
-            blinding.no.input_vbf,
-            &dormant_spk,
-        ),
-        collateral_source: CollateralSource::Initial {
-            wallet_utxo: test_unblinded_utxo(
-                params.collateral_asset_id,
-                total_collateral,
-                &Script::new(),
+    let tx = Arc::new(Transaction {
+        version: 2,
+        lock_time: LockTime::ZERO,
+        input: vec![
+            simple_txin(OutPoint::new(Txid::all_zeros(), 0)),
+            simple_txin(OutPoint::new(Txid::all_zeros(), 1)),
+            issuance_txin(OutPoint::new(Txid::all_zeros(), 2), pairs),
+        ],
+        output: vec![
+            confidential_rt_txout(
+                &params.yes_reissuance_token,
+                &blinding.yes.output_abf,
+                &blinding.yes.output_vbf,
+                &contract.script_pubkey(MarketSlot::DormantYesRt),
             ),
-        },
-        fee_utxo: test_unblinded_utxo(params.collateral_asset_id, fee_amount, &Script::new()),
-        pairs,
-        fee_amount,
-        token_destination: Script::new(),
-        change_destination: None,
-        issuance_entropy: IssuanceEntropy {
-            yes_blinding_nonce: blinding.yes.input_abf,
-            yes_entropy: [0x20; 32],
-            no_blinding_nonce: blinding.no.input_abf,
-            no_entropy: [0x20; 32],
-        },
-        lock_time: 0,
-    };
-
-    let (tx, utxos, spending_path) =
-        assemble_issuance_for_env(inputs, blinding).expect("assembly should succeed");
-
-    // Re-compile contract for execute_against_env (contract was moved into inputs)
-    let contract = CompiledPredictionMarket::new(params).expect("compile");
+            confidential_rt_txout(
+                &params.no_reissuance_token,
+                &blinding.no.output_abf,
+                &blinding.no.output_vbf,
+                &contract.script_pubkey(MarketSlot::DormantNoRt),
+            ),
+            explicit_txout(&params.yes_token_asset, pairs, &Script::new()),
+            explicit_txout(&params.no_token_asset, pairs, &Script::new()),
+            explicit_txout(&params.collateral_asset_id, refund, &Script::new()),
+            fee_output(&params.collateral_asset_id, 1_000),
+        ],
+    });
 
     let result = execute_against_env(
         &contract,
-        MarketState::Dormant,
-        &spending_path,
+        MarketSlot::UnresolvedNoRt,
+        &PredictionMarketSpendingPath::CancellationFullSecondaryNoRt { blinding },
         tx,
         utxos,
-        0,
+        2,
     );
 
-    assert!(
-        result.is_ok(),
-        "Initial issuance assembly pipeline should succeed: {:?}",
-        result.err()
-    );
-}
-
-/// Test the full PSET builder → witness → ElementsEnv pipeline for subsequent issuance.
-#[test]
-#[ignore = "pruned-branch failure under investigation"]
-fn subsequent_issuance_assembly_to_env() {
-    let params = test_contract_params();
-    let contract = CompiledPredictionMarket::new(params).expect("compile");
-    let blinding = shared_test_blinding();
-    let unresolved_spk = contract.script_pubkey(MarketState::Unresolved);
-
-    let pairs: u64 = 10;
-    let new_collateral = pairs * 2 * params.collateral_per_token;
-    let old_collateral: u64 = 1_000_000;
-    let fee_amount: u64 = 1000;
-
-    let inputs = IssuanceAssemblyInputs {
-        contract,
-        current_state: MarketState::Unresolved,
-        yes_reissuance_utxo: test_rt_utxo(
-            params.yes_reissuance_token,
-            blinding.yes.input_abf,
-            blinding.yes.input_vbf,
-            &unresolved_spk,
-        ),
-        no_reissuance_utxo: test_rt_utxo(
-            params.no_reissuance_token,
-            blinding.no.input_abf,
-            blinding.no.input_vbf,
-            &unresolved_spk,
-        ),
-        collateral_source: CollateralSource::Subsequent {
-            covenant_collateral: test_unblinded_utxo(
-                params.collateral_asset_id,
-                old_collateral,
-                &unresolved_spk,
-            ),
-            new_wallet_utxo: test_unblinded_utxo(
-                params.collateral_asset_id,
-                new_collateral,
-                &Script::new(),
-            ),
-        },
-        fee_utxo: test_unblinded_utxo(params.collateral_asset_id, fee_amount, &Script::new()),
-        pairs,
-        fee_amount,
-        token_destination: Script::new(),
-        change_destination: None,
-        issuance_entropy: IssuanceEntropy {
-            yes_blinding_nonce: blinding.yes.input_abf,
-            yes_entropy: [0x20; 32],
-            no_blinding_nonce: blinding.no.input_abf,
-            no_entropy: [0x20; 32],
-        },
-        lock_time: 0,
-    };
-
-    let (tx, utxos, spending_path) =
-        assemble_issuance_for_env(inputs, blinding).expect("assembly should succeed");
-
-    let contract = CompiledPredictionMarket::new(params).expect("compile");
-
-    let result = execute_against_env(
-        &contract,
-        MarketState::Unresolved,
-        &spending_path,
-        tx,
-        utxos,
-        0,
-    );
-
-    assert!(
-        result.is_ok(),
-        "Subsequent issuance assembly pipeline should succeed: {:?}",
-        result.err()
-    );
-}
-
-/// Negative test: initial issuance with wrong collateral amount should fail.
-#[test]
-fn initial_issuance_assembly_wrong_collateral_fails() {
-    let params = test_contract_params();
-    let contract = CompiledPredictionMarket::new(params).expect("compile");
-    let blinding = shared_test_blinding();
-    let dormant_spk = contract.script_pubkey(MarketState::Dormant);
-
-    let pairs: u64 = 10;
-    let total_collateral = pairs * 2 * params.collateral_per_token;
-    let fee_amount: u64 = 1000;
-
-    // Provide less collateral than required — the PSET builder should reject this
-    let inputs = IssuanceAssemblyInputs {
-        contract,
-        current_state: MarketState::Dormant,
-        yes_reissuance_utxo: test_rt_utxo(
-            params.yes_reissuance_token,
-            blinding.yes.input_abf,
-            blinding.yes.input_vbf,
-            &dormant_spk,
-        ),
-        no_reissuance_utxo: test_rt_utxo(
-            params.no_reissuance_token,
-            blinding.no.input_abf,
-            blinding.no.input_vbf,
-            &dormant_spk,
-        ),
-        collateral_source: CollateralSource::Initial {
-            wallet_utxo: test_unblinded_utxo(
-                params.collateral_asset_id,
-                total_collateral - 1, // Insufficient
-                &Script::new(),
-            ),
-        },
-        fee_utxo: test_unblinded_utxo(params.collateral_asset_id, fee_amount, &Script::new()),
-        pairs,
-        fee_amount,
-        token_destination: Script::new(),
-        change_destination: None,
-        issuance_entropy: IssuanceEntropy {
-            yes_blinding_nonce: blinding.yes.input_abf,
-            yes_entropy: [0x20; 32],
-            no_blinding_nonce: blinding.no.input_abf,
-            no_entropy: [0x20; 32],
-        },
-        lock_time: 0,
-    };
-
-    let result = assemble_issuance_for_env(inputs, blinding);
-    assert!(
-        result.is_err(),
-        "Initial issuance with insufficient collateral should fail at PSET build"
-    );
+    assert!(result.is_err());
 }

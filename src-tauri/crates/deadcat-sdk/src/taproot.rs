@@ -11,6 +11,8 @@ pub const NUMS_KEY_BYTES: [u8; 32] = [
 
 /// The Simplicity tapleaf version used by Elements/Liquid.
 pub const SIMPLICITY_LEAF_VERSION: u8 = 0xbe;
+/// Version byte for prediction-market slot TapData leaves.
+pub const PREDICTION_MARKET_SLOT_TAPDATA_VERSION: u8 = 0x01;
 
 /// Compute a SHA256 tagged hash: SHA256(SHA256(tag) || SHA256(tag) || data).
 pub(crate) fn tagged_hash(tag: &[u8], data: &[u8]) -> [u8; 32] {
@@ -30,8 +32,18 @@ pub(crate) fn tagged_hash(tag: &[u8], data: &[u8]) -> [u8; 32] {
 /// This matches the `jet::tapdata_init()` introspection jet in `simplicity-lang`,
 /// which initializes a SHA-256 context with `SHA256("TapData") || SHA256("TapData")`.
 pub fn tapdata_hash(state: u64) -> [u8; 32] {
-    let state_bytes = state.to_be_bytes();
-    tagged_hash(b"TapData", &state_bytes)
+    tapdata_hash_bytes(&state.to_be_bytes())
+}
+
+/// Compute the TapData hash for a prediction-market slot commitment.
+///
+/// Format: `TaggedHash("TapData", [0x01, slot])`
+pub fn prediction_market_slot_tapdata_hash(slot: u8) -> [u8; 32] {
+    tapdata_hash_bytes(&[PREDICTION_MARKET_SLOT_TAPDATA_VERSION, slot])
+}
+
+fn tapdata_hash_bytes(data: &[u8]) -> [u8; 32] {
+    tagged_hash(b"TapData", data)
 }
 
 /// Compute the Simplicity tapleaf hash from a CMR.
@@ -134,26 +146,57 @@ pub fn covenant_address_from_root(
 }
 
 /// Compute the full P2TR script pubkey from a CMR and state.
+#[allow(dead_code)]
 pub fn covenant_script_pubkey(cmr: &Cmr, state: u64) -> Script {
+    covenant_script_pubkey_with_tapdata_leaf(cmr, &tapdata_hash(state))
+}
+
+/// Compute the full P2TR script pubkey from a CMR and prediction-market slot.
+pub fn prediction_market_script_pubkey(cmr: &Cmr, slot: u8) -> Script {
+    covenant_script_pubkey_with_tapdata_leaf(cmr, &prediction_market_slot_tapdata_hash(slot))
+}
+
+fn covenant_script_pubkey_with_tapdata_leaf(cmr: &Cmr, tapdata_leaf: &[u8; 32]) -> Script {
     let sim_leaf = simplicity_leaf_hash(cmr);
-    let data_leaf = tapdata_hash(state);
-    let merkle_root = tapbranch_hash(&sim_leaf, &data_leaf);
+    let merkle_root = tapbranch_hash(&sim_leaf, tapdata_leaf);
     covenant_script_pubkey_from_root(&merkle_root)
 }
 
 /// Compute the script hash (SHA256 of scriptPubKey) used for introspection jets.
+#[allow(dead_code)]
 pub fn covenant_script_hash(cmr: &Cmr, state: u64) -> [u8; 32] {
+    covenant_script_hash_with_tapdata_leaf(cmr, &tapdata_hash(state))
+}
+
+/// Compute the script hash for a prediction-market slot.
+pub fn prediction_market_script_hash(cmr: &Cmr, slot: u8) -> [u8; 32] {
+    covenant_script_hash_with_tapdata_leaf(cmr, &prediction_market_slot_tapdata_hash(slot))
+}
+
+fn covenant_script_hash_with_tapdata_leaf(cmr: &Cmr, tapdata_leaf: &[u8; 32]) -> [u8; 32] {
     let sim_leaf = simplicity_leaf_hash(cmr);
-    let data_leaf = tapdata_hash(state);
-    let merkle_root = tapbranch_hash(&sim_leaf, &data_leaf);
+    let merkle_root = tapbranch_hash(&sim_leaf, tapdata_leaf);
     covenant_script_hash_from_root(&merkle_root)
 }
 
 /// Compute the covenant address for a given CMR and state.
+#[allow(dead_code)]
 pub fn covenant_address(cmr: &Cmr, state: u64, params: &'static AddressParams) -> Address {
+    covenant_address_with_tapdata_leaf(cmr, &tapdata_hash(state), params)
+}
+
+/// Compute the covenant address for a prediction-market slot.
+pub fn prediction_market_address(cmr: &Cmr, slot: u8, params: &'static AddressParams) -> Address {
+    covenant_address_with_tapdata_leaf(cmr, &prediction_market_slot_tapdata_hash(slot), params)
+}
+
+fn covenant_address_with_tapdata_leaf(
+    cmr: &Cmr,
+    tapdata_leaf: &[u8; 32],
+    params: &'static AddressParams,
+) -> Address {
     let sim_leaf = simplicity_leaf_hash(cmr);
-    let data_leaf = tapdata_hash(state);
-    let merkle_root = tapbranch_hash(&sim_leaf, &data_leaf);
+    let merkle_root = tapbranch_hash(&sim_leaf, tapdata_leaf);
     covenant_address_from_root(&merkle_root, params)
 }
 
@@ -163,11 +206,20 @@ pub fn covenant_address(cmr: &Cmr, state: u64, params: &'static AddressParams) -
 ///
 /// The first byte encodes both the leaf version (upper 7 bits) and the parity of
 /// the tweaked output key (lowest bit), per BIP-341.
+#[allow(dead_code)]
 pub fn simplicity_control_block(cmr: &Cmr, state: u64) -> Vec<u8> {
+    simplicity_control_block_with_tapdata_leaf(cmr, &tapdata_hash(state))
+}
+
+/// Build the Simplicity control block for a prediction-market slot.
+pub fn prediction_market_control_block(cmr: &Cmr, slot: u8) -> Vec<u8> {
+    simplicity_control_block_with_tapdata_leaf(cmr, &prediction_market_slot_tapdata_hash(slot))
+}
+
+fn simplicity_control_block_with_tapdata_leaf(cmr: &Cmr, tapdata_leaf: &[u8; 32]) -> Vec<u8> {
     let sim_leaf = simplicity_leaf_hash(cmr);
-    let data_leaf = tapdata_hash(state);
-    let merkle_root = tapbranch_hash(&sim_leaf, &data_leaf);
-    nums_control_block(&merkle_root, &[data_leaf])
+    let merkle_root = tapbranch_hash(&sim_leaf, tapdata_leaf);
+    nums_control_block(&merkle_root, &[*tapdata_leaf])
 }
 
 /// Hashes for the canonical LMSR tree shape: `((primary, secondary), tapdata)`.
