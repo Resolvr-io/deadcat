@@ -21,6 +21,10 @@ diesel::table! {
         maker_receive_spk -> Nullable<Binary>,
         nostr_event_id -> Nullable<Text>,
         nostr_event_json -> Nullable<Text>,
+        creation_txid -> Nullable<Text>,
+        market_id -> Nullable<Text>,
+        direction_label -> Nullable<Text>,
+        offered_amount -> Nullable<BigInt>,
     }
 }
 

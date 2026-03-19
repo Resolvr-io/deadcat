@@ -10,31 +10,53 @@ import { escapeAttr, escapeHtml } from "../../utils/html.ts";
 
 export function renderWalletTransactionRows(params: {
   creationTxToMarket: Map<string, string>;
+  orderTxLabel: Map<string, { label: string; marketId: string | null }>;
   pawIcon: string;
   walletData: WalletData | null;
 }): string {
-  const { creationTxToMarket, pawIcon, walletData } = params;
+  const { creationTxToMarket, orderTxLabel, pawIcon, walletData } = params;
 
   return (walletData?.transactions ?? [])
     .map((tx) => {
       const marketId = creationTxToMarket.get(tx.txid);
       const isCreation = !!marketId;
       const isIssuance = tx.txType === "issuance" || tx.txType === "reissuance";
+      const orderInfo = orderTxLabel.get(tx.txid);
+      const isLimitOrder = !!orderInfo;
       const sign = tx.balanceChange >= 0 ? "+" : "";
       const color =
-        isCreation || isIssuance
-          ? "text-violet-300"
-          : tx.balanceChange >= 0
-            ? "text-emerald-300"
-            : "text-red-300";
+        isLimitOrder
+          ? "text-amber-300"
+          : isCreation || isIssuance
+            ? "text-violet-300"
+            : tx.balanceChange >= 0
+              ? "text-emerald-300"
+              : "text-red-300";
       const icon =
-        isCreation || isIssuance
-          ? "&#9670;"
-          : tx.balanceChange >= 0
-            ? "&#8595;"
-            : "&#8593;";
+        isLimitOrder
+          ? "&#9830;"
+          : isCreation || isIssuance
+            ? "&#9670;"
+            : tx.balanceChange >= 0
+              ? "&#8595;"
+              : "&#8593;";
       let label = "";
-      if (isCreation) {
+      if (isLimitOrder) {
+        const badgeContent = escapeHtml(orderInfo.label);
+        if (orderInfo.marketId) {
+          label =
+            '<button data-open-market="' +
+            escapeAttr(orderInfo.marketId) +
+            '" class="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-300 hover:bg-amber-500/30 transition cursor-pointer">' +
+            badgeContent +
+            "</button>";
+        } else {
+          label =
+            '<span class="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">' +
+            badgeContent +
+            "</span>";
+        }
+      } else if (isCreation) {
         label =
           '<button data-open-market="' +
           escapeAttr(marketId) +

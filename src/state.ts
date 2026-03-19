@@ -13,6 +13,7 @@ import type {
   NostrBackupStatus,
   NostrProfile,
   OrderType,
+  OwnOrderSummary,
   QuoteMarketTradeResult,
   RelayEntry,
   Side,
@@ -112,6 +113,7 @@ export const state: {
   showFeeDetails: boolean;
   tradeQuoteLoading: boolean;
   tradeExecuteLoading: boolean;
+  cancellingOrderId: string | null;
   tradeQuoteSnapshot: TradeQuoteSnapshot | null;
   tradeError: string | null;
   tradeSizeSats: number;
@@ -182,6 +184,7 @@ export const state: {
   walletBalanceHidden: boolean;
   showMiniWallet: boolean;
   showLbtcLabel: boolean;
+  marketMakerMode: boolean;
   baseCurrency: BaseCurrency;
   helpOpen: boolean;
   settingsOpen: boolean;
@@ -234,6 +237,7 @@ export const state: {
   chartHoverMarketId: string | null;
   chartHoverX: number | null;
   chartTimescale: "1H" | "3H" | "6H" | "12H" | "1D";
+  ownOrders: OwnOrderSummary[];
   chartAspectHome: number;
   chartAspectDetail: number;
 } = {
@@ -253,6 +257,7 @@ export const state: {
   showFeeDetails: false,
   tradeQuoteLoading: false,
   tradeExecuteLoading: false,
+  cancellingOrderId: null,
   tradeQuoteSnapshot: null,
   tradeError: null,
   tradeSizeSats: 10000,
@@ -327,6 +332,7 @@ export const state: {
   walletBalanceHidden: false,
   showMiniWallet: true,
   showLbtcLabel: false,
+  marketMakerMode: false,
   baseCurrency: "BTC" as BaseCurrency,
   marketCreating: false,
   helpOpen: false,
@@ -384,6 +390,7 @@ export const state: {
   chartHoverMarketId: null,
   chartHoverX: null,
   chartTimescale: "3H",
+  ownOrders: [],
   chartAspectHome: 2.8,
   chartAspectDetail: 3.35,
 };

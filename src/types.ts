@@ -272,6 +272,12 @@ export type OrderbookLevel = {
   contracts: number;
 };
 
+export type FullOrderbook = {
+  asks: OrderbookLevel[];
+  bids: OrderbookLevel[];
+  spread: number | null;
+};
+
 export type FillEstimate = {
   avgPriceSats: number;
   bestPriceSats: number;
@@ -359,6 +365,28 @@ export type ExecuteTradeResponse = {
     r_no: number;
     r_lbtc: number;
   } | null;
+};
+
+export type CreateLimitOrderResponse = {
+  txid: string;
+  nostr_event_id: string;
+  covenant_address: string;
+  order_amount: number;
+  order_index: number;
+};
+
+export type CancelLimitOrderResponse = {
+  txid: string;
+  refunded_amount: number;
+};
+
+export type OwnOrderSummary = {
+  creation_txid: string | null;
+  market_id: string | null;
+  direction_label: string | null;
+  price: number;
+  offered_amount: number | null;
+  order_status: string;
 };
 
 export type TradeQuoteSnapshot = {

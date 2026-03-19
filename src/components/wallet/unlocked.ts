@@ -1,5 +1,6 @@
 import { btcLabel, formatLbtc, satsLabel } from "../../services/wallet.ts";
 import { markets, state } from "../../state.ts";
+import type { DiscoveredOrder, Market } from "../../types.ts";
 import { reverseHex } from "../../utils/crypto.ts";
 import { satsToFiatStr } from "../../utils/format.ts";
 import { escapeAttr, escapeHtml } from "../../utils/html.ts";
@@ -32,6 +33,17 @@ export function renderWalletUnlocked(params: {
       .map((m) => [m.creationTxid as string, m.id]),
   );
 
+  // Build txid->label map from own limit orders for transaction labeling
+  const orderTxLabel = new Map<string, { label: string; marketId: string | null }>();
+  for (const o of state.ownOrders) {
+    if (o.creation_txid) {
+      orderTxLabel.set(o.creation_txid, {
+        label: `${o.direction_label ?? "Limit Order"} @ ${o.price}`,
+        marketId: o.market_id,
+      });
+    }
+  }
+
   // Map token asset IDs to labels for display.
   // Market asset IDs are internal byte order; wallet balance keys are display order (reversed).
   const assetLabel = new Map<string, WalletAssetLabel>();
@@ -58,8 +70,19 @@ export function renderWalletUnlocked(params: {
       return { assetId: id, amount: amt, info };
     });
 
+  // Collect the user's limit orders across all markets
+  const myLimitOrders: Array<{ order: DiscoveredOrder; market: Market }> = [];
+  for (const m of markets) {
+    for (const o of m.limitOrders) {
+      if (state.nostrPubkey && o.creator_pubkey === state.nostrPubkey) {
+        myLimitOrders.push({ order: o, market: m });
+      }
+    }
+  }
+
   const txRows = renderWalletTransactionRows({
     creationTxToMarket,
+    orderTxLabel,
     pawIcon: PAW_ICON,
     walletData: wd ?? null,
   });
@@ -193,6 +216,71 @@ export function renderWalletUnlocked(params: {
                   : '<span class="mono text-slate-100">' +
                     tp.amount.toLocaleString() +
                     "</span>") +
+                "</div>"
+              );
+            })
+            .join("")}
+        </div>
+        `
+            : ""
+        }
+
+        ${
+          myLimitOrders.length > 0
+            ? `
+        <!-- Limit Orders -->
+        <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
+          <h3 class="mb-3 font-semibold text-slate-100">Limit Orders</h3>
+          ${myLimitOrders
+            .map(({ order: o, market: m }) => {
+              const truncQ =
+                m.question.length > 45
+                  ? m.question.slice(0, 45) + "..."
+                  : m.question;
+              const cancelling = state.cancellingOrderId === o.id;
+              const dirColor =
+                o.direction === "sell-quote"
+                  ? "text-emerald-300 bg-emerald-500/20"
+                  : "text-red-300 bg-red-500/20";
+              const dirText =
+                o.direction === "sell-quote" ? "BUY" : "SELL";
+              return (
+                '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
+                '<div class="flex items-center gap-2 min-w-0">' +
+                '<span class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ' +
+                dirColor +
+                '">' +
+                dirText +
+                "</span>" +
+                '<button data-open-market="' +
+                escapeAttr(m.id) +
+                '" class="truncate text-slate-300 hover:text-slate-100 transition cursor-pointer text-left">' +
+                escapeHtml(truncQ) +
+                "</button>" +
+                "</div>" +
+                '<div class="flex items-center gap-3 shrink-0">' +
+                (state.walletBalanceHidden
+                  ? '<span class="inline-flex gap-0.5 text-slate-500">' +
+                    PAW_ICON +
+                    PAW_ICON +
+                    "</span>"
+                  : '<span class="text-xs text-slate-400">' +
+                    o.price +
+                    " sats &middot; " +
+                    o.offered_amount.toLocaleString() +
+                    " offered</span>") +
+                '<button data-action="cancel-limit-order" data-order-id="' +
+                escapeAttr(o.id) +
+                '"' +
+                (cancelling ? " disabled" : "") +
+                ' class="rounded border px-2 py-0.5 text-xs transition ' +
+                (cancelling
+                  ? "border-slate-700 text-slate-500"
+                  : "border-rose-800 text-rose-400 hover:bg-rose-900/30") +
+                '">' +
+                (cancelling ? "Cancelling..." : "Cancel") +
+                "</button>" +
+                "</div>" +
                 "</div>"
               );
             })

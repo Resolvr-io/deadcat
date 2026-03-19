@@ -91,7 +91,9 @@ export function renderTopShell(): string {
           <div id="category-row" class="flex items-center gap-1 overflow-x-auto whitespace-nowrap">
             ${categories
               .filter(
-                (category) => category !== "My Markets" || state.nostrPubkey,
+                (category) =>
+                  category !== "My Markets" ||
+                  (state.nostrPubkey && state.marketMakerMode),
               )
               .map((category) => {
                 const active = state.activeCategory === category;
@@ -272,6 +274,15 @@ export function renderTopShell(): string {
                   </div>
                   <button data-action="toggle-lbtc-label" class="relative h-5 w-9 rounded-full transition ${state.showLbtcLabel ? "bg-emerald-400" : "bg-slate-700"}">
                     <span class="absolute top-0.5 ${state.showLbtcLabel ? "left-[18px]" : "left-0.5"} h-4 w-4 rounded-full bg-white shadow transition-all"></span>
+                  </button>
+                </div>
+                <div class="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2.5">
+                  <div>
+                    <p class="text-xs text-slate-300">Market Maker mode</p>
+                    <p class="text-[10px] text-slate-500">Create markets, issue tokens, resolve as oracle</p>
+                  </div>
+                  <button data-action="toggle-market-maker" class="relative h-5 w-9 rounded-full transition ${state.marketMakerMode ? "bg-emerald-400" : "bg-slate-700"}">
+                    <span class="absolute top-0.5 ${state.marketMakerMode ? "left-[18px]" : "left-0.5"} h-4 w-4 rounded-full bg-white shadow transition-all"></span>
                   </button>
                 </div>
                 <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">

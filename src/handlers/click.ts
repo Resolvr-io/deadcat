@@ -2,10 +2,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { MOCK_MARKETS } from "../mock-markets.ts";
 import {
+  cancelLimitOrder,
+  createLimitOrder,
   discoveredToMarket,
   executeTrade,
+  fetchOrders,
+  fetchOwnOrders,
   issueTokens,
   marketToContractParamsJson,
+  mergeOrdersIntoMarket,
   quoteTrade,
 } from "../services/markets.ts";
 import {
@@ -102,7 +107,6 @@ function currentExactInput(): number {
 }
 
 function enforceSizeModeForIntent(): void {
-  state.orderType = "market";
   state.sizeMode = state.tradeIntent === "open" ? "sats" : "contracts";
 }
 
@@ -1047,6 +1051,7 @@ export async function handleClick(
   }
 
   if (action === "open-create-market") {
+    if (!state.marketMakerMode) return;
     state.view = "create";
     render();
     return;
@@ -1209,6 +1214,10 @@ export async function handleClick(
         state.walletLoading = false;
         hideOverlayLoader();
         render();
+        // Fetch own orders for transaction labeling
+        fetchOwnOrders()
+          .then((orders) => { state.ownOrders = orders; render(); })
+          .catch(() => {});
         // Background Electrum sync -- updates balances when done
         invoke("sync_wallet")
           .then(async () => {
@@ -1337,6 +1346,15 @@ export async function handleClick(
 
   if (action === "toggle-lbtc-label") {
     state.showLbtcLabel = !state.showLbtcLabel;
+    render();
+    return;
+  }
+
+  if (action === "toggle-market-maker") {
+    state.marketMakerMode = !state.marketMakerMode;
+    if (!state.marketMakerMode && state.activeCategory === "My Markets") {
+      state.activeCategory = "Trending";
+    }
     render();
     return;
   }
@@ -2196,10 +2214,7 @@ export async function handleClick(
   }
 
   if (orderType) {
-    if (orderType === "limit") {
-      showToast("Limit orders are not supported in LMSR cutover yet.", "info");
-    }
-    state.orderType = "market";
+    state.orderType = orderType as OrderType;
     clearTradeQuoteSnapshot();
     render();
     return;
@@ -2211,6 +2226,51 @@ export async function handleClick(
       state.actionTab = tab;
       render();
     }
+    return;
+  }
+
+  if (action === "cancel-limit-order") {
+    const orderId = actionEl?.dataset.orderId;
+
+    // Search all markets for the order (cancel can be triggered from wallet or detail view)
+    let order: import("../types.ts").DiscoveredOrder | undefined;
+    let orderMarketId: string | undefined;
+    for (const m of markets) {
+      const found = m.limitOrders.find((o) => o.id === orderId);
+      if (found) {
+        order = found;
+        orderMarketId = m.marketId;
+        break;
+      }
+    }
+
+    if (!order || !orderMarketId) {
+      showToast("Order not found — try refreshing the page", "error");
+      return;
+    }
+
+    state.cancellingOrderId = orderId ?? null;
+    render();
+
+    (async () => {
+      try {
+        const result = await cancelLimitOrder(order);
+        showToast(
+          `Order cancelled! Refunded ${result.refunded_amount} sats. txid: ${result.txid.slice(0, 16)}...`,
+          "success",
+        );
+        await refreshWallet(render);
+        const orders = await fetchOrders(orderMarketId);
+        mergeOrdersIntoMarket(orderMarketId, orders);
+        fetchOwnOrders()
+          .then((own) => { state.ownOrders = own; render(); })
+          .catch(() => {});
+      } catch (error) {
+        showToast(`Cancel failed: ${error}`, "error");
+      }
+      state.cancellingOrderId = null;
+      render();
+    })();
     return;
   }
 
@@ -2279,6 +2339,51 @@ export async function handleClick(
 
     const market = getSelectedMarket();
     if (action === "submit-trade") {
+      if (state.orderType === "limit") {
+        const side = state.selectedSide;
+        const direction = currentTradeDirection();
+        const priceSats = Math.round(state.limitPrice * SATS_PER_FULL_CONTRACT);
+        const amount = currentExactInput();
+
+        if (amount <= 0) {
+          showToast("Enter an amount greater than zero", "error");
+          return;
+        }
+
+        state.tradeExecuteLoading = true;
+        state.tradeError = null;
+        render();
+
+        createLimitOrder(market, side, direction, priceSats, amount)
+          .then(async (result) => {
+            showToast(
+              `Limit order placed! txid: ${result.txid.slice(0, 16)}...`,
+              "success",
+            );
+            await refreshWallet(render);
+            const orders = await fetchOrders(market.marketId);
+            mergeOrdersIntoMarket(market.marketId, orders);
+            fetchOwnOrders()
+              .then((own) => { state.ownOrders = own; render(); })
+              .catch(() => {});
+          })
+          .catch((error) => {
+            const msg = String(error);
+            if (msg.includes("excluding") && msg.includes("fee")) {
+              state.tradeError =
+                "Limit orders need two L-BTC UTXOs (one for the order, one for the fee). Send yourself a small amount first to split your balance.";
+            } else {
+              state.tradeError = msg;
+            }
+            showToast(state.tradeError, "error");
+          })
+          .finally(() => {
+            state.tradeExecuteLoading = false;
+            render();
+          });
+        return;
+      }
+
       const side = state.selectedSide;
       const direction = currentTradeDirection();
       const exactInput = currentExactInput();

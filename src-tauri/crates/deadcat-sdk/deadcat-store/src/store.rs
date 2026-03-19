@@ -145,6 +145,10 @@ pub struct MakerOrderInfo {
     pub nostr_event_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub creation_txid: Option<String>,
+    pub market_id: Option<String>,
+    pub direction_label: Option<String>,
+    pub offered_amount: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -973,6 +977,36 @@ impl DeadcatStore {
                     .eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
             ))
             .execute(&mut self.conn)?;
+
+        Ok(())
+    }
+
+    /// Record local creation metadata for an order that was just created on-chain.
+    /// Matches by `(cmr, maker_base_pubkey)` — the same unique key used by `ingest_maker_order`.
+    pub fn record_order_creation(
+        &mut self,
+        cmr: &[u8],
+        maker_base_pubkey: &[u8; 32],
+        creation_txid: &str,
+        market_id: &str,
+        direction_label: &str,
+        offered_amount: u64,
+    ) -> crate::Result<()> {
+        diesel::update(
+            maker_orders::table.filter(
+                maker_orders::cmr
+                    .eq(cmr)
+                    .and(maker_orders::maker_base_pubkey.eq(maker_base_pubkey.to_vec())),
+            ),
+        )
+        .set((
+            maker_orders::creation_txid.eq(creation_txid),
+            maker_orders::market_id.eq(market_id),
+            maker_orders::direction_label.eq(direction_label),
+            maker_orders::offered_amount.eq(offered_amount as i64),
+            maker_orders::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+        ))
+        .execute(&mut self.conn)?;
 
         Ok(())
     }

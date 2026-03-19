@@ -1499,16 +1499,36 @@ impl DeadcatSdk {
             OrderDirection::SellQuote => &quote_asset_id,
         };
 
-        let funding_utxo = self.select_funding_utxo(offered_asset, order_amount, &[])?;
-
-        // 6. Select fee UTXO (exclude funding outpoint)
-        let (fee_utxo, change_addr) =
-            self.select_fee_utxo_excluding(fee_amount, &[funding_utxo.outpoint])?;
-        let change_spk = change_addr.script_pubkey();
         let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
+        let same_asset = *offered_asset == policy_bytes;
+
+        let funding_utxo = if same_asset {
+            // Buy order: single UTXO covers order + fee
+            self.select_funding_utxo(offered_asset, order_amount + fee_amount, &[])?
+        } else {
+            self.select_funding_utxo(offered_asset, order_amount, &[])?
+        };
+
+        // 6. Select fee UTXO (or reuse funding UTXO for same-asset orders)
+        let (fee_utxo, change_addr) = if same_asset {
+            let addr_result = self.address(None)?;
+            let change_addr: lwk_wollet::elements::Address = addr_result
+                .address()
+                .to_string()
+                .parse()
+                .map_err(|e| Error::Query(format!("bad change address: {}", e)))?;
+            (funding_utxo.clone(), change_addr)
+        } else {
+            self.select_fee_utxo_excluding(fee_amount, &[funding_utxo.outpoint])?
+        };
+        let change_spk = change_addr.script_pubkey();
 
         // 7. Build PSET
-        let input_utxos = [funding_utxo.clone(), fee_utxo.clone()];
+        let input_utxos: Vec<UnblindedUtxo> = if same_asset {
+            vec![funding_utxo.clone()]
+        } else {
+            vec![funding_utxo.clone(), fee_utxo.clone()]
+        };
 
         let create_params = CreateOrderParams {
             funding_utxo,

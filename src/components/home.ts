@@ -63,7 +63,7 @@ export function renderHome(): string {
         `
             : ""
         }
-        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950"><span class="mr-1">+</span> Create New Market</button>
+        ${state.marketMakerMode ? `<button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950"><span class="mr-1">+</span> Create New Market</button>` : ""}
         ${state.nostrPubkey ? `<p class="mt-4 text-xs text-slate-500">Identity: ${escapeHtml(state.nostrPubkey.slice(0, 8))}...${escapeHtml(state.nostrPubkey.slice(-8))}</p>` : ""}
       </div>
     `;
@@ -232,7 +232,7 @@ export function renderMyMarkets(): string {
     <div class="phi-container py-6 lg:py-8">
       <div class="mb-4 flex items-center justify-between">
         <h1 class="text-xl font-medium text-slate-100">My Markets</h1>
-        <button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-5 py-2 text-sm font-semibold text-slate-950"><span class="mr-1">+</span> Create New Market</button>
+        ${state.marketMakerMode ? `<button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-5 py-2 text-sm font-semibold text-slate-950"><span class="mr-1">+</span> Create New Market</button>` : ""}
       </div>
       <div class="mb-4 grid gap-2 sm:grid-cols-3">
         <div class="rounded-xl border border-slate-800 bg-slate-950/45 p-3">

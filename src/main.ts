@@ -15,13 +15,19 @@ import { handleFocusout } from "./handlers/focusout.ts";
 import { handleInput } from "./handlers/input.ts";
 import { handleKeydown } from "./handlers/keydown.ts";
 // Services
-import { loadMarkets, refreshMarketsFromStore } from "./services/markets.ts";
+import {
+  fetchOrders,
+  fetchOwnOrders,
+  loadMarkets,
+  mergeOrdersIntoMarket,
+  refreshMarketsFromStore,
+} from "./services/markets.ts";
 import {
   fetchWalletStatus,
   refreshWallet,
   syncCurrentHeightFromLwk,
 } from "./services/wallet.ts";
-import { app, createWalletData, state } from "./state.ts";
+import { app, createWalletData, markets, state } from "./state.ts";
 import type {
   IdentityResponse,
   NostrBackupStatus,
@@ -170,6 +176,12 @@ function openMarket(
   state.chartHoverX = null;
   setLimitPriceSats(getBasePriceSats(market, nextSide));
   render();
+
+  // Fetch limit orders for the selected market in the background
+  fetchOrders(market.marketId).then((orders) => {
+    mergeOrdersIntoMarket(market.marketId, orders);
+    render();
+  });
 }
 
 async function finishOnboarding(): Promise<void> {
@@ -189,6 +201,9 @@ async function finishOnboarding(): Promise<void> {
 
   if (state.walletStatus === "unlocked") {
     void refreshWallet(render);
+    fetchOwnOrders()
+      .then((orders) => { state.ownOrders = orders; render(); })
+      .catch(() => {});
   }
   await loadMarkets();
   state.marketsLoading = false;
@@ -337,12 +352,23 @@ async function initApp(): Promise<void> {
   // 4. Normal boot — both identity and wallet exist
   if (state.walletStatus === "unlocked") {
     void refreshWallet(render);
+    fetchOwnOrders()
+      .then((orders) => { state.ownOrders = orders; render(); })
+      .catch(() => {});
   }
 
   await Promise.all([loadMarkets(), splashReady]);
   state.marketsLoading = false;
   render();
   dismissSplash();
+
+  // Fetch limit orders for all markets in the background
+  for (const m of markets) {
+    void fetchOrders(m.marketId).then((orders) => {
+      mergeOrdersIntoMarket(m.marketId, orders);
+      render();
+    });
+  }
 
   void syncCurrentHeightFromLwk("liquid-testnet", render, updateEstClockLabels);
 }

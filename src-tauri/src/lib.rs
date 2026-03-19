@@ -1245,6 +1245,10 @@ pub fn run() {
             commands::execute_trade,
             commands::get_wallet_utxos,
             commands::list_contracts,
+            commands::fetch_orders,
+            commands::create_limit_order,
+            commands::cancel_limit_order,
+            commands::list_own_orders,
             // Wallet store (SDK)
             wallet_store::create_software_signer,
             wallet_store::create_wollet,

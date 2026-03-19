@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
 use crate::discovery::{
-    self, ContractMetadata, CreateContractRequest, DiscoveredMarket, IdentityResponse,
+    self, ContractMetadata, CreateContractRequest, DiscoveredMarket, DiscoveredOrder,
+    IdentityResponse,
 };
 use crate::state::AppStateManager;
 use crate::{NodeState, NostrAppState};
@@ -655,6 +656,23 @@ pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredM
     }
     // Return from store — single source of truth
     list_contracts(app)
+}
+
+#[tauri::command]
+pub async fn fetch_orders(
+    market_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<DiscoveredOrder>, String> {
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    match node.fetch_orders(market_id.as_deref()).await {
+        Ok(orders) => Ok(orders),
+        Err(e) => {
+            log::warn!("Nostr order fetch failed: {e}");
+            Ok(vec![])
+        }
+    }
 }
 
 /// Publish a contract to Nostr (Nostr-only mode — no on-chain tx).
@@ -1620,4 +1638,279 @@ fn parse_iso_datetime_to_unix(s: &str) -> u64 {
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .map(|dt| dt.and_utc().timestamp() as u64)
         .unwrap_or(0)
+}
+
+// =========================================================================
+// Limit order commands
+// =========================================================================
+
+#[derive(Serialize, Deserialize)]
+pub struct CreateLimitOrderRequest {
+    pub contract_params_json: String,
+    pub market_id: String,
+    pub side: String,
+    pub direction: String,
+    pub price: u64,
+    pub amount: u64,
+    #[serde(default)]
+    pub fee_amount: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CreateLimitOrderResponse {
+    pub txid: String,
+    pub nostr_event_id: String,
+    pub covenant_address: String,
+    pub order_amount: u64,
+    pub order_index: u32,
+}
+
+#[tauri::command]
+pub async fn create_limit_order(
+    request: CreateLimitOrderRequest,
+    app: tauri::AppHandle,
+) -> Result<CreateLimitOrderResponse, String> {
+    let params: deadcat_sdk::PredictionMarketParams =
+        serde_json::from_str(&request.contract_params_json)
+            .map_err(|e| format!("invalid contract params: {e}"))?;
+    let side = parse_trade_side(&request.side)?;
+    let direction = parse_trade_direction(&request.direction)?;
+
+    let base_asset_id = match side {
+        deadcat_sdk::TradeSide::Yes => params.yes_token_asset,
+        deadcat_sdk::TradeSide::No => params.no_token_asset,
+    };
+    let quote_asset_id = params.collateral_asset_id;
+
+    let order_direction = match direction {
+        deadcat_sdk::TradeDirection::Buy => deadcat_sdk::OrderDirection::SellQuote,
+        deadcat_sdk::TradeDirection::Sell => deadcat_sdk::OrderDirection::SellBase,
+    };
+
+    let direction_label = format!(
+        "{}-{}",
+        match direction {
+            deadcat_sdk::TradeDirection::Buy => "buy",
+            deadcat_sdk::TradeDirection::Sell => "sell",
+        },
+        match side {
+            deadcat_sdk::TradeSide::Yes => "yes",
+            deadcat_sdk::TradeSide::No => "no",
+        }
+    );
+
+    let order_index: u32 = 0;
+
+    let fee_amount = request.fee_amount.unwrap_or(500);
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let market_id_for_store = request.market_id.clone();
+    let direction_label_for_store = direction_label.clone();
+
+    let (result, event_id) = node
+        .create_limit_order(
+            base_asset_id,
+            quote_asset_id,
+            request.price,
+            request.amount,
+            order_direction,
+            1,
+            1,
+            order_index,
+            fee_amount,
+            request.market_id,
+            direction_label,
+        )
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
+
+    // Persist the order to the local store for transaction labeling
+    {
+        let store_arc = {
+            let state_handle = app.state::<Mutex<AppStateManager>>();
+            let mgr = state_handle.lock().ok();
+            mgr.and_then(|m| m.store().cloned())
+        };
+        if let Some(store_arc) = store_arc {
+            if let Ok(mut store) = store_arc.lock() {
+                // Ingest the order (deduplicates on cmr + maker_base_pubkey)
+                let event_id_hex = event_id.to_hex();
+                if let Err(e) = store.ingest_maker_order(
+                    &result.order_params,
+                    Some(&result.maker_base_pubkey),
+                    Some(&result.order_nonce),
+                    Some(event_id_hex.as_str()),
+                    None,
+                ) {
+                    log::warn!("failed to ingest order into store: {e}");
+                }
+                // Record the creation metadata
+                let compiled = deadcat_sdk::CompiledMakerOrder::new(result.order_params);
+                if let Ok(compiled) = compiled {
+                    if let Err(e) = store.record_order_creation(
+                        compiled.cmr().as_ref(),
+                        &result.maker_base_pubkey,
+                        &result.txid.to_string(),
+                        &market_id_for_store,
+                        &direction_label_for_store,
+                        result.order_amount,
+                    ) {
+                        log::warn!("failed to record order creation: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    bump_revision_and_emit(&app).await?;
+
+    Ok(CreateLimitOrderResponse {
+        txid: result.txid.to_string(),
+        nostr_event_id: event_id.to_hex(),
+        covenant_address: result.covenant_address,
+        order_amount: result.order_amount,
+        order_index,
+    })
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CancelLimitOrderRequest {
+    pub market_id: String,
+    pub base_asset_id: String,
+    pub quote_asset_id: String,
+    pub price: u64,
+    pub min_fill_lots: u64,
+    pub min_remainder_lots: u64,
+    pub direction: String,
+    pub maker_base_pubkey: String,
+    pub order_nonce: String,
+    pub cosigner_pubkey: String,
+    pub maker_receive_spk_hash: String,
+    #[serde(default)]
+    pub fee_amount: Option<u64>,
+    #[serde(default)]
+    pub order_index: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CancelLimitOrderResponse {
+    pub txid: String,
+    pub refunded_amount: u64,
+}
+
+fn decode_hex_32(hex_str: &str, field: &str) -> Result<[u8; 32], String> {
+    hex::decode(hex_str)
+        .map_err(|e| format!("invalid {field} hex: {e}"))?
+        .try_into()
+        .map_err(|_| format!("{field} must be exactly 32 bytes"))
+}
+
+fn parse_order_direction(direction: &str) -> Result<deadcat_sdk::OrderDirection, String> {
+    match direction.trim().to_ascii_lowercase().as_str() {
+        "sell-base" => Ok(deadcat_sdk::OrderDirection::SellBase),
+        "sell-quote" => Ok(deadcat_sdk::OrderDirection::SellQuote),
+        other => Err(format!(
+            "invalid order direction '{other}', expected 'sell-base' or 'sell-quote'"
+        )),
+    }
+}
+
+#[tauri::command]
+pub async fn cancel_limit_order(
+    request: CancelLimitOrderRequest,
+    app: tauri::AppHandle,
+) -> Result<CancelLimitOrderResponse, String> {
+    let base_asset_id = decode_hex_32(&request.base_asset_id, "base_asset_id")?;
+    let quote_asset_id = decode_hex_32(&request.quote_asset_id, "quote_asset_id")?;
+    let maker_pubkey = decode_hex_32(&request.maker_base_pubkey, "maker_base_pubkey")?;
+    let cosigner_pubkey = decode_hex_32(&request.cosigner_pubkey, "cosigner_pubkey")?;
+    let maker_receive_spk_hash =
+        decode_hex_32(&request.maker_receive_spk_hash, "maker_receive_spk_hash")?;
+    let direction = parse_order_direction(&request.direction)?;
+
+    let params = deadcat_sdk::MakerOrderParams {
+        base_asset_id,
+        quote_asset_id,
+        price: request.price,
+        min_fill_lots: request.min_fill_lots,
+        min_remainder_lots: request.min_remainder_lots,
+        direction,
+        maker_receive_spk_hash,
+        cosigner_pubkey,
+        maker_pubkey,
+    };
+
+    let fee_amount = request.fee_amount.unwrap_or(500);
+
+    let order_index: u32 = request.order_index.unwrap_or(0);
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let result = node
+        .cancel_limit_order(params, maker_pubkey, order_index, fee_amount)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
+
+    bump_revision_and_emit(&app).await?;
+
+    Ok(CancelLimitOrderResponse {
+        txid: result.txid.to_string(),
+        refunded_amount: result.refunded_amount,
+    })
+}
+
+// =========================================================================
+// Own order listing (for transaction labeling)
+// =========================================================================
+
+#[derive(Serialize)]
+pub struct OwnOrderSummary {
+    pub creation_txid: Option<String>,
+    pub market_id: Option<String>,
+    pub direction_label: Option<String>,
+    pub price: u64,
+    pub offered_amount: Option<u64>,
+    pub order_status: String,
+}
+
+#[tauri::command]
+pub fn list_own_orders(app: tauri::AppHandle) -> Result<Vec<OwnOrderSummary>, String> {
+    let store_arc = {
+        let state_handle = app.state::<Mutex<AppStateManager>>();
+        let mgr = state_handle
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.store()
+            .cloned()
+            .ok_or_else(|| "Store not initialized".to_string())?
+    };
+
+    let mut store = store_arc
+        .lock()
+        .map_err(|_| "store lock failed".to_string())?;
+
+    // Only return orders that have local creation metadata (creation_txid IS NOT NULL)
+    let all_orders = store
+        .list_maker_orders(&deadcat_store::OrderFilter::default())
+        .map_err(|e| format!("list orders: {e}"))?;
+
+    let own: Vec<OwnOrderSummary> = all_orders
+        .into_iter()
+        .filter(|o| o.creation_txid.is_some())
+        .map(|o| OwnOrderSummary {
+            creation_txid: o.creation_txid,
+            market_id: o.market_id,
+            direction_label: o.direction_label,
+            price: o.params.price,
+            offered_amount: o.offered_amount,
+            order_status: format!("{:?}", o.status),
+        })
+        .collect();
+
+    Ok(own)
 }
