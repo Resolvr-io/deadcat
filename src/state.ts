@@ -194,6 +194,7 @@ export const state: {
   settingsOpen: boolean;
   settingsSection: Record<string, boolean>;
   logoutOpen: boolean;
+  logoutBackedUp: boolean;
   nostrPubkey: string | null;
   nostrNpub: string | null;
   nostrNsecRevealed: string | null;
@@ -351,6 +352,7 @@ export const state: {
     dev: false,
   } as Record<string, boolean>,
   logoutOpen: false,
+  logoutBackedUp: false,
   nostrPubkey: null,
   nostrNpub: null,
   nostrNsecRevealed: null,
