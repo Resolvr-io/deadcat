@@ -450,7 +450,7 @@ export function renderTopShell(): string {
         </div>
         <div class="mt-5 space-y-4">
           <div class="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
-            <p class="text-sm font-medium text-slate-200">Before you log out, make sure you have:</p>
+            <p class="text-sm font-medium text-slate-200">Logging out will <strong>remove your Nostr key and wallet</strong> from this device. Make sure you have:</p>
             <ul class="mt-3 space-y-2 text-sm text-slate-400">
               <li class="flex items-start gap-2">
                 <svg class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -460,12 +460,20 @@ export function renderTopShell(): string {
                 <svg class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 <span>Saved your <strong class="text-slate-200">unlock password</strong> — you'll need it to access your wallet again</span>
               </li>
+              <li class="flex items-start gap-2">
+                <svg class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span>Backed up your <strong class="text-slate-200">Nostr private key</strong> locally so you can restore your identity</span>
+              </li>
             </ul>
           </div>
-          <p class="text-xs text-slate-500"><strong class="text-slate-300">Deadcat.live does not hold user funds.</strong> If you lose your recovery phrase and password, your funds cannot be recovered.</p>
+          <label class="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-300">
+            <input id="logout-backed-up" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-950 text-rose-400 focus:ring-rose-400" ${state.logoutBackedUp ? "checked" : ""} />
+            <span>I backed up my recovery phrase, unlock password, and Nostr key locally before removing them from this device.</span>
+          </label>
+          <p class="text-xs text-slate-500"><strong class="text-slate-300">Deadcat.live does not hold user funds.</strong> Your keys and wallet data will be permanently removed from this device. If you lose your recovery phrase and password, your funds cannot be recovered.</p>
           <div class="flex gap-3">
             <button data-action="close-logout" class="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100">Cancel</button>
-            <button data-action="confirm-logout" class="flex-1 rounded-xl bg-rose-500/20 py-2.5 text-sm font-medium text-rose-300 transition hover:bg-rose-500/30">Log Out</button>
+            <button data-action="confirm-logout" class="flex-1 rounded-xl py-2.5 text-sm font-medium transition ${state.logoutBackedUp ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "cursor-not-allowed border border-slate-800 text-slate-600"}" ${state.logoutBackedUp ? "" : "disabled"}>Log Out</button>
           </div>
         </div>
       </div>

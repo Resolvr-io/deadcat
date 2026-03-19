@@ -25,6 +25,7 @@ import {
   refreshWallet,
   resetReceiveState,
   resetSendState,
+  resetWalletStoredState,
 } from "../services/wallet.ts";
 import {
   createWalletData,
@@ -1027,6 +1028,7 @@ export async function handleClick(
 
   if (action === "user-logout") {
     state.userMenuOpen = false;
+    state.logoutBackedUp = false;
     state.logoutOpen = true;
     render();
     return;
@@ -1034,25 +1036,42 @@ export async function handleClick(
 
   if (action === "close-logout") {
     state.logoutOpen = false;
+    state.logoutBackedUp = false;
     render();
     return;
   }
 
   if (action === "confirm-logout") {
+    if (!state.logoutBackedUp) return;
     state.logoutOpen = false;
+    state.logoutBackedUp = false;
     (async () => {
       try {
-        await invoke("lock_wallet");
+        await invoke("delete_nostr_identity");
+        try {
+          await invoke("delete_wallet");
+        } catch (_) {
+          /* no wallet is fine */
+        }
         await fetchWalletStatus();
-        state.walletData = null;
-        state.walletPassword = "";
-        state.walletError = "";
-        state.walletModal = "none";
-        resetReceiveState();
-        resetSendState();
+        state.nostrPubkey = null;
+        state.nostrNpub = null;
+        state.nostrNsecRevealed = null;
+        resetWalletStoredState();
+        state.walletStatus = "not_created";
+        state.onboardingNostrNsec = "";
+        state.onboardingNostrGeneratedNsec = "";
+        state.onboardingNsecRevealed = false;
+        state.onboardingNostrDone = false;
+        state.onboardingWalletPassword = "";
+        state.onboardingWalletPasswordConfirm = "";
+        state.onboardingWalletMnemonic = "";
+        state.onboardingError = "";
+        state.onboardingStep = "nostr";
         state.view = "home";
+        showToast("Logged out - keys removed", "success");
       } catch (e) {
-        console.warn("Failed to lock wallet:", e);
+        showToast(`Logout failed: ${String(e)}`, "error");
       }
       render();
     })();
