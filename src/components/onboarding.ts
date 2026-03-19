@@ -18,7 +18,7 @@ export function renderOnboarding(): string {
       <div class="h-px flex-1 ${step === "wallet" ? "bg-emerald-400" : "bg-slate-700"}"></div>
       <div class="flex items-center gap-2">
         <div class="h-8 w-8 rounded-full ${step === "wallet" ? "bg-emerald-400 text-slate-950" : "border border-slate-700 text-slate-500"} flex items-center justify-center text-sm font-medium">2</div>
-        <span class="text-sm ${step === "wallet" ? "text-slate-100" : "text-slate-500"}">Liquid Wallet</span>
+        <span class="text-sm ${step === "wallet" ? "text-slate-100" : "text-slate-500"}">Wallet</span>
       </div>
     </div>
   `;
@@ -183,7 +183,7 @@ export function renderOnboarding(): string {
     <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-8">
       ${stepIndicator}
       <h2 class="text-xl font-medium text-slate-100">Set Up Your Wallet</h2>
-      <p class="mt-2 text-sm text-slate-400">Create a new Liquid Bitcoin wallet or restore from an existing recovery phrase.</p>
+      <p class="mt-2 text-sm text-slate-400">Create a new wallet or restore from an existing recovery phrase.</p>
       ${errorHtml}
       ${scanningHtml}
       ${backupFoundHtml}
