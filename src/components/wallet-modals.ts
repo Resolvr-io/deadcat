@@ -195,7 +195,9 @@ export function renderReceiveModal(): string {
     } else {
       content =
         '<div class="space-y-3">' +
-        '<p class="text-sm text-slate-400">Create a Lightning invoice via Boltz. Funds settle as ' + btcLabel() + '.</p>' +
+        '<p class="text-sm text-slate-400">Create a Lightning invoice via Boltz. Funds settle as ' +
+        btcLabel() +
+        ".</p>" +
         '<div class="flex gap-2">' +
         '<button data-action="receive-preset" data-preset="1000" class="flex-1 rounded-lg border border-slate-700 py-2 text-sm text-slate-300 hover:bg-slate-800">1k</button>' +
         '<button data-action="receive-preset" data-preset="10000" class="flex-1 rounded-lg border border-slate-700 py-2 text-sm text-slate-300 hover:bg-slate-800">10k</button>' +
@@ -217,7 +219,9 @@ export function renderReceiveModal(): string {
     if (state.receiveLiquidAddress) {
       content =
         '<div class="space-y-3">' +
-        '<p class="text-sm text-slate-400">Send ' + btcLabel() + ' to this address to fund your wallet.</p>' +
+        '<p class="text-sm text-slate-400">Send ' +
+        btcLabel() +
+        " to this address to fund your wallet.</p>" +
         (state.modalQr
           ? '<div class="flex justify-center"><img src="' +
             escapeAttr(state.modalQr) +
@@ -233,7 +237,9 @@ export function renderReceiveModal(): string {
     } else {
       content =
         '<div class="flex flex-col items-center gap-4 py-4">' +
-        '<p class="text-sm text-slate-400">Generate a Liquid address to receive ' + btcLabel() + '.</p>' +
+        '<p class="text-sm text-slate-400">Generate a Liquid address to receive ' +
+        btcLabel() +
+        ".</p>" +
         '<button data-action="generate-liquid-address" class="rounded-lg bg-emerald-400 px-6 py-3 font-medium text-slate-950 hover:bg-emerald-300">' +
         (creating ? "Generating..." : "Generate Address") +
         "</button>" +
@@ -287,7 +293,9 @@ export function renderReceiveModal(): string {
         : "";
       content =
         '<div class="space-y-3">' +
-        '<p class="text-sm text-slate-400">Send BTC on-chain to receive ' + btcLabel() + ' via Boltz.</p>' +
+        '<p class="text-sm text-slate-400">Send BTC on-chain to receive ' +
+        btcLabel() +
+        " via Boltz.</p>" +
         pairInfo +
         '<div class="flex gap-2">' +
         '<input id="receive-amount" type="number" min="1" value="' +
@@ -364,7 +372,9 @@ export function renderSendModal(): string {
     } else {
       content =
         '<div class="space-y-3">' +
-        '<p class="text-sm text-slate-400">Send ' + btcLabel() + ' directly to a Liquid address.</p>' +
+        '<p class="text-sm text-slate-400">Send ' +
+        btcLabel() +
+        " directly to a Liquid address.</p>" +
         '<input id="send-liquid-address" value="' +
         escapeAttr(state.sendLiquidAddress) +
         '" placeholder="Liquid address" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
@@ -374,7 +384,7 @@ export function renderSendModal(): string {
         '<button data-action="send-liquid" class="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300"' +
         (creating ? " disabled" : "") +
         ">" +
-        (creating ? "Sending..." : "Send " + btcLabel()) +
+        (creating ? "Sending..." : `Send ${btcLabel()}`) +
         "</button>" +
         "</div>";
     }
