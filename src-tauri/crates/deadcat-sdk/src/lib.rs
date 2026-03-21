@@ -60,6 +60,7 @@ pub use maker_order::params::{
 
 // ── LMSR pools ─────────────────────────────────────────────────────
 pub use lmsr_pool::api::{
+    AdjustLmsrPoolRequest, AdjustLmsrPoolResult, CloseLmsrPoolRequest, CloseLmsrPoolResult,
     CreateLmsrPoolRequest, CreateLmsrPoolResult, LmsrPoolLocator, LmsrPoolSnapshot,
     build_pool_announcement_from_snapshot,
 };
@@ -70,7 +71,8 @@ pub use lmsr_pool::math::{
 };
 pub use lmsr_pool::params::{LmsrInitialOutpoint, LmsrPoolId, LmsrPoolIdInput, LmsrPoolParams};
 pub use lmsr_pool::table::{
-    LmsrTableManifest, lmsr_table_leaf_hash, lmsr_table_node_hash, lmsr_table_root,
+    LmsrTableManifest, generate_lmsr_table, lmsr_table_leaf_hash, lmsr_table_node_hash,
+    lmsr_table_root,
 };
 
 // ── Pool helpers ───────────────────────────────────────────────────

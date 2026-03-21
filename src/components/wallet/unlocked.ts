@@ -34,7 +34,10 @@ export function renderWalletUnlocked(params: {
   );
 
   // Build txid->label map from own limit orders for transaction labeling
-  const orderTxLabel = new Map<string, { label: string; marketId: string | null }>();
+  const orderTxLabel = new Map<
+    string,
+    { label: string; marketId: string | null }
+  >();
   for (const o of state.ownOrders) {
     if (o.creation_txid) {
       orderTxLabel.set(o.creation_txid, {
@@ -235,15 +238,14 @@ export function renderWalletUnlocked(params: {
             .map(({ order: o, market: m }) => {
               const truncQ =
                 m.question.length > 45
-                  ? m.question.slice(0, 45) + "..."
+                  ? `${m.question.slice(0, 45)}...`
                   : m.question;
               const cancelling = state.cancellingOrderId === o.id;
               const dirColor =
                 o.direction === "sell-quote"
                   ? "text-emerald-300 bg-emerald-500/20"
                   : "text-red-300 bg-red-500/20";
-              const dirText =
-                o.direction === "sell-quote" ? "BUY" : "SELL";
+              const dirText = o.direction === "sell-quote" ? "BUY" : "SELL";
               return (
                 '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
                 '<div class="flex items-center gap-2 min-w-0">' +
@@ -280,6 +282,50 @@ export function renderWalletUnlocked(params: {
                 '">' +
                 (cancelling ? "Cancelling..." : "Cancel") +
                 "</button>" +
+                "</div>" +
+                "</div>"
+              );
+            })
+            .join("")}
+        </div>
+        `
+            : ""
+        }
+
+        ${
+          state.myPools.length > 0
+            ? `
+        <!-- My Pools -->
+        <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
+          <h3 class="mb-3 font-semibold text-slate-100">My Pools</h3>
+          ${state.myPools
+            .map((p) => {
+              return (
+                '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
+                '<div class="flex items-center gap-2 min-w-0">' +
+                '<span class="mono text-slate-300">' +
+                escapeHtml(`${p.pool_id.slice(0, 10)}...`) +
+                "</span>" +
+                '<span class="text-xs text-slate-500">' +
+                escapeHtml(`${p.market_id.slice(0, 10)}...`) +
+                "</span>" +
+                "</div>" +
+                '<div class="flex items-center gap-3 shrink-0">' +
+                (state.walletBalanceHidden
+                  ? '<span class="inline-flex gap-0.5 text-slate-500">' +
+                    PAW_ICON +
+                    PAW_ICON +
+                    "</span>"
+                  : '<span class="text-xs text-slate-400">Y:' +
+                    p.reserve_yes +
+                    " N:" +
+                    p.reserve_no +
+                    " L:" +
+                    p.reserve_collateral +
+                    "</span>") +
+                '<span class="mono text-[10px] text-slate-500">' +
+                escapeHtml(`${p.creation_txid.slice(0, 10)}...`) +
+                "</span>" +
                 "</div>" +
                 "</div>"
               );

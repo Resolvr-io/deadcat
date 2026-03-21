@@ -7,6 +7,7 @@ import type {
   BoltzLightningReceiveCreated,
   BoltzSubmarineSwapCreated,
   LimitSellWarning,
+  LmsrPoolInfo,
   Market,
   MarketCategory,
   NavCategory,
@@ -14,6 +15,7 @@ import type {
   NostrProfile,
   OrderType,
   OwnOrderSummary,
+  PriceHistoryEntry,
   QuoteMarketTradeResult,
   RelayEntry,
   Side,
@@ -238,6 +240,9 @@ export const state: {
   chartHoverX: number | null;
   chartTimescale: "1H" | "3H" | "6H" | "12H" | "1D";
   ownOrders: OwnOrderSummary[];
+  myPools: LmsrPoolInfo[];
+  poolCreateOpen: boolean;
+  priceHistory: Map<string, PriceHistoryEntry[]>;
   chartAspectHome: number;
   chartAspectDetail: number;
 } = {
@@ -391,6 +396,9 @@ export const state: {
   chartHoverX: null,
   chartTimescale: "3H",
   ownOrders: [],
+  myPools: [],
+  poolCreateOpen: false,
+  priceHistory: new Map(),
   chartAspectHome: 2.8,
   chartAspectDetail: 3.35,
 };

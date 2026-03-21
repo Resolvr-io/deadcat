@@ -106,9 +106,8 @@ fn get_tx_confirmed_height(
     };
 
     // Deserialize to get the first output's script_pubkey
-    let tx: lwk_wollet::elements::Transaction =
-        lwk_wollet::elements::encode::deserialize(&raw_tx)
-            .map_err(|e| ChainAdapterError::Parse(format!("tx deserialize: {e}")))?;
+    let tx: lwk_wollet::elements::Transaction = lwk_wollet::elements::encode::deserialize(&raw_tx)
+        .map_err(|e| ChainAdapterError::Parse(format!("tx deserialize: {e}")))?;
 
     let first_output = match tx.output.first() {
         Some(o) => o,

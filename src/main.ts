@@ -22,6 +22,7 @@ import {
   mergeOrdersIntoMarket,
   refreshMarketsFromStore,
 } from "./services/markets.ts";
+import { getPriceHistory, listLmsrPools } from "./services/pools.ts";
 import {
   fetchWalletStatus,
   refreshWallet,
@@ -182,6 +183,14 @@ function openMarket(
     mergeOrdersIntoMarket(market.marketId, orders);
     render();
   });
+
+  // Load price history for the chart
+  getPriceHistory(market.marketId, 500)
+    .then((entries) => {
+      state.priceHistory.set(market.marketId, entries);
+      render();
+    })
+    .catch(() => {});
 }
 
 async function finishOnboarding(): Promise<void> {
@@ -202,7 +211,16 @@ async function finishOnboarding(): Promise<void> {
   if (state.walletStatus === "unlocked") {
     void refreshWallet(render);
     fetchOwnOrders()
-      .then((orders) => { state.ownOrders = orders; render(); })
+      .then((orders) => {
+        state.ownOrders = orders;
+        render();
+      })
+      .catch(() => {});
+    listLmsrPools()
+      .then((pools) => {
+        state.myPools = pools;
+        render();
+      })
       .catch(() => {});
   }
   await loadMarkets();
@@ -353,7 +371,16 @@ async function initApp(): Promise<void> {
   if (state.walletStatus === "unlocked") {
     void refreshWallet(render);
     fetchOwnOrders()
-      .then((orders) => { state.ownOrders = orders; render(); })
+      .then((orders) => {
+        state.ownOrders = orders;
+        render();
+      })
+      .catch(() => {});
+    listLmsrPools()
+      .then((pools) => {
+        state.myPools = pools;
+        render();
+      })
       .catch(() => {});
   }
 

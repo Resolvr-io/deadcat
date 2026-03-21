@@ -24,22 +24,20 @@ export function renderWalletTransactionRows(params: {
       const orderInfo = orderTxLabel.get(tx.txid);
       const isLimitOrder = !!orderInfo;
       const sign = tx.balanceChange >= 0 ? "+" : "";
-      const color =
-        isLimitOrder
-          ? "text-amber-300"
-          : isCreation || isIssuance
-            ? "text-violet-300"
-            : tx.balanceChange >= 0
-              ? "text-emerald-300"
-              : "text-red-300";
-      const icon =
-        isLimitOrder
-          ? "&#9830;"
-          : isCreation || isIssuance
-            ? "&#9670;"
-            : tx.balanceChange >= 0
-              ? "&#8595;"
-              : "&#8593;";
+      const color = isLimitOrder
+        ? "text-amber-300"
+        : isCreation || isIssuance
+          ? "text-violet-300"
+          : tx.balanceChange >= 0
+            ? "text-emerald-300"
+            : "text-red-300";
+      const icon = isLimitOrder
+        ? "&#9830;"
+        : isCreation || isIssuance
+          ? "&#9670;"
+          : tx.balanceChange >= 0
+            ? "&#8595;"
+            : "&#8593;";
       let label = "";
       if (isLimitOrder) {
         const badgeContent = escapeHtml(orderInfo.label);

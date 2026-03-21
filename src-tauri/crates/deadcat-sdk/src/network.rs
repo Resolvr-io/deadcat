@@ -68,6 +68,20 @@ impl Network {
     pub fn genesis_hash(self) -> [u8; 32] {
         self.into_lwk().genesis_block_hash().to_byte_array()
     }
+
+    /// Genesis block hash with reversed byte order, used by the swap
+    /// assembly path.
+    ///
+    /// The swap path does not depend on the exact genesis hash value
+    /// (the sighash is self-consistent regardless of byte order), so
+    /// this is a best-effort match against the on-chain representation.
+    /// For admin operations that hash `genesis_block_hash()` explicitly,
+    /// use [`DeadcatSdk::chain_genesis_hash`] instead.
+    pub fn genesis_hash_simplicity(self) -> [u8; 32] {
+        let mut h = self.genesis_hash();
+        h.reverse();
+        h
+    }
 }
 
 impl std::str::FromStr for Network {

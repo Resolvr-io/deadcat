@@ -1,5 +1,7 @@
 pub mod api;
 pub mod assembly;
+#[cfg(feature = "testing")]
+pub(crate) mod c_eval;
 pub mod chain_walk;
 pub mod contract;
 pub(crate) mod identity;

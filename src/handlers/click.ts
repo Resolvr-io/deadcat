@@ -1216,7 +1216,10 @@ export async function handleClick(
         render();
         // Fetch own orders for transaction labeling
         fetchOwnOrders()
-          .then((orders) => { state.ownOrders = orders; render(); })
+          .then((orders) => {
+            state.ownOrders = orders;
+            render();
+          })
           .catch(() => {});
         // Background Electrum sync -- updates balances when done
         invoke("sync_wallet")
@@ -2006,6 +2009,17 @@ export async function handleClick(
     return;
   }
 
+  if (action === "toggle-pool-create") {
+    state.poolCreateOpen = !state.poolCreateOpen;
+    render();
+    return;
+  }
+
+  if (action === "create-pool") {
+    showToast("Pool creation coming soon", "info");
+    return;
+  }
+
   if (action === "use-cashout") {
     const market = getSelectedMarket();
     const positions = getPositionContracts(market);
@@ -2263,7 +2277,10 @@ export async function handleClick(
         const orders = await fetchOrders(orderMarketId);
         mergeOrdersIntoMarket(orderMarketId, orders);
         fetchOwnOrders()
-          .then((own) => { state.ownOrders = own; render(); })
+          .then((own) => {
+            state.ownOrders = own;
+            render();
+          })
           .catch(() => {});
       } catch (error) {
         showToast(`Cancel failed: ${error}`, "error");
@@ -2364,7 +2381,10 @@ export async function handleClick(
             const orders = await fetchOrders(market.marketId);
             mergeOrdersIntoMarket(market.marketId, orders);
             fetchOwnOrders()
-              .then((own) => { state.ownOrders = own; render(); })
+              .then((own) => {
+                state.ownOrders = own;
+                render();
+              })
               .catch(() => {});
           })
           .catch((error) => {

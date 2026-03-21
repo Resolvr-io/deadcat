@@ -8,6 +8,7 @@ use crate::lmsr_pool::params::{LmsrInitialOutpoint, LmsrPoolId, LmsrPoolParams};
 use crate::lmsr_pool::table::LmsrTableManifest;
 use crate::pool::PoolReserves;
 use crate::prediction_market::params::{MarketId, PredictionMarketParams};
+use crate::trade::types::LmsrPoolUtxos;
 
 /// LMSR scan inputs plus the caller-supplied pool identity hint.
 ///
@@ -55,6 +56,53 @@ pub struct CreateLmsrPoolResult {
     pub txid: Txid,
     pub snapshot: LmsrPoolSnapshot,
     pub announcement: PoolAnnouncement,
+}
+
+/// Request for adjusting an existing LMSR pool's reserves (AdminAdjust transition).
+///
+/// Pool parameters are carried inside `locator.params`.
+#[derive(Debug, Clone)]
+#[allow(private_interfaces)] // LmsrPoolUtxos is pub(crate); callers use node-layer APIs
+pub struct AdjustLmsrPoolRequest {
+    pub locator: LmsrPoolLocator,
+    pub current_pool_utxos: LmsrPoolUtxos,
+    pub current_s_index: u64,
+    pub current_reserves: PoolReserves,
+    pub new_reserves: PoolReserves,
+    pub table_values: Vec<u64>,
+    pub fee_amount: u64,
+    pub pool_index: u32,
+}
+
+/// Result returned after a successful LMSR pool adjustment.
+#[derive(Debug, Clone)]
+pub struct AdjustLmsrPoolResult {
+    pub txid: Txid,
+    pub new_snapshot: LmsrPoolSnapshot,
+}
+
+/// Request for closing an LMSR pool (AdminAdjust to minimum reserves).
+///
+/// Pool parameters are carried inside `locator.params`.
+#[derive(Debug, Clone)]
+#[allow(private_interfaces)] // LmsrPoolUtxos is pub(crate); callers use node-layer APIs
+pub struct CloseLmsrPoolRequest {
+    pub locator: LmsrPoolLocator,
+    pub current_pool_utxos: LmsrPoolUtxos,
+    pub current_s_index: u64,
+    pub current_reserves: PoolReserves,
+    pub table_values: Vec<u64>,
+    pub fee_amount: u64,
+    pub pool_index: u32,
+}
+
+/// Result returned after a successful LMSR pool close.
+#[derive(Debug, Clone)]
+pub struct CloseLmsrPoolResult {
+    pub txid: Txid,
+    pub reclaimed_yes: u64,
+    pub reclaimed_no: u64,
+    pub reclaimed_collateral: u64,
 }
 
 impl TryFrom<&PoolAnnouncement> for LmsrPoolLocator {

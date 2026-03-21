@@ -1914,3 +1914,357 @@ pub fn list_own_orders(app: tauri::AppHandle) -> Result<Vec<OwnOrderSummary>, St
 
     Ok(own)
 }
+
+// =========================================================================
+// LMSR Pool commands
+// =========================================================================
+
+#[tauri::command]
+pub fn generate_lmsr_table(
+    liquidity_param: f64,
+    table_depth: u32,
+    q_step_lots: u64,
+    s_bias: u64,
+    half_payout_sats: u64,
+) -> Result<Vec<u64>, String> {
+    deadcat_sdk::generate_lmsr_table(
+        liquidity_param,
+        table_depth,
+        q_step_lots,
+        s_bias,
+        half_payout_sats,
+    )
+    .map_err(|e| format!("{e}"))
+}
+
+#[derive(Deserialize)]
+pub struct CreateLmsrPoolRequest {
+    pub market_params_json: String,
+    pub pool_params_json: String,
+    pub initial_s_index: u64,
+    pub initial_reserves_yes: u64,
+    pub initial_reserves_no: u64,
+    pub initial_reserves_lbtc: u64,
+    pub table_values: Vec<u64>,
+    pub fee_amount: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct CreateLmsrPoolResponse {
+    pub txid: String,
+    pub pool_id: String,
+}
+
+#[tauri::command]
+pub async fn create_lmsr_pool(
+    request: CreateLmsrPoolRequest,
+    app: tauri::AppHandle,
+) -> Result<CreateLmsrPoolResponse, String> {
+    let market_params: deadcat_sdk::PredictionMarketParams =
+        serde_json::from_str(&request.market_params_json)
+            .map_err(|e| format!("invalid market params: {e}"))?;
+    let pool_params: deadcat_sdk::LmsrPoolParams = serde_json::from_str(&request.pool_params_json)
+        .map_err(|e| format!("invalid pool params: {e}"))?;
+
+    let sdk_request = deadcat_sdk::CreateLmsrPoolRequest {
+        market_params,
+        pool_params,
+        initial_s_index: request.initial_s_index,
+        initial_reserves: deadcat_sdk::PoolReserves {
+            r_yes: request.initial_reserves_yes,
+            r_no: request.initial_reserves_no,
+            r_lbtc: request.initial_reserves_lbtc,
+        },
+        table_values: request.table_values,
+        fee_amount: request.fee_amount.unwrap_or(500),
+    };
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let result = node
+        .create_lmsr_pool(sdk_request)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
+
+    bump_revision_and_emit(&app).await?;
+
+    Ok(CreateLmsrPoolResponse {
+        txid: result.txid.to_string(),
+        pool_id: result.snapshot.locator.pool_id.to_hex(),
+    })
+}
+
+#[derive(Serialize)]
+pub struct ScanLmsrPoolResponse {
+    pub pool_id: String,
+    pub current_s_index: u64,
+    pub reserve_yes: u64,
+    pub reserve_no: u64,
+    pub reserve_collateral: u64,
+}
+
+#[tauri::command]
+pub async fn scan_lmsr_pool(
+    pool_id: String,
+    app: tauri::AppHandle,
+) -> Result<ScanLmsrPoolResponse, String> {
+    // Look up the pool locator from the store
+    let store_arc = {
+        let state_handle = app.state::<Mutex<AppStateManager>>();
+        let mgr = state_handle
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.store()
+            .cloned()
+            .ok_or_else(|| "Store not initialized".to_string())?
+    };
+
+    let pool_info = {
+        let mut store = store_arc
+            .lock()
+            .map_err(|_| "store lock failed".to_string())?;
+        let pools = store
+            .list_lmsr_pools(&deadcat_store::LmsrPoolFilter {
+                pool_id: Some(pool_id.clone()),
+                ..Default::default()
+            })
+            .map_err(|e| format!("list pools: {e}"))?;
+        pools.into_iter().next().ok_or("Pool not found in store")?
+    };
+
+    let pool_params: deadcat_sdk::LmsrPoolParams = serde_json::from_str(&pool_info.params_json)
+        .map_err(|e| format!("invalid pool params: {e}"))?;
+
+    let locator = deadcat_sdk::LmsrPoolLocator {
+        market_id: deadcat_sdk::MarketId(
+            hex::decode(&pool_info.market_id)
+                .map_err(|e| format!("bad market_id hex: {e}"))?
+                .try_into()
+                .map_err(|_| "market_id not 32 bytes")?,
+        ),
+        pool_id: deadcat_sdk::LmsrPoolId::from_hex(&pool_id).map_err(|e| format!("{e}"))?,
+        params: pool_params,
+        creation_txid: pool_info
+            .creation_txid
+            .parse()
+            .map_err(|e| format!("bad txid: {e}"))?,
+        initial_reserve_outpoints: {
+            let creation_txid_bytes: [u8; 32] = hex::decode(&pool_info.creation_txid)
+                .map_err(|e| format!("bad creation_txid hex: {e}"))?
+                .try_into()
+                .map_err(|_| "creation_txid not 32 bytes".to_string())?;
+            [
+                deadcat_sdk::LmsrInitialOutpoint {
+                    txid: creation_txid_bytes,
+                    vout: 0,
+                },
+                deadcat_sdk::LmsrInitialOutpoint {
+                    txid: creation_txid_bytes,
+                    vout: 1,
+                },
+                deadcat_sdk::LmsrInitialOutpoint {
+                    txid: creation_txid_bytes,
+                    vout: 2,
+                },
+            ]
+        },
+        hinted_s_index: pool_info.current_s_index,
+        witness_schema_version: pool_info.witness_schema_version,
+    };
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let snapshot = node
+        .scan_lmsr_pool(locator)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
+
+    Ok(ScanLmsrPoolResponse {
+        pool_id,
+        current_s_index: snapshot.current_s_index,
+        reserve_yes: snapshot.reserves.r_yes,
+        reserve_no: snapshot.reserves.r_no,
+        reserve_collateral: snapshot.reserves.r_lbtc,
+    })
+}
+
+#[derive(Deserialize)]
+pub struct AdjustLmsrPoolTauriRequest {
+    pub pool_id: String,
+    pub new_reserves_yes: u64,
+    pub new_reserves_no: u64,
+    pub new_reserves_lbtc: u64,
+    pub table_values: Vec<u64>,
+    pub fee_amount: Option<u64>,
+    pub pool_index: Option<u32>,
+}
+
+#[derive(Serialize)]
+pub struct AdjustLmsrPoolResponse {
+    pub txid: String,
+    pub pool_id: String,
+    pub current_s_index: u64,
+    pub reserve_yes: u64,
+    pub reserve_no: u64,
+    pub reserve_collateral: u64,
+}
+
+/// Adjust an LMSR pool's reserves via AdminAdjust transition.
+///
+/// Requires the pool scan to return unblinded UTXOs — not yet wired.
+/// Returns an error until full pool-UTXO passthrough is implemented.
+#[tauri::command]
+pub async fn adjust_lmsr_pool(
+    _request: AdjustLmsrPoolTauriRequest,
+    _app: tauri::AppHandle,
+) -> Result<AdjustLmsrPoolResponse, String> {
+    Err("adjust_lmsr_pool is not yet fully wired — pool UTXO passthrough required".to_string())
+}
+
+#[derive(Deserialize)]
+pub struct CloseLmsrPoolTauriRequest {
+    pub pool_id: String,
+    pub table_values: Vec<u64>,
+    pub fee_amount: Option<u64>,
+    pub pool_index: Option<u32>,
+}
+
+#[derive(Serialize)]
+pub struct CloseLmsrPoolResponse {
+    pub txid: String,
+    pub reclaimed_yes: u64,
+    pub reclaimed_no: u64,
+    pub reclaimed_collateral: u64,
+}
+
+/// Close an LMSR pool by adjusting reserves to covenant minimums.
+///
+/// Requires the pool scan to return unblinded UTXOs — not yet wired.
+/// Returns an error until full pool-UTXO passthrough is implemented.
+#[tauri::command]
+pub async fn close_lmsr_pool(
+    _request: CloseLmsrPoolTauriRequest,
+    _app: tauri::AppHandle,
+) -> Result<CloseLmsrPoolResponse, String> {
+    Err("close_lmsr_pool is not yet fully wired — pool UTXO passthrough required".to_string())
+}
+
+#[derive(Serialize)]
+pub struct LmsrPoolInfoResponse {
+    pub pool_id: String,
+    pub market_id: String,
+    pub creation_txid: String,
+    pub current_s_index: u64,
+    pub reserve_yes: u64,
+    pub reserve_no: u64,
+    pub reserve_collateral: u64,
+    pub state_source: String,
+    pub params_json: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[tauri::command]
+pub fn list_lmsr_pools(
+    market_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<LmsrPoolInfoResponse>, String> {
+    let store_arc = {
+        let state_handle = app.state::<Mutex<AppStateManager>>();
+        let mgr = state_handle
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.store()
+            .cloned()
+            .ok_or_else(|| "Store not initialized".to_string())?
+    };
+
+    let mut store = store_arc
+        .lock()
+        .map_err(|_| "store lock failed".to_string())?;
+
+    let pools = store
+        .list_lmsr_pools(&deadcat_store::LmsrPoolFilter {
+            market_id,
+            ..Default::default()
+        })
+        .map_err(|e| format!("list pools: {e}"))?;
+
+    Ok(pools
+        .into_iter()
+        .map(|p| LmsrPoolInfoResponse {
+            pool_id: p.pool_id,
+            market_id: p.market_id,
+            creation_txid: p.creation_txid,
+            current_s_index: p.current_s_index,
+            reserve_yes: p.reserve_yes,
+            reserve_no: p.reserve_no,
+            reserve_collateral: p.reserve_collateral,
+            state_source: p.state_source,
+            params_json: p.params_json,
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+pub struct PriceHistoryEntryResponse {
+    pub pool_id: String,
+    pub market_id: String,
+    pub transition_txid: String,
+    pub old_s_index: u64,
+    pub new_s_index: u64,
+    pub reserve_yes: u64,
+    pub reserve_no: u64,
+    pub reserve_collateral: u64,
+    pub implied_yes_price_bps: u16,
+    pub recorded_at: String,
+    pub block_height: Option<u32>,
+}
+
+#[tauri::command]
+pub fn get_price_history(
+    market_id: String,
+    limit: Option<i64>,
+    app: tauri::AppHandle,
+) -> Result<Vec<PriceHistoryEntryResponse>, String> {
+    let store_arc = {
+        let state_handle = app.state::<Mutex<AppStateManager>>();
+        let mgr = state_handle
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.store()
+            .cloned()
+            .ok_or_else(|| "Store not initialized".to_string())?
+    };
+
+    let mut store = store_arc
+        .lock()
+        .map_err(|_| "store lock failed".to_string())?;
+
+    let entries = store
+        .get_market_price_history(&market_id, None, limit)
+        .map_err(|e| format!("get price history: {e}"))?;
+
+    Ok(entries
+        .into_iter()
+        .map(|e| PriceHistoryEntryResponse {
+            pool_id: e.pool_id,
+            market_id: e.market_id,
+            transition_txid: e.transition_txid,
+            old_s_index: e.old_s_index,
+            new_s_index: e.new_s_index,
+            reserve_yes: e.reserve_yes,
+            reserve_no: e.reserve_no,
+            reserve_collateral: e.reserve_collateral,
+            implied_yes_price_bps: e.implied_yes_price_bps,
+            recorded_at: e.recorded_at,
+            block_height: e.block_height,
+        })
+        .collect())
+}

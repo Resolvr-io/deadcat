@@ -876,6 +876,128 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         Ok(snapshot)
     }
 
+    /// Scan a pool and return a pre-populated adjust request with current UTXOs.
+    ///
+    /// The caller sets `new_reserves`, `table_values`, `fee_amount`, and
+    /// `pool_index` on the returned request, then passes it to
+    /// [`adjust_lmsr_pool`](Self::adjust_lmsr_pool).
+    pub async fn scan_for_adjust(
+        &self,
+        locator: LmsrPoolLocator,
+    ) -> Result<
+        (
+            LmsrPoolSnapshot,
+            crate::lmsr_pool::api::AdjustLmsrPoolRequest,
+        ),
+        NodeError,
+    > {
+        // Reuse the same validation as scan_lmsr_pool
+        if locator.hinted_s_index > locator.params.s_max_index {
+            return Err(NodeError::Sdk(Error::LmsrPool(format!(
+                "hinted_s_index {} exceeds s_max_index {}",
+                locator.hinted_s_index, locator.params.s_max_index
+            ))));
+        }
+        let creation_txid = locator.creation_txid;
+        let creation_txid_bytes = txid_to_canonical_bytes(&creation_txid)
+            .map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?;
+        let params = locator.params;
+        let expected_market_id = derive_lmsr_market_id(params);
+        if locator.market_id != expected_market_id {
+            return Err(NodeError::Sdk(Error::LmsrPool(format!(
+                "locator market_id {} does not match canonical market_id {}",
+                locator.market_id, expected_market_id
+            ))));
+        }
+        let expected_pool_id = derive_lmsr_pool_id(
+            self.network,
+            params,
+            creation_txid_bytes,
+            locator.initial_reserve_outpoints,
+        )
+        .map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?;
+        if locator.pool_id != expected_pool_id {
+            return Err(NodeError::Sdk(Error::LmsrPool(format!(
+                "locator pool_id {} does not match canonical pool_id {}",
+                locator.pool_id.to_hex(),
+                expected_pool_id.to_hex()
+            ))));
+        }
+        let initial_reserve_outpoints = locator.initial_reserve_outpoints;
+        let hinted_s_index = locator.hinted_s_index;
+        let witness_schema_version = locator.witness_schema_version.clone();
+
+        let scan = self
+            .with_sdk(move |sdk| {
+                sdk.scan_lmsr_pool_state(
+                    params,
+                    creation_txid_bytes,
+                    initial_reserve_outpoints,
+                    hinted_s_index,
+                    &witness_schema_version,
+                )
+            })
+            .await?;
+
+        let current_reserve_outpoints = [
+            scan.pool_utxos.yes.outpoint,
+            scan.pool_utxos.no.outpoint,
+            scan.pool_utxos.collateral.outpoint,
+        ];
+        let last_transition_txid = if current_reserve_outpoints[0].txid == creation_txid {
+            None
+        } else {
+            Some(current_reserve_outpoints[0].txid)
+        };
+        let snapshot = LmsrPoolSnapshot {
+            locator: locator.clone(),
+            current_s_index: scan.current_s_index,
+            reserves: scan.reserves,
+            current_reserve_outpoints,
+            last_transition_txid,
+        };
+        self.persist_lmsr_pool_snapshot(&snapshot);
+
+        let request = crate::lmsr_pool::api::AdjustLmsrPoolRequest {
+            locator,
+            current_pool_utxos: scan.pool_utxos,
+            current_s_index: scan.current_s_index,
+            current_reserves: scan.reserves,
+            // Caller must set these:
+            new_reserves: scan.reserves, // default: no change
+            table_values: Vec::new(),    // caller must provide
+            fee_amount: 0,               // caller must provide
+            pool_index: 0,               // caller must provide
+        };
+
+        Ok((snapshot, request))
+    }
+
+    /// Adjust LMSR pool reserves via AdminAdjust transition.
+    pub async fn adjust_lmsr_pool(
+        &self,
+        request: crate::lmsr_pool::api::AdjustLmsrPoolRequest,
+    ) -> Result<crate::lmsr_pool::api::AdjustLmsrPoolResult, NodeError> {
+        let result = self
+            .with_sdk(move |sdk| sdk.adjust_lmsr_pool(&request))
+            .await?;
+        self.persist_lmsr_pool_snapshot(&result.new_snapshot);
+        Ok(result)
+    }
+
+    /// Close an LMSR pool by adjusting reserves to covenant minimums.
+    ///
+    /// NOTE: Unlike `adjust_lmsr_pool`, this does NOT persist the post-close
+    /// snapshot because `CloseLmsrPoolResult` doesn't carry one. A follow-up
+    /// `scan_lmsr_pool` call will pick up the new on-chain state.
+    pub async fn close_lmsr_pool(
+        &self,
+        request: crate::lmsr_pool::api::CloseLmsrPoolRequest,
+    ) -> Result<crate::lmsr_pool::api::CloseLmsrPoolResult, NodeError> {
+        self.with_sdk(move |sdk| sdk.close_lmsr_pool(&request))
+            .await
+    }
+
     // ── Discovery (delegated to DiscoveryService) ───────────────────────
 
     /// Fetch all markets from Nostr relays.
@@ -941,6 +1063,24 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     }
 
     // ── Wallet queries (via spawn_blocking) ─────────────────────────────
+
+    /// Set the chain genesis hash for Simplicity admin operations.
+    ///
+    /// Required for regtest where each `elementsd` instance has a unique
+    /// genesis hash.
+    pub async fn set_chain_genesis_hash(&self, hash: [u8; 32]) -> Result<(), NodeError> {
+        self.with_sdk(move |sdk| {
+            sdk.set_chain_genesis_hash(hash);
+            Ok(())
+        })
+        .await
+    }
+
+    /// Derive the x-only admin public key for the given pool index.
+    pub async fn pool_admin_pubkey(&self, pool_index: u32) -> Result<[u8; 32], NodeError> {
+        self.with_sdk(move |sdk| sdk.pool_admin_pubkey(pool_index))
+            .await
+    }
 
     /// Sync the wallet with the Electrum backend.
     pub async fn sync_wallet(&self) -> Result<(), NodeError> {

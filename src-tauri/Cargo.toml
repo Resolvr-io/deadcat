@@ -63,3 +63,8 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 
 [patch.crates-io]
 secp256k1-zkp = { git = "https://github.com/breez/rust-secp256k1-zkp.git", rev = "eac2e479255a6e32b5588bc25ee53c642fdd8395" }
+# Pin to upstream master post-PR-#348 (right_shift_1 value bit corruption fix).
+# Pre-jet-rename, so compatible with simplicityhl 0.4.1.
+# Remove once simplicity-lang ≥0.7.1 is released with the fix.
+simplicity-lang = { git = "https://github.com/BlockstreamResearch/rust-simplicity.git", rev = "8839c919d360b8eb4a3ade279c544448e9a2d0d3" }
+simplicity-sys = { git = "https://github.com/BlockstreamResearch/rust-simplicity.git", rev = "8839c919d360b8eb4a3ade279c544448e9a2d0d3" }

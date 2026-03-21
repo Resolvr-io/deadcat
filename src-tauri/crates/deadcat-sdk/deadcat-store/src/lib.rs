@@ -30,8 +30,9 @@ pub use deadcat_sdk::{
 };
 pub use error::StoreError;
 pub use store::{
-    DeadcatStore, IssuanceData, MakerOrderInfo, MarketCandidateFilter, MarketCandidateInfo,
-    MarketFilter, MarketInfo, OrderFilter, OrderStatus,
+    DeadcatStore, IssuanceData, LmsrPoolFilter, LmsrPoolInfo, MakerOrderInfo,
+    MarketCandidateFilter, MarketCandidateInfo, MarketFilter, MarketInfo, OrderFilter, OrderStatus,
+    PriceHistoryEntry, PriceTransitionInput,
 };
 pub use sync::{ChainSource, ChainUtxo, MarketStateChange, OrderStatusChange, SyncReport};
 

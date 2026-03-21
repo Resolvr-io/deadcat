@@ -396,3 +396,52 @@ export type TradeQuoteSnapshot = {
   exactInput: number;
   quote: TradeQuoteResponse;
 };
+
+// LMSR Pool types
+export type LmsrPoolInfo = {
+  pool_id: string;
+  market_id: string;
+  creation_txid: string;
+  current_s_index: number;
+  reserve_yes: number;
+  reserve_no: number;
+  reserve_collateral: number;
+  state_source: string;
+  params_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PriceHistoryEntry = {
+  pool_id: string;
+  market_id: string;
+  transition_txid: string;
+  old_s_index: number;
+  new_s_index: number;
+  reserve_yes: number;
+  reserve_no: number;
+  reserve_collateral: number;
+  implied_yes_price_bps: number;
+  recorded_at: string;
+  block_height: number | null;
+};
+
+export type CreateLmsrPoolResponse = {
+  txid: string;
+  pool_id: string;
+};
+
+export type ScanLmsrPoolResponse = {
+  pool_id: string;
+  current_s_index: number;
+  reserve_yes: number;
+  reserve_no: number;
+  reserve_collateral: number;
+};
+
+export type CloseLmsrPoolResponse = {
+  txid: string;
+  reclaimed_yes: number;
+  reclaimed_no: number;
+  reclaimed_collateral: number;
+};

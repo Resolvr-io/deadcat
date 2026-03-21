@@ -19,13 +19,16 @@ use crate::assembly::{pset_to_pruning_transaction, txout_secrets_from_unblinded}
 use crate::chain::{ChainBackend, ElectrumBackend};
 use crate::error::{Error, Result};
 use crate::lmsr_pool::api::{
+    AdjustLmsrPoolRequest, AdjustLmsrPoolResult, CloseLmsrPoolRequest, CloseLmsrPoolResult,
     CreateLmsrPoolRequest, LmsrPoolLocator, LmsrPoolSnapshot, txid_to_canonical_bytes,
 };
+use crate::lmsr_pool::assembly::attach_lmsr_pool_witnesses;
 use crate::lmsr_pool::chain_walk::{
     decode_primary_witness_payload_from_spend_tx, extract_reserve_window,
 };
 use crate::lmsr_pool::contract::CompiledLmsrPool;
 use crate::lmsr_pool::identity::derive_lmsr_pool_id;
+use crate::lmsr_pool::math::LmsrTradeKind;
 use crate::lmsr_pool::params::{LmsrInitialOutpoint, LmsrPoolParams};
 use crate::lmsr_pool::table::LmsrTableManifest;
 use crate::maker_order::contract::CompiledMakerOrder;
@@ -63,6 +66,7 @@ use crate::pset::{
     UnblindedUtxo, add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset,
 };
 use crate::taproot::NUMS_KEY_BYTES;
+use crate::trade::types::{LmsrPoolSwapLeg, LmsrPoolUtxos, LmsrPrimaryPath};
 
 use crate::discovery::pool::LMSR_WITNESS_SCHEMA_V2;
 
@@ -147,6 +151,12 @@ pub struct DeadcatSdk {
     wollet: Wollet,
     network: Network,
     chain: ElectrumBackend,
+    /// Genesis hash for the Simplicity C runtime.
+    ///
+    /// For Liquid/Testnet, this is the hardcoded constant.
+    /// For regtest, this must be set to the actual chain genesis hash
+    /// via [`set_chain_genesis_hash`](Self::set_chain_genesis_hash).
+    chain_genesis_override: Option<[u8; 32]>,
 }
 
 struct SdkPredictionMarketScanBackend<'a> {
@@ -215,6 +225,7 @@ impl DeadcatSdk {
             wollet,
             network,
             chain: ElectrumBackend::new(electrum_url),
+            chain_genesis_override: None,
         })
     }
 
@@ -236,6 +247,25 @@ impl DeadcatSdk {
         lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, &mut client)
             .map_err(|e| Error::Electrum(e.to_string()))?;
         Ok(())
+    }
+
+    /// Get the genesis block hash for Simplicity operations.
+    ///
+    /// Returns the override if set (required for regtest), otherwise
+    /// falls back to the hardcoded network genesis hash.
+    pub fn chain_genesis_hash(&self) -> Result<[u8; 32]> {
+        Ok(self
+            .chain_genesis_override
+            .unwrap_or_else(|| self.network.genesis_hash()))
+    }
+
+    /// Set the chain genesis hash for Simplicity admin operations.
+    ///
+    /// Required for regtest where each `elementsd` instance has a unique
+    /// genesis hash. For Liquid and Liquid Testnet, the hardcoded values
+    /// are correct.
+    pub fn set_chain_genesis_hash(&mut self, hash: [u8; 32]) {
+        self.chain_genesis_override = Some(hash);
     }
 
     pub fn balance(&self) -> Result<HashMap<AssetId, u64>> {
@@ -475,6 +505,431 @@ impl DeadcatSdk {
                 OutPoint::new(txid, 2),
             ],
             last_transition_txid: None,
+        })
+    }
+
+    // ── LMSR pool admin operations ────────────────────────────────────
+
+    pub(crate) fn adjust_lmsr_pool(
+        &mut self,
+        request: &AdjustLmsrPoolRequest,
+    ) -> Result<AdjustLmsrPoolResult> {
+        self.sync()?;
+
+        // Fetch the actual chain genesis hash for admin signature computation.
+        // The Simplicity C runtime in elementsd uses the chain's real genesis
+        // hash (via `uint256::data()` in LE byte order). For regtest, each
+        // instance has a unique genesis hash that differs from LWK's hardcoded
+        // constant.
+        let chain_genesis = self.chain_genesis_hash()?;
+
+        let params = request.locator.params;
+        if !params.has_admin_cosigner() {
+            return Err(Error::LmsrPool(
+                "adjust_lmsr_pool requires a non-NUMS admin cosigner".into(),
+            ));
+        }
+        params
+            .validate()
+            .map_err(|e| Error::LmsrPool(e.to_string()))?;
+        let admin_keypair = self.derive_pool_admin_keypair(request.pool_index)?;
+        let (admin_xonly, _) = admin_keypair.x_only_public_key();
+        if admin_xonly.serialize() != params.cosigner_pubkey {
+            return Err(Error::LmsrPool(
+                "derived admin pubkey does not match pool cosigner_pubkey".into(),
+            ));
+        }
+        if request.new_reserves.r_yes < params.min_r_yes
+            || request.new_reserves.r_no < params.min_r_no
+            || request.new_reserves.r_lbtc < params.min_r_collateral
+        {
+            return Err(Error::LmsrPool("new reserves below pool minimums".into()));
+        }
+        if request.current_pool_utxos.yes.value != request.current_reserves.r_yes
+            || request.current_pool_utxos.no.value != request.current_reserves.r_no
+            || request.current_pool_utxos.collateral.value != request.current_reserves.r_lbtc
+        {
+            return Err(Error::LmsrPool(
+                "current_reserves must match current_pool_utxos values".into(),
+            ));
+        }
+        let manifest = LmsrTableManifest::new(params.table_depth, request.table_values.clone())?;
+        manifest.verify_matches_pool_params(&params)?;
+
+        let contract = CompiledLmsrPool::new(params)?;
+        let s_index = request.current_s_index;
+        let reserve_spk = contract.script_pubkey(s_index);
+
+        let change_addr: lwk_wollet::elements::Address = self
+            .address(None)?
+            .address()
+            .to_string()
+            .parse()
+            .map_err(|e| Error::Query(format!("bad change address: {e}")))?;
+
+        let policy_asset = self.policy_asset();
+        let policy_bytes = policy_asset.into_inner().to_byte_array();
+        let collateral_is_policy = params.collateral_asset_id == policy_bytes;
+
+        // Build PSET: 3 reserve inputs + optional wallet inputs → 3 reserve outputs + change + fee
+        let mut pset = crate::pset::new_pset();
+
+        // Add 3 reserve inputs (in_base = 0)
+        crate::pset::add_pset_input(&mut pset, &request.current_pool_utxos.yes);
+        crate::pset::add_pset_input(&mut pset, &request.current_pool_utxos.no);
+        crate::pset::add_pset_input(&mut pset, &request.current_pool_utxos.collateral);
+        let in_base: u32 = 0;
+        let out_base: u32 = 0;
+
+        // 3 reserve outputs at same s_index
+        crate::pset::add_pset_output(
+            &mut pset,
+            crate::pset::explicit_txout(
+                &params.yes_asset_id,
+                request.new_reserves.r_yes,
+                &reserve_spk,
+            ),
+        );
+        crate::pset::add_pset_output(
+            &mut pset,
+            crate::pset::explicit_txout(
+                &params.no_asset_id,
+                request.new_reserves.r_no,
+                &reserve_spk,
+            ),
+        );
+        crate::pset::add_pset_output(
+            &mut pset,
+            crate::pset::explicit_txout(
+                &params.collateral_asset_id,
+                request.new_reserves.r_lbtc,
+                &reserve_spk,
+            ),
+        );
+
+        // Collect any additional wallet inputs needed for adding liquidity
+        let mut exclude: Vec<OutPoint> = vec![
+            request.current_pool_utxos.yes.outpoint,
+            request.current_pool_utxos.no.outpoint,
+            request.current_pool_utxos.collateral.outpoint,
+        ];
+        let mut wallet_inputs: Vec<UnblindedUtxo> = Vec::new();
+
+        // YES delta
+        if request.new_reserves.r_yes > request.current_reserves.r_yes {
+            let extra = request.new_reserves.r_yes - request.current_reserves.r_yes;
+            let inputs =
+                self.collect_wallet_utxos_for_asset(&params.yes_asset_id, extra, &exclude)?;
+            exclude.extend(inputs.iter().map(|u| u.outpoint));
+            for u in &inputs {
+                crate::pset::add_pset_input(&mut pset, u);
+            }
+            wallet_inputs.extend(inputs);
+        }
+        // NO delta
+        if request.new_reserves.r_no > request.current_reserves.r_no {
+            let extra = request.new_reserves.r_no - request.current_reserves.r_no;
+            let inputs =
+                self.collect_wallet_utxos_for_asset(&params.no_asset_id, extra, &exclude)?;
+            exclude.extend(inputs.iter().map(|u| u.outpoint));
+            for u in &inputs {
+                crate::pset::add_pset_input(&mut pset, u);
+            }
+            wallet_inputs.extend(inputs);
+        }
+        // Collateral delta.
+        //
+        // When collateral IS the policy asset, the fee can be absorbed from the
+        // explicit reserve flow:
+        //   - increase: wallet must provide (extra + fee) worth of policy asset.
+        //   - decrease: the explicit surplus covers the fee, so we reduce the
+        //     collateral change output by fee_amount and skip the wallet input.
+        //   - neutral: wallet provides fee_amount.
+        //
+        // This avoids mixing confidential wallet inputs with an explicit fee
+        // output which would cause `value in != value out` on Elements.
+        let collateral_decrease = request
+            .current_reserves
+            .r_lbtc
+            .saturating_sub(request.new_reserves.r_lbtc);
+        let fee_absorbed_by_collateral_surplus =
+            collateral_is_policy && collateral_decrease >= request.fee_amount;
+
+        let collateral_extra_needed =
+            if request.new_reserves.r_lbtc > request.current_reserves.r_lbtc {
+                let extra = request.new_reserves.r_lbtc - request.current_reserves.r_lbtc;
+                if collateral_is_policy {
+                    extra + request.fee_amount
+                } else {
+                    extra
+                }
+            } else if collateral_is_policy && !fee_absorbed_by_collateral_surplus {
+                // Neutral case or decrease too small to absorb fee
+                request.fee_amount - collateral_decrease
+            } else {
+                0
+            };
+        if collateral_extra_needed > 0 {
+            let inputs = self.collect_wallet_utxos_for_asset(
+                &params.collateral_asset_id,
+                collateral_extra_needed,
+                &exclude,
+            )?;
+            exclude.extend(inputs.iter().map(|u| u.outpoint));
+            for u in &inputs {
+                crate::pset::add_pset_input(&mut pset, u);
+            }
+            wallet_inputs.extend(inputs);
+        }
+        // Fee inputs if collateral != policy asset
+        if !collateral_is_policy {
+            let fee_inputs =
+                self.collect_wallet_utxos_for_asset(&policy_bytes, request.fee_amount, &exclude)?;
+            for u in &fee_inputs {
+                crate::pset::add_pset_input(&mut pset, u);
+            }
+            wallet_inputs.extend(fee_inputs);
+        }
+
+        // Fee output
+        crate::pset::add_pset_output(
+            &mut pset,
+            crate::pset::explicit_txout(&policy_bytes, request.fee_amount, &Script::new()),
+        );
+
+        // Change outputs for surplus tokens returned to wallet.
+        //
+        // All change outputs are explicit (not blinded). The reserve inputs are
+        // explicit on-chain, so reserve amounts are already public. Blinding the
+        // change would require surjection proofs referencing confidential inputs,
+        // but the reserve covenant inputs are explicit.
+        let change_spk = change_addr.script_pubkey();
+
+        // Reserve-surplus change (decreasing reserves → tokens flow to wallet)
+        if request.current_reserves.r_yes > request.new_reserves.r_yes {
+            let surplus = request.current_reserves.r_yes - request.new_reserves.r_yes;
+            crate::pset::add_pset_output(
+                &mut pset,
+                crate::pset::explicit_txout(&params.yes_asset_id, surplus, &change_spk),
+            );
+        }
+        if request.current_reserves.r_no > request.new_reserves.r_no {
+            let surplus = request.current_reserves.r_no - request.new_reserves.r_no;
+            crate::pset::add_pset_output(
+                &mut pset,
+                crate::pset::explicit_txout(&params.no_asset_id, surplus, &change_spk),
+            );
+        }
+        if request.current_reserves.r_lbtc > request.new_reserves.r_lbtc {
+            let surplus = request.current_reserves.r_lbtc - request.new_reserves.r_lbtc;
+            // When the fee is absorbed from this explicit surplus, reduce by fee_amount.
+            let net_surplus = if fee_absorbed_by_collateral_surplus {
+                surplus - request.fee_amount
+            } else {
+                surplus
+            };
+            if net_surplus > 0 {
+                crate::pset::add_pset_output(
+                    &mut pset,
+                    crate::pset::explicit_txout(
+                        &params.collateral_asset_id,
+                        net_surplus,
+                        &change_spk,
+                    ),
+                );
+            }
+        }
+
+        // Wallet-input surplus change (wallet provided more than needed).
+        // These outputs are blinded because the wallet inputs are confidential
+        // and Elements requires the value balance to hold with commitments.
+        let mut blind_indices = Vec::new();
+        {
+            let mut wallet_totals: HashMap<[u8; 32], u64> = HashMap::new();
+            for u in &wallet_inputs {
+                *wallet_totals.entry(u.asset_id).or_insert(0) += u.value;
+            }
+            let mut wallet_needed_per_asset: HashMap<[u8; 32], u64> = HashMap::new();
+            if request.new_reserves.r_yes > request.current_reserves.r_yes {
+                let extra = request.new_reserves.r_yes - request.current_reserves.r_yes;
+                *wallet_needed_per_asset
+                    .entry(params.yes_asset_id)
+                    .or_insert(0) += extra;
+            }
+            if request.new_reserves.r_no > request.current_reserves.r_no {
+                let extra = request.new_reserves.r_no - request.current_reserves.r_no;
+                *wallet_needed_per_asset
+                    .entry(params.no_asset_id)
+                    .or_insert(0) += extra;
+            }
+            if collateral_extra_needed > 0 {
+                *wallet_needed_per_asset
+                    .entry(params.collateral_asset_id)
+                    .or_insert(0) += collateral_extra_needed;
+            }
+            if !collateral_is_policy {
+                *wallet_needed_per_asset.entry(policy_bytes).or_insert(0) += request.fee_amount;
+            }
+            for (asset, total) in &wallet_totals {
+                let needed = wallet_needed_per_asset.get(asset).copied().unwrap_or(0);
+                if *total > needed {
+                    let surplus = *total - needed;
+                    let idx = pset.n_outputs();
+                    crate::pset::add_pset_output(
+                        &mut pset,
+                        crate::pset::explicit_txout(asset, surplus, &change_spk),
+                    );
+                    blind_indices.push(idx);
+                }
+            }
+        }
+
+        // Blind wallet-surplus change outputs BEFORE computing the admin
+        // signature, since sig_all_hash covers blinded output commitments.
+        //
+        // We can't use blind_order_pset here because it indexes wallet_inputs
+        // from 0, but in the PSET, wallet inputs start at index 3 (after the
+        // 3 reserve inputs). We build the secrets map manually with correct
+        // PSET indices, including both reserve and wallet inputs.
+        if !blind_indices.is_empty() {
+            let blinding_pk = change_addr
+                .blinding_pubkey
+                .ok_or_else(|| Error::Blinding("change address has no blinding key".into()))?;
+            let pset_blinding_key = lwk_wollet::elements::bitcoin::PublicKey {
+                inner: blinding_pk,
+                compressed: true,
+            };
+            for &idx in &blind_indices {
+                pset.outputs_mut()[idx].blinding_key = Some(pset_blinding_key);
+                pset.outputs_mut()[idx].blinder_index = Some(0);
+            }
+
+            let mut inp_txout_sec = HashMap::new();
+            // Reserve inputs (explicit, at PSET indices 0-2)
+            for (i, utxo) in [
+                &request.current_pool_utxos.yes,
+                &request.current_pool_utxos.no,
+                &request.current_pool_utxos.collateral,
+            ]
+            .iter()
+            .enumerate()
+            {
+                let asset_id = AssetId::from_slice(&utxo.asset_id)
+                    .map_err(|e| Error::Blinding(format!("reserve input {i} asset: {e}")))?;
+                inp_txout_sec.insert(i, txout_secrets_from_unblinded(utxo, asset_id)?);
+            }
+            // Wallet inputs (confidential, at PSET indices 3+)
+            for (i, utxo) in wallet_inputs.iter().enumerate() {
+                let pset_idx = 3 + i;
+                let asset_id = AssetId::from_slice(&utxo.asset_id)
+                    .map_err(|e| Error::Blinding(format!("wallet input {i} asset: {e}")))?;
+                inp_txout_sec.insert(pset_idx, txout_secrets_from_unblinded(utxo, asset_id)?);
+            }
+
+            let secp = secp256k1_zkp::Secp256k1::new();
+            let mut rng = rand::thread_rng();
+            pset.blind_last(&mut rng, &secp, &inp_txout_sec)
+                .map_err(|e| Error::Blinding(format!("{e:?}")))?;
+        }
+
+        // Compute admin signature
+        let old_proof = manifest.proof_at(s_index)?;
+        let admin_signature = compute_lmsr_admin_signature(
+            &pset,
+            &contract,
+            &params,
+            &request.current_pool_utxos,
+            s_index,
+            s_index,
+            request.current_reserves,
+            request.new_reserves,
+            in_base,
+            out_base,
+            &admin_keypair,
+            chain_genesis,
+        )?;
+
+        // Build swap leg for witness attachment
+        let leg = LmsrPoolSwapLeg {
+            primary_path: LmsrPrimaryPath::AdminAdjust,
+            pool_params: params,
+            pool_id: request.locator.pool_id.to_hex(),
+            old_s_index: s_index,
+            new_s_index: s_index,
+            old_path_bits: old_proof.path_bits,
+            new_path_bits: old_proof.path_bits,
+            old_siblings: old_proof.siblings.clone(),
+            new_siblings: old_proof.siblings,
+            in_base,
+            out_base,
+            pool_utxos: request.current_pool_utxos.clone(),
+            trade_kind: LmsrTradeKind::BuyYes, // unused for AdminAdjust
+            old_f: manifest.value_at(s_index)?,
+            new_f: manifest.value_at(s_index)?,
+            delta_in: 0,
+            delta_out: 0,
+            admin_signature,
+        };
+
+        attach_lmsr_pool_witnesses(&mut pset, &leg, 0..3, chain_genesis)?;
+
+        let tx = self.sign_pset(pset)?;
+        let txid = self.broadcast_and_sync(&tx)?;
+
+        let mut new_locator = request.locator.clone();
+        new_locator.hinted_s_index = s_index;
+
+        Ok(AdjustLmsrPoolResult {
+            txid,
+            new_snapshot: LmsrPoolSnapshot {
+                locator: new_locator,
+                current_s_index: s_index,
+                reserves: request.new_reserves,
+                current_reserve_outpoints: [
+                    OutPoint::new(txid, 0),
+                    OutPoint::new(txid, 1),
+                    OutPoint::new(txid, 2),
+                ],
+                last_transition_txid: Some(txid),
+            },
+        })
+    }
+
+    pub(crate) fn close_lmsr_pool(
+        &mut self,
+        request: &CloseLmsrPoolRequest,
+    ) -> Result<CloseLmsrPoolResult> {
+        let params = request.locator.params;
+        let min_reserves = PoolReserves {
+            r_yes: params.min_r_yes,
+            r_no: params.min_r_no,
+            r_lbtc: params.min_r_collateral,
+        };
+        let adjust_request = AdjustLmsrPoolRequest {
+            locator: request.locator.clone(),
+            current_pool_utxos: request.current_pool_utxos.clone(),
+            current_s_index: request.current_s_index,
+            current_reserves: request.current_reserves,
+            new_reserves: min_reserves,
+            table_values: request.table_values.clone(),
+            fee_amount: request.fee_amount,
+            pool_index: request.pool_index,
+        };
+        let result = self.adjust_lmsr_pool(&adjust_request)?;
+        Ok(CloseLmsrPoolResult {
+            txid: result.txid,
+            reclaimed_yes: request
+                .current_reserves
+                .r_yes
+                .saturating_sub(min_reserves.r_yes),
+            reclaimed_no: request
+                .current_reserves
+                .r_no
+                .saturating_sub(min_reserves.r_no),
+            reclaimed_collateral: request
+                .current_reserves
+                .r_lbtc
+                .saturating_sub(min_reserves.r_lbtc),
         })
     }
 
@@ -1292,6 +1747,34 @@ impl DeadcatSdk {
         Ok(Keypair::from_secret_key(&secp, &secret))
     }
 
+    // ── Pool admin key derivation ────────────────────────────────────
+
+    /// Derive a secp256k1 keypair for LMSR pool admin at the given index.
+    ///
+    /// Path: `m/86'/{network}'/2'/0/{pool_index}` where `2'` = LMSR pool admin account.
+    fn derive_pool_admin_keypair(&self, pool_index: u32) -> Result<Keypair> {
+        let network_path = if self.network.is_mainnet() { 1776 } else { 1 };
+        let path_str = format!("m/86'/{network_path}'/2'/0/{pool_index}");
+        let path: lwk_wollet::bitcoin::bip32::DerivationPath = path_str
+            .parse()
+            .map_err(|e| Error::Signer(format!("{}", e)))?;
+        let derived = self
+            .signer
+            .derive_xprv(&path)
+            .map_err(|e| Error::Signer(format!("{:?}", e)))?;
+        let secp = secp256k1_zkp::Secp256k1::new();
+        let secret = secp256k1_zkp::SecretKey::from_slice(&derived.private_key.secret_bytes())
+            .map_err(|e| Error::Signer(format!("{}", e)))?;
+        Ok(Keypair::from_secret_key(&secp, &secret))
+    }
+
+    /// Get the x-only public key for LMSR pool admin at the given index.
+    pub fn pool_admin_pubkey(&self, pool_index: u32) -> Result<[u8; 32]> {
+        let keypair = self.derive_pool_admin_keypair(pool_index)?;
+        let (xonly, _parity) = keypair.x_only_public_key();
+        Ok(xonly.serialize())
+    }
+
     fn collect_wallet_utxos_for_asset(
         &self,
         asset_id: &[u8; 32],
@@ -2057,6 +2540,7 @@ impl DeadcatSdk {
                 &mut pset,
                 lmsr_leg,
                 lmsr_input_range,
+                self.network.genesis_hash_simplicity(),
             )?;
         }
 
@@ -2595,11 +3079,6 @@ fn validate_create_lmsr_pool_request(request: &CreateLmsrPoolRequest) -> Result<
         .validate()
         .map_err(|e| Error::LmsrPool(e.to_string()))?;
 
-    if request.pool_params.cosigner_pubkey != NUMS_KEY_BYTES {
-        return Err(Error::LmsrPool(
-            "create_lmsr_pool only supports NUMS cosigner deployments in v1".into(),
-        ));
-    }
     if request.pool_params.yes_asset_id != request.market_params.yes_token_asset {
         return Err(Error::LmsrPool(
             "pool yes_asset_id must match market yes_token_asset".into(),
@@ -2633,6 +3112,101 @@ fn validate_create_lmsr_pool_request(request: &CreateLmsrPoolRequest) -> Result<
     )?;
     manifest.verify_matches_pool_params(&request.pool_params)?;
     Ok(())
+}
+
+/// Compute the BIP340 admin signature for an LMSR AdminAdjust transition.
+///
+/// The message hash matches the contract's `verify_admin_signature()`:
+/// SHA256(domain || genesis_hash || table_root || asset_ids || sig_all_hash ||
+///        input_prevouts || indices || s_indices || reserve_amounts || output_spk_hashes)
+#[allow(clippy::too_many_arguments)]
+fn compute_lmsr_admin_signature(
+    pset: &PartiallySignedTransaction,
+    contract: &CompiledLmsrPool,
+    params: &LmsrPoolParams,
+    pool_utxos: &LmsrPoolUtxos,
+    old_s_index: u64,
+    new_s_index: u64,
+    current_reserves: PoolReserves,
+    new_reserves: PoolReserves,
+    in_base: u32,
+    out_base: u32,
+    admin_keypair: &Keypair,
+    genesis_hash: [u8; 32],
+) -> Result<[u8; 64]> {
+    use sha2::{Digest, Sha256};
+    use simplicityhl::elements::taproot::ControlBlock;
+    use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
+
+    let tx = std::sync::Arc::new(pset_to_pruning_transaction(pset)?);
+    let utxos: Vec<ElementsUtxo> = pset
+        .inputs()
+        .iter()
+        .enumerate()
+        .map(|(i, inp)| {
+            inp.witness_utxo
+                .as_ref()
+                .map(|u| ElementsUtxo::from(u.clone()))
+                .ok_or_else(|| Error::Pset(format!("input {i} missing witness_utxo")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let primary_cmr = *contract.primary_cmr();
+    let cb_bytes = contract.primary_control_block(old_s_index);
+    let control_block = ControlBlock::from_slice(&cb_bytes)
+        .map_err(|e| Error::Witness(format!("admin CB: {e}")))?;
+
+    let env = ElementsEnv::new(
+        tx,
+        utxos,
+        in_base,
+        primary_cmr,
+        control_block,
+        None,
+        lwk_wollet::elements::BlockHash::from_byte_array(genesis_hash),
+    );
+    let sig_all: [u8; 32] = env.c_tx_env().sighash_all().to_byte_array();
+
+    // Build the admin message hash matching the contract's verify_admin_signature()
+    let mut hasher = Sha256::new();
+    // Domain tag: "DEADCAT/LMSR_LIQUIDITY_ADJUST_V1"
+    hasher.update(b"DEADCAT/LMSR_LIQUIDITY_ADJUST_V1");
+    hasher.update(genesis_hash);
+    hasher.update(params.lmsr_table_root);
+    hasher.update(params.yes_asset_id);
+    hasher.update(params.no_asset_id);
+    hasher.update(params.collateral_asset_id);
+    hasher.update(sig_all);
+    // Input prevouts
+    hasher.update(pool_utxos.yes.outpoint.txid.to_byte_array());
+    hasher.update(pool_utxos.yes.outpoint.vout.to_be_bytes());
+    hasher.update(pool_utxos.no.outpoint.txid.to_byte_array());
+    hasher.update(pool_utxos.no.outpoint.vout.to_be_bytes());
+    hasher.update(pool_utxos.collateral.outpoint.txid.to_byte_array());
+    hasher.update(pool_utxos.collateral.outpoint.vout.to_be_bytes());
+    // Indices and state
+    hasher.update(in_base.to_be_bytes());
+    hasher.update(out_base.to_be_bytes());
+    hasher.update(old_s_index.to_be_bytes());
+    hasher.update(new_s_index.to_be_bytes());
+    // Reserve amounts
+    hasher.update(current_reserves.r_yes.to_be_bytes());
+    hasher.update(current_reserves.r_no.to_be_bytes());
+    hasher.update(current_reserves.r_lbtc.to_be_bytes());
+    hasher.update(new_reserves.r_yes.to_be_bytes());
+    hasher.update(new_reserves.r_no.to_be_bytes());
+    hasher.update(new_reserves.r_lbtc.to_be_bytes());
+    // Output script pubkey hashes
+    let spk_hash = contract.script_hash(new_s_index);
+    hasher.update(spk_hash);
+    hasher.update(spk_hash);
+    hasher.update(spk_hash);
+
+    let msg_hash: [u8; 32] = hasher.finalize().into();
+    let secp = secp256k1_zkp::Secp256k1::new();
+    let msg = secp256k1_zkp::Message::from_digest(msg_hash);
+    let sig = secp.sign_schnorr_no_aux_rand(&msg, admin_keypair);
+    Ok(sig.serialize())
 }
 
 fn find_lmsr_state_index_by_script(
