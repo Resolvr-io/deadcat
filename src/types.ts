@@ -272,6 +272,12 @@ export type OrderbookLevel = {
   contracts: number;
 };
 
+export type FullOrderbook = {
+  asks: OrderbookLevel[];
+  bids: OrderbookLevel[];
+  spread: number | null;
+};
+
 export type FillEstimate = {
   avgPriceSats: number;
   bestPriceSats: number;
@@ -361,10 +367,81 @@ export type ExecuteTradeResponse = {
   } | null;
 };
 
+export type CreateLimitOrderResponse = {
+  txid: string;
+  nostr_event_id: string;
+  covenant_address: string;
+  order_amount: number;
+  order_index: number;
+};
+
+export type CancelLimitOrderResponse = {
+  txid: string;
+  refunded_amount: number;
+};
+
+export type OwnOrderSummary = {
+  creation_txid: string | null;
+  market_id: string | null;
+  direction_label: string | null;
+  price: number;
+  offered_amount: number | null;
+  order_status: string;
+};
+
 export type TradeQuoteSnapshot = {
   marketId: string;
   side: Side;
   direction: TradeDirection;
   exactInput: number;
   quote: TradeQuoteResponse;
+};
+
+// LMSR Pool types
+export type LmsrPoolInfo = {
+  pool_id: string;
+  market_id: string;
+  creation_txid: string;
+  current_s_index: number;
+  reserve_yes: number;
+  reserve_no: number;
+  reserve_collateral: number;
+  state_source: string;
+  params_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PriceHistoryEntry = {
+  pool_id: string;
+  market_id: string;
+  transition_txid: string;
+  old_s_index: number;
+  new_s_index: number;
+  reserve_yes: number;
+  reserve_no: number;
+  reserve_collateral: number;
+  implied_yes_price_bps: number;
+  recorded_at: string;
+  block_height: number | null;
+};
+
+export type CreateLmsrPoolResponse = {
+  txid: string;
+  pool_id: string;
+};
+
+export type ScanLmsrPoolResponse = {
+  pool_id: string;
+  current_s_index: number;
+  reserve_yes: number;
+  reserve_no: number;
+  reserve_collateral: number;
+};
+
+export type CloseLmsrPoolResponse = {
+  txid: string;
+  reclaimed_yes: number;
+  reclaimed_no: number;
+  reclaimed_collateral: number;
 };

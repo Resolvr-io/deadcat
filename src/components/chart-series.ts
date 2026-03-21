@@ -1,5 +1,5 @@
 import { state } from "../state.ts";
-import type { Market } from "../types.ts";
+import type { Market, PriceHistoryEntry } from "../types.ts";
 
 export type ChartSeriesData = {
   endTime: Date;
@@ -105,6 +105,115 @@ export function buildChartSeriesData(market: Market): ChartSeriesData {
     return baseSeries[left] + (baseSeries[right] - baseSeries[left]) * mix;
   });
   yesSeries[yesSeries.length - 1] = yes;
+
+  return {
+    endTime,
+    pointCount,
+    scaleHours,
+    startTime,
+    xLabelOffsets,
+    xLabels,
+    yesSeries,
+  };
+}
+
+export function buildChartFromHistory(
+  market: Market,
+  history: PriceHistoryEntry[],
+): ChartSeriesData {
+  const scaleHoursByKey: Record<"1H" | "3H" | "6H" | "12H" | "1D", number> = {
+    "1H": 1,
+    "3H": 3,
+    "6H": 6,
+    "12H": 12,
+    "1D": 24,
+  };
+  const pointCountByKey: Record<"1H" | "3H" | "6H" | "12H" | "1D", number> = {
+    "1H": 28,
+    "3H": 34,
+    "6H": 40,
+    "12H": 48,
+    "1D": 56,
+  };
+  const scaleKey = state.chartTimescale;
+  const scaleHours = scaleHoursByKey[scaleKey];
+  const pointCount = pointCountByKey[scaleKey];
+  const endTime = new Date();
+  const startTime = new Date(endTime.getTime() - scaleHours * 60 * 60 * 1000);
+  const xLabelFractions =
+    scaleHours >= 12 ? [0, 0.25, 0.5, 0.75, 1] : [0, 1 / 3, 2 / 3, 1];
+  const xLabels = xLabelFractions.map(
+    (fraction) =>
+      new Date(
+        startTime.getTime() +
+          fraction * (endTime.getTime() - startTime.getTime()),
+      ),
+  );
+  const xLabelOffsets = xLabelFractions.map(
+    (fraction) => scaleHours * (1 - fraction),
+  );
+
+  // Convert history entries to timestamped probability values
+  const historyPoints = history
+    .map((entry) => ({
+      time: new Date(entry.recorded_at).getTime(),
+      probability: Math.max(
+        0.02,
+        Math.min(0.98, entry.implied_yes_price_bps / 10000),
+      ),
+    }))
+    .filter((p) => p.time >= startTime.getTime() && p.time <= endTime.getTime())
+    .sort((a, b) => a.time - b.time);
+
+  // Resample to standard pointCount
+  const timeSpan = endTime.getTime() - startTime.getTime();
+  const yesSeries: number[] = [];
+  const fallbackYes = market.yesPrice ?? 0.5;
+
+  if (historyPoints.length === 0) {
+    // No history in window — flat line at current price
+    for (let i = 0; i < pointCount; i++) {
+      yesSeries.push(fallbackYes);
+    }
+  } else {
+    for (let i = 0; i < pointCount; i++) {
+      const t = pointCount === 1 ? 1 : i / (pointCount - 1);
+      const sampleTime = startTime.getTime() + t * timeSpan;
+
+      // Find surrounding history points for interpolation
+      let leftIdx = 0;
+      for (let j = 0; j < historyPoints.length; j++) {
+        if (historyPoints[j].time <= sampleTime) {
+          leftIdx = j;
+        } else {
+          break;
+        }
+      }
+      const rightIdx = Math.min(leftIdx + 1, historyPoints.length - 1);
+
+      if (leftIdx === rightIdx) {
+        yesSeries.push(historyPoints[leftIdx].probability);
+      } else {
+        const leftTime = historyPoints[leftIdx].time;
+        const rightTime = historyPoints[rightIdx].time;
+        const mix =
+          rightTime === leftTime
+            ? 0
+            : (sampleTime - leftTime) / (rightTime - leftTime);
+        const interpolated =
+          historyPoints[leftIdx].probability +
+          (historyPoints[rightIdx].probability -
+            historyPoints[leftIdx].probability) *
+            mix;
+        yesSeries.push(Math.max(0.02, Math.min(0.98, interpolated)));
+      }
+    }
+    // Snap last point to the last history entry's probability to avoid a
+    // visual jump when the current market.yesPrice diverges from the most
+    // recent on-chain transition.
+    yesSeries[yesSeries.length - 1] =
+      historyPoints[historyPoints.length - 1].probability;
+  }
 
   return {
     endTime,

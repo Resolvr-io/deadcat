@@ -62,8 +62,14 @@ fn explicit_txout(asset_id: &[u8; 32], amount: u64, script_pubkey: &Script) -> T
 }
 
 fn test_utxo(asset_id: [u8; 32], value: u64) -> UnblindedUtxo {
+    test_utxo_vout(asset_id, value, 0)
+}
+
+fn test_utxo_vout(asset_id: [u8; 32], value: u64, vout: u32) -> UnblindedUtxo {
+    let mut outpoint = OutPoint::default();
+    outpoint.vout = vout;
     UnblindedUtxo {
-        outpoint: OutPoint::default(),
+        outpoint,
         txout: explicit_txout(&asset_id, value, &Script::new()),
         asset_id,
         value,
@@ -216,7 +222,7 @@ fn create_order_happy_path() {
     let contract = CompiledMakerOrder::new(params).unwrap();
     let create_params = CreateOrderParams {
         funding_utxo: test_utxo(BASE_ASSET, 100),
-        fee_utxo: test_utxo(FEE_ASSET, 500),
+        fee_utxo: test_utxo_vout(FEE_ASSET, 500, 1),
         order_amount: 100,
         fee_amount: 500,
         fee_asset_id: FEE_ASSET,
@@ -236,7 +242,7 @@ fn create_order_with_change() {
     let contract = CompiledMakerOrder::new(params).unwrap();
     let create_params = CreateOrderParams {
         funding_utxo: test_utxo(BASE_ASSET, 200),
-        fee_utxo: test_utxo(FEE_ASSET, 1000),
+        fee_utxo: test_utxo_vout(FEE_ASSET, 1000, 1),
         order_amount: 100,
         fee_amount: 500,
         fee_asset_id: FEE_ASSET,
@@ -255,7 +261,7 @@ fn create_order_zero_amount() {
     let contract = CompiledMakerOrder::new(params).unwrap();
     let create_params = CreateOrderParams {
         funding_utxo: test_utxo(BASE_ASSET, 100),
-        fee_utxo: test_utxo(FEE_ASSET, 500),
+        fee_utxo: test_utxo_vout(FEE_ASSET, 500, 1),
         order_amount: 0,
         fee_amount: 500,
         fee_asset_id: FEE_ASSET,
@@ -273,7 +279,7 @@ fn create_order_insufficient_funding() {
     let contract = CompiledMakerOrder::new(params).unwrap();
     let create_params = CreateOrderParams {
         funding_utxo: test_utxo(BASE_ASSET, 50),
-        fee_utxo: test_utxo(FEE_ASSET, 500),
+        fee_utxo: test_utxo_vout(FEE_ASSET, 500, 1),
         order_amount: 100,
         fee_amount: 500,
         fee_asset_id: FEE_ASSET,
@@ -702,6 +708,76 @@ fn partial_fill_not_last_rejected() {
 }
 
 // ============================================================================
+// Combined-UTXO create order tests (SellQuote, same asset for funding + fee)
+// ============================================================================
+
+#[test]
+fn create_order_sell_quote_combined_utxo() {
+    let params = sell_quote_params();
+    let contract = CompiledMakerOrder::new(params).unwrap();
+    // Single UTXO covers order + fee exactly (same outpoint for both)
+    let utxo = test_utxo(QUOTE_ASSET, 500_500); // 500_000 order + 500 fee
+    let create_params = CreateOrderParams {
+        funding_utxo: utxo.clone(),
+        fee_utxo: utxo,
+        order_amount: 500_000,
+        fee_amount: 500,
+        fee_asset_id: FEE_ASSET,
+        change_destination: None,
+        fee_change_destination: None,
+        maker_base_pubkey: MAKER_PUBKEY,
+    };
+    let pset = build_create_order_pset(&contract, &create_params).unwrap();
+    // Combined: 1 input, 2 outputs (covenant + fee, no change)
+    assert_eq!(pset.inputs().len(), 1);
+    assert_eq!(pset.outputs().len(), 2);
+}
+
+#[test]
+fn create_order_sell_quote_combined_with_change() {
+    let params = sell_quote_params();
+    let contract = CompiledMakerOrder::new(params).unwrap();
+    let utxo = test_utxo(QUOTE_ASSET, 600_000); // excess beyond order + fee
+    let create_params = CreateOrderParams {
+        funding_utxo: utxo.clone(),
+        fee_utxo: utxo,
+        order_amount: 500_000,
+        fee_amount: 500,
+        fee_asset_id: FEE_ASSET,
+        change_destination: Some(Script::new()),
+        fee_change_destination: None,
+        maker_base_pubkey: MAKER_PUBKEY,
+    };
+    let pset = build_create_order_pset(&contract, &create_params).unwrap();
+    // Combined: 1 input, 3 outputs (covenant + fee + combined change)
+    assert_eq!(pset.inputs().len(), 1);
+    assert_eq!(pset.outputs().len(), 3);
+}
+
+#[test]
+fn create_order_sell_quote_combined_insufficient() {
+    let params = sell_quote_params();
+    let contract = CompiledMakerOrder::new(params).unwrap();
+    // UTXO covers order but not order + fee
+    let utxo = test_utxo(QUOTE_ASSET, 500_000);
+    let create_params = CreateOrderParams {
+        funding_utxo: utxo.clone(),
+        fee_utxo: utxo,
+        order_amount: 500_000,
+        fee_amount: 500,
+        fee_asset_id: FEE_ASSET,
+        change_destination: None,
+        fee_change_destination: None,
+        maker_base_pubkey: MAKER_PUBKEY,
+    };
+    let result = build_create_order_pset(&contract, &create_params);
+    assert!(matches!(
+        result,
+        Err(deadcat_sdk::Error::InsufficientCollateral)
+    ));
+}
+
+// ============================================================================
 // Cancel order PSET tests
 // ============================================================================
 
@@ -709,7 +785,7 @@ fn partial_fill_not_last_rejected() {
 fn cancel_order_happy_path() {
     let cancel_params = CancelOrderParams {
         order_utxo: test_utxo(BASE_ASSET, 100),
-        fee_utxo: test_utxo(FEE_ASSET, 500),
+        fee_utxo: test_utxo_vout(FEE_ASSET, 500, 1),
         fee_amount: 500,
         fee_asset_id: FEE_ASSET,
         order_asset_id: BASE_ASSET,
@@ -726,7 +802,7 @@ fn cancel_order_happy_path() {
 fn cancel_order_with_fee_change() {
     let cancel_params = CancelOrderParams {
         order_utxo: test_utxo(BASE_ASSET, 100),
-        fee_utxo: test_utxo(FEE_ASSET, 1000),
+        fee_utxo: test_utxo_vout(FEE_ASSET, 1000, 1),
         fee_amount: 500,
         fee_asset_id: FEE_ASSET,
         order_asset_id: BASE_ASSET,
@@ -742,7 +818,7 @@ fn cancel_order_with_fee_change() {
 fn cancel_order_insufficient_fee() {
     let cancel_params = CancelOrderParams {
         order_utxo: test_utxo(BASE_ASSET, 100),
-        fee_utxo: test_utxo(FEE_ASSET, 100),
+        fee_utxo: test_utxo_vout(FEE_ASSET, 100, 1),
         fee_amount: 500,
         fee_asset_id: FEE_ASSET,
         order_asset_id: BASE_ASSET,
@@ -784,7 +860,7 @@ fn create_order_sell_quote() {
     let contract = CompiledMakerOrder::new(params).unwrap();
     let create_params = CreateOrderParams {
         funding_utxo: test_utxo(QUOTE_ASSET, 500_000),
-        fee_utxo: test_utxo(FEE_ASSET, 500),
+        fee_utxo: test_utxo_vout(FEE_ASSET, 500, 1),
         order_amount: 500_000,
         fee_amount: 500,
         fee_asset_id: FEE_ASSET,
@@ -879,7 +955,7 @@ fn create_order_zero_price_rejected() {
     let contract = CompiledMakerOrder::new(params).unwrap();
     let create_params = CreateOrderParams {
         funding_utxo: test_utxo(BASE_ASSET, 100),
-        fee_utxo: test_utxo(FEE_ASSET, 500),
+        fee_utxo: test_utxo_vout(FEE_ASSET, 500, 1),
         order_amount: 100,
         fee_amount: 500,
         fee_asset_id: FEE_ASSET,
@@ -947,7 +1023,7 @@ fn create_order_excess_funding_no_change_rejected() {
     let contract = CompiledMakerOrder::new(params).unwrap();
     let create_params = CreateOrderParams {
         funding_utxo: test_utxo(BASE_ASSET, 200),
-        fee_utxo: test_utxo(FEE_ASSET, 500),
+        fee_utxo: test_utxo_vout(FEE_ASSET, 500, 1),
         order_amount: 100,
         fee_amount: 500,
         fee_asset_id: FEE_ASSET,

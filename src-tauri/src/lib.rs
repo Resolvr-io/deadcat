@@ -1245,6 +1245,18 @@ pub fn run() {
             commands::execute_trade,
             commands::get_wallet_utxos,
             commands::list_contracts,
+            commands::fetch_orders,
+            commands::create_limit_order,
+            commands::cancel_limit_order,
+            commands::list_own_orders,
+            // LMSR Pools
+            commands::generate_lmsr_table,
+            commands::create_lmsr_pool,
+            commands::scan_lmsr_pool,
+            commands::adjust_lmsr_pool,
+            commands::close_lmsr_pool,
+            commands::list_lmsr_pools,
+            commands::get_price_history,
             // Wallet store (SDK)
             wallet_store::create_software_signer,
             wallet_store::create_wollet,

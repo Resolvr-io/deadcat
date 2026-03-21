@@ -1,12 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
-import { setMarkets } from "../state.ts";
+import { markets, setMarkets } from "../state.ts";
 import type {
+  CancelLimitOrderResponse,
+  CreateLimitOrderResponse,
   DiscoveredMarket,
+  DiscoveredOrder,
   ExecuteTradeExpectedQuote,
   ExecuteTradeResponse,
   IssuanceResult,
   Market,
   MarketCategory,
+  OwnOrderSummary,
   Side,
   TradeDirection,
   TradeQuoteResponse,
@@ -67,7 +71,18 @@ export async function loadMarkets(): Promise<void> {
 export async function refreshMarketsFromStore(): Promise<void> {
   try {
     const stored = await invoke<DiscoveredMarket[]>("list_contracts");
-    setMarkets(stored.map(discoveredToMarket));
+    const oldByMarketId = new Map(markets.map((m) => [m.marketId, m]));
+    setMarkets(
+      stored.map((d) => {
+        const m = discoveredToMarket(d);
+        const prev = oldByMarketId.get(m.marketId);
+        if (prev) {
+          m.limitOrders = prev.limitOrders;
+          m.collateralUtxos = prev.collateralUtxos;
+        }
+        return m;
+      }),
+    );
   } catch (error) {
     console.warn("Failed to refresh markets from store:", error);
   }
@@ -136,4 +151,71 @@ export async function executeTrade(
       expected_quote: expectedQuote,
     },
   });
+}
+
+export async function fetchOrders(
+  marketId?: string,
+): Promise<DiscoveredOrder[]> {
+  return invoke<DiscoveredOrder[]>("fetch_orders", {
+    marketId: marketId ?? null,
+  });
+}
+
+export async function createLimitOrder(
+  market: Market,
+  side: Side,
+  direction: TradeDirection,
+  price: number,
+  amount: number,
+  feeAmount = 500,
+): Promise<CreateLimitOrderResponse> {
+  return invoke<CreateLimitOrderResponse>("create_limit_order", {
+    request: {
+      contract_params_json: marketToContractParamsJson(market),
+      market_id: market.marketId,
+      side,
+      direction,
+      price: Math.floor(price),
+      amount: Math.floor(amount),
+      fee_amount: feeAmount,
+    },
+  });
+}
+
+export async function cancelLimitOrder(
+  order: DiscoveredOrder,
+  orderIndex?: number,
+  feeAmount = 500,
+): Promise<CancelLimitOrderResponse> {
+  return invoke<CancelLimitOrderResponse>("cancel_limit_order", {
+    request: {
+      market_id: order.market_id,
+      base_asset_id: order.base_asset_id,
+      quote_asset_id: order.quote_asset_id,
+      price: order.price,
+      min_fill_lots: order.min_fill_lots,
+      min_remainder_lots: order.min_remainder_lots,
+      direction: order.direction,
+      maker_base_pubkey: order.maker_base_pubkey,
+      order_nonce: order.order_nonce,
+      cosigner_pubkey: order.cosigner_pubkey,
+      maker_receive_spk_hash: order.maker_receive_spk_hash,
+      fee_amount: feeAmount,
+      order_index: orderIndex ?? null,
+    },
+  });
+}
+
+export async function fetchOwnOrders(): Promise<OwnOrderSummary[]> {
+  return invoke<OwnOrderSummary[]>("list_own_orders");
+}
+
+export function mergeOrdersIntoMarket(
+  marketId: string,
+  orders: DiscoveredOrder[],
+): void {
+  const market = markets.find((m) => m.marketId === marketId);
+  if (market) {
+    market.limitOrders = orders;
+  }
 }

@@ -26,6 +26,10 @@ pub struct MakerOrderRow {
     pub maker_receive_spk: Option<Vec<u8>>,
     pub nostr_event_id: Option<String>,
     pub nostr_event_json: Option<String>,
+    pub creation_txid: Option<String>,
+    pub market_id: Option<String>,
+    pub direction_label: Option<String>,
+    pub offered_amount: Option<i64>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -46,4 +50,8 @@ pub struct NewMakerOrderRow {
     pub maker_receive_spk: Option<Vec<u8>>,
     pub nostr_event_id: Option<String>,
     pub nostr_event_json: Option<String>,
+    pub creation_txid: Option<String>,
+    pub market_id: Option<String>,
+    pub direction_label: Option<String>,
+    pub offered_amount: Option<i64>,
 }

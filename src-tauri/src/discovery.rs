@@ -34,7 +34,7 @@ pub use deadcat_sdk::{
     DEFAULT_RELAYS,
     NETWORK_TAG,
 };
-pub use deadcat_sdk::{ContractAnnouncement, ContractMetadata};
+pub use deadcat_sdk::{ContractAnnouncement, ContractMetadata, DiscoveredOrder};
 
 // ---------------------------------------------------------------------------
 // App-layer-only types (Tauri command request/response types)

@@ -2,7 +2,7 @@ import { SATS_PER_FULL_CONTRACT, state } from "../state.ts";
 import type { Market } from "../types.ts";
 import { formatEstTime } from "../utils/format.ts";
 import { escapeAttr } from "../utils/html.ts";
-import { buildChartSeriesData } from "./chart-series.ts";
+import { buildChartFromHistory, buildChartSeriesData } from "./chart-series.ts";
 
 export function chartSkeleton(
   market: Market,
@@ -137,8 +137,13 @@ export function chartSkeleton(
   };
 
   const yes = market.yesPrice ?? 0.5;
+  const history = state.priceHistory.get(market.marketId);
+  const seriesData =
+    history && history.length >= 2
+      ? buildChartFromHistory(market, history)
+      : buildChartSeriesData(market);
   const { endTime, pointCount, startTime, xLabelOffsets, xLabels, yesSeries } =
-    buildChartSeriesData(market);
+    seriesData;
   const chartAspect = isHomeChart
     ? state.chartAspectHome
     : state.chartAspectDetail;

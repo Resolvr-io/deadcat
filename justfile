@@ -51,4 +51,4 @@ cargo-test:
 		esac; \
 		ELEMENTSD_EXEC=$PWD/tests/elementsd-$TRIPLE \
 		ELECTRS_LIQUID_EXEC=$PWD/tests/electrs-$TRIPLE \
-		cargo test
+		cargo test -- --test-threads=4

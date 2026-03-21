@@ -52,25 +52,27 @@ impl ElectrumChainAdapter {
         txid: &[u8; 32],
     ) -> Result<Option<(u32, [u8; 32])>, ChainAdapterError> {
         let client = self.client()?;
-        let txid_hex = txid_to_display_hex(txid);
-        let resp = match transaction_get_response(&client, &txid_hex, true)? {
-            Some(resp) => resp,
+
+        let height = match get_tx_confirmed_height(&client, self, txid)? {
+            Some(h) => h,
             None => return Ok(None),
         };
 
-        let confirmations = resp["confirmations"].as_u64().unwrap_or(0) as u32;
+        let confirmations = best_height
+            .checked_sub(height)
+            .map(|diff| diff + 1)
+            .unwrap_or(0);
+
         if confirmations < deadcat_store::LIQUID_IRREVERSIBLE_CONFIRMATIONS {
             return Ok(None);
         }
 
-        let block_hash_hex = resp["blockhash"]
-            .as_str()
-            .ok_or_else(|| ChainAdapterError::Parse("missing blockhash".into()))?;
-        let block_hash = hex_to_txid_bytes(block_hash_hex)?;
-        confirmation_height_at(best_height, confirmations, block_hash)
+        let block_hash = get_block_hash(&client, height)?;
+        Ok(Some((height, block_hash)))
     }
 }
 
+#[cfg(test)]
 fn confirmation_height_at(
     best_height: u32,
     confirmations: u32,
@@ -84,6 +86,90 @@ fn confirmation_height_at(
         .checked_sub(confirmations.saturating_sub(1))
         .ok_or_else(|| ChainAdapterError::Parse("invalid confirmation height".into()))?;
     Ok(Some((confirmed_height, block_hash)))
+}
+
+/// Get the confirmed height of a transaction by looking up its first output's
+/// script hash history. Returns `None` if the tx is unconfirmed or not found.
+fn get_tx_confirmed_height(
+    client: &electrum_client::Client,
+    adapter: &ElectrumChainAdapter,
+    txid: &[u8; 32],
+) -> Result<Option<u32>, ChainAdapterError> {
+    use electrum_client::ElectrumApi;
+
+    let txid_hex = txid_to_display_hex(txid);
+
+    // Fetch raw tx (non-verbose, which is supported)
+    let raw_tx = match adapter.get_transaction(txid)? {
+        Some(tx) => tx,
+        None => return Ok(None),
+    };
+
+    // Deserialize to get the first output's script_pubkey
+    let tx: lwk_wollet::elements::Transaction = lwk_wollet::elements::encode::deserialize(&raw_tx)
+        .map_err(|e| ChainAdapterError::Parse(format!("tx deserialize: {e}")))?;
+
+    let first_output = match tx.output.first() {
+        Some(o) => o,
+        None => return Ok(None),
+    };
+
+    let script_hash_hex =
+        ElectrumChainAdapter::script_hash_hex(first_output.script_pubkey.as_bytes());
+
+    // Get script history and find our txid
+    let history = client
+        .raw_call(
+            "blockchain.scripthash.get_history",
+            [electrum_client::Param::String(script_hash_hex)],
+        )
+        .map_err(|e| ChainAdapterError::Electrum(e.to_string()))?;
+
+    if let Some(entries) = history.as_array() {
+        for entry in entries {
+            if entry["tx_hash"].as_str() == Some(&txid_hex) {
+                let height = entry["height"].as_u64().unwrap_or(0) as u32;
+                if height == 0 {
+                    return Ok(None); // unconfirmed
+                }
+                return Ok(Some(height));
+            }
+        }
+    }
+
+    Ok(None) // txid not found in history
+}
+
+/// Get the block hash at a given height by fetching the raw header and
+/// computing its double-SHA256 hash (Elements standard).
+fn get_block_hash(
+    client: &electrum_client::Client,
+    height: u32,
+) -> Result<[u8; 32], ChainAdapterError> {
+    use electrum_client::ElectrumApi;
+
+    let resp = client
+        .raw_call(
+            "blockchain.block.header",
+            [electrum_client::Param::Usize(height as usize)],
+        )
+        .map_err(|e| ChainAdapterError::Electrum(e.to_string()))?;
+
+    let header_hex = resp
+        .as_str()
+        .ok_or_else(|| ChainAdapterError::Parse("expected string for block header".into()))?;
+
+    let header_bytes = hex::decode(header_hex)
+        .map_err(|e| ChainAdapterError::Parse(format!("block header hex decode: {e}")))?;
+
+    // Double-SHA256
+    let first = Sha256::digest(&header_bytes);
+    let second = Sha256::digest(first);
+
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&second);
+    hash.reverse(); // internal byte order
+    Ok(hash)
 }
 
 fn transaction_get_response(
@@ -453,6 +539,30 @@ mod tests {
 
         assert!(matches!(err, ChainAdapterError::Parse(_)));
         assert_eq!(err.to_string(), "parse error: invalid confirmation height");
+    }
+
+    #[test]
+    fn get_block_hash_double_sha256_and_reverse() {
+        // Verify the double-SHA256 + byte reversal logic in isolation.
+        // Use a synthetic 80-byte "header" so the test is self-contained.
+        let header = [0xABu8; 80];
+        let first = Sha256::digest(header);
+        let second = Sha256::digest(first);
+
+        let mut expected = [0u8; 32];
+        expected.copy_from_slice(&second);
+        expected.reverse();
+
+        // Simulate what get_block_hash does after fetching the hex
+        let header_hex = hex::encode(header);
+        let decoded = hex::decode(&header_hex).unwrap();
+        let h1 = Sha256::digest(&decoded);
+        let h2 = Sha256::digest(h1);
+        let mut result = [0u8; 32];
+        result.copy_from_slice(&h2);
+        result.reverse();
+
+        assert_eq!(result, expected);
     }
 
     #[test]

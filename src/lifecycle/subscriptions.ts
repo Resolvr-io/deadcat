@@ -1,6 +1,10 @@
 import { listen } from "@tauri-apps/api/event";
-import { refreshMarketsFromStore } from "../services/markets.ts";
-import { createWalletData, state } from "../state.ts";
+import {
+  fetchOrders,
+  mergeOrdersIntoMarket,
+  refreshMarketsFromStore,
+} from "../services/markets.ts";
+import { createWalletData, markets, state } from "../state.ts";
 import type { WalletTransaction, WalletUtxo } from "../types.ts";
 
 export function setupTauriSubscriptions(render: () => void): () => void {
@@ -83,14 +87,51 @@ export function setupTauriSubscriptions(render: () => void): () => void {
     }),
   );
 
+  let orderRefreshInFlight = false;
+  let orderRefreshQueued = false;
+
+  const scheduleOrderRefresh = (): void => {
+    if (disposed) return;
+    if (state.view !== "detail" || !state.selectedMarketId) return;
+    const selectedMarket = markets.find((m) => m.id === state.selectedMarketId);
+    if (!selectedMarket) return;
+    if (orderRefreshInFlight) {
+      orderRefreshQueued = true;
+      return;
+    }
+
+    const marketId = selectedMarket.marketId;
+    orderRefreshInFlight = true;
+    void fetchOrders(marketId)
+      .then((orders) => {
+        if (disposed) return;
+        mergeOrdersIntoMarket(marketId, orders);
+        render();
+      })
+      .finally(() => {
+        if (disposed) return;
+        orderRefreshInFlight = false;
+        if (orderRefreshQueued) {
+          orderRefreshQueued = false;
+          scheduleOrderRefresh();
+        }
+      });
+  };
+
   for (const eventName of [
     "discovery:market",
-    "discovery:order",
     "discovery:attestation",
     "discovery:pool",
   ]) {
     registerListener(listen(eventName, scheduleMarketRefresh));
   }
+
+  registerListener(
+    listen("discovery:order", () => {
+      scheduleMarketRefresh();
+      scheduleOrderRefresh();
+    }),
+  );
 
   return () => {
     disposed = true;

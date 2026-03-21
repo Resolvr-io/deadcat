@@ -141,6 +141,8 @@ export const MARKET_ACTION_LIST = [
   "submit-redeem",
   "submit-cancel",
   "submit-create-market",
+  "toggle-pool-create",
+  "create-pool",
 ] as const;
 
 export type OnboardingAction = (typeof ONBOARDING_ACTION_LIST)[number];

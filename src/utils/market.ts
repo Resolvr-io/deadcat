@@ -9,6 +9,7 @@ import type {
   CovenantState,
   DiscoveredOrder,
   FillEstimate,
+  FullOrderbook,
   LimitSellWarning,
   Market,
   OrderbookLevel,
@@ -142,19 +143,7 @@ export function getOrderbookLevels(
   side: Side,
   intent: TradeIntent,
 ): OrderbookLevel[] {
-  const discovered = getDiscoveredOrderbookLevels(market, side, intent);
-  if (discovered.length > 0) {
-    return discovered;
-  }
-
-  const seed = getMarketSeed(market);
-  const base = getBasePriceSats(market, side);
-  return Array.from({ length: 8 }).map((_, idx) => {
-    const offset = intent === "open" ? idx + 1 : -(idx + 1);
-    const priceSats = clampContractPriceSats(base + offset);
-    const contracts = 12 + ((seed + idx * 11) % 34);
-    return { priceSats, contracts };
-  });
+  return getDiscoveredOrderbookLevels(market, side, intent);
 }
 
 export function getDiscoveredOrderbookLevels(
@@ -187,6 +176,23 @@ export function getDiscoveredOrderbookLevels(
   }
 
   return [];
+}
+
+export function getFullOrderbook(market: Market, side: Side): FullOrderbook {
+  const asks = getDiscoveredOrderbookLevels(market, side, "open");
+  const bids = getDiscoveredOrderbookLevels(market, side, "close");
+
+  // asks: ascending (best ask = lowest price first)
+  asks.sort((a, b) => a.priceSats - b.priceSats);
+  // bids: descending (best bid = highest price first)
+  bids.sort((a, b) => b.priceSats - a.priceSats);
+
+  const bestAsk = asks[0]?.priceSats ?? null;
+  const bestBid = bids[0]?.priceSats ?? null;
+  const spread =
+    bestAsk !== null && bestBid !== null ? bestAsk - bestBid : null;
+
+  return { asks, bids, spread };
 }
 
 export function getLimitSellWarning(

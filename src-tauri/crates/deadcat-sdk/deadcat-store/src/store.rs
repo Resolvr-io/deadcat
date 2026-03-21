@@ -145,6 +145,10 @@ pub struct MakerOrderInfo {
     pub nostr_event_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub creation_txid: Option<String>,
+    pub market_id: Option<String>,
+    pub direction_label: Option<String>,
+    pub offered_amount: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -177,6 +181,178 @@ pub struct OrderFilter {
     pub min_price: Option<u64>,
     pub max_price: Option<u64>,
     pub limit: Option<i64>,
+}
+
+// --- LMSR Pool types ---
+
+#[derive(Debug, Clone, Default)]
+pub struct LmsrPoolFilter {
+    pub market_id: Option<String>,
+    pub pool_id: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LmsrPoolInfo {
+    pub pool_id: String,
+    pub market_id: String,
+    pub creation_txid: String,
+    pub witness_schema_version: String,
+    pub current_s_index: u64,
+    pub reserve_yes: u64,
+    pub reserve_no: u64,
+    pub reserve_collateral: u64,
+    pub reserve_yes_outpoint: String,
+    pub reserve_no_outpoint: String,
+    pub reserve_collateral_outpoint: String,
+    pub state_source: String,
+    pub last_transition_txid: Option<String>,
+    pub params_json: String,
+    pub nostr_event_id: Option<String>,
+    pub nostr_event_json: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, QueryableByName)]
+struct LmsrPoolRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pool_id: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    market_id: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    creation_txid: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    witness_schema_version: String,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    current_s_index: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    reserve_yes: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    reserve_no: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    reserve_collateral: i64,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    reserve_yes_outpoint: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    reserve_no_outpoint: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    reserve_collateral_outpoint: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    state_source: String,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    last_transition_txid: Option<String>,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    params_json: String,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    nostr_event_id: Option<String>,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    nostr_event_json: Option<String>,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    created_at: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    updated_at: String,
+}
+
+impl From<LmsrPoolRow> for LmsrPoolInfo {
+    fn from(r: LmsrPoolRow) -> Self {
+        Self {
+            pool_id: r.pool_id,
+            market_id: r.market_id,
+            creation_txid: r.creation_txid,
+            witness_schema_version: r.witness_schema_version,
+            current_s_index: r.current_s_index as u64,
+            reserve_yes: r.reserve_yes as u64,
+            reserve_no: r.reserve_no as u64,
+            reserve_collateral: r.reserve_collateral as u64,
+            reserve_yes_outpoint: r.reserve_yes_outpoint,
+            reserve_no_outpoint: r.reserve_no_outpoint,
+            reserve_collateral_outpoint: r.reserve_collateral_outpoint,
+            state_source: r.state_source,
+            last_transition_txid: r.last_transition_txid,
+            params_json: r.params_json,
+            nostr_event_id: r.nostr_event_id,
+            nostr_event_json: r.nostr_event_json,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PriceTransitionInput {
+    pub pool_id: String,
+    pub market_id: String,
+    pub transition_txid: String,
+    pub old_s_index: u64,
+    pub new_s_index: u64,
+    pub reserve_yes: u64,
+    pub reserve_no: u64,
+    pub reserve_collateral: u64,
+    pub implied_yes_price_bps: u16,
+    pub block_height: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PriceHistoryEntry {
+    pub pool_id: String,
+    pub market_id: String,
+    pub transition_txid: String,
+    pub old_s_index: u64,
+    pub new_s_index: u64,
+    pub reserve_yes: u64,
+    pub reserve_no: u64,
+    pub reserve_collateral: u64,
+    pub implied_yes_price_bps: u16,
+    pub recorded_at: String,
+    pub block_height: Option<u32>,
+}
+
+#[derive(Debug, Clone, QueryableByName)]
+#[allow(dead_code)] // `id` needed for SQL SELECT, unused in Rust
+struct PriceHistoryRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    id: i32,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pool_id: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    market_id: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    transition_txid: String,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    old_s_index: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    new_s_index: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    reserve_yes: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    reserve_no: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    reserve_collateral: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    implied_yes_price_bps: i64,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    recorded_at: String,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::BigInt>)]
+    block_height: Option<i64>,
+}
+
+impl From<PriceHistoryRow> for PriceHistoryEntry {
+    fn from(r: PriceHistoryRow) -> Self {
+        Self {
+            pool_id: r.pool_id,
+            market_id: r.market_id,
+            transition_txid: r.transition_txid,
+            old_s_index: r.old_s_index as u64,
+            new_s_index: r.new_s_index as u64,
+            reserve_yes: r.reserve_yes as u64,
+            reserve_no: r.reserve_no as u64,
+            reserve_collateral: r.reserve_collateral as u64,
+            implied_yes_price_bps: r.implied_yes_price_bps as u16,
+            recorded_at: r.recorded_at,
+            block_height: r.block_height.map(|h| h as u32),
+        }
+    }
 }
 
 // --- DeadcatStore ---
@@ -569,6 +745,151 @@ impl DeadcatStore {
             )));
         }
         Ok(())
+    }
+
+    // ==================== LMSR Pool Queries ====================
+
+    /// List LMSR pools, optionally filtered by market_id or pool_id.
+    pub fn list_lmsr_pools(&mut self, filter: &LmsrPoolFilter) -> crate::Result<Vec<LmsrPoolInfo>> {
+        use diesel::sql_types::{BigInt, Text};
+
+        let mut query = String::from(
+            "SELECT pool_id, market_id, creation_txid, witness_schema_version,
+                    current_s_index, reserve_yes, reserve_no, reserve_collateral,
+                    reserve_yes_outpoint, reserve_no_outpoint, reserve_collateral_outpoint,
+                    state_source, last_transition_txid, params_json,
+                    nostr_event_id, nostr_event_json, created_at, updated_at
+             FROM lmsr_pools WHERE 1=1",
+        );
+        let mut bind_market: Option<String> = None;
+        let mut bind_pool: Option<String> = None;
+        let mut bind_limit: Option<i64> = None;
+
+        if let Some(ref mid) = filter.market_id {
+            query.push_str(" AND market_id = ?");
+            bind_market = Some(mid.clone());
+        }
+        if let Some(ref pid) = filter.pool_id {
+            query.push_str(" AND pool_id = ?");
+            bind_pool = Some(pid.clone());
+        }
+        query.push_str(" ORDER BY updated_at DESC");
+        if let Some(limit) = filter.limit {
+            query.push_str(" LIMIT ?");
+            bind_limit = Some(limit);
+        }
+
+        // Build the query dynamically based on bound parameters.
+        // Each combination of optional binds requires a separate arm because
+        // diesel's bound query types are not object-safe.
+        macro_rules! load_with_limit {
+            ($q:expr) => {
+                match bind_limit {
+                    Some(l) => $q.bind::<BigInt, _>(l).load(&mut self.conn)?,
+                    None => $q.load(&mut self.conn)?,
+                }
+            };
+        }
+
+        let rows: Vec<LmsrPoolRow> = match (&bind_market, &bind_pool) {
+            (Some(m), Some(p)) => {
+                let q = diesel::sql_query(&query)
+                    .bind::<Text, _>(m)
+                    .bind::<Text, _>(p);
+                load_with_limit!(q)
+            }
+            (Some(m), None) => {
+                let q = diesel::sql_query(&query).bind::<Text, _>(m);
+                load_with_limit!(q)
+            }
+            (None, Some(p)) => {
+                let q = diesel::sql_query(&query).bind::<Text, _>(p);
+                load_with_limit!(q)
+            }
+            (None, None) => {
+                let q = diesel::sql_query(&query);
+                load_with_limit!(q)
+            }
+        };
+
+        Ok(rows.into_iter().map(LmsrPoolInfo::from).collect())
+    }
+
+    /// Record a price transition for market price history.
+    pub fn record_price_transition(&mut self, input: &PriceTransitionInput) -> crate::Result<()> {
+        use diesel::sql_types::{BigInt, Nullable, Text};
+
+        diesel::sql_query(
+            "INSERT OR IGNORE INTO lmsr_price_history
+                (pool_id, market_id, transition_txid, old_s_index, new_s_index,
+                 reserve_yes, reserve_no, reserve_collateral, implied_yes_price_bps,
+                 block_height)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind::<Text, _>(&input.pool_id)
+        .bind::<Text, _>(&input.market_id)
+        .bind::<Text, _>(&input.transition_txid)
+        .bind::<BigInt, _>(input.old_s_index as i64)
+        .bind::<BigInt, _>(input.new_s_index as i64)
+        .bind::<BigInt, _>(input.reserve_yes as i64)
+        .bind::<BigInt, _>(input.reserve_no as i64)
+        .bind::<BigInt, _>(input.reserve_collateral as i64)
+        .bind::<BigInt, _>(input.implied_yes_price_bps as i64)
+        .bind::<Nullable<BigInt>, _>(input.block_height.map(|h| h as i64))
+        .execute(&mut self.conn)?;
+
+        Ok(())
+    }
+
+    /// Get market price history, optionally filtered by timestamp and limited.
+    pub fn get_market_price_history(
+        &mut self,
+        market_id: &str,
+        since: Option<&str>,
+        limit: Option<i64>,
+    ) -> crate::Result<Vec<PriceHistoryEntry>> {
+        use diesel::sql_types::{BigInt, Text};
+
+        let mut query = String::from(
+            "SELECT id, pool_id, market_id, transition_txid, old_s_index, new_s_index,
+                    reserve_yes, reserve_no, reserve_collateral, implied_yes_price_bps,
+                    recorded_at, block_height
+             FROM lmsr_price_history WHERE market_id = ?",
+        );
+        let mut bind_since: Option<String> = None;
+        let bind_limit: Option<i64> = limit;
+        if let Some(s) = since {
+            query.push_str(" AND recorded_at >= ?");
+            bind_since = Some(s.to_string());
+        }
+        query.push_str(" ORDER BY recorded_at ASC");
+        if bind_limit.is_some() {
+            query.push_str(" LIMIT ?");
+        }
+
+        macro_rules! load_with_limit {
+            ($q:expr) => {
+                match bind_limit {
+                    Some(l) => $q.bind::<BigInt, _>(l).load(&mut self.conn)?,
+                    None => $q.load(&mut self.conn)?,
+                }
+            };
+        }
+
+        let rows: Vec<PriceHistoryRow> = match &bind_since {
+            Some(s) => {
+                let q = diesel::sql_query(&query)
+                    .bind::<Text, _>(market_id)
+                    .bind::<Text, _>(s);
+                load_with_limit!(q)
+            }
+            None => {
+                let q = diesel::sql_query(&query).bind::<Text, _>(market_id);
+                load_with_limit!(q)
+            }
+        };
+
+        Ok(rows.into_iter().map(PriceHistoryEntry::from).collect())
     }
 
     // ==================== Market Queries ====================
@@ -973,6 +1294,36 @@ impl DeadcatStore {
                     .eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
             ))
             .execute(&mut self.conn)?;
+
+        Ok(())
+    }
+
+    /// Record local creation metadata for an order that was just created on-chain.
+    /// Matches by `(cmr, maker_base_pubkey)` — the same unique key used by `ingest_maker_order`.
+    pub fn record_order_creation(
+        &mut self,
+        cmr: &[u8],
+        maker_base_pubkey: &[u8; 32],
+        creation_txid: &str,
+        market_id: &str,
+        direction_label: &str,
+        offered_amount: u64,
+    ) -> crate::Result<()> {
+        diesel::update(
+            maker_orders::table.filter(
+                maker_orders::cmr
+                    .eq(cmr)
+                    .and(maker_orders::maker_base_pubkey.eq(maker_base_pubkey.to_vec())),
+            ),
+        )
+        .set((
+            maker_orders::creation_txid.eq(creation_txid),
+            maker_orders::market_id.eq(market_id),
+            maker_orders::direction_label.eq(direction_label),
+            maker_orders::offered_amount.eq(offered_amount as i64),
+            maker_orders::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+        ))
+        .execute(&mut self.conn)?;
 
         Ok(())
     }
@@ -2044,5 +2395,178 @@ mod tests {
             deadcat_sdk::LmsrPoolStateSource::CanonicalScan.as_str()
         );
         assert_eq!(row.nostr_event_id.as_deref(), Some("evt-3"));
+    }
+
+    // ── list_lmsr_pools tests ────────────────────────────────────────────
+
+    #[test]
+    fn list_lmsr_pools_returns_all() {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        let mut p1 = sample_lmsr_pool_ingest();
+        p1.pool_id = "aa".repeat(32);
+        let mut p2 = sample_lmsr_pool_ingest();
+        p2.pool_id = "bb".repeat(32);
+        store.ingest_lmsr_pool(&p1).unwrap();
+        store.ingest_lmsr_pool(&p2).unwrap();
+
+        let pools = store.list_lmsr_pools(&LmsrPoolFilter::default()).unwrap();
+        assert_eq!(pools.len(), 2);
+    }
+
+    #[test]
+    fn list_lmsr_pools_filters_by_market_id() {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        let mut p1 = sample_lmsr_pool_ingest();
+        p1.pool_id = "aa".repeat(32);
+        p1.market_id = "11".repeat(32);
+        let mut p2 = sample_lmsr_pool_ingest();
+        p2.pool_id = "bb".repeat(32);
+        p2.market_id = "22".repeat(32);
+        store.ingest_lmsr_pool(&p1).unwrap();
+        store.ingest_lmsr_pool(&p2).unwrap();
+
+        let pools = store
+            .list_lmsr_pools(&LmsrPoolFilter {
+                market_id: Some("11".repeat(32)),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(pools.len(), 1);
+        assert_eq!(pools[0].market_id, "11".repeat(32));
+    }
+
+    #[test]
+    fn list_lmsr_pools_filters_by_pool_id() {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        let mut p1 = sample_lmsr_pool_ingest();
+        p1.pool_id = "aa".repeat(32);
+        let mut p2 = sample_lmsr_pool_ingest();
+        p2.pool_id = "bb".repeat(32);
+        store.ingest_lmsr_pool(&p1).unwrap();
+        store.ingest_lmsr_pool(&p2).unwrap();
+
+        let pools = store
+            .list_lmsr_pools(&LmsrPoolFilter {
+                pool_id: Some("bb".repeat(32)),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(pools.len(), 1);
+        assert_eq!(pools[0].pool_id, "bb".repeat(32));
+    }
+
+    // ── price history tests ──────────────────────────────────────────────
+
+    fn sample_price_transition(pool_id: &str, market_id: &str, txid: &str) -> PriceTransitionInput {
+        PriceTransitionInput {
+            pool_id: pool_id.to_string(),
+            market_id: market_id.to_string(),
+            transition_txid: txid.to_string(),
+            old_s_index: 4,
+            new_s_index: 5,
+            reserve_yes: 500,
+            reserve_no: 400,
+            reserve_collateral: 1000,
+            implied_yes_price_bps: 5500,
+            block_height: Some(100),
+        }
+    }
+
+    #[test]
+    fn record_price_transition_and_query() {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        let input = sample_price_transition("pool-1", "market-1", "tx-1");
+        store.record_price_transition(&input).unwrap();
+
+        let entries = store
+            .get_market_price_history("market-1", None, None)
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.pool_id, "pool-1");
+        assert_eq!(e.market_id, "market-1");
+        assert_eq!(e.transition_txid, "tx-1");
+        assert_eq!(e.old_s_index, 4);
+        assert_eq!(e.new_s_index, 5);
+        assert_eq!(e.reserve_yes, 500);
+        assert_eq!(e.reserve_no, 400);
+        assert_eq!(e.reserve_collateral, 1000);
+        assert_eq!(e.implied_yes_price_bps, 5500);
+        assert_eq!(e.block_height, Some(100));
+    }
+
+    #[test]
+    fn record_price_transition_deduplicates_by_txid() {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        let input = sample_price_transition("pool-1", "market-1", "tx-dup");
+        store.record_price_transition(&input).unwrap();
+        store.record_price_transition(&input).unwrap(); // second insert is no-op
+
+        let entries = store
+            .get_market_price_history("market-1", None, None)
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn get_market_price_history_filters_by_market() {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        store
+            .record_price_transition(&sample_price_transition("pool-1", "market-A", "tx-1"))
+            .unwrap();
+        store
+            .record_price_transition(&sample_price_transition("pool-1", "market-B", "tx-2"))
+            .unwrap();
+
+        let entries = store
+            .get_market_price_history("market-A", None, None)
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].market_id, "market-A");
+    }
+
+    #[test]
+    fn get_market_price_history_orders_by_recorded_at() {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        // Insert out of order — recorded_at is auto-set by SQLite's datetime('now')
+        // so they'll all have the same timestamp. Use distinct txids to verify ordering
+        // remains deterministic (ASC by recorded_at, then by rowid).
+        for i in 0..3 {
+            store
+                .record_price_transition(&sample_price_transition(
+                    "pool-1",
+                    "market-1",
+                    &format!("tx-{i}"),
+                ))
+                .unwrap();
+        }
+
+        let entries = store
+            .get_market_price_history("market-1", None, None)
+            .unwrap();
+        assert_eq!(entries.len(), 3);
+        // Verify ascending order by checking txids come back in insertion order
+        assert_eq!(entries[0].transition_txid, "tx-0");
+        assert_eq!(entries[1].transition_txid, "tx-1");
+        assert_eq!(entries[2].transition_txid, "tx-2");
+    }
+
+    #[test]
+    fn get_market_price_history_respects_limit() {
+        let mut store = DeadcatStore::open_in_memory().unwrap();
+        for i in 0..5 {
+            store
+                .record_price_transition(&sample_price_transition(
+                    "pool-1",
+                    "market-1",
+                    &format!("tx-{i}"),
+                ))
+                .unwrap();
+        }
+
+        let entries = store
+            .get_market_price_history("market-1", None, Some(2))
+            .unwrap();
+        assert_eq!(entries.len(), 2);
     }
 }

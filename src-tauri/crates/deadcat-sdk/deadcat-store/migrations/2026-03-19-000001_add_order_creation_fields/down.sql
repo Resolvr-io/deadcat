@@ -1,0 +1,1 @@
+-- SQLite ALTER TABLE DROP COLUMN requires 3.35+; no-op for dev.

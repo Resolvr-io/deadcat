@@ -332,6 +332,10 @@ impl TryFrom<&MakerOrderRow> for MakerOrderInfo {
             nostr_event_json: row.nostr_event_json.clone(),
             created_at: row.created_at.clone(),
             updated_at: row.updated_at.clone(),
+            creation_txid: row.creation_txid.clone(),
+            market_id: row.market_id.clone(),
+            direction_label: row.direction_label.clone(),
+            offered_amount: row.offered_amount.map(|v| v as u64),
         })
     }
 }
@@ -373,6 +377,10 @@ pub fn new_maker_order_row(
         maker_receive_spk,
         nostr_event_id: nostr_event_id.map(|s| s.to_string()),
         nostr_event_json: nostr_event_json.map(|s| s.to_string()),
+        creation_txid: None,
+        market_id: None,
+        direction_label: None,
+        offered_amount: None,
     }
 }
 

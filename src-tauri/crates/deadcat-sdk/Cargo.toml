@@ -22,10 +22,15 @@ tokio = { version = "1", features = ["rt", "sync", "time"] }
 rayon = "1.11"
 
 [features]
-testing = []
+testing = ["simplicity-sys/test-utils"]
+
+[dependencies.simplicity-sys]
+version = "0.6"
+optional = true
 
 [dev-dependencies]
 deadcat-sdk = { path = ".", features = ["testing"] }
+simplicity-sys = { version = "0.6", features = ["test-utils"] }
 bitcoincore-rpc = "0.19"
 lwk_test_util = "0.14"
 nostr-relay-builder = "0.38"
