@@ -15,7 +15,7 @@ pub const AUTO_LOCK_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
 const LOCAL_STATE_FILE: &str = "deadcat_state.json";
 const CONFIG_FILE: &str = "network_config.json";
-const STORE_CUTOVER_MARKER_FILE: &str = "deadcat_store_cutover_v2.marker";
+const STORE_CUTOVER_MARKER_FILE: &str = "deadcat_store_cutover_v3.marker";
 
 // ============================================================================
 // Persisted local state (payment swaps)
@@ -167,6 +167,8 @@ impl AppStateManager {
 
     fn apply_unreleased_store_cutover(&self, store_dir: &Path, db_path: &Path) {
         // Pre-release breaking cutover: wipe any pre-cutover DB once per network.
+        // v3 drops support for the legacy LMSR `params_json` encoding and other
+        // in-flight LMSR history rows that only existed in local/dev DBs.
         let marker = store_dir.join(STORE_CUTOVER_MARKER_FILE);
         if marker.exists() || !db_path.exists() {
             return;
@@ -196,7 +198,7 @@ impl AppStateManager {
             return;
         }
 
-        if let Err(e) = fs::write(&marker, b"deadcat-store-cutover-v2\n") {
+        if let Err(e) = fs::write(&marker, b"deadcat-store-cutover-v3\n") {
             log::warn!(
                 "failed to write store cutover marker {}: {e}",
                 marker.display()

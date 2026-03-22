@@ -6,6 +6,9 @@ use crate::error::{Error, Result};
 
 /// Backend for interacting with the Liquid blockchain.
 pub trait ChainBackend {
+    /// Return the current best block height.
+    fn best_block_height(&self) -> Result<u32>;
+
     /// Scan a script pubkey for unspent outputs.
     fn scan_script_utxos(&self, script_pubkey: &Script) -> Result<Vec<(OutPoint, TxOut)>>;
 
@@ -14,6 +17,9 @@ pub trait ChainBackend {
 
     /// Fetch a transaction by its txid.
     fn fetch_transaction(&self, txid: &Txid) -> Result<Transaction>;
+
+    /// Return the confirmed block height for a transaction, if known.
+    fn transaction_height(&self, txid: &Txid) -> Result<Option<u32>>;
 
     /// Broadcast a signed transaction and return its txid.
     fn broadcast(&self, tx: &Transaction) -> Result<Txid>;
@@ -40,22 +46,40 @@ impl ElectrumBackend {
         lower.contains("missing transaction")
             || lower.contains("no such mempool or blockchain transaction")
     }
+
+    fn script_hash_hex(script_pubkey: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hash = Sha256::digest(script_pubkey).to_vec();
+        hash.reverse();
+        hex::encode(&hash)
+    }
 }
 
 impl ChainBackend for ElectrumBackend {
+    fn best_block_height(&self) -> Result<u32> {
+        use electrum_client::ElectrumApi;
+
+        let client = electrum_client::Client::new(&self.electrum_url)
+            .map_err(|e| Error::Electrum(e.to_string()))?;
+        let resp = client
+            .raw_call("blockchain.headers.subscribe", [])
+            .map_err(|e| Error::Electrum(e.to_string()))?;
+        let height = resp["height"]
+            .as_u64()
+            .ok_or_else(|| Error::Query("missing height in headers response".into()))?;
+        Ok(height as u32)
+    }
+
     fn scan_script_utxos(&self, script_pubkey: &Script) -> Result<Vec<(OutPoint, TxOut)>> {
         use electrum_client::ElectrumApi;
-        use sha2::{Digest, Sha256};
 
         let btc_script = lwk_wollet::bitcoin::ScriptBuf::from(script_pubkey.to_bytes());
 
         let client = electrum_client::Client::new(&self.electrum_url)
             .map_err(|e| Error::CovenantScan(e.to_string()))?;
 
-        // Electrum script hash = SHA256(scriptPubKey) with reversed byte order.
-        let mut hash = Sha256::digest(btc_script.as_bytes()).to_vec();
-        hash.reverse();
-        let script_hash_hex = hex::encode(&hash);
+        let script_hash_hex = Self::script_hash_hex(btc_script.as_bytes());
 
         let resp = client
             .raw_call(
@@ -97,17 +121,13 @@ impl ChainBackend for ElectrumBackend {
 
     fn script_history_txids(&self, script_pubkey: &Script) -> Result<Vec<Txid>> {
         use electrum_client::ElectrumApi;
-        use sha2::{Digest, Sha256};
 
         let btc_script = lwk_wollet::bitcoin::ScriptBuf::from(script_pubkey.to_bytes());
 
         let client = electrum_client::Client::new(&self.electrum_url)
             .map_err(|e| Error::CovenantScan(e.to_string()))?;
 
-        // Electrum script hash = SHA256(scriptPubKey) with reversed byte order.
-        let mut hash = Sha256::digest(btc_script.as_bytes()).to_vec();
-        hash.reverse();
-        let script_hash_hex = hex::encode(&hash);
+        let script_hash_hex = Self::script_hash_hex(btc_script.as_bytes());
 
         let resp = client
             .raw_call(
@@ -170,6 +190,43 @@ impl ChainBackend for ElectrumBackend {
         Err(Error::Electrum(format!(
             "failed to fetch transaction {txid} after {MAX_ATTEMPTS} attempts"
         )))
+    }
+
+    fn transaction_height(&self, txid: &Txid) -> Result<Option<u32>> {
+        use electrum_client::ElectrumApi;
+
+        let client = electrum_client::Client::new(&self.electrum_url)
+            .map_err(|e| Error::Electrum(e.to_string()))?;
+        let tx = self.fetch_transaction(txid)?;
+        let first_output = tx
+            .output
+            .first()
+            .ok_or_else(|| Error::Query(format!("transaction {txid} has no outputs")))?;
+        let script_hash_hex = Self::script_hash_hex(first_output.script_pubkey.as_bytes());
+        let history = client
+            .raw_call(
+                "blockchain.scripthash.get_history",
+                [electrum_client::Param::String(script_hash_hex)],
+            )
+            .map_err(|e| Error::Electrum(e.to_string()))?;
+        let entries = history
+            .as_array()
+            .ok_or_else(|| Error::Query("expected array response".into()))?;
+        for entry in entries {
+            let tx_hash_hex = entry["tx_hash"]
+                .as_str()
+                .ok_or_else(|| Error::Query("missing tx_hash".into()))?;
+            if tx_hash_hex == txid.to_string() {
+                let height = entry["height"]
+                    .as_i64()
+                    .ok_or_else(|| Error::Query("missing height".into()))?;
+                if height <= 0 {
+                    return Ok(None);
+                }
+                return Ok(Some(height as u32));
+            }
+        }
+        Ok(None)
     }
 
     fn broadcast(&self, tx: &Transaction) -> Result<Txid> {

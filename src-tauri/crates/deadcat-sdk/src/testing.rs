@@ -605,12 +605,21 @@ pub fn assemble_oracle_resolve_for_env(
 use nostr_sdk::Keys;
 
 use crate::announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement, ContractMetadata};
-use crate::discovery::OrderAnnouncement;
 use crate::discovery::store_trait::{
-    DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource, LmsrPoolStateUpdateInput,
+    DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource, LmsrPoolStateUpdateInput, NodeStore,
     PredictionMarketCandidateIngestInput,
 };
+use crate::discovery::{OrderAnnouncement, PoolAnnouncement};
+use crate::history::{LmsrPoolSyncInfo, LmsrPriceHistoryEntry, LmsrPriceTransitionInput};
+use crate::lmsr_pool::api::{
+    LmsrPoolLocator, LmsrPoolSnapshot, build_pool_announcement_from_snapshot,
+    txid_to_canonical_bytes,
+};
+use crate::lmsr_pool::identity::{derive_lmsr_market_id, derive_lmsr_pool_id};
+use crate::lmsr_pool::params::{LmsrInitialOutpoint, LmsrPoolParams};
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
+use crate::network::Network;
+use crate::pool::PoolReserves;
 use crate::taproot::NUMS_KEY_BYTES;
 
 /// Minimal in-memory store implementing `DiscoveryStore` for integration tests.
@@ -622,6 +631,7 @@ pub struct TestStore {
     pub orders: Vec<(MakerOrderParams, Option<String>)>,
     pub pools: Vec<LmsrPoolIngestInput>,
     pub pool_states: Vec<LmsrPoolStateUpdateInput>,
+    pub price_history: Vec<LmsrPriceHistoryEntry>,
 }
 
 fn should_preserve_canonical_lmsr_state(
@@ -649,6 +659,10 @@ fn merge_lmsr_pool_ingest(existing: &mut LmsrPoolIngestInput, incoming: &LmsrPoo
         existing.s_bias,
         existing.s_max_index,
         existing.half_payout_sats,
+        existing.min_r_yes,
+        existing.min_r_no,
+        existing.min_r_collateral,
+        existing.initial_reserve_outpoints.clone(),
     );
     let preserved_state = preserve_canonical_state.then(|| {
         (
@@ -669,6 +683,10 @@ fn merge_lmsr_pool_ingest(existing: &mut LmsrPoolIngestInput, incoming: &LmsrPoo
         .nostr_event_json
         .clone()
         .or_else(|| existing.nostr_event_json.clone());
+    let merged_table_values = incoming
+        .lmsr_table_values
+        .clone()
+        .or_else(|| existing.lmsr_table_values.clone());
 
     *existing = incoming.clone();
 
@@ -687,6 +705,10 @@ fn merge_lmsr_pool_ingest(existing: &mut LmsrPoolIngestInput, incoming: &LmsrPoo
         s_bias,
         s_max_index,
         half_payout_sats,
+        min_r_yes,
+        min_r_no,
+        min_r_collateral,
+        initial_reserve_outpoints,
     ) = preserved_identity;
     existing.market_id = market_id;
     existing.creation_txid = creation_txid;
@@ -702,6 +724,11 @@ fn merge_lmsr_pool_ingest(existing: &mut LmsrPoolIngestInput, incoming: &LmsrPoo
     existing.s_bias = s_bias;
     existing.s_max_index = s_max_index;
     existing.half_payout_sats = half_payout_sats;
+    existing.min_r_yes = min_r_yes;
+    existing.min_r_no = min_r_no;
+    existing.min_r_collateral = min_r_collateral;
+    existing.initial_reserve_outpoints = initial_reserve_outpoints;
+    existing.lmsr_table_values = merged_table_values;
 
     if let Some((
         current_s_index,
@@ -776,6 +803,172 @@ impl DiscoveryStore for TestStore {
     }
 }
 
+impl NodeStore for TestStore {
+    fn list_lmsr_pool_sync_info(&mut self) -> std::result::Result<Vec<LmsrPoolSyncInfo>, String> {
+        self.pools
+            .iter()
+            .map(|pool| {
+                let params = crate::lmsr_pool::params::LmsrPoolParams {
+                    yes_asset_id: pool.yes_asset_id,
+                    no_asset_id: pool.no_asset_id,
+                    collateral_asset_id: pool.collateral_asset_id,
+                    fee_bps: pool.fee_bps,
+                    cosigner_pubkey: pool.cosigner_pubkey,
+                    lmsr_table_root: pool.lmsr_table_root,
+                    table_depth: pool.table_depth,
+                    q_step_lots: pool.q_step_lots,
+                    s_bias: pool.s_bias,
+                    s_max_index: pool.s_max_index,
+                    half_payout_sats: pool.half_payout_sats,
+                    min_r_yes: pool.min_r_yes,
+                    min_r_no: pool.min_r_no,
+                    min_r_collateral: pool.min_r_collateral,
+                };
+                Ok(LmsrPoolSyncInfo {
+                    pool_id: pool.pool_id.clone(),
+                    market_id: pool.market_id.clone(),
+                    creation_txid: pool.creation_txid.clone(),
+                    stored_initial_reserve_outpoints: Some(pool.initial_reserve_outpoints.clone()),
+                    witness_schema_version: pool.witness_schema_version.clone(),
+                    current_s_index: pool.current_s_index,
+                    params_json: serde_json::to_string(&params)
+                        .map_err(|e| format!("serialize test lmsr params: {e}"))?,
+                    lmsr_table_values: pool.lmsr_table_values.clone(),
+                    nostr_event_json: pool.nostr_event_json.clone(),
+                })
+            })
+            .collect()
+    }
+
+    fn repair_lmsr_pool_sync_info(
+        &mut self,
+        input: &crate::LmsrPoolSyncRepairInput,
+    ) -> std::result::Result<(), String> {
+        let Some(pool) = self
+            .pools
+            .iter_mut()
+            .find(|pool| pool.pool_id == input.pool_id)
+        else {
+            return Err(format!(
+                "cannot repair LMSR sync metadata for unknown pool_id {}",
+                input.pool_id
+            ));
+        };
+        pool.market_id = input.market_id.clone();
+        pool.creation_txid = input.creation_txid.clone();
+        pool.witness_schema_version = input.witness_schema_version.clone();
+        pool.yes_asset_id = input.params.yes_asset_id;
+        pool.no_asset_id = input.params.no_asset_id;
+        pool.collateral_asset_id = input.params.collateral_asset_id;
+        pool.fee_bps = input.params.fee_bps;
+        pool.cosigner_pubkey = input.params.cosigner_pubkey;
+        pool.lmsr_table_root = input.params.lmsr_table_root;
+        pool.table_depth = input.params.table_depth;
+        pool.q_step_lots = input.params.q_step_lots;
+        pool.s_bias = input.params.s_bias;
+        pool.s_max_index = input.params.s_max_index;
+        pool.half_payout_sats = input.params.half_payout_sats;
+        pool.min_r_yes = input.params.min_r_yes;
+        pool.min_r_no = input.params.min_r_no;
+        pool.min_r_collateral = input.params.min_r_collateral;
+        pool.initial_reserve_outpoints = input.initial_reserve_outpoints.clone();
+        if let Some(table_values) = input.lmsr_table_values.clone() {
+            pool.lmsr_table_values = Some(table_values);
+        }
+        Ok(())
+    }
+
+    fn record_lmsr_price_transition(
+        &mut self,
+        input: &LmsrPriceTransitionInput,
+    ) -> std::result::Result<(), String> {
+        if self.price_history.iter().any(|entry| {
+            entry.pool_id == input.pool_id && entry.transition_txid == input.transition_txid
+        }) {
+            return Ok(());
+        }
+        self.price_history.push(LmsrPriceHistoryEntry {
+            pool_id: input.pool_id.clone(),
+            market_id: input.market_id.clone(),
+            transition_txid: input.transition_txid.clone(),
+            old_s_index: input.old_s_index,
+            new_s_index: input.new_s_index,
+            reserve_yes: input.reserve_yes,
+            reserve_no: input.reserve_no,
+            reserve_collateral: input.reserve_collateral,
+            implied_yes_price_bps: input.implied_yes_price_bps,
+            block_height: input.block_height,
+        });
+        self.price_history.sort_by(|a, b| {
+            a.block_height
+                .cmp(&b.block_height)
+                .then_with(|| a.transition_txid.cmp(&b.transition_txid))
+        });
+        Ok(())
+    }
+
+    fn get_market_price_history(
+        &mut self,
+        market_id: &str,
+        since_block_height: Option<u32>,
+        limit: Option<i64>,
+    ) -> std::result::Result<Vec<LmsrPriceHistoryEntry>, String> {
+        Ok(filter_test_price_history(
+            &self.price_history,
+            |entry| entry.market_id == market_id,
+            since_block_height,
+            limit,
+        ))
+    }
+
+    fn get_pool_price_history(
+        &mut self,
+        pool_id: &str,
+        since_block_height: Option<u32>,
+        limit: Option<i64>,
+    ) -> std::result::Result<Vec<LmsrPriceHistoryEntry>, String> {
+        Ok(filter_test_price_history(
+            &self.price_history,
+            |entry| entry.pool_id == pool_id,
+            since_block_height,
+            limit,
+        ))
+    }
+}
+
+fn filter_test_price_history<F>(
+    history: &[LmsrPriceHistoryEntry],
+    predicate: F,
+    since_block_height: Option<u32>,
+    limit: Option<i64>,
+) -> Vec<LmsrPriceHistoryEntry>
+where
+    F: Fn(&LmsrPriceHistoryEntry) -> bool,
+{
+    let mut entries: Vec<_> = history
+        .iter()
+        .filter(|entry| predicate(entry))
+        .filter(|entry| {
+            since_block_height
+                .map(|height| entry.block_height >= height)
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect();
+    entries.sort_by(|a, b| {
+        a.block_height
+            .cmp(&b.block_height)
+            .then_with(|| a.pool_id.cmp(&b.pool_id))
+            .then_with(|| a.transition_txid.cmp(&b.transition_txid))
+    });
+    if let Some(limit) = limit.and_then(|value| usize::try_from(value).ok())
+        && entries.len() > limit
+    {
+        entries.drain(0..entries.len() - limit);
+    }
+    entries
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -795,8 +988,16 @@ mod tests {
             s_bias: 4,
             s_max_index: 7,
             half_payout_sats: 100,
+            min_r_yes: 1,
+            min_r_no: 1,
+            min_r_collateral: 1,
             creation_txid: "aa".repeat(32),
             witness_schema_version: "DEADCAT/LMSR_WITNESS_SCHEMA_V2".to_string(),
+            initial_reserve_outpoints: [
+                format!("{}:0", "aa".repeat(32)),
+                format!("{}:1", "aa".repeat(32)),
+                format!("{}:2", "aa".repeat(32)),
+            ],
             current_s_index: 4,
             reserve_outpoints: [
                 format!("{}:0", "aa".repeat(32)),
@@ -808,6 +1009,7 @@ mod tests {
             reserve_collateral: 1_000,
             state_source: LmsrPoolStateSource::Announcement,
             last_transition_txid: None,
+            lmsr_table_values: None,
             nostr_event_id: Some("evt-1".to_string()),
             nostr_event_json: Some(r#"{"id":"evt-1"}"#.to_string()),
         }
@@ -1076,6 +1278,149 @@ pub fn test_market_announcement(
         },
         params,
     )
+}
+
+pub fn test_lmsr_table_values() -> Vec<u64> {
+    vec![2_000, 2_010, 2_025, 2_045, 2_070, 2_100, 2_135, 2_175]
+}
+
+pub fn test_lmsr_pool_params(tag: u8) -> LmsrPoolParams {
+    let table_values = test_lmsr_table_values();
+    LmsrPoolParams {
+        yes_asset_id: [tag.wrapping_add(0x01); 32],
+        no_asset_id: [tag.wrapping_add(0x02); 32],
+        collateral_asset_id: [tag.wrapping_add(0x03); 32],
+        lmsr_table_root: crate::lmsr_table_root(&table_values).expect("test lmsr table root"),
+        table_depth: 3,
+        q_step_lots: 10,
+        s_bias: 4,
+        s_max_index: 7,
+        half_payout_sats: 100,
+        fee_bps: 30,
+        min_r_yes: 7,
+        min_r_no: 8,
+        min_r_collateral: 9,
+        cosigner_pubkey: [tag.wrapping_add(0x04); 32],
+    }
+}
+
+fn test_txid(tag: u8, offset: u8) -> Txid {
+    let mut bytes = [0u8; 32];
+    for (idx, byte) in bytes.iter_mut().enumerate() {
+        *byte = tag
+            .wrapping_add(offset)
+            .wrapping_add((idx as u8).wrapping_mul(7));
+    }
+    Txid::from_byte_array(bytes)
+}
+
+pub fn test_lmsr_pool_snapshot(network: Network, tag: u8) -> (LmsrPoolSnapshot, Vec<u64>) {
+    let table_values = test_lmsr_table_values();
+    let params = test_lmsr_pool_params(tag);
+    let creation_txid = test_txid(tag, 0x80);
+    let creation_txid_bytes =
+        txid_to_canonical_bytes(&creation_txid).expect("canonical test creation txid");
+    let initial_reserve_outpoints = [
+        LmsrInitialOutpoint {
+            txid: creation_txid_bytes,
+            vout: 0,
+        },
+        LmsrInitialOutpoint {
+            txid: creation_txid_bytes,
+            vout: 1,
+        },
+        LmsrInitialOutpoint {
+            txid: creation_txid_bytes,
+            vout: 2,
+        },
+    ];
+    let locator = LmsrPoolLocator {
+        market_id: derive_lmsr_market_id(params),
+        pool_id: derive_lmsr_pool_id(
+            network,
+            params,
+            creation_txid_bytes,
+            initial_reserve_outpoints,
+        )
+        .expect("derive test lmsr pool id"),
+        params,
+        creation_txid,
+        initial_reserve_outpoints,
+        hinted_s_index: 4,
+        witness_schema_version: "DEADCAT/LMSR_WITNESS_SCHEMA_V2".to_string(),
+    };
+    let reserve_txid = test_txid(tag, 0x81);
+    let last_transition_txid = test_txid(tag, 0x82);
+    (
+        LmsrPoolSnapshot {
+            locator,
+            current_s_index: 4,
+            reserves: PoolReserves {
+                r_yes: 500,
+                r_no: 400,
+                r_lbtc: 1_000,
+            },
+            current_reserve_outpoints: [
+                OutPoint::new(reserve_txid, 0),
+                OutPoint::new(reserve_txid, 1),
+                OutPoint::new(reserve_txid, 2),
+            ],
+            last_transition_txid: Some(last_transition_txid),
+        },
+        table_values,
+    )
+}
+
+pub fn test_lmsr_pool_announcement(network: Network, tag: u8) -> PoolAnnouncement {
+    let (snapshot, table_values) = test_lmsr_pool_snapshot(network, tag);
+    build_pool_announcement_from_snapshot(&snapshot, table_values)
+        .expect("build canonical test lmsr pool announcement")
+}
+
+pub fn test_lmsr_pool_ingest_input(network: Network, tag: u8) -> LmsrPoolIngestInput {
+    let (snapshot, table_values) = test_lmsr_pool_snapshot(network, tag);
+    let announcement = build_pool_announcement_from_snapshot(&snapshot, table_values)
+        .expect("build canonical test lmsr pool announcement");
+    LmsrPoolIngestInput {
+        pool_id: announcement.lmsr_pool_id.clone(),
+        market_id: announcement.market_id.clone(),
+        yes_asset_id: announcement.params.yes_asset_id,
+        no_asset_id: announcement.params.no_asset_id,
+        collateral_asset_id: announcement.params.lbtc_asset_id,
+        fee_bps: announcement.params.fee_bps,
+        cosigner_pubkey: announcement.params.cosigner_pubkey,
+        lmsr_table_root: hex::decode(&announcement.lmsr_table_root)
+            .expect("test lmsr table root hex")
+            .try_into()
+            .expect("test lmsr table root length"),
+        table_depth: announcement.table_depth,
+        q_step_lots: announcement.q_step_lots,
+        s_bias: announcement.s_bias,
+        s_max_index: announcement.s_max_index,
+        half_payout_sats: announcement.half_payout_sats,
+        min_r_yes: announcement.params.min_r_yes,
+        min_r_no: announcement.params.min_r_no,
+        min_r_collateral: announcement.params.min_r_collateral,
+        creation_txid: announcement.creation_txid.clone(),
+        witness_schema_version: announcement.witness_schema_version.clone(),
+        initial_reserve_outpoints: announcement
+            .initial_reserve_outpoints
+            .clone()
+            .try_into()
+            .expect("test announcement has 3 initial reserve outpoints"),
+        current_s_index: announcement.current_s_index,
+        reserve_outpoints: snapshot
+            .current_reserve_outpoints
+            .map(|outpoint| outpoint.to_string()),
+        reserve_yes: announcement.reserves.r_yes,
+        reserve_no: announcement.reserves.r_no,
+        reserve_collateral: announcement.reserves.r_lbtc,
+        state_source: LmsrPoolStateSource::Announcement,
+        last_transition_txid: snapshot.last_transition_txid.map(|txid| txid.to_string()),
+        lmsr_table_values: announcement.lmsr_table_values.clone(),
+        nostr_event_id: None,
+        nostr_event_json: None,
+    }
 }
 
 /// Standard test metadata for discovery / node tests.

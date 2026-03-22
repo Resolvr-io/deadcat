@@ -67,7 +67,7 @@ pub use attestation::{
 // Re-exports: pool
 // ---------------------------------------------------------------------------
 
-pub use pool::{DiscoveredPool, PoolAnnouncement, PoolParams};
+pub use pool::{DiscoveredPool, PoolAnnouncement, PoolParams, build_pool_event};
 
 // ---------------------------------------------------------------------------
 // Re-exports: config, events, service, store_trait
@@ -78,7 +78,7 @@ pub use events::DiscoveryEvent;
 pub use service::{DiscoveryService, NoopStore, discovered_market_to_contract_params};
 pub use store_trait::{
     ContractMetadataInput, DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource,
-    LmsrPoolStateUpdateInput, PredictionMarketCandidateIngestInput,
+    LmsrPoolStateUpdateInput, NodeStore, PredictionMarketCandidateIngestInput,
 };
 
 // ---------------------------------------------------------------------------

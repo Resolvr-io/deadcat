@@ -1,3 +1,6 @@
+use crate::history::{
+    LmsrPoolSyncInfo, LmsrPoolSyncRepairInput, LmsrPriceHistoryEntry, LmsrPriceTransitionInput,
+};
 use crate::maker_order::params::MakerOrderParams;
 use crate::prediction_market::anchor::PredictionMarketAnchor;
 use crate::prediction_market::params::PredictionMarketParams;
@@ -47,8 +50,12 @@ pub struct LmsrPoolIngestInput {
     pub s_bias: u64,
     pub s_max_index: u64,
     pub half_payout_sats: u64,
+    pub min_r_yes: u64,
+    pub min_r_no: u64,
+    pub min_r_collateral: u64,
     pub creation_txid: String,
     pub witness_schema_version: String,
+    pub initial_reserve_outpoints: [String; 3],
     pub current_s_index: u64,
     pub reserve_outpoints: [String; 3],
     pub reserve_yes: u64,
@@ -56,6 +63,7 @@ pub struct LmsrPoolIngestInput {
     pub reserve_collateral: u64,
     pub state_source: LmsrPoolStateSource,
     pub last_transition_txid: Option<String>,
+    pub lmsr_table_values: Option<Vec<u64>>,
     pub nostr_event_id: Option<String>,
     pub nostr_event_json: Option<String>,
 }
@@ -119,4 +127,37 @@ pub trait DiscoveryStore: Send + 'static {
 
     /// Persist canonical LMSR live-state produced by chain scan.
     fn upsert_lmsr_pool_state(&mut self, input: &LmsrPoolStateUpdateInput) -> Result<(), String>;
+}
+
+/// Store operations needed by `DeadcatNode` for LMSR history sync and reads.
+pub trait NodeStore: DiscoveryStore {
+    /// List known LMSR pools with enough data to reconstruct a typed locator and price manifest.
+    fn list_lmsr_pool_sync_info(&mut self) -> Result<Vec<LmsrPoolSyncInfo>, String>;
+
+    /// Repair canonical LMSR sync metadata for a previously persisted pool row.
+    fn repair_lmsr_pool_sync_info(&mut self, input: &LmsrPoolSyncRepairInput)
+    -> Result<(), String>;
+
+    /// Persist an irreversible LMSR price transition. Implementations should treat duplicates as
+    /// a no-op.
+    fn record_lmsr_price_transition(
+        &mut self,
+        input: &LmsrPriceTransitionInput,
+    ) -> Result<(), String>;
+
+    /// Return merged history for all pools associated with a market.
+    fn get_market_price_history(
+        &mut self,
+        market_id: &str,
+        since_block_height: Option<u32>,
+        limit: Option<i64>,
+    ) -> Result<Vec<LmsrPriceHistoryEntry>, String>;
+
+    /// Return history for a specific LMSR pool.
+    fn get_pool_price_history(
+        &mut self,
+        pool_id: &str,
+        since_block_height: Option<u32>,
+        limit: Option<i64>,
+    ) -> Result<Vec<LmsrPriceHistoryEntry>, String>;
 }

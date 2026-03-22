@@ -82,6 +82,12 @@ impl Network {
         h.reverse();
         h
     }
+
+    pub fn irreversible_confirmations(self) -> u32 {
+        match self {
+            Network::Liquid | Network::LiquidTestnet | Network::LiquidRegtest => 2,
+        }
+    }
 }
 
 impl std::str::FromStr for Network {

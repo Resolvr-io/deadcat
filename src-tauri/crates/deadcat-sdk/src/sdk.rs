@@ -140,6 +140,24 @@ pub(crate) struct LmsrPoolScanResult {
     pub reserves: PoolReserves,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct LmsrPoolStateTransition {
+    pub transition_txid: Txid,
+    pub old_s_index: u64,
+    pub new_s_index: u64,
+    pub reserves: PoolReserves,
+    pub block_height: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LmsrPoolScanHistoryResult {
+    pub current_s_index: u64,
+    pub pool_utxos: crate::trade::types::LmsrPoolUtxos,
+    pub reserves: PoolReserves,
+    pub transitions: Vec<LmsrPoolStateTransition>,
+    pub best_block_height: u32,
+}
+
 struct LmsrBootstrapPset {
     pset: PartiallySignedTransaction,
     wallet_inputs: Vec<UnblindedUtxo>,
@@ -2803,6 +2821,32 @@ impl DeadcatSdk {
         hinted_s_index: u64,
         witness_schema_version: &str,
     ) -> Result<LmsrPoolScanResult> {
+        let scan = self.scan_lmsr_pool_state_with_history(
+            params,
+            creation_txid,
+            initial_reserve_outpoints,
+            hinted_s_index,
+            witness_schema_version,
+        )?;
+        Ok(LmsrPoolScanResult {
+            current_s_index: scan.current_s_index,
+            pool_utxos: scan.pool_utxos,
+            reserves: scan.reserves,
+        })
+    }
+
+    /// Scan LMSR pool reserves and retain the full canonical transition history.
+    ///
+    /// The returned transition list is ordered from pool creation to the
+    /// current canonical tip.
+    pub(crate) fn scan_lmsr_pool_state_with_history(
+        &self,
+        params: LmsrPoolParams,
+        creation_txid: [u8; 32],
+        initial_reserve_outpoints: [LmsrInitialOutpoint; 3],
+        hinted_s_index: u64,
+        witness_schema_version: &str,
+    ) -> Result<LmsrPoolScanHistoryResult> {
         let parse_txid = |label: &str, bytes: [u8; 32]| -> Result<Txid> {
             let txid_hex = hex::encode(bytes);
             txid_hex
@@ -2812,6 +2856,8 @@ impl DeadcatSdk {
 
         let contract = CompiledLmsrPool::new(params)?;
         let mut hinted_s_index = hinted_s_index;
+        let best_block_height = self.chain.best_block_height()?;
+        let mut transitions = Vec::new();
         let creation_txid_bytes = creation_txid;
         for (idx, outpoint) in initial_reserve_outpoints.iter().enumerate() {
             if outpoint.txid != creation_txid_bytes {
@@ -2959,10 +3005,12 @@ impl DeadcatSdk {
                     collateral_txout,
                     contract.params(),
                 )?;
-                return Ok(LmsrPoolScanResult {
+                return Ok(LmsrPoolScanHistoryResult {
                     current_s_index,
                     pool_utxos,
                     reserves,
+                    transitions,
+                    best_block_height,
                 });
             }
 
@@ -2996,7 +3044,9 @@ impl DeadcatSdk {
                     "invalid LMSR admin payload: NEW_S_INDEX must equal OLD_S_INDEX".into(),
                 ));
             }
-            let (next_bundle_utxos, _, next_script) =
+            let transition_txid = spend_tx.txid();
+            let transition_height = self.chain.transaction_height(&transition_txid)?;
+            let (next_bundle_utxos, next_reserves, next_script) =
                 extract_reserve_window(&spend_tx, payload.out_base, contract.params())?;
             let expected_next_script = contract.script_pubkey(payload.new_s_index);
             if next_script != expected_next_script {
@@ -3004,6 +3054,13 @@ impl DeadcatSdk {
                     "LMSR transition output script does not match witness NEW_S_INDEX".into(),
                 ));
             }
+            transitions.push(LmsrPoolStateTransition {
+                transition_txid,
+                old_s_index: current_s_index,
+                new_s_index: payload.new_s_index,
+                reserves: next_reserves,
+                block_height: transition_height,
+            });
             bundle = [
                 next_bundle_utxos.yes.outpoint,
                 next_bundle_utxos.no.outpoint,

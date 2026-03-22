@@ -145,6 +145,8 @@ pub enum NodeError {
     Sdk(Error),
     /// A discovery (Nostr) operation failed.
     Discovery(String),
+    /// A store operation failed.
+    Store(String),
     /// A `spawn_blocking` task failed to join.
     Task(String),
     /// The chain watcher encountered an error.
@@ -159,6 +161,7 @@ impl std::fmt::Display for NodeError {
             NodeError::MutexPoisoned => write!(f, "internal mutex poisoned by a prior panic"),
             NodeError::Sdk(e) => write!(f, "sdk error: {e}"),
             NodeError::Discovery(e) => write!(f, "discovery error: {e}"),
+            NodeError::Store(e) => write!(f, "store error: {e}"),
             NodeError::Task(e) => write!(f, "task join error: {e}"),
             NodeError::Watcher(e) => write!(f, "chain watcher error: {e}"),
         }

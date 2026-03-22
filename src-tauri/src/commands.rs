@@ -1196,13 +1196,21 @@ fn validate_expected_quote(
 
 #[cfg(test)]
 mod trade_command_tests {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::{
-        execute_trade_inner, parse_trade_direction, parse_trade_side, quote_matches_expected,
-        quote_trade_inner, validate_expected_quote, ExecuteTradeRequest, ExecuteTradeResponse,
+        execute_trade_inner, get_pool_price_history_inner, get_price_history_inner,
+        parse_trade_direction, parse_trade_side, quote_matches_expected, quote_trade_inner,
+        scan_lmsr_pool_inner, validate_expected_quote, ExecuteTradeRequest, ExecuteTradeResponse,
         RouteLegResponse, RouteLegSourceResponse, TradeQuoteRequest, TradeQuoteResponse,
     };
+    use crate::state::AppStateManager;
     use crate::NodeState;
+    use nostr_sdk::Keys;
     use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
 
     fn sample_quote(effective_price: f64) -> TradeQuoteResponse {
         TradeQuoteResponse {
@@ -1251,6 +1259,52 @@ mod trade_command_tests {
             .manage(NodeState::default())
             .build(mock_context(noop_assets()))
             .expect("build mock tauri app")
+    }
+
+    fn unique_test_app_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after unix epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("deadcat-{label}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&path).expect("create test app dir");
+        path
+    }
+
+    fn mock_scan_app() -> (
+        tauri::App<tauri::test::MockRuntime>,
+        Arc<Mutex<deadcat_store::DeadcatStore>>,
+    ) {
+        let mut manager = AppStateManager::new(unique_test_app_dir("scan-lmsr"));
+        manager.set_network(crate::Network::Testnet);
+        let store = manager.store().cloned().expect("store initialized");
+        let app = mock_builder()
+            .manage(NodeState::default())
+            .manage(Mutex::new(manager))
+            .build(mock_context(noop_assets()))
+            .expect("build mock tauri app");
+        (app, store)
+    }
+
+    fn sample_price_transition(
+        pool_id: &str,
+        market_id: &str,
+        transition_txid: &str,
+        block_height: u32,
+    ) -> deadcat_sdk::LmsrPriceTransitionInput {
+        deadcat_sdk::LmsrPriceTransitionInput {
+            pool_id: pool_id.to_string(),
+            market_id: market_id.to_string(),
+            transition_txid: transition_txid.to_string(),
+            old_s_index: 10,
+            new_s_index: 11,
+            reserve_yes: 1_000,
+            reserve_no: 900,
+            reserve_collateral: 2_000,
+            implied_yes_price_bps: 5_100,
+            block_height,
+        }
     }
 
     #[test]
@@ -1451,6 +1505,151 @@ mod trade_command_tests {
             Err(err) => err,
         };
         assert!(err.contains("invalid direction"));
+    }
+
+    #[tokio::test]
+    async fn scan_lmsr_pool_repairs_store_metadata_before_wallet_check() {
+        let (app, store) = mock_scan_app();
+        let keys = Keys::generate();
+        let (node, _rx) = deadcat_sdk::DeadcatNode::with_store(
+            keys.clone(),
+            deadcat_sdk::Network::LiquidTestnet,
+            store.clone(),
+            deadcat_sdk::DiscoveryConfig {
+                relays: vec![],
+                network_tag: "liquid-testnet".to_string(),
+                ..Default::default()
+            },
+        );
+        {
+            let node_state = app.state::<NodeState>();
+            let mut guard = node_state.node.lock().await;
+            *guard = Some(node);
+        }
+
+        let announcement = deadcat_sdk::testing::test_lmsr_pool_announcement(
+            deadcat_sdk::Network::LiquidTestnet,
+            0x51,
+        );
+        let event = deadcat_sdk::build_pool_event(
+            &keys,
+            &announcement,
+            deadcat_sdk::Network::LiquidTestnet.discovery_tag(),
+        )
+        .unwrap();
+        let mut ingest = deadcat_sdk::testing::test_lmsr_pool_ingest_input(
+            deadcat_sdk::Network::LiquidTestnet,
+            0x51,
+        );
+        ingest.initial_reserve_outpoints = [
+            format!("{}:7", ingest.creation_txid),
+            format!("{}:8", ingest.creation_txid),
+            format!("{}:9", ingest.creation_txid),
+        ];
+        ingest.lmsr_table_values = None;
+        ingest.nostr_event_id = Some(event.id.to_hex());
+        ingest.nostr_event_json = Some(serde_json::to_string(&event).unwrap());
+        store.lock().unwrap().ingest_lmsr_pool(&ingest).unwrap();
+
+        let err = match scan_lmsr_pool_inner(ingest.pool_id.clone(), app.handle().clone()).await {
+            Ok(_) => panic!("scan should stop at wallet lock after metadata resolution"),
+            Err(err) => err,
+        };
+        assert!(err.contains("wallet is locked"));
+
+        let repaired = store
+            .lock()
+            .unwrap()
+            .list_lmsr_pool_sync_info()
+            .unwrap()
+            .into_iter()
+            .find(|pool| pool.pool_id == ingest.pool_id)
+            .unwrap();
+        assert_eq!(repaired.market_id, announcement.market_id);
+        assert_eq!(
+            repaired
+                .stored_initial_reserve_outpoints
+                .unwrap()
+                .as_slice(),
+            announcement.initial_reserve_outpoints.as_slice()
+        );
+    }
+
+    #[tokio::test]
+    async fn get_price_history_reads_from_store_when_node_is_not_initialized() {
+        let (app, store) = mock_scan_app();
+        store
+            .lock()
+            .unwrap()
+            .record_price_transition(&sample_price_transition("pool-a", "market-a", "tx-a", 101))
+            .unwrap();
+
+        let entries =
+            get_price_history_inner("market-a".to_string(), Some(10), app.handle().clone())
+                .await
+                .expect("market history from store");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].pool_id, "pool-a");
+        assert_eq!(entries[0].market_id, "market-a");
+        assert_eq!(entries[0].block_height, 101);
+    }
+
+    #[tokio::test]
+    async fn get_pool_price_history_reads_from_store_when_node_is_not_initialized() {
+        let (app, store) = mock_scan_app();
+        store
+            .lock()
+            .unwrap()
+            .record_price_transition(&sample_price_transition("pool-b", "market-b", "tx-b", 202))
+            .unwrap();
+
+        let entries = get_pool_price_history_inner(
+            "pool-b".to_string(),
+            Some(10),
+            Some(200),
+            app.handle().clone(),
+        )
+        .await
+        .expect("pool history from store");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].pool_id, "pool-b");
+        assert_eq!(entries[0].market_id, "market-b");
+        assert_eq!(entries[0].block_height, 202);
+    }
+
+    #[tokio::test]
+    async fn get_price_history_errors_when_neither_node_nor_store_is_initialized() {
+        let app = mock_trade_app();
+
+        let err = match get_price_history_inner("market-a".to_string(), None, app.handle().clone())
+            .await
+        {
+            Ok(_) => panic!("expected get_price_history error"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("Store not initialized"));
+    }
+
+    #[tokio::test]
+    async fn get_pool_price_history_errors_when_neither_node_nor_store_is_initialized() {
+        let app = mock_trade_app();
+
+        let err = match get_pool_price_history_inner(
+            "pool-a".to_string(),
+            None,
+            None,
+            app.handle().clone(),
+        )
+        .await
+        {
+            Ok(_) => panic!("expected get_pool_price_history error"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("Store not initialized"));
     }
 }
 
@@ -2005,78 +2204,16 @@ pub struct ScanLmsrPoolResponse {
     pub reserve_collateral: u64,
 }
 
-#[tauri::command]
-pub async fn scan_lmsr_pool(
+async fn scan_lmsr_pool_inner<R: tauri::Runtime>(
     pool_id: String,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> Result<ScanLmsrPoolResponse, String> {
-    // Look up the pool locator from the store
-    let store_arc = {
-        let state_handle = app.state::<Mutex<AppStateManager>>();
-        let mgr = state_handle
-            .lock()
-            .map_err(|_| "state lock failed".to_string())?;
-        mgr.store()
-            .cloned()
-            .ok_or_else(|| "Store not initialized".to_string())?
-    };
-
-    let pool_info = {
-        let mut store = store_arc
-            .lock()
-            .map_err(|_| "store lock failed".to_string())?;
-        let pools = store
-            .list_lmsr_pools(&deadcat_store::LmsrPoolFilter {
-                pool_id: Some(pool_id.clone()),
-                ..Default::default()
-            })
-            .map_err(|e| format!("list pools: {e}"))?;
-        pools.into_iter().next().ok_or("Pool not found in store")?
-    };
-
-    let pool_params: deadcat_sdk::LmsrPoolParams = serde_json::from_str(&pool_info.params_json)
-        .map_err(|e| format!("invalid pool params: {e}"))?;
-
-    let locator = deadcat_sdk::LmsrPoolLocator {
-        market_id: deadcat_sdk::MarketId(
-            hex::decode(&pool_info.market_id)
-                .map_err(|e| format!("bad market_id hex: {e}"))?
-                .try_into()
-                .map_err(|_| "market_id not 32 bytes")?,
-        ),
-        pool_id: deadcat_sdk::LmsrPoolId::from_hex(&pool_id).map_err(|e| format!("{e}"))?,
-        params: pool_params,
-        creation_txid: pool_info
-            .creation_txid
-            .parse()
-            .map_err(|e| format!("bad txid: {e}"))?,
-        initial_reserve_outpoints: {
-            let creation_txid_bytes: [u8; 32] = hex::decode(&pool_info.creation_txid)
-                .map_err(|e| format!("bad creation_txid hex: {e}"))?
-                .try_into()
-                .map_err(|_| "creation_txid not 32 bytes".to_string())?;
-            [
-                deadcat_sdk::LmsrInitialOutpoint {
-                    txid: creation_txid_bytes,
-                    vout: 0,
-                },
-                deadcat_sdk::LmsrInitialOutpoint {
-                    txid: creation_txid_bytes,
-                    vout: 1,
-                },
-                deadcat_sdk::LmsrInitialOutpoint {
-                    txid: creation_txid_bytes,
-                    vout: 2,
-                },
-            ]
-        },
-        hinted_s_index: pool_info.current_s_index,
-        witness_schema_version: pool_info.witness_schema_version,
-    };
-
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
+    let locator = node
+        .resolve_lmsr_pool_locator(&pool_id)
+        .map_err(|e| format!("{e}"))?;
     let snapshot = node
         .scan_lmsr_pool(locator)
         .await
@@ -2090,6 +2227,14 @@ pub async fn scan_lmsr_pool(
         reserve_no: snapshot.reserves.r_no,
         reserve_collateral: snapshot.reserves.r_lbtc,
     })
+}
+
+#[tauri::command]
+pub async fn scan_lmsr_pool(
+    pool_id: String,
+    app: tauri::AppHandle,
+) -> Result<ScanLmsrPoolResponse, String> {
+    scan_lmsr_pool_inner(pool_id, app).await
 }
 
 #[derive(Deserialize)]
@@ -2223,35 +2368,13 @@ pub struct PriceHistoryEntryResponse {
     pub reserve_no: u64,
     pub reserve_collateral: u64,
     pub implied_yes_price_bps: u16,
-    pub recorded_at: String,
-    pub block_height: Option<u32>,
+    pub block_height: u32,
 }
 
-#[tauri::command]
-pub fn get_price_history(
-    market_id: String,
-    limit: Option<i64>,
-    app: tauri::AppHandle,
-) -> Result<Vec<PriceHistoryEntryResponse>, String> {
-    let store_arc = {
-        let state_handle = app.state::<Mutex<AppStateManager>>();
-        let mgr = state_handle
-            .lock()
-            .map_err(|_| "state lock failed".to_string())?;
-        mgr.store()
-            .cloned()
-            .ok_or_else(|| "Store not initialized".to_string())?
-    };
-
-    let mut store = store_arc
-        .lock()
-        .map_err(|_| "store lock failed".to_string())?;
-
-    let entries = store
-        .get_market_price_history(&market_id, None, limit)
-        .map_err(|e| format!("get price history: {e}"))?;
-
-    Ok(entries
+fn map_price_history_entries(
+    entries: Vec<deadcat_sdk::LmsrPriceHistoryEntry>,
+) -> Vec<PriceHistoryEntryResponse> {
+    entries
         .into_iter()
         .map(|e| PriceHistoryEntryResponse {
             pool_id: e.pool_id,
@@ -2263,8 +2386,114 @@ pub fn get_price_history(
             reserve_no: e.reserve_no,
             reserve_collateral: e.reserve_collateral,
             implied_yes_price_bps: e.implied_yes_price_bps,
-            recorded_at: e.recorded_at,
             block_height: e.block_height,
         })
-        .collect())
+        .collect()
+}
+
+fn get_store<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<std::sync::Arc<std::sync::Mutex<deadcat_store::DeadcatStore>>, String> {
+    let state_handle = app
+        .try_state::<Mutex<AppStateManager>>()
+        .ok_or_else(|| "Store not initialized".to_string())?;
+    Ok({
+        let mgr = state_handle
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.store()
+            .cloned()
+            .ok_or_else(|| "Store not initialized".to_string())?
+    })
+}
+
+// Read-only LMSR history stays available before node init by falling back to
+// the confirmed rows already persisted in the store.
+fn get_market_price_history_from_store<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    market_id: &str,
+    limit: Option<i64>,
+) -> Result<Vec<deadcat_sdk::LmsrPriceHistoryEntry>, String> {
+    let store_arc = get_store(app)?;
+    let mut store = store_arc
+        .lock()
+        .map_err(|_| "store lock failed".to_string())?;
+    store
+        .get_market_price_history(market_id, None, limit)
+        .map_err(|e| format!("get price history: {e}"))
+}
+
+fn get_pool_price_history_from_store<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool_id: &str,
+    since_block_height: Option<u32>,
+    limit: Option<i64>,
+) -> Result<Vec<deadcat_sdk::LmsrPriceHistoryEntry>, String> {
+    let store_arc = get_store(app)?;
+    let mut store = store_arc
+        .lock()
+        .map_err(|_| "store lock failed".to_string())?;
+    store
+        .get_pool_price_history(pool_id, since_block_height, limit)
+        .map_err(|e| format!("get pool price history: {e}"))
+}
+
+#[tauri::command]
+pub async fn get_price_history(
+    market_id: String,
+    limit: Option<i64>,
+    app: tauri::AppHandle,
+) -> Result<Vec<PriceHistoryEntryResponse>, String> {
+    get_price_history_inner(market_id, limit, app).await
+}
+
+async fn get_price_history_inner<R: tauri::Runtime>(
+    market_id: String,
+    limit: Option<i64>,
+    app: tauri::AppHandle<R>,
+) -> Result<Vec<PriceHistoryEntryResponse>, String> {
+    let entries = {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        if let Some(node) = guard.as_ref() {
+            node.get_market_price_history(&market_id, None, limit)
+                .map_err(|e| format!("get price history: {e}"))?
+        } else {
+            drop(guard);
+            get_market_price_history_from_store(&app, &market_id, limit)?
+        }
+    };
+
+    Ok(map_price_history_entries(entries))
+}
+
+#[tauri::command]
+pub async fn get_pool_price_history(
+    pool_id: String,
+    limit: Option<i64>,
+    since_block_height: Option<u32>,
+    app: tauri::AppHandle,
+) -> Result<Vec<PriceHistoryEntryResponse>, String> {
+    get_pool_price_history_inner(pool_id, limit, since_block_height, app).await
+}
+
+async fn get_pool_price_history_inner<R: tauri::Runtime>(
+    pool_id: String,
+    limit: Option<i64>,
+    since_block_height: Option<u32>,
+    app: tauri::AppHandle<R>,
+) -> Result<Vec<PriceHistoryEntryResponse>, String> {
+    let entries = {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        if let Some(node) = guard.as_ref() {
+            node.get_pool_price_history(&pool_id, since_block_height, limit)
+                .map_err(|e| format!("get pool price history: {e}"))?
+        } else {
+            drop(guard);
+            get_pool_price_history_from_store(&app, &pool_id, since_block_height, limit)?
+        }
+    };
+
+    Ok(map_price_history_entries(entries))
 }

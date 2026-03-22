@@ -514,11 +514,10 @@ export async function handleClick(
 
   if (action === "set-chart-timescale") {
     const scale = actionEl?.getAttribute("data-scale") as
-      | "1H"
-      | "3H"
-      | "6H"
-      | "12H"
-      | "1D"
+      | "10B"
+      | "25B"
+      | "50B"
+      | "100B"
       | null;
     if (scale) {
       state.chartTimescale = scale;

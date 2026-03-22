@@ -8,6 +8,7 @@ import type {
   WalletTransaction,
 } from "../types";
 import { hideOverlayLoader, showOverlayLoader } from "../ui/loader";
+import { getPriceHistory } from "./pools.ts";
 
 export type WalletSnapshot = {
   balance: Record<string, number>;
@@ -111,6 +112,17 @@ export async function refreshWallet(render: () => void): Promise<void> {
     // balance + transactions arrive via "wallet_snapshot" event listener
     const swaps = await tauriApi.listPaymentSwaps();
     if (state.walletData) state.walletData.swaps = swaps;
+    const selectedMarket = markets.find(
+      (market) => market.id === state.selectedMarketId,
+    );
+    if (selectedMarket) {
+      try {
+        const entries = await getPriceHistory(selectedMarket.marketId, 500);
+        state.priceHistory.set(selectedMarket.marketId, entries);
+      } catch (error) {
+        console.warn("Failed to refresh selected market history:", error);
+      }
+    }
   } catch (e) {
     state.walletError = String(e);
   }
@@ -218,7 +230,7 @@ export function formatSwapStatus(status: string): string {
 export async function syncCurrentHeightFromLwk(
   network: WalletNetwork,
   render: () => void,
-  updateEstClockLabels: () => void,
+  updateEstClockLabels?: () => void,
 ): Promise<void> {
   try {
     const tip = await tauriApi.fetchChainTip(network);
@@ -234,7 +246,7 @@ export async function syncCurrentHeightFromLwk(
 
     if (didChange) {
       render();
-      updateEstClockLabels();
+      updateEstClockLabels?.();
     }
   } catch (error) {
     console.warn("Failed to sync chain tip from LWK:", error);

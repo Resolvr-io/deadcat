@@ -1,61 +1,132 @@
 import { state } from "../state.ts";
-import type { Market, PriceHistoryEntry } from "../types.ts";
+import type { ChartTimescale, Market, PriceHistoryEntry } from "../types.ts";
+
+export type ChartHistoryPoint = {
+  blockHeight: number;
+  probability: number;
+};
 
 export type ChartSeriesData = {
-  endTime: Date;
+  endBlockHeight: number;
+  historyPoints: ChartHistoryPoint[];
   pointCount: number;
-  scaleHours: number;
-  startTime: Date;
-  xLabelOffsets: number[];
-  xLabels: Date[];
-  yesSeries: number[];
+  scaleBlocks: number;
+  startBlockHeight: number;
+  xLabels: number[];
+  yesSeries: Array<number | null>;
 };
+
+const SCALE_BLOCKS_BY_KEY: Record<ChartTimescale, number> = {
+  "10B": 10,
+  "25B": 25,
+  "50B": 50,
+  "100B": 100,
+};
+
+const POINT_COUNT_BY_KEY: Record<ChartTimescale, number> = {
+  "10B": 20,
+  "25B": 28,
+  "50B": 40,
+  "100B": 56,
+};
+
+function clampProbability(value: number): number {
+  return Math.max(0.02, Math.min(0.98, value));
+}
+
+function currentScaleConfig(): {
+  pointCount: number;
+  scaleBlocks: number;
+  scaleKey: ChartTimescale;
+} {
+  const scaleKey = state.chartTimescale;
+  return {
+    scaleKey,
+    scaleBlocks: SCALE_BLOCKS_BY_KEY[scaleKey],
+    pointCount: POINT_COUNT_BY_KEY[scaleKey],
+  };
+}
+
+function buildXAxisLabels(
+  startBlockHeight: number,
+  scaleBlocks: number,
+): number[] {
+  const fractions =
+    scaleBlocks >= 100 ? [0, 0.25, 0.5, 0.75, 1] : [0, 1 / 3, 2 / 3, 1];
+  return fractions.map((fraction) =>
+    Math.round(startBlockHeight + fraction * scaleBlocks),
+  );
+}
+
+function sampleHistoryProbabilityAtHeight(
+  historyPoints: ChartHistoryPoint[],
+  sampleHeight: number,
+): number | null {
+  // History-backed charts stay empty until the first visible confirmed point.
+  if (historyPoints.length === 0) return null;
+  if (sampleHeight < historyPoints[0].blockHeight) return null;
+
+  let leftPoint = historyPoints[0];
+  for (let idx = 1; idx < historyPoints.length; idx += 1) {
+    const rightPoint = historyPoints[idx];
+    if (sampleHeight < rightPoint.blockHeight) {
+      const heightSpan = rightPoint.blockHeight - leftPoint.blockHeight;
+      if (heightSpan <= 0) {
+        return rightPoint.probability;
+      }
+      const mix = (sampleHeight - leftPoint.blockHeight) / heightSpan;
+      const interpolated =
+        leftPoint.probability +
+        (rightPoint.probability - leftPoint.probability) * mix;
+      return clampProbability(interpolated);
+    }
+    leftPoint = rightPoint;
+  }
+
+  return historyPoints[historyPoints.length - 1].probability;
+}
+
+function sampleDenseSeriesAtFraction(
+  series: Array<number | null>,
+  fraction: number,
+): number | null {
+  if (series.length === 0) return null;
+  const clampedFraction = Math.max(0, Math.min(1, fraction));
+  const seriesPosition = clampedFraction * (series.length - 1);
+  const leftIndex = Math.max(
+    0,
+    Math.min(series.length - 1, Math.floor(seriesPosition)),
+  );
+  const rightIndex = Math.max(
+    leftIndex,
+    Math.min(series.length - 1, Math.ceil(seriesPosition)),
+  );
+  const leftValue = series[leftIndex];
+  const rightValue = series[rightIndex];
+  if (leftValue === null || rightValue === null) return null;
+
+  const mix = Math.max(0, Math.min(1, seriesPosition - leftIndex));
+  return leftValue + (rightValue - leftValue) * mix;
+}
 
 export function buildChartSeriesData(market: Market): ChartSeriesData {
   const yes = market.yesPrice ?? 0.5;
-  const endTime = new Date();
-  const scaleHoursByKey: Record<"1H" | "3H" | "6H" | "12H" | "1D", number> = {
-    "1H": 1,
-    "3H": 3,
-    "6H": 6,
-    "12H": 12,
-    "1D": 24,
-  };
-  const pointCountByKey: Record<"1H" | "3H" | "6H" | "12H" | "1D", number> = {
-    "1H": 28,
-    "3H": 34,
-    "6H": 40,
-    "12H": 48,
-    "1D": 56,
-  };
-  const scaleKey = state.chartTimescale;
-  const scaleHours = scaleHoursByKey[scaleKey];
-  const pointCount = pointCountByKey[scaleKey];
-  const totalHours = 24;
-  const startTime = new Date(endTime.getTime() - scaleHours * 60 * 60 * 1000);
-  const xLabelFractions =
-    scaleHours >= 12 ? [0, 0.25, 0.5, 0.75, 1] : [0, 1 / 3, 2 / 3, 1];
-  const xLabels = xLabelFractions.map(
-    (fraction) =>
-      new Date(
-        startTime.getTime() +
-          fraction * (endTime.getTime() - startTime.getTime()),
-      ),
+  const { pointCount, scaleBlocks } = currentScaleConfig();
+  const endBlockHeight = Math.max(
+    scaleBlocks,
+    market.currentHeight || scaleBlocks,
   );
-  const xLabelOffsets = xLabelFractions.map(
-    (fraction) => scaleHours * (1 - fraction),
-  );
+  const startBlockHeight = Math.max(0, endBlockHeight - scaleBlocks);
+  const xLabels = buildXAxisLabels(startBlockHeight, scaleBlocks);
   const seed =
     [...market.id].reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % 97;
   const trendSign = seed % 2 === 0 ? 1 : -1;
-  const clampProbability = (value: number): number =>
-    Math.max(0.02, Math.min(0.98, value));
   let rngState = seed * 1103515245 + 12345;
   const rand = (): number => {
     rngState = (rngState * 1664525 + 1013904223) >>> 0;
     return rngState / 0xffffffff;
   };
-  const baseSeriesCount = 24 * 12 + 1;
+  const baseSeriesCount = 240;
   const baseSeries: number[] = [];
   const historicalBias = (0.2 + (seed % 5) * 0.02) * trendSign;
   const historicalCenter = clampProbability(yes + historicalBias);
@@ -88,7 +159,7 @@ export function buildChartSeriesData(market: Market): ChartSeriesData {
     baseSeries.push(clampProbability(next));
   }
   baseSeries[baseSeries.length - 1] = yes;
-  const windowStartT = Math.max(0, 1 - scaleHours / totalHours);
+  const windowStartT = Math.max(0, 1 - scaleBlocks / 120);
   const yesSeries = Array.from({ length: pointCount }, (_v, idx) => {
     const localT = pointCount === 1 ? 1 : idx / (pointCount - 1);
     const baseT = windowStartT + localT * (1 - windowStartT);
@@ -107,11 +178,11 @@ export function buildChartSeriesData(market: Market): ChartSeriesData {
   yesSeries[yesSeries.length - 1] = yes;
 
   return {
-    endTime,
+    endBlockHeight,
+    historyPoints: [],
     pointCount,
-    scaleHours,
-    startTime,
-    xLabelOffsets,
+    scaleBlocks,
+    startBlockHeight,
     xLabels,
     yesSeries,
   };
@@ -121,107 +192,82 @@ export function buildChartFromHistory(
   market: Market,
   history: PriceHistoryEntry[],
 ): ChartSeriesData {
-  const scaleHoursByKey: Record<"1H" | "3H" | "6H" | "12H" | "1D", number> = {
-    "1H": 1,
-    "3H": 3,
-    "6H": 6,
-    "12H": 12,
-    "1D": 24,
-  };
-  const pointCountByKey: Record<"1H" | "3H" | "6H" | "12H" | "1D", number> = {
-    "1H": 28,
-    "3H": 34,
-    "6H": 40,
-    "12H": 48,
-    "1D": 56,
-  };
-  const scaleKey = state.chartTimescale;
-  const scaleHours = scaleHoursByKey[scaleKey];
-  const pointCount = pointCountByKey[scaleKey];
-  const endTime = new Date();
-  const startTime = new Date(endTime.getTime() - scaleHours * 60 * 60 * 1000);
-  const xLabelFractions =
-    scaleHours >= 12 ? [0, 0.25, 0.5, 0.75, 1] : [0, 1 / 3, 2 / 3, 1];
-  const xLabels = xLabelFractions.map(
-    (fraction) =>
-      new Date(
-        startTime.getTime() +
-          fraction * (endTime.getTime() - startTime.getTime()),
-      ),
+  const { pointCount, scaleBlocks } = currentScaleConfig();
+  const latestHistoryHeight =
+    history.length > 0 ? history[history.length - 1].block_height : 0;
+  const endBlockHeight = Math.max(
+    scaleBlocks,
+    market.currentHeight || 0,
+    latestHistoryHeight,
   );
-  const xLabelOffsets = xLabelFractions.map(
-    (fraction) => scaleHours * (1 - fraction),
-  );
-
-  // Convert history entries to timestamped probability values
+  const startBlockHeight = Math.max(0, endBlockHeight - scaleBlocks);
+  const xLabels = buildXAxisLabels(startBlockHeight, scaleBlocks);
   const historyPoints = history
     .map((entry) => ({
-      time: new Date(entry.recorded_at).getTime(),
-      probability: Math.max(
-        0.02,
-        Math.min(0.98, entry.implied_yes_price_bps / 10000),
-      ),
+      blockHeight: entry.block_height,
+      probability: clampProbability(entry.implied_yes_price_bps / 10_000),
     }))
-    .filter((p) => p.time >= startTime.getTime() && p.time <= endTime.getTime())
-    .sort((a, b) => a.time - b.time);
-
-  // Resample to standard pointCount
-  const timeSpan = endTime.getTime() - startTime.getTime();
-  const yesSeries: number[] = [];
+    .filter(
+      (point) =>
+        point.blockHeight >= startBlockHeight &&
+        point.blockHeight <= endBlockHeight,
+    )
+    .sort((a, b) => a.blockHeight - b.blockHeight);
+  const yesSeries: Array<number | null> = [];
   const fallbackYes = market.yesPrice ?? 0.5;
 
   if (historyPoints.length === 0) {
-    // No history in window — flat line at current price
-    for (let i = 0; i < pointCount; i++) {
+    for (let idx = 0; idx < pointCount; idx += 1) {
       yesSeries.push(fallbackYes);
     }
   } else {
-    for (let i = 0; i < pointCount; i++) {
-      const t = pointCount === 1 ? 1 : i / (pointCount - 1);
-      const sampleTime = startTime.getTime() + t * timeSpan;
-
-      // Find surrounding history points for interpolation
-      let leftIdx = 0;
-      for (let j = 0; j < historyPoints.length; j++) {
-        if (historyPoints[j].time <= sampleTime) {
-          leftIdx = j;
-        } else {
-          break;
-        }
-      }
-      const rightIdx = Math.min(leftIdx + 1, historyPoints.length - 1);
-
-      if (leftIdx === rightIdx) {
-        yesSeries.push(historyPoints[leftIdx].probability);
-      } else {
-        const leftTime = historyPoints[leftIdx].time;
-        const rightTime = historyPoints[rightIdx].time;
-        const mix =
-          rightTime === leftTime
-            ? 0
-            : (sampleTime - leftTime) / (rightTime - leftTime);
-        const interpolated =
-          historyPoints[leftIdx].probability +
-          (historyPoints[rightIdx].probability -
-            historyPoints[leftIdx].probability) *
-            mix;
-        yesSeries.push(Math.max(0.02, Math.min(0.98, interpolated)));
-      }
+    for (let idx = 0; idx < pointCount; idx += 1) {
+      const t = pointCount === 1 ? 1 : idx / (pointCount - 1);
+      const sampleHeight = startBlockHeight + t * scaleBlocks;
+      yesSeries.push(
+        sampleHistoryProbabilityAtHeight(historyPoints, sampleHeight),
+      );
     }
-    // Snap last point to the last history entry's probability to avoid a
-    // visual jump when the current market.yesPrice diverges from the most
-    // recent on-chain transition.
-    yesSeries[yesSeries.length - 1] =
-      historyPoints[historyPoints.length - 1].probability;
   }
 
   return {
-    endTime,
+    endBlockHeight,
+    historyPoints,
     pointCount,
-    scaleHours,
-    startTime,
-    xLabelOffsets,
+    scaleBlocks,
+    startBlockHeight,
     xLabels,
     yesSeries,
   };
+}
+
+export function sampleChartProbabilityAtFraction(
+  seriesData: ChartSeriesData,
+  fraction: number,
+): number | null {
+  const clampedFraction = Math.max(0, Math.min(1, fraction));
+  if (seriesData.historyPoints.length > 0) {
+    const sampleHeight =
+      seriesData.startBlockHeight + clampedFraction * seriesData.scaleBlocks;
+    return sampleHistoryProbabilityAtHeight(
+      seriesData.historyPoints,
+      sampleHeight,
+    );
+  }
+
+  return sampleDenseSeriesAtFraction(seriesData.yesSeries, clampedFraction);
+}
+
+export function lastDefinedChartProbability(
+  seriesData: ChartSeriesData,
+  fallbackProbability: number,
+): number {
+  for (let idx = seriesData.yesSeries.length - 1; idx >= 0; idx -= 1) {
+    const value = seriesData.yesSeries[idx];
+    if (value !== null) {
+      return value;
+    }
+  }
+
+  return fallbackProbability;
 }
