@@ -851,10 +851,20 @@ impl DiscoveryStore for TestStore {
         maker_pubkey: &[u8; 32],
     ) -> std::result::Result<Option<PendingOrderDeletion>, String> {
         self.cancelled_orders.push((*params, *maker_pubkey));
+        let matching_nonce = self
+            .own_orders
+            .iter()
+            .find(|order| order.params == *params && order.maker_pubkey == *maker_pubkey)
+            .map(|order| order.order_nonce);
         Ok(self
             .pending_order_deletions
             .iter()
-            .find(|pending| pending.maker_base_pubkey == *maker_pubkey)
+            .find(|pending| {
+                pending.maker_base_pubkey == *maker_pubkey
+                    && matching_nonce
+                        .map(|order_nonce| pending.order_nonce == order_nonce)
+                        .unwrap_or(false)
+            })
             .cloned())
     }
 
@@ -1183,6 +1193,81 @@ mod tests {
         );
         assert_eq!(existing.current_s_index, incoming.current_s_index);
         assert_eq!(existing.nostr_event_id.as_deref(), Some("evt-2"));
+    }
+
+    #[test]
+    fn mark_own_maker_order_cancelled_matches_pending_deletion_by_recorded_nonce() {
+        let maker_pubkey = [0xaa; 32];
+        let (params_a, _) = MakerOrderParams::new(
+            [0x01; 32],
+            [0xbb; 32],
+            50_000,
+            1,
+            1,
+            OrderDirection::SellBase,
+            NUMS_KEY_BYTES,
+            &maker_pubkey,
+            &[0x11; 32],
+        );
+        let (params_b, _) = MakerOrderParams::new(
+            [0x01; 32],
+            [0xbb; 32],
+            50_000,
+            1,
+            1,
+            OrderDirection::SellBase,
+            NUMS_KEY_BYTES,
+            &maker_pubkey,
+            &[0x22; 32],
+        );
+
+        let mut store = TestStore::default();
+        store.own_orders.push(RecordedOwnOrder {
+            params: params_a,
+            maker_pubkey,
+            order_nonce: [0x11; 32],
+            nostr_event_id: "evt-a".to_string(),
+            creation_txid: "tx-a".to_string(),
+            market_id: "market-a".to_string(),
+            direction_label: "sell-yes".to_string(),
+            offered_amount: 100,
+        });
+        store.own_orders.push(RecordedOwnOrder {
+            params: params_b,
+            maker_pubkey,
+            order_nonce: [0x22; 32],
+            nostr_event_id: "evt-b".to_string(),
+            creation_txid: "tx-b".to_string(),
+            market_id: "market-b".to_string(),
+            direction_label: "sell-yes".to_string(),
+            offered_amount: 100,
+        });
+        store.pending_order_deletions = vec![
+            PendingOrderDeletion {
+                order_id: 1,
+                market_id: "market-a".to_string(),
+                direction_label: "sell-yes".to_string(),
+                maker_base_pubkey: maker_pubkey,
+                order_nonce: [0x11; 32],
+                price: 50_000,
+                nostr_event_id: "evt-a".to_string(),
+            },
+            PendingOrderDeletion {
+                order_id: 2,
+                market_id: "market-b".to_string(),
+                direction_label: "sell-yes".to_string(),
+                maker_base_pubkey: maker_pubkey,
+                order_nonce: [0x22; 32],
+                price: 50_000,
+                nostr_event_id: "evt-b".to_string(),
+            },
+        ];
+
+        let pending = store
+            .mark_own_maker_order_cancelled(&params_b, &maker_pubkey)
+            .expect("test store cancel lookup");
+
+        assert_eq!(pending.map(|entry| entry.order_id), Some(2));
     }
 }
 

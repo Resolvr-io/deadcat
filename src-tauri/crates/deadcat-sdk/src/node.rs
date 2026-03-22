@@ -290,6 +290,29 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         }
     }
 
+    async fn record_order_deletion_result(
+        &self,
+        order_id: i32,
+        delete_event_id: Option<String>,
+        error: Option<String>,
+    ) {
+        if self.store.is_none() {
+            return;
+        }
+        if let Err(e) = self
+            .with_store_blocking(move |store| {
+                store.record_order_deletion_result(
+                    order_id,
+                    delete_event_id.as_deref(),
+                    error.as_deref(),
+                )
+            })
+            .await
+        {
+            log::warn!("failed to record deletion result for store order {order_id}: {e}");
+        }
+    }
+
     async fn publish_order_deletion(&self, pending: &PendingOrderDeletion) {
         let maker_base_pubkey = hex::encode(pending.maker_base_pubkey);
         let order_nonce = hex::encode(pending.order_nonce);
@@ -307,54 +330,20 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
         match tombstone_result {
             Ok(delete_event_id) => {
-                if let Some(store) = &self.store {
-                    match store.lock() {
-                        Ok(mut store) => {
-                            if let Err(e) = store.record_order_deletion_result(
-                                pending.order_id,
-                                Some(&delete_event_id.to_hex()),
-                                None,
-                            ) {
-                                log::warn!(
-                                    "failed to record order tombstone for store order {}: {e}",
-                                    pending.order_id
-                                );
-                            }
-                        }
-                        Err(_) => {
-                            log::warn!(
-                                "failed to lock store to record order tombstone for {}",
-                                pending.order_id
-                            );
-                        }
-                    }
-                }
+                self.record_order_deletion_result(
+                    pending.order_id,
+                    Some(delete_event_id.to_hex()),
+                    None,
+                )
+                .await;
             }
             Err(e) => {
                 log::warn!(
                     "failed to publish order tombstone for store order {}: {e}",
                     pending.order_id
                 );
-                if let Some(store) = &self.store {
-                    match store.lock() {
-                        Ok(mut store) => {
-                            if let Err(record_err) =
-                                store.record_order_deletion_result(pending.order_id, None, Some(&e))
-                            {
-                                log::warn!(
-                                    "failed to record tombstone publish error for store order {}: {record_err}",
-                                    pending.order_id
-                                );
-                            }
-                        }
-                        Err(_) => {
-                            log::warn!(
-                                "failed to lock store to record tombstone error for {}",
-                                pending.order_id
-                            );
-                        }
-                    }
-                }
+                self.record_order_deletion_result(pending.order_id, None, Some(e))
+                    .await;
             }
         }
 

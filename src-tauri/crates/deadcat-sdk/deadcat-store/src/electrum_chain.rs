@@ -186,7 +186,9 @@ impl ChainSource for ElectrumChainAdapter {
             }
         }
 
-        Ok(Some([0u8; 32]))
+        Err(ElectrumChainError::Parse(
+            "spent output found but spending tx could not be identified".into(),
+        ))
     }
 
     fn get_transaction(&self, txid: &[u8; 32]) -> Result<Option<Vec<u8>>, Self::Error> {
