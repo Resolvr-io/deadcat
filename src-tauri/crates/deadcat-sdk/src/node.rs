@@ -18,11 +18,12 @@ use crate::announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement, C
 use crate::discovery::config::DiscoveryConfig;
 use crate::discovery::events::DiscoveryEvent;
 use crate::discovery::market::{DiscoveredMarket, ParsedDiscoveredMarketAnnouncement};
+use crate::discovery::pool::{parse_canonical_lmsr_outpoint, parse_pool_event};
 use crate::discovery::service::{
     DiscoveryService, NoopStore, persist_canonical_lmsr_state_to_store, persist_market_to_store,
 };
 use crate::discovery::store_trait::{
-    ContractMetadataInput, DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource,
+    ContractMetadataInput, DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource, NodeStore,
     PredictionMarketCandidateIngestInput,
 };
 use crate::discovery::{
@@ -35,6 +36,9 @@ use crate::lmsr_pool::api::{
     build_pool_announcement_from_snapshot, txid_to_canonical_bytes,
 };
 use crate::lmsr_pool::identity::{derive_lmsr_market_id, derive_lmsr_pool_id};
+use crate::lmsr_pool::math::fee_free_yes_spot_price_bps;
+use crate::lmsr_pool::params::LmsrPoolId;
+use crate::lmsr_pool::table::LmsrTableManifest;
 use crate::maker_order::params::{MakerOrderParams, OrderDirection};
 use crate::network::Network;
 use crate::prediction_market::anchor::PredictionMarketAnchor;
@@ -46,6 +50,7 @@ use crate::sdk::{
     IssuanceResult, RedemptionResult, ResolutionResult,
 };
 use crate::trade::types::{TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide};
+use crate::{LmsrPoolSyncRepairInput, LmsrPriceHistoryEntry, LmsrPriceTransitionInput};
 
 // ── Wallet snapshot ────────────────────────────────────────────────────────
 
@@ -208,7 +213,11 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         persist_market_to_store(&self.store, parsed);
     }
 
-    fn persist_lmsr_pool_snapshot(&self, snapshot: &LmsrPoolSnapshot) {
+    fn persist_lmsr_pool_snapshot(
+        &self,
+        snapshot: &LmsrPoolSnapshot,
+        lmsr_table_values: Option<Vec<u64>>,
+    ) {
         let Some(store) = &self.store else { return };
         let reserve_outpoints = snapshot
             .current_reserve_outpoints
@@ -227,8 +236,15 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             s_bias: snapshot.locator.params.s_bias,
             s_max_index: snapshot.locator.params.s_max_index,
             half_payout_sats: snapshot.locator.params.half_payout_sats,
+            min_r_yes: snapshot.locator.params.min_r_yes,
+            min_r_no: snapshot.locator.params.min_r_no,
+            min_r_collateral: snapshot.locator.params.min_r_collateral,
             creation_txid: snapshot.locator.creation_txid.to_string(),
             witness_schema_version: snapshot.locator.witness_schema_version.clone(),
+            initial_reserve_outpoints: snapshot
+                .locator
+                .initial_reserve_outpoints
+                .map(|outpoint| format!("{}:{}", hex::encode(outpoint.txid), outpoint.vout)),
             current_s_index: snapshot.current_s_index,
             reserve_outpoints,
             reserve_yes: snapshot.reserves.r_yes,
@@ -236,6 +252,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             reserve_collateral: snapshot.reserves.r_lbtc,
             state_source: LmsrPoolStateSource::CanonicalScan,
             last_transition_txid: snapshot.last_transition_txid.map(|txid| txid.to_string()),
+            lmsr_table_values,
             nostr_event_id: None,
             nostr_event_json: None,
         };
@@ -770,12 +787,13 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         request: CreateLmsrPoolRequest,
     ) -> Result<CreateLmsrPoolResult, NodeError> {
         let table_values = request.table_values.clone();
+        let request_for_sdk = request.clone();
         let snapshot = self
-            .with_sdk(move |sdk| sdk.create_lmsr_pool_bootstrap(&request))
+            .with_sdk(move |sdk| sdk.create_lmsr_pool_bootstrap(&request_for_sdk))
             .await?;
         let announcement = build_pool_announcement_from_snapshot(&snapshot, table_values)
             .map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?;
-        self.persist_lmsr_pool_snapshot(&snapshot);
+        self.persist_lmsr_pool_snapshot(&snapshot, Some(request.table_values.clone()));
 
         Ok(CreateLmsrPoolResult {
             txid: snapshot.locator.creation_txid,
@@ -857,7 +875,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             current_reserve_outpoints,
             last_transition_txid,
         };
-        self.persist_lmsr_pool_snapshot(&snapshot);
+        self.persist_lmsr_pool_snapshot(&snapshot, None);
         persist_canonical_lmsr_state_to_store(
             &self.store,
             &crate::discovery::LmsrPoolStateUpdateInput {
@@ -956,7 +974,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             current_reserve_outpoints,
             last_transition_txid,
         };
-        self.persist_lmsr_pool_snapshot(&snapshot);
+        self.persist_lmsr_pool_snapshot(&snapshot, None);
 
         let request = crate::lmsr_pool::api::AdjustLmsrPoolRequest {
             locator,
@@ -978,10 +996,11 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         &self,
         request: crate::lmsr_pool::api::AdjustLmsrPoolRequest,
     ) -> Result<crate::lmsr_pool::api::AdjustLmsrPoolResult, NodeError> {
+        let table_values = request.table_values.clone();
         let result = self
             .with_sdk(move |sdk| sdk.adjust_lmsr_pool(&request))
             .await?;
-        self.persist_lmsr_pool_snapshot(&result.new_snapshot);
+        self.persist_lmsr_pool_snapshot(&result.new_snapshot, Some(table_values));
         Ok(result)
     }
 
@@ -1227,5 +1246,640 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Return the default Electrum URL for this node's network.
     pub fn default_electrum_url(&self) -> &str {
         self.network.default_electrum_url()
+    }
+}
+
+fn market_id_from_hex(market_id: &str) -> Result<MarketId, NodeError> {
+    let bytes = crate::trade::convert::hex_to_bytes32(market_id).map_err(NodeError::Sdk)?;
+    Ok(MarketId(bytes))
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedPoolSyncMetadata {
+    locator: LmsrPoolLocator,
+    lmsr_table_values: Option<Vec<u64>>,
+    repair_input: Option<LmsrPoolSyncRepairInput>,
+}
+
+struct EventRepairMetadata {
+    market_id: String,
+    creation_txid: String,
+    witness_schema_version: String,
+    params: crate::LmsrPoolParams,
+    initial_reserve_outpoints: [crate::LmsrInitialOutpoint; 3],
+    initial_reserve_outpoint_strings: [String; 3],
+    lmsr_table_values: Option<Vec<u64>>,
+}
+
+fn parse_stored_initial_reserve_outpoints(
+    pool: &crate::LmsrPoolSyncInfo,
+) -> Result<[crate::LmsrInitialOutpoint; 3], NodeError> {
+    let outpoints = pool
+        .stored_initial_reserve_outpoints
+        .as_ref()
+        .ok_or_else(|| {
+            NodeError::Sdk(Error::LmsrPool(
+                "missing stored initial reserve outpoints".into(),
+            ))
+        })?;
+    Ok([
+        parse_canonical_lmsr_outpoint(&outpoints[0], "initial_reserve_outpoints[0]")
+            .map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?,
+        parse_canonical_lmsr_outpoint(&outpoints[1], "initial_reserve_outpoints[1]")
+            .map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?,
+        parse_canonical_lmsr_outpoint(&outpoints[2], "initial_reserve_outpoints[2]")
+            .map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?,
+    ])
+}
+
+struct LocatorSyncParts<'a> {
+    network: Network,
+    pool_id_hex: &'a str,
+    market_id_hex: &'a str,
+    params: crate::LmsrPoolParams,
+    creation_txid_hex: &'a str,
+    initial_reserve_outpoints: [crate::LmsrInitialOutpoint; 3],
+    hinted_s_index: u64,
+    witness_schema_version: &'a str,
+}
+
+fn locator_from_sync_parts(parts: LocatorSyncParts<'_>) -> Result<LmsrPoolLocator, NodeError> {
+    let market_id = market_id_from_hex(parts.market_id_hex)?;
+    let pool_id = LmsrPoolId::from_hex(parts.pool_id_hex)
+        .map_err(|e| NodeError::Sdk(Error::LmsrPool(e.to_string())))?;
+    let creation_txid = parts
+        .creation_txid_hex
+        .parse::<Txid>()
+        .map_err(|e| NodeError::Sdk(Error::LmsrPool(format!("invalid creation_txid: {e}"))))?;
+    let creation_txid_bytes =
+        txid_to_canonical_bytes(&creation_txid).map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?;
+    let expected_pool_id = derive_lmsr_pool_id(
+        parts.network,
+        parts.params,
+        creation_txid_bytes,
+        parts.initial_reserve_outpoints,
+    )
+    .map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?;
+    if pool_id != expected_pool_id {
+        return Err(NodeError::Sdk(Error::LmsrPool(format!(
+            "stored pool_id {} does not match canonical pool_id {}",
+            pool_id.to_hex(),
+            expected_pool_id.to_hex()
+        ))));
+    }
+    Ok(LmsrPoolLocator {
+        market_id,
+        pool_id,
+        params: parts.params,
+        creation_txid,
+        initial_reserve_outpoints: parts.initial_reserve_outpoints,
+        hinted_s_index: parts.hinted_s_index,
+        witness_schema_version: parts.witness_schema_version.to_string(),
+    })
+}
+
+fn build_snapshot_from_history(
+    locator: LmsrPoolLocator,
+    scan: &crate::sdk::LmsrPoolScanHistoryResult,
+) -> LmsrPoolSnapshot {
+    let current_reserve_outpoints = [
+        scan.pool_utxos.yes.outpoint,
+        scan.pool_utxos.no.outpoint,
+        scan.pool_utxos.collateral.outpoint,
+    ];
+    let last_transition_txid = scan
+        .transitions
+        .last()
+        .map(|transition| transition.transition_txid);
+    LmsrPoolSnapshot {
+        locator,
+        current_s_index: scan.current_s_index,
+        reserves: scan.reserves,
+        current_reserve_outpoints,
+        last_transition_txid,
+    }
+}
+
+fn is_irreversible_transition(network: Network, best_block_height: u32, block_height: u32) -> bool {
+    best_block_height
+        .checked_sub(block_height)
+        .map(|diff| diff + 1 >= network.irreversible_confirmations())
+        .unwrap_or(false)
+}
+
+fn repair_metadata_from_nostr_event(
+    network: Network,
+    pool: &crate::LmsrPoolSyncInfo,
+) -> Result<EventRepairMetadata, NodeError> {
+    let event_json = pool
+        .nostr_event_json
+        .as_deref()
+        .ok_or_else(|| NodeError::Sdk(Error::LmsrPool("missing nostr_event_json".into())))?;
+    let event: Event = serde_json::from_str(event_json)
+        .map_err(|e| NodeError::Sdk(Error::LmsrPool(format!("decode nostr_event_json: {e}"))))?;
+    let discovered = parse_pool_event(&event, network.discovery_tag())
+        .map_err(|e| NodeError::Sdk(Error::LmsrPool(format!("parse stored pool event: {e}"))))?;
+    if discovered.pool_id != pool.pool_id {
+        return Err(NodeError::Sdk(Error::LmsrPool(format!(
+            "stored pool_id {} does not match Nostr event pool_id {}",
+            pool.pool_id, discovered.pool_id
+        ))));
+    }
+    let parsed =
+        crate::trade::convert::parse_discovered_lmsr_pool(&discovered, network.discovery_tag())
+            .map_err(NodeError::Sdk)?;
+    let initial_reserve_outpoint_strings: [String; 3] = discovered
+        .initial_reserve_outpoints
+        .clone()
+        .try_into()
+        .map_err(|outpoints: Vec<String>| {
+            NodeError::Sdk(Error::LmsrPool(format!(
+                "expected 3 Nostr initial reserve outpoints, got {}",
+                outpoints.len()
+            )))
+        })?;
+
+    Ok(EventRepairMetadata {
+        market_id: discovered.market_id,
+        creation_txid: discovered.creation_txid,
+        witness_schema_version: parsed.witness_schema_version,
+        params: parsed.params,
+        initial_reserve_outpoints: parsed.initial_reserve_outpoints,
+        initial_reserve_outpoint_strings,
+        lmsr_table_values: parsed.table_values,
+    })
+}
+
+fn resolved_sync_metadata(
+    network: Network,
+    pool: &crate::LmsrPoolSyncInfo,
+) -> Result<ResolvedPoolSyncMetadata, NodeError> {
+    let mut resolution_errors = Vec::new();
+    let stored_locator = match serde_json::from_str::<crate::LmsrPoolParams>(&pool.params_json) {
+        Ok(params) => {
+            match parse_stored_initial_reserve_outpoints(pool).and_then(|initial_outpoints| {
+                locator_from_sync_parts(LocatorSyncParts {
+                    network,
+                    pool_id_hex: &pool.pool_id,
+                    market_id_hex: &pool.market_id,
+                    params,
+                    creation_txid_hex: &pool.creation_txid,
+                    initial_reserve_outpoints: initial_outpoints,
+                    hinted_s_index: pool.current_s_index,
+                    witness_schema_version: &pool.witness_schema_version,
+                })
+            }) {
+                Ok(locator) => Some(locator),
+                Err(err) => {
+                    resolution_errors.push(format!("stored metadata invalid: {err}"));
+                    None
+                }
+            }
+        }
+        Err(err) => {
+            resolution_errors.push(format!(
+                "decode stored lmsr params: {err} (unsupported legacy local DB format; recreate the local DB)"
+            ));
+            None
+        }
+    };
+
+    let needs_repair = stored_locator.is_none() || pool.lmsr_table_values.is_none();
+    let repaired = if needs_repair {
+        match repair_metadata_from_nostr_event(network, pool) {
+            Ok(repaired) => Some(repaired),
+            Err(err) => {
+                resolution_errors.push(format!("nostr repair failed: {err}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some(repaired) = repaired {
+        let locator = locator_from_sync_parts(LocatorSyncParts {
+            network,
+            pool_id_hex: &pool.pool_id,
+            market_id_hex: &repaired.market_id,
+            params: repaired.params,
+            creation_txid_hex: &repaired.creation_txid,
+            initial_reserve_outpoints: repaired.initial_reserve_outpoints,
+            hinted_s_index: pool.current_s_index,
+            witness_schema_version: &repaired.witness_schema_version,
+        })?;
+        let params_json = serde_json::to_string(&repaired.params).map_err(|e| {
+            NodeError::Sdk(Error::LmsrPool(format!("serialize repaired params: {e}")))
+        })?;
+        let should_repair = pool.market_id != repaired.market_id
+            || pool.creation_txid != repaired.creation_txid
+            || pool.witness_schema_version != repaired.witness_schema_version
+            || pool.stored_initial_reserve_outpoints.as_ref()
+                != Some(&repaired.initial_reserve_outpoint_strings)
+            || pool.params_json != params_json
+            || (pool.lmsr_table_values.is_none() && repaired.lmsr_table_values.is_some());
+        return Ok(ResolvedPoolSyncMetadata {
+            locator,
+            lmsr_table_values: pool
+                .lmsr_table_values
+                .clone()
+                .or_else(|| repaired.lmsr_table_values.clone()),
+            repair_input: should_repair.then_some(LmsrPoolSyncRepairInput {
+                pool_id: pool.pool_id.clone(),
+                market_id: repaired.market_id,
+                creation_txid: repaired.creation_txid,
+                witness_schema_version: repaired.witness_schema_version,
+                params: repaired.params,
+                initial_reserve_outpoints: repaired.initial_reserve_outpoint_strings,
+                lmsr_table_values: repaired.lmsr_table_values,
+            }),
+        });
+    }
+
+    if let Some(locator) = stored_locator {
+        return Ok(ResolvedPoolSyncMetadata {
+            locator,
+            lmsr_table_values: pool.lmsr_table_values.clone(),
+            repair_input: None,
+        });
+    }
+
+    Err(NodeError::Sdk(Error::LmsrPool(format!(
+        "cannot resolve LMSR sync metadata for pool {}: {}",
+        pool.pool_id,
+        resolution_errors.join("; ")
+    ))))
+}
+
+impl<S: NodeStore> DeadcatNode<S> {
+    fn resolve_and_repair_pool_sync_metadata(
+        &self,
+        pool: crate::LmsrPoolSyncInfo,
+    ) -> Result<ResolvedPoolSyncMetadata, NodeError> {
+        let resolved = resolved_sync_metadata(self.network, &pool)?;
+        if let Some(repair_input) = resolved.repair_input.as_ref() {
+            let store = self
+                .store
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| NodeError::Store("node store not configured".into()))?;
+            let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+            guard
+                .repair_lmsr_pool_sync_info(repair_input)
+                .map_err(NodeError::Store)?;
+        }
+        Ok(resolved)
+    }
+
+    /// Resolve a persisted LMSR pool row into a canonical locator, repairing
+    /// recoverable metadata first. Stored initial reserve outpoints are read in
+    /// canonical raw-hex byte order so pool-id derivation matches discovery.
+    pub fn resolve_lmsr_pool_locator(&self, pool_id: &str) -> Result<LmsrPoolLocator, NodeError> {
+        let store = self
+            .store
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| NodeError::Store("node store not configured".into()))?;
+        let pool = {
+            let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+            guard
+                .list_lmsr_pool_sync_info()
+                .map_err(NodeError::Store)?
+                .into_iter()
+                .find(|pool| pool.pool_id == pool_id)
+                .ok_or_else(|| NodeError::Store(format!("unknown LMSR pool_id {pool_id}")))?
+        };
+        self.resolve_and_repair_pool_sync_metadata(pool)
+            .map(|resolved| resolved.locator)
+    }
+
+    /// Sync wallet state and backfill irreversible LMSR transition history.
+    pub async fn sync(&self) -> Result<(), NodeError> {
+        self.sync_wallet().await?;
+
+        let store = self
+            .store
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| NodeError::Store("node store not configured".into()))?;
+        let pools = {
+            let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+            guard.list_lmsr_pool_sync_info().map_err(NodeError::Store)?
+        };
+
+        for pool in pools {
+            let resolved = match self.resolve_and_repair_pool_sync_metadata(pool.clone()) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    log::warn!("skipping LMSR sync for pool {}: {}", pool.pool_id, err);
+                    continue;
+                }
+            };
+            let locator = resolved.locator.clone();
+            let pool_id = locator.pool_id.to_hex();
+            let market_id = locator.market_id.to_string();
+            let params = locator.params;
+            let creation_txid_bytes = txid_to_canonical_bytes(&locator.creation_txid)
+                .map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?;
+            let initial_reserve_outpoints = locator.initial_reserve_outpoints;
+            let hinted_s_index = locator.hinted_s_index;
+            let witness_schema_version = locator.witness_schema_version.clone();
+            let scan = self
+                .with_sdk(move |sdk| {
+                    sdk.scan_lmsr_pool_state_with_history(
+                        params,
+                        creation_txid_bytes,
+                        initial_reserve_outpoints,
+                        hinted_s_index,
+                        &witness_schema_version,
+                    )
+                })
+                .await?;
+
+            let snapshot = build_snapshot_from_history(locator, &scan);
+            self.persist_lmsr_pool_snapshot(&snapshot, resolved.lmsr_table_values.clone());
+
+            let Some(table_values) = resolved.lmsr_table_values.clone() else {
+                log::warn!(
+                    "skipping LMSR price history ingestion for pool {}: missing lmsr_table_values",
+                    pool_id
+                );
+                continue;
+            };
+            let manifest = LmsrTableManifest::new(params.table_depth, table_values)
+                .and_then(|manifest| {
+                    manifest.verify_matches_pool_params(&params)?;
+                    Ok(manifest)
+                })
+                .map_err(|e| NodeError::Sdk(Error::LmsrPool(e.to_string())))?;
+            let transitions: Result<Vec<LmsrPriceTransitionInput>, NodeError> = scan
+                .transitions
+                .into_iter()
+                .filter_map(|transition| {
+                    let block_height = transition.block_height?;
+                    is_irreversible_transition(self.network, scan.best_block_height, block_height)
+                        .then_some((transition, block_height))
+                })
+                .map(|(transition, block_height)| {
+                    Ok(LmsrPriceTransitionInput {
+                        pool_id: pool_id.clone(),
+                        market_id: market_id.clone(),
+                        transition_txid: transition.transition_txid.to_string(),
+                        old_s_index: transition.old_s_index,
+                        new_s_index: transition.new_s_index,
+                        reserve_yes: transition.reserves.r_yes,
+                        reserve_no: transition.reserves.r_no,
+                        reserve_collateral: transition.reserves.r_lbtc,
+                        implied_yes_price_bps: fee_free_yes_spot_price_bps(
+                            &manifest,
+                            &params,
+                            transition.new_s_index,
+                        )
+                        .map_err(NodeError::Sdk)?,
+                        block_height,
+                    })
+                })
+                .collect();
+            let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+            for transition in transitions? {
+                guard
+                    .record_lmsr_price_transition(&transition)
+                    .map_err(NodeError::Store)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn get_market_price_history(
+        &self,
+        market_id: &str,
+        since_block_height: Option<u32>,
+        limit: Option<i64>,
+    ) -> Result<Vec<LmsrPriceHistoryEntry>, NodeError> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| NodeError::Store("node store not configured".into()))?;
+        let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+        guard
+            .get_market_price_history(market_id, since_block_height, limit)
+            .map_err(NodeError::Store)
+    }
+
+    pub fn get_pool_price_history(
+        &self,
+        pool_id: &str,
+        since_block_height: Option<u32>,
+        limit: Option<i64>,
+    ) -> Result<Vec<LmsrPriceHistoryEntry>, NodeError> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| NodeError::Store("node store not configured".into()))?;
+        let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+        guard
+            .get_pool_price_history(pool_id, since_block_height, limit)
+            .map_err(NodeError::Store)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discovery::pool::{
+        LMSR_WITNESS_SCHEMA_V2, PoolAnnouncement, PoolParams, build_pool_event,
+    };
+
+    fn sample_table_values() -> Vec<u64> {
+        vec![2_000, 2_010, 2_025, 2_045, 2_070, 2_100, 2_135, 2_175]
+    }
+
+    fn sample_params(table_values: &[u64]) -> crate::LmsrPoolParams {
+        crate::LmsrPoolParams {
+            yes_asset_id: [0x11; 32],
+            no_asset_id: [0x22; 32],
+            collateral_asset_id: [0x33; 32],
+            lmsr_table_root: crate::lmsr_table_root(table_values).unwrap(),
+            table_depth: 3,
+            q_step_lots: 10,
+            s_bias: 4,
+            s_max_index: 7,
+            half_payout_sats: 100,
+            fee_bps: 30,
+            min_r_yes: 7,
+            min_r_no: 8,
+            min_r_collateral: 9,
+            cosigner_pubkey: [0x44; 32],
+        }
+    }
+
+    fn sample_pool_announcement() -> PoolAnnouncement {
+        let table_values = sample_table_values();
+        let params = sample_params(&table_values);
+        let creation_txid =
+            "00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f".to_string();
+        let initial_reserve_outpoints = vec![
+            format!("{creation_txid}:0"),
+            format!("{creation_txid}:1"),
+            format!("{creation_txid}:2"),
+        ];
+        let creation_txid_bytes = crate::trade::convert::hex_to_bytes32(&creation_txid).unwrap();
+        let parsed_outpoints = [
+            crate::LmsrInitialOutpoint {
+                txid: creation_txid_bytes,
+                vout: 0,
+            },
+            crate::LmsrInitialOutpoint {
+                txid: creation_txid_bytes,
+                vout: 1,
+            },
+            crate::LmsrInitialOutpoint {
+                txid: creation_txid_bytes,
+                vout: 2,
+            },
+        ];
+        let pool_id = derive_lmsr_pool_id(
+            Network::LiquidTestnet,
+            params,
+            creation_txid_bytes,
+            parsed_outpoints,
+        )
+        .unwrap()
+        .to_hex();
+
+        PoolAnnouncement {
+            version: crate::discovery::pool::LMSR_POOL_ANNOUNCEMENT_VERSION,
+            params: PoolParams {
+                yes_asset_id: params.yes_asset_id,
+                no_asset_id: params.no_asset_id,
+                lbtc_asset_id: params.collateral_asset_id,
+                fee_bps: params.fee_bps,
+                min_r_yes: params.min_r_yes,
+                min_r_no: params.min_r_no,
+                min_r_collateral: params.min_r_collateral,
+                cosigner_pubkey: params.cosigner_pubkey,
+            },
+            market_id: derive_lmsr_market_id(params).to_string(),
+            reserves: crate::PoolReserves {
+                r_yes: 200_000,
+                r_no: 200_000,
+                r_lbtc: 300_000,
+            },
+            creation_txid,
+            lmsr_pool_id: pool_id,
+            lmsr_table_root: hex::encode(params.lmsr_table_root),
+            table_depth: params.table_depth,
+            q_step_lots: params.q_step_lots,
+            s_bias: params.s_bias,
+            s_max_index: params.s_max_index,
+            half_payout_sats: params.half_payout_sats,
+            current_s_index: 4,
+            initial_reserve_outpoints,
+            witness_schema_version: LMSR_WITNESS_SCHEMA_V2.to_string(),
+            table_manifest_hash: None,
+            lmsr_table_values: Some(table_values),
+        }
+    }
+
+    fn canonical_params_json(announcement: &PoolAnnouncement) -> String {
+        serde_json::to_string(&sample_params(
+            announcement
+                .lmsr_table_values
+                .as_ref()
+                .expect("sample announcement includes table values"),
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn resolved_sync_metadata_accepts_canonical_stored_anchors_without_repair() {
+        let announcement = sample_pool_announcement();
+        let pool = crate::LmsrPoolSyncInfo {
+            pool_id: announcement.lmsr_pool_id.clone(),
+            market_id: announcement.market_id.clone(),
+            creation_txid: announcement.creation_txid.clone(),
+            stored_initial_reserve_outpoints: Some(
+                announcement
+                    .initial_reserve_outpoints
+                    .clone()
+                    .try_into()
+                    .expect("sample announcement has 3 initial reserve outpoints"),
+            ),
+            witness_schema_version: announcement.witness_schema_version.clone(),
+            current_s_index: announcement.current_s_index,
+            params_json: canonical_params_json(&announcement),
+            lmsr_table_values: announcement.lmsr_table_values.clone(),
+            nostr_event_json: None,
+        };
+
+        let resolved = resolved_sync_metadata(Network::LiquidTestnet, &pool).unwrap();
+        assert_eq!(resolved.locator.pool_id.to_hex(), announcement.lmsr_pool_id);
+        assert_eq!(
+            resolved.locator.creation_txid.to_string(),
+            announcement.creation_txid
+        );
+        assert_eq!(resolved.lmsr_table_values, announcement.lmsr_table_values);
+        assert!(resolved.repair_input.is_none());
+    }
+
+    #[test]
+    fn resolved_sync_metadata_repairs_poisoned_anchors_from_nostr_event() {
+        let announcement = sample_pool_announcement();
+        let event = build_pool_event(
+            &Keys::generate(),
+            &announcement,
+            Network::LiquidTestnet.discovery_tag(),
+        )
+        .unwrap();
+        let pool = crate::LmsrPoolSyncInfo {
+            pool_id: announcement.lmsr_pool_id.clone(),
+            market_id: announcement.market_id.clone(),
+            creation_txid: announcement.creation_txid.clone(),
+            stored_initial_reserve_outpoints: Some([
+                format!("{}:7", announcement.creation_txid),
+                format!("{}:8", announcement.creation_txid),
+                format!("{}:9", announcement.creation_txid),
+            ]),
+            witness_schema_version: announcement.witness_schema_version.clone(),
+            current_s_index: announcement.current_s_index,
+            params_json: canonical_params_json(&announcement),
+            lmsr_table_values: None,
+            nostr_event_json: Some(serde_json::to_string(&event).unwrap()),
+        };
+
+        let resolved = resolved_sync_metadata(Network::LiquidTestnet, &pool).unwrap();
+        assert_eq!(resolved.locator.pool_id.to_hex(), announcement.lmsr_pool_id);
+        assert_eq!(resolved.locator.initial_reserve_outpoints[0].vout, 0);
+        assert_eq!(resolved.lmsr_table_values, announcement.lmsr_table_values);
+        let repair = resolved.repair_input.expect("repair input");
+        assert_eq!(repair.params.min_r_yes, announcement.params.min_r_yes);
+        assert_eq!(
+            repair.initial_reserve_outpoints[0],
+            announcement.initial_reserve_outpoints[0]
+        );
+    }
+
+    #[test]
+    fn resolved_sync_metadata_errors_when_pool_is_unrecoverable() {
+        let announcement = sample_pool_announcement();
+        let params_json = canonical_params_json(&announcement);
+        let pool = crate::LmsrPoolSyncInfo {
+            pool_id: announcement.lmsr_pool_id,
+            market_id: announcement.market_id,
+            creation_txid: announcement.creation_txid,
+            stored_initial_reserve_outpoints: None,
+            witness_schema_version: announcement.witness_schema_version,
+            current_s_index: announcement.current_s_index,
+            params_json,
+            lmsr_table_values: None,
+            nostr_event_json: None,
+        };
+
+        let err = resolved_sync_metadata(Network::LiquidTestnet, &pool).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot resolve LMSR sync metadata")
+        );
     }
 }

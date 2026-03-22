@@ -746,6 +746,97 @@ impl ChainSource for MockChainSource {
     }
 }
 
+const PRE_NODE_OWNED_HISTORY_MIGRATIONS: &[&str] = &[
+    "00000000000000",
+    "20260220000001",
+    "20260220000002",
+    "20260221000001",
+    "20260222000001",
+    "20260227000001",
+    "20260228000001",
+    "20260228000002",
+    "20260302000001",
+    "20260313000001",
+    "20260319000001",
+    "20260320000001",
+];
+
+fn bootstrap_pre_node_owned_history_schema(path: &str) {
+    let mut conn = SqliteConnection::establish(path).unwrap();
+    diesel::sql_query("PRAGMA foreign_keys = ON")
+        .execute(&mut conn)
+        .unwrap();
+    diesel::sql_query(
+        "CREATE TABLE __diesel_schema_migrations (
+            version VARCHAR(50) PRIMARY KEY NOT NULL,
+            run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )",
+    )
+    .execute(&mut conn)
+    .unwrap();
+    for version in PRE_NODE_OWNED_HISTORY_MIGRATIONS {
+        diesel::sql_query("INSERT INTO __diesel_schema_migrations (version) VALUES (?)")
+            .bind::<diesel::sql_types::Text, _>(*version)
+            .execute(&mut conn)
+            .unwrap();
+    }
+    diesel::sql_query(
+        "CREATE TABLE lmsr_pools (
+            pool_id TEXT NOT NULL PRIMARY KEY,
+            market_id TEXT NOT NULL,
+            creation_txid TEXT NOT NULL,
+            witness_schema_version TEXT NOT NULL,
+            current_s_index BIGINT NOT NULL,
+            reserve_yes BIGINT NOT NULL,
+            reserve_no BIGINT NOT NULL,
+            reserve_collateral BIGINT NOT NULL,
+            reserve_yes_outpoint TEXT NOT NULL,
+            reserve_no_outpoint TEXT NOT NULL,
+            reserve_collateral_outpoint TEXT NOT NULL,
+            state_source TEXT NOT NULL DEFAULT 'announcement',
+            last_transition_txid TEXT,
+            params_json TEXT NOT NULL,
+            nostr_event_id TEXT,
+            nostr_event_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(&mut conn)
+    .unwrap();
+    diesel::sql_query("CREATE INDEX idx_lmsr_pools_market_id ON lmsr_pools (market_id)")
+        .execute(&mut conn)
+        .unwrap();
+    diesel::sql_query(
+        "CREATE TABLE lmsr_price_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pool_id TEXT NOT NULL,
+            market_id TEXT NOT NULL,
+            transition_txid TEXT NOT NULL,
+            old_s_index INTEGER NOT NULL,
+            new_s_index INTEGER NOT NULL,
+            reserve_yes INTEGER NOT NULL,
+            reserve_no INTEGER NOT NULL,
+            reserve_collateral INTEGER NOT NULL,
+            implied_yes_price_bps INTEGER NOT NULL,
+            recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+            block_height INTEGER
+        )",
+    )
+    .execute(&mut conn)
+    .unwrap();
+    diesel::sql_query(
+        "CREATE INDEX idx_price_history_market ON lmsr_price_history(market_id, recorded_at)",
+    )
+    .execute(&mut conn)
+    .unwrap();
+    diesel::sql_query(
+        "CREATE UNIQUE INDEX idx_price_history_txid ON lmsr_price_history(transition_txid)",
+    )
+    .execute(&mut conn)
+    .unwrap();
+}
+
 // ==================== Basic Store Tests ====================
 
 #[test]
@@ -778,6 +869,106 @@ fn test_reopen_persists_data() {
     let info = store.get_market(&market_id).unwrap();
     assert!(info.is_some());
     assert_eq!(info.unwrap().params, test_params());
+}
+
+#[test]
+fn test_open_migrates_price_history_dropping_rows_without_block_height() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("legacy-price-history.db");
+    bootstrap_pre_node_owned_history_schema(db_path.to_str().unwrap());
+
+    let mut conn = SqliteConnection::establish(db_path.to_str().unwrap()).unwrap();
+    diesel::sql_query(
+        "INSERT INTO lmsr_price_history (
+            pool_id, market_id, transition_txid, old_s_index, new_s_index,
+            reserve_yes, reserve_no, reserve_collateral, implied_yes_price_bps, block_height
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<diesel::sql_types::Text, _>("pool-1")
+    .bind::<diesel::sql_types::Text, _>("market-1")
+    .bind::<diesel::sql_types::Text, _>("tx-pending")
+    .bind::<diesel::sql_types::BigInt, _>(1_i64)
+    .bind::<diesel::sql_types::BigInt, _>(2_i64)
+    .bind::<diesel::sql_types::BigInt, _>(100_i64)
+    .bind::<diesel::sql_types::BigInt, _>(101_i64)
+    .bind::<diesel::sql_types::BigInt, _>(102_i64)
+    .bind::<diesel::sql_types::Integer, _>(4_900_i32)
+    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Integer>, _>(None::<i32>)
+    .execute(&mut conn)
+    .unwrap();
+    diesel::sql_query(
+        "INSERT INTO lmsr_price_history (
+            pool_id, market_id, transition_txid, old_s_index, new_s_index,
+            reserve_yes, reserve_no, reserve_collateral, implied_yes_price_bps, block_height
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<diesel::sql_types::Text, _>("pool-1")
+    .bind::<diesel::sql_types::Text, _>("market-1")
+    .bind::<diesel::sql_types::Text, _>("tx-confirmed")
+    .bind::<diesel::sql_types::BigInt, _>(2_i64)
+    .bind::<diesel::sql_types::BigInt, _>(3_i64)
+    .bind::<diesel::sql_types::BigInt, _>(110_i64)
+    .bind::<diesel::sql_types::BigInt, _>(111_i64)
+    .bind::<diesel::sql_types::BigInt, _>(112_i64)
+    .bind::<diesel::sql_types::Integer, _>(5_100_i32)
+    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Integer>, _>(Some(321_i32))
+    .execute(&mut conn)
+    .unwrap();
+    drop(conn);
+
+    let mut store = DeadcatStore::open(db_path.to_str().unwrap()).unwrap();
+    let history = store
+        .get_market_price_history("market-1", None, None)
+        .unwrap();
+
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].transition_txid, "tx-confirmed");
+    assert_eq!(history[0].block_height, 321);
+}
+
+#[test]
+fn test_open_migrates_lmsr_pools_without_fabricated_initial_anchors() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("legacy-lmsr-pools.db");
+    bootstrap_pre_node_owned_history_schema(db_path.to_str().unwrap());
+
+    let mut conn = SqliteConnection::establish(db_path.to_str().unwrap()).unwrap();
+    diesel::sql_query(
+        "INSERT INTO lmsr_pools (
+            pool_id, market_id, creation_txid, witness_schema_version, current_s_index,
+            reserve_yes, reserve_no, reserve_collateral,
+            reserve_yes_outpoint, reserve_no_outpoint, reserve_collateral_outpoint,
+            state_source, last_transition_txid, params_json, nostr_event_id, nostr_event_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<diesel::sql_types::Text, _>("pool-legacy")
+    .bind::<diesel::sql_types::Text, _>("market-legacy")
+    .bind::<diesel::sql_types::Text, _>("aa".repeat(32))
+    .bind::<diesel::sql_types::Text, _>("v2")
+    .bind::<diesel::sql_types::BigInt, _>(7_i64)
+    .bind::<diesel::sql_types::BigInt, _>(1_000_i64)
+    .bind::<diesel::sql_types::BigInt, _>(1_001_i64)
+    .bind::<diesel::sql_types::BigInt, _>(1_002_i64)
+    .bind::<diesel::sql_types::Text, _>(&format!("{}:0", "bb".repeat(32)))
+    .bind::<diesel::sql_types::Text, _>(&format!("{}:1", "cc".repeat(32)))
+    .bind::<diesel::sql_types::Text, _>(&format!("{}:2", "dd".repeat(32)))
+    .bind::<diesel::sql_types::Text, _>("announcement")
+    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(None::<&str>)
+    .bind::<diesel::sql_types::Text, _>("{}")
+    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(None::<&str>)
+    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(None::<&str>)
+    .execute(&mut conn)
+    .unwrap();
+    drop(conn);
+
+    let mut store = DeadcatStore::open(db_path.to_str().unwrap()).unwrap();
+    let pools = store.list_lmsr_pool_sync_info().unwrap();
+    let pool = pools
+        .into_iter()
+        .find(|pool| pool.pool_id == "pool-legacy")
+        .unwrap();
+
+    assert_eq!(pool.stored_initial_reserve_outpoints, None);
 }
 
 // ==================== Market Tests ====================

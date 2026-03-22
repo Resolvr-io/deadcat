@@ -422,9 +422,10 @@ export type PriceHistoryEntry = {
   reserve_no: number;
   reserve_collateral: number;
   implied_yes_price_bps: number;
-  recorded_at: string;
-  block_height: number | null;
+  block_height: number;
 };
+
+export type ChartTimescale = "10B" | "25B" | "50B" | "100B";
 
 export type CreateLmsrPoolResponse = {
   txid: string;

@@ -366,7 +366,7 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
-    node.sync_wallet().await.map_err(|e| format!("{e}"))?;
+    node.sync().await.map_err(|e| format!("{e}"))?;
 
     // Grab balance from the snapshot (sync — no lock needed)
     let wallet_balance = node.balance().ok().map(|m| {
@@ -1257,6 +1257,7 @@ pub fn run() {
             commands::close_lmsr_pool,
             commands::list_lmsr_pools,
             commands::get_price_history,
+            commands::get_pool_price_history,
             // Wallet store (SDK)
             wallet_store::create_software_signer,
             wallet_store::create_wollet,

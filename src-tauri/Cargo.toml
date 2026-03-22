@@ -61,6 +61,9 @@ electrum-client = "0.21"
 # needs exactly one crypto provider selected at the feature level).
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 
+[dev-dependencies]
+deadcat-sdk = { path = "crates/deadcat-sdk", features = ["testing"] }
+
 [patch.crates-io]
 secp256k1-zkp = { git = "https://github.com/breez/rust-secp256k1-zkp.git", rev = "eac2e479255a6e32b5588bc25ee53c642fdd8395" }
 # Pin to upstream master post-PR-#348 (right_shift_1 value bit corruption fix).

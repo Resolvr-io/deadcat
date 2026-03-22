@@ -6,6 +6,7 @@ import type {
   BoltzChainSwapPairInfo,
   BoltzLightningReceiveCreated,
   BoltzSubmarineSwapCreated,
+  ChartTimescale,
   LimitSellWarning,
   LmsrPoolInfo,
   Market,
@@ -238,7 +239,7 @@ export const state: {
   nostrEventNevent: string | null;
   chartHoverMarketId: string | null;
   chartHoverX: number | null;
-  chartTimescale: "1H" | "3H" | "6H" | "12H" | "1D";
+  chartTimescale: ChartTimescale;
   ownOrders: OwnOrderSummary[];
   myPools: LmsrPoolInfo[];
   poolCreateOpen: boolean;
@@ -394,7 +395,7 @@ export const state: {
   nostrEventNevent: null,
   chartHoverMarketId: null,
   chartHoverX: null,
-  chartTimescale: "3H",
+  chartTimescale: "25B",
   ownOrders: [],
   myPools: [],
   poolCreateOpen: false,

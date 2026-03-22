@@ -212,6 +212,48 @@ pub fn quote_exact_input_from_manifest(
     Ok(best)
 }
 
+/// Direction-neutral fee-free YES spot price for a discrete LMSR state.
+///
+/// Interior states use the midpoint of the adjacent one-step fee-free BuyYes
+/// and SellYes prices. Boundaries clamp to `0` and `10_000`.
+pub fn fee_free_yes_spot_price_bps(
+    manifest: &LmsrTableManifest,
+    params: &LmsrPoolParams,
+    current_s_index: u64,
+) -> Result<u16> {
+    params
+        .validate()
+        .map_err(|e| Error::LmsrPool(format!("invalid LMSR params: {e}")))?;
+    manifest.verify_matches_pool_params(params)?;
+
+    if current_s_index > params.s_max_index {
+        return Err(Error::LmsrPool(format!(
+            "current_s_index {current_s_index} exceeds s_max_index {}",
+            params.s_max_index
+        )));
+    }
+    if current_s_index == 0 {
+        return Ok(0);
+    }
+    if current_s_index == params.s_max_index {
+        return Ok(10_000);
+    }
+
+    let step_l = params
+        .q_step_lots
+        .checked_mul(params.half_payout_sats)
+        .ok_or_else(|| Error::LmsrPool("L overflow (q_step_lots * half_payout_sats)".into()))?;
+    let old_f = manifest.value_at(current_s_index)?;
+    let next_f = manifest.value_at(current_s_index + 1)?;
+    let prev_f = manifest.value_at(current_s_index - 1)?;
+    let buy_yes_base = checked_base_notional(true, step_l, old_f, next_f)?;
+    let sell_yes_base = checked_base_notional(false, step_l, old_f, prev_f)?;
+    let midpoint_num = u128::from(buy_yes_base) + u128::from(sell_yes_base);
+    let midpoint_denom = 2u128 * u128::from(step_l);
+
+    Ok(price_bps_from_ratio(midpoint_num, midpoint_denom))
+}
+
 /// Compute traded lots `x = abs(new-old) * q_step_lots`.
 pub fn compute_traded_lots(old_s_index: u64, new_s_index: u64, q_step_lots: u64) -> Result<u64> {
     if q_step_lots == 0 {
@@ -244,6 +286,14 @@ pub fn max_collateral_out(base_rebate: u64, fee_bps: u64) -> Result<u64> {
     let fee_c = FEE_DENOM - fee_bps;
     let out = ((base_rebate as u128) * (fee_c as u128)) / (FEE_DENOM as u128);
     u64::try_from(out).map_err(|_| Error::LmsrPool("max_collateral_out overflow".into()))
+}
+
+fn price_bps_from_ratio(num: u128, denom: u128) -> u16 {
+    if denom == 0 {
+        return 0;
+    }
+    let rounded = (num * 10_000 + (denom / 2)) / denom;
+    rounded.min(10_000) as u16
 }
 
 fn validate_direction(trade_kind: LmsrTradeKind, old_s_index: u64, new_s_index: u64) -> Result<()> {
@@ -456,5 +506,32 @@ mod tests {
             quote_exact_input_from_manifest(&manifest, &params, LmsrTradeKind::BuyNo, 5, 500)
                 .unwrap();
         assert!(quote.is_none());
+    }
+
+    #[test]
+    fn fee_free_yes_spot_price_bps_is_centered_and_clamped() {
+        let (manifest, params) = sample_manifest_and_params(4);
+        assert_eq!(
+            fee_free_yes_spot_price_bps(&manifest, &params, 0).unwrap(),
+            0
+        );
+        assert_eq!(
+            fee_free_yes_spot_price_bps(&manifest, &params, params.s_max_index).unwrap(),
+            10_000
+        );
+
+        let step_l = params.q_step_lots * params.half_payout_sats;
+        let old_f = manifest.value_at(5).unwrap();
+        let next_f = manifest.value_at(6).unwrap();
+        let prev_f = manifest.value_at(4).unwrap();
+        let expected = price_bps_from_ratio(
+            u128::from(checked_base_notional(true, step_l, old_f, next_f).unwrap())
+                + u128::from(checked_base_notional(false, step_l, old_f, prev_f).unwrap()),
+            2u128 * u128::from(step_l),
+        );
+        assert_eq!(
+            fee_free_yes_spot_price_bps(&manifest, &params, 5).unwrap(),
+            expected
+        );
     }
 }

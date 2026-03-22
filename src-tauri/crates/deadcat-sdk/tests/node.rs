@@ -3,14 +3,15 @@ use std::time::Duration;
 
 use deadcat_sdk::PoolParams;
 use deadcat_sdk::testing::{
-    TestStore, oracle_pubkey_from_keys, test_market_announcement, test_market_params,
-    test_order_announcement,
+    TestStore, oracle_pubkey_from_keys, test_lmsr_pool_announcement, test_lmsr_pool_ingest_input,
+    test_market_announcement, test_market_params, test_order_announcement,
 };
 use deadcat_sdk::{
     CompiledLmsrPool, DeadcatNode, DiscoveryConfig, DiscoveryEvent, LmsrInitialOutpoint,
     LmsrPoolId, LmsrPoolIdInput, LmsrPoolParams, PoolAnnouncement, PoolReserves,
 };
 use deadcat_sdk::{NodeError, TradeAmount, TradeDirection, TradeSide};
+use deadcat_store::DeadcatStore;
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
 
@@ -36,6 +37,23 @@ async fn setup_node_with_store(
         config,
     );
     (node, rx, store, keys)
+}
+
+fn setup_node_with_deadcat_store() -> (DeadcatNode<DeadcatStore>, Arc<Mutex<DeadcatStore>>, Keys) {
+    let keys = Keys::generate();
+    let store = Arc::new(Mutex::new(DeadcatStore::open_in_memory().unwrap()));
+    let config = DiscoveryConfig {
+        relays: vec![],
+        network_tag: "liquid-testnet".to_string(),
+        ..Default::default()
+    };
+    let (node, _rx) = DeadcatNode::with_store(
+        keys.clone(),
+        deadcat_sdk::Network::LiquidTestnet,
+        store.clone(),
+        config,
+    );
+    (node, store, keys)
 }
 
 fn parse_lmsr_outpoint(outpoint: &str) -> LmsrInitialOutpoint {
@@ -247,6 +265,93 @@ async fn node_subscription_delivers_events() {
 
     handle.abort();
     let _ = publisher.disconnect().await;
+}
+
+#[test]
+fn resolve_lmsr_pool_locator_round_trips_real_store_params_json_for_local_pools() {
+    let (node, store, _keys) = setup_node_with_deadcat_store();
+    let ingest = test_lmsr_pool_ingest_input(deadcat_sdk::Network::LiquidTestnet, 0x41);
+    store.lock().unwrap().ingest_lmsr_pool(&ingest).unwrap();
+
+    let locator = node.resolve_lmsr_pool_locator(&ingest.pool_id).unwrap();
+    assert_eq!(locator.pool_id.to_hex(), ingest.pool_id);
+    assert_eq!(locator.market_id.to_string(), ingest.market_id);
+    assert_eq!(locator.creation_txid.to_string(), ingest.creation_txid);
+    assert_eq!(locator.hinted_s_index, ingest.current_s_index);
+    assert_eq!(
+        locator.witness_schema_version,
+        ingest.witness_schema_version
+    );
+}
+
+#[test]
+fn resolve_lmsr_pool_locator_repairs_market_id_and_existing_history_rows_in_real_store() {
+    let (node, store, keys) = setup_node_with_deadcat_store();
+    let announcement = test_lmsr_pool_announcement(deadcat_sdk::Network::LiquidTestnet, 0x42);
+    let event = deadcat_sdk::build_pool_event(
+        &keys,
+        &announcement,
+        deadcat_sdk::Network::LiquidTestnet.discovery_tag(),
+    )
+    .unwrap();
+    let mut ingest = test_lmsr_pool_ingest_input(deadcat_sdk::Network::LiquidTestnet, 0x42);
+    let poisoned_market_id = "aa".repeat(32);
+    ingest.market_id = poisoned_market_id.clone();
+    ingest.initial_reserve_outpoints = [
+        format!("{}:7", ingest.creation_txid),
+        format!("{}:8", ingest.creation_txid),
+        format!("{}:9", ingest.creation_txid),
+    ];
+    ingest.lmsr_table_values = None;
+    ingest.nostr_event_id = Some(event.id.to_hex());
+    ingest.nostr_event_json = Some(serde_json::to_string(&event).unwrap());
+    store.lock().unwrap().ingest_lmsr_pool(&ingest).unwrap();
+    store
+        .lock()
+        .unwrap()
+        .record_price_transition(&deadcat_sdk::LmsrPriceTransitionInput {
+            pool_id: ingest.pool_id.clone(),
+            market_id: poisoned_market_id,
+            transition_txid: "legacy-transition".to_string(),
+            old_s_index: 4,
+            new_s_index: 5,
+            reserve_yes: 500,
+            reserve_no: 400,
+            reserve_collateral: 1_000,
+            implied_yes_price_bps: 5_500,
+            block_height: 100,
+        })
+        .unwrap();
+
+    let locator = node.resolve_lmsr_pool_locator(&ingest.pool_id).unwrap();
+    assert_eq!(locator.pool_id.to_hex(), announcement.lmsr_pool_id);
+    assert_eq!(locator.market_id.to_string(), announcement.market_id);
+    assert_eq!(locator.initial_reserve_outpoints[0].vout, 0);
+
+    let repaired_pool = store
+        .lock()
+        .unwrap()
+        .list_lmsr_pool_sync_info()
+        .unwrap()
+        .into_iter()
+        .find(|pool| pool.pool_id == ingest.pool_id)
+        .unwrap();
+    assert_eq!(repaired_pool.market_id, announcement.market_id);
+    assert_eq!(
+        repaired_pool
+            .stored_initial_reserve_outpoints
+            .unwrap()
+            .as_slice(),
+        announcement.initial_reserve_outpoints.as_slice()
+    );
+
+    let repaired_history = store
+        .lock()
+        .unwrap()
+        .get_pool_price_history(&ingest.pool_id, None, None)
+        .unwrap();
+    assert_eq!(repaired_history.len(), 1);
+    assert_eq!(repaired_history[0].market_id, announcement.market_id);
 }
 
 #[tokio::test]

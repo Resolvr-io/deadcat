@@ -67,3 +67,15 @@ export async function getPriceHistory(
     limit,
   });
 }
+
+export async function getPoolPriceHistory(
+  poolId: string,
+  limit?: number,
+  sinceBlockHeight?: number,
+): Promise<PriceHistoryEntry[]> {
+  return invoke<PriceHistoryEntry[]>("get_pool_price_history", {
+    poolId,
+    limit,
+    sinceBlockHeight,
+  });
+}

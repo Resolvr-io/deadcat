@@ -7,8 +7,6 @@
 //!
 //! Remove this module once `simplicity-sys` is updated with the fix (PR #355).
 
-#![cfg(feature = "testing")]
-
 use std::os::raw::{c_int, c_uchar, c_uint};
 use std::ptr;
 

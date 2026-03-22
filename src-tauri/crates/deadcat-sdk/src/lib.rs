@@ -6,6 +6,7 @@ pub(crate) mod assembly;
 pub(crate) mod chain;
 pub(crate) mod discovery;
 pub(crate) mod error;
+pub(crate) mod history;
 pub(crate) mod lmsr_pool;
 #[cfg(any(test, feature = "testing"))]
 pub mod maker_order;
@@ -30,6 +31,9 @@ pub(crate) mod trade;
 // ── Core types ─────────────────────────────────────────────────────
 pub use announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement, ContractMetadata};
 pub use error::{Error, NodeError, Result};
+pub use history::{
+    LmsrPoolSyncInfo, LmsrPoolSyncRepairInput, LmsrPriceHistoryEntry, LmsrPriceTransitionInput,
+};
 pub use network::Network;
 pub use node::DeadcatNode;
 pub use prediction_market::anchor::{
@@ -66,7 +70,7 @@ pub use lmsr_pool::api::{
 };
 pub use lmsr_pool::contract::CompiledLmsrPool;
 pub use lmsr_pool::math::{
-    LmsrQuote, LmsrTradeKind, max_collateral_out, min_collateral_in,
+    LmsrQuote, LmsrTradeKind, fee_free_yes_spot_price_bps, max_collateral_out, min_collateral_in,
     quote_exact_input_from_manifest, quote_from_table,
 };
 pub use lmsr_pool::params::{LmsrInitialOutpoint, LmsrPoolId, LmsrPoolIdInput, LmsrPoolParams};
@@ -105,6 +109,7 @@ pub use discovery::{
     LmsrPoolStateSource,
     LmsrPoolStateUpdateInput,
     NETWORK_TAG,
+    NodeStore,
     NoopStore,
     OrderAnnouncement,
     PoolAnnouncement,
@@ -115,6 +120,7 @@ pub use discovery::{
     build_attestation_event,
     build_attestation_filter,
     build_contract_filter,
+    build_pool_event,
     connect_client,
     discovered_market_to_contract_params,
     fetch_announcements,

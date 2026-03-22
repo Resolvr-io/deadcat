@@ -26,13 +26,14 @@ pub const LIQUID_IRREVERSIBLE_CONFIRMATIONS: u32 = 2;
 
 pub use deadcat_sdk::{
     ContractMetadataInput, LmsrPoolIngestInput, LmsrPoolStateSource, LmsrPoolStateUpdateInput,
-    MarketSlot, MarketState, PredictionMarketCandidateIngestInput,
+    LmsrPoolSyncRepairInput, LmsrPriceHistoryEntry as PriceHistoryEntry,
+    LmsrPriceTransitionInput as PriceTransitionInput, MarketSlot, MarketState,
+    PredictionMarketCandidateIngestInput,
 };
 pub use error::StoreError;
 pub use store::{
     DeadcatStore, IssuanceData, LmsrPoolFilter, LmsrPoolInfo, MakerOrderInfo,
     MarketCandidateFilter, MarketCandidateInfo, MarketFilter, MarketInfo, OrderFilter, OrderStatus,
-    PriceHistoryEntry, PriceTransitionInput,
 };
 pub use sync::{ChainSource, ChainUtxo, MarketStateChange, OrderStatusChange, SyncReport};
 

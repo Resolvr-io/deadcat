@@ -552,8 +552,16 @@ pub(crate) fn persist_pool_to_store<S: DiscoveryStore>(
         s_bias: parsed.params.s_bias,
         s_max_index: parsed.params.s_max_index,
         half_payout_sats: parsed.params.half_payout_sats,
+        min_r_yes: parsed.params.min_r_yes,
+        min_r_no: parsed.params.min_r_no,
+        min_r_collateral: parsed.params.min_r_collateral,
         creation_txid: pool.creation_txid.clone(),
         witness_schema_version: parsed.witness_schema_version.clone(),
+        initial_reserve_outpoints: [
+            pool.initial_reserve_outpoints[0].clone(),
+            pool.initial_reserve_outpoints[1].clone(),
+            pool.initial_reserve_outpoints[2].clone(),
+        ],
         current_s_index: parsed.current_s_index,
         reserve_outpoints: [
             pool.initial_reserve_outpoints[0].clone(),
@@ -565,6 +573,7 @@ pub(crate) fn persist_pool_to_store<S: DiscoveryStore>(
         reserve_collateral: pool.reserves.r_lbtc,
         state_source: LmsrPoolStateSource::Announcement,
         last_transition_txid: None,
+        lmsr_table_values: pool.lmsr_table_values.clone(),
         nostr_event_id: Some(pool.id.clone()),
         nostr_event_json: pool.nostr_event_json.clone(),
     };

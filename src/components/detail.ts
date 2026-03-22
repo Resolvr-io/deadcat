@@ -8,7 +8,6 @@ import type { Market } from "../types.ts";
 import { hexToNpub } from "../utils/crypto.ts";
 import {
   formatBlockHeight,
-  formatEstTime,
   formatProbabilityWithPercent,
   formatSats,
   formatSettlementDateTime,
@@ -25,6 +24,12 @@ import {
   stateBadge,
   stateLabel,
 } from "../utils/market.ts";
+import {
+  buildChartFromHistory,
+  buildChartSeriesData,
+  lastDefinedChartProbability,
+  sampleChartProbabilityAtFraction,
+} from "./chart-series.ts";
 
 export function chartSkeleton(
   market: Market,
@@ -158,98 +163,15 @@ export function chartSkeleton(
     return out;
   };
 
-  const yes = market.yesPrice ?? 0.5;
-  const now = new Date();
-  const scaleHoursByKey: Record<"1H" | "3H" | "6H" | "12H" | "1D", number> = {
-    "1H": 1,
-    "3H": 3,
-    "6H": 6,
-    "12H": 12,
-    "1D": 24,
-  };
-  const pointCountByKey: Record<"1H" | "3H" | "6H" | "12H" | "1D", number> = {
-    "1H": 28,
-    "3H": 34,
-    "6H": 40,
-    "12H": 48,
-    "1D": 56,
-  };
-  const scaleKey = state.chartTimescale;
-  const scaleHours = scaleHoursByKey[scaleKey];
-  const pointCount = pointCountByKey[scaleKey];
-  const totalHours = 24;
-  const startTime = new Date(now.getTime() - scaleHours * 60 * 60 * 1000);
-  const xLabelFractions =
-    scaleHours >= 12 ? [0, 0.25, 0.5, 0.75, 1] : [0, 1 / 3, 2 / 3, 1];
-  const xLabels = xLabelFractions.map(
-    (fraction) =>
-      new Date(
-        startTime.getTime() + fraction * (now.getTime() - startTime.getTime()),
-      ),
-  );
-  const xLabelOffsets = xLabelFractions.map(
-    (fraction) => scaleHours * (1 - fraction),
-  );
-  const seed =
-    [...market.id].reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % 97;
-  const trendSign = seed % 2 === 0 ? 1 : -1;
-  const clampProbability = (value: number): number =>
-    Math.max(0.02, Math.min(0.98, value));
-  let rngState = seed * 1103515245 + 12345;
-  const rand = (): number => {
-    rngState = (rngState * 1664525 + 1013904223) >>> 0;
-    return rngState / 0xffffffff;
-  };
-  const baseSeriesCount = 24 * 12 + 1;
-  const baseSeries: number[] = [];
-  const historicalBias = (0.2 + (seed % 5) * 0.02) * trendSign;
-  const historicalCenter = clampProbability(yes + historicalBias);
-  for (let idx = 0; idx < baseSeriesCount; idx += 1) {
-    const t = idx / (baseSeriesCount - 1);
-    const transitionStart = 0.88;
-    const transitionT =
-      t <= transitionStart ? 0 : (t - transitionStart) / (1 - transitionStart);
-    const smoothTransition = transitionT * transitionT * (3 - 2 * transitionT);
-    const macroAnchor =
-      historicalCenter + (yes - historicalCenter) * smoothTransition;
-    const microWaveAmp = t > 0.8 ? 0.03 : 0.018;
-    const microWave =
-      Math.sin((t * 22 + seed * 0.117) * Math.PI * 2) * microWaveAmp;
-    const anchor = clampProbability(macroAnchor + microWave);
-    if (idx === 0) {
-      baseSeries.push(anchor);
-      continue;
-    }
-    const prev = baseSeries[idx - 1];
-    const jump = idx % 20 === 0 ? (rand() - 0.5) * 0.18 : 0;
-    const driftPull = (anchor - prev) * 0.2;
-    const stepNoise =
-      idx % 4 === 0 ? (rand() - 0.5) * 0.03 : (rand() - 0.5) * 0.004;
-    const next = prev + jump + driftPull + stepNoise;
-    if (idx % 3 !== 0) {
-      baseSeries.push(clampProbability(prev + (rand() - 0.5) * 0.0028));
-      continue;
-    }
-    baseSeries.push(clampProbability(next));
-  }
-  baseSeries[baseSeries.length - 1] = yes;
-  const windowStartT = Math.max(0, 1 - scaleHours / totalHours);
-  const yesSeries = Array.from({ length: pointCount }, (_v, idx) => {
-    const localT = pointCount === 1 ? 1 : idx / (pointCount - 1);
-    const baseT = windowStartT + localT * (1 - windowStartT);
-    const basePosition = baseT * (baseSeriesCount - 1);
-    const left = Math.max(
-      0,
-      Math.min(baseSeriesCount - 1, Math.floor(basePosition)),
-    );
-    const right = Math.max(
-      left,
-      Math.min(baseSeriesCount - 1, Math.ceil(basePosition)),
-    );
-    const mix = Math.max(0, Math.min(1, basePosition - left));
-    return baseSeries[left] + (baseSeries[right] - baseSeries[left]) * mix;
-  });
-  yesSeries[yesSeries.length - 1] = yes;
+  const fallbackYes = market.yesPrice ?? 0.5;
+  const history = state.priceHistory.get(market.marketId);
+  const seriesData =
+    history && history.length > 0
+      ? buildChartFromHistory(market, history)
+      : buildChartSeriesData(market);
+  const displayedYes = lastDefinedChartProbability(seriesData, fallbackYes);
+  const { pointCount, scaleBlocks, startBlockHeight, xLabels, yesSeries } =
+    seriesData;
   const chartAspect = isHomeChart
     ? state.chartAspectHome
     : state.chartAspectDetail;
@@ -294,6 +216,7 @@ export function chartSkeleton(
     return { yesY, noY };
   };
   const separatedPoints = yesSeries.map((price, idx) => {
+    if (price === null) return null;
     const t = pointCount === 1 ? 1 : idx / (pointCount - 1);
     const x = plotLeft + t * plotXSpan;
     const separated = separateSeriesY(
@@ -306,10 +229,19 @@ export function chartSkeleton(
       noY: separated.noY,
     };
   });
-  const yesPoints: Array<{ x: number; y: number }> = separatedPoints.map(
+  const visiblePoints = separatedPoints.filter(
+    (
+      point,
+    ): point is {
+      x: number;
+      yesY: number;
+      noY: number;
+    } => point !== null,
+  );
+  const yesPoints: Array<{ x: number; y: number }> = visiblePoints.map(
     (point) => ({ x: point.x, y: point.yesY }),
   );
-  const noPoints: Array<{ x: number; y: number }> = separatedPoints.map(
+  const noPoints: Array<{ x: number; y: number }> = visiblePoints.map(
     (point) => ({ x: point.x, y: point.noY }),
   );
   const yesLinePoints = yesPoints
@@ -330,58 +262,48 @@ export function chartSkeleton(
 
   const yesEnd = yesPoints[yesPoints.length - 1];
   const noEnd = noPoints[noPoints.length - 1];
-  const yesPct = Math.round(yes * 100);
+  const yesPct = Math.round(displayedYes * 100);
   const noPct = 100 - yesPct;
-  const hoverActive =
+  const hoverRequested =
     state.chartHoverMarketId === market.id && state.chartHoverX !== null;
-  const hoverX = hoverActive
+  const hoverX = hoverRequested
     ? Math.max(plotLeft, Math.min(plotRight, state.chartHoverX as number))
     : yesEnd.x;
   const hoverT =
     plotXSpan <= 0
       ? 1
       : Math.max(0, Math.min(1, (hoverX - plotLeft) / plotXSpan));
-  const seriesPosition = hoverT * (pointCount - 1);
-  const leftIndex = Math.max(
-    0,
-    Math.min(pointCount - 1, Math.floor(seriesPosition)),
-  );
-  const rightIndex = Math.max(
-    leftIndex,
-    Math.min(pointCount - 1, Math.ceil(seriesPosition)),
-  );
-  const mix = Math.max(0, Math.min(1, seriesPosition - leftIndex));
-  const yesHoverValue =
-    yesSeries[leftIndex] + (yesSeries[rightIndex] - yesSeries[leftIndex]) * mix;
-  const separatedHover = separateSeriesY(
-    yFromProbability(yesHoverValue),
-    yFromProbability(1 - yesHoverValue),
-  );
-  const yesHover = {
-    x: hoverX,
-    y: separatedHover.yesY,
-  };
-  const noHover = { x: hoverX, y: separatedHover.noY };
-  const hoverTime = new Date(
-    startTime.getTime() + (now.getTime() - startTime.getTime()) * hoverT,
-  );
-  const hoverTimeLabel = hoverTime.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone: "America/New_York",
-  });
-  const hoverYesPct = Math.round(yesHoverValue * 100);
+  const hoverYesValue = sampleChartProbabilityAtFraction(seriesData, hoverT);
+  const hoverActive = hoverRequested && hoverYesValue !== null;
+  const separatedHover =
+    hoverActive && hoverYesValue !== null
+      ? separateSeriesY(
+          yFromProbability(hoverYesValue),
+          yFromProbability(1 - hoverYesValue),
+        )
+      : null;
+  const yesHover =
+    hoverActive && separatedHover
+      ? {
+          x: hoverX,
+          y: separatedHover.yesY,
+        }
+      : null;
+  const noHover =
+    hoverActive && separatedHover ? { x: hoverX, y: separatedHover.noY } : null;
+  const hoverBlockHeight = Math.round(startBlockHeight + scaleBlocks * hoverT);
+  const hoverYesPct =
+    hoverYesValue === null ? 0 : Math.round(hoverYesValue * 100);
   const hoverNoPct = 100 - hoverYesPct;
   const endpointOpacity = hoverActive ? "0.4" : "1";
   const showCurrentPulse = !hoverActive || hoverT > 0.985;
   const fadeX = hoverX;
   const fadeW = Math.max(0, plotRight - fadeX);
+  const hoverAvailable = hoverActive && yesHover !== null && noHover !== null;
   const pawSkipZones = [
     { x: yesEnd.x, y: yesEnd.y, r: 3.5 },
     { x: noEnd.x, y: noEnd.y, r: 3.5 },
-    ...(hoverActive
+    ...(hoverAvailable
       ? [
           { x: yesHover.x, y: yesHover.y, r: 3.3 },
           { x: noHover.x, y: noHover.y, r: 3.3 },
@@ -404,8 +326,8 @@ export function chartSkeleton(
   const readoutTokenOffsetY = readoutLabelFont + 0.96;
   const clampReadoutTop = (y: number): number =>
     Math.max(plotTop + 0.6, Math.min(plotBottom - readoutBlockHeight - 0.6, y));
-  const noAnchorY = hoverActive ? noHover.y : noEnd.y;
-  const yesAnchorY = hoverActive ? yesHover.y : yesEnd.y;
+  const noAnchorY = hoverAvailable ? noHover.y : noEnd.y;
+  const yesAnchorY = hoverAvailable ? yesHover.y : yesEnd.y;
   let readoutNoTop = clampReadoutTop(noAnchorY - (readoutLabelFont + 0.8));
   let readoutYesTop = clampReadoutTop(yesAnchorY - (readoutLabelFont + 0.8));
   const minReadoutGap = readoutBlockHeight + 1.4;
@@ -428,7 +350,7 @@ export function chartSkeleton(
   const legendNoPct = hoverActive ? hoverNoPct : noPct;
   const legendYesPct = hoverActive ? hoverYesPct : yesPct;
   const hoverTimeX = Math.max(plotLeft + 18, Math.min(plotRight - 18, hoverX));
-  const hoverTimeText = `${hoverTimeLabel} ET`;
+  const hoverTimeText = `Block ${hoverBlockHeight.toLocaleString()}`;
   const hoverTimeFontSize = isHomeChart ? 7.8 : 8.4;
   const hoverTimeStrokeWidth = isHomeChart ? 0.16 : 0.2;
   const hoverTimeBoxHeight = 15.8;
@@ -472,7 +394,7 @@ export function chartSkeleton(
           ${pawTrail(yesPoints, "#3fbcae", pawSkipZones)}
           ${pawTrail(noPoints, "#e06b7f", pawSkipZones)}
           ${
-            hoverActive
+            hoverAvailable
               ? `<rect x="${fadeX}" y="${plotTop}" width="${fadeW}" height="${plotYSpan}" fill="#020617" fill-opacity="0.5" />
           <line x1="${yesHover.x}" y1="${plotTop}" x2="${yesHover.x}" y2="${plotBottom}" stroke="#e2e8f0" stroke-opacity="0.6" stroke-width="0.32" />`
               : ""
@@ -488,13 +410,13 @@ export function chartSkeleton(
             ${markerAt(noEnd.x, noEnd.y, "#fb7185")}
           </g>
           ${
-            hoverActive
+            hoverAvailable
               ? `${markerAt(yesHover.x, yesHover.y, "#5eead4", 1.16)}
           ${markerAt(noHover.x, noHover.y, "#fb7185", 1.16)}`
               : ""
           }
           ${
-            hoverActive
+            hoverAvailable
               ? `<rect x="${hoverTimeBoxX}" y="${hoverTimeBoxY}" width="${hoverTimeBoxWidth}" height="${hoverTimeBoxHeight}" rx="2.45" fill="#020617" fill-opacity="0.8" stroke="#475569" stroke-opacity="0.56" stroke-width="0.24" />
           <text x="${hoverTimeTextX}" y="${hoverTimeTextY}" fill="#dbe7f6" font-size="${hoverTimeFontSize}" font-weight="430" text-anchor="middle" style="paint-order:stroke;stroke:#020617;stroke-width:${hoverTimeStrokeWidth};stroke-opacity:0.45;">${hoverTimeText}</text>`
               : ""
@@ -517,18 +439,15 @@ export function chartSkeleton(
       ></div>
       <div class="pointer-events-none absolute right-1 top-10 bottom-8 flex flex-col justify-between text-[12px] font-normal text-slate-500" style="text-shadow: 0 1px 1px rgba(2, 6, 23, 0.35);"><span>100%</span><span>75%</span><span>50%</span><span>25%</span><span>0%</span></div>
       <div class="pointer-events-none absolute inset-x-3 bottom-1 flex items-center justify-between text-[12px] font-normal text-slate-500" style="text-shadow: 0 1px 1px rgba(2, 6, 23, 0.35);">${xLabels
-        .map(
-          (label, idx) =>
-            `<span data-est-label data-offset-hours="${xLabelOffsets[idx]}">${formatEstTime(label)}</span>`,
-        )
+        .map((label) => `<span>#${label.toLocaleString()}</span>`)
         .join(
           "",
-        )}<span class="ml-2 text-[11px] uppercase tracking-wide text-slate-600">ET</span></div>
+        )}<span class="ml-2 text-[11px] uppercase tracking-wide text-slate-600">BLOCK</span></div>
       </div>
       <div class="mt-2 flex items-center justify-between">
         <span class="pl-0.5 text-[13px] font-medium text-slate-300">${volumeLabel}</span>
         <div class="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/65 p-1 text-[12px]">
-        ${(["1H", "3H", "6H", "12H", "1D"] as const)
+        ${(["10B", "25B", "50B", "100B"] as const)
           .map(
             (option) =>
               `<button data-action="set-chart-timescale" data-scale="${option}" class="rounded px-2 py-0.5 transition ${state.chartTimescale === option ? "bg-slate-700 text-slate-100" : "text-slate-500 hover:bg-slate-800/70 hover:text-slate-300"}">${option}</button>`,

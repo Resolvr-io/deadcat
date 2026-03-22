@@ -27,11 +27,24 @@ fn parse_hex32(label: &str, hex_str: &str) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
-fn parse_outpoint(outpoint: &str, label: &str) -> Result<LmsrInitialOutpoint, String> {
+/// Parse a canonical LMSR initial reserve outpoint string.
+///
+/// The txid component is compared and persisted in raw lowercase hex byte
+/// order; do not round-trip it through `Txid` byte-array helpers.
+pub(crate) fn parse_canonical_lmsr_outpoint(
+    outpoint: &str,
+    label: &str,
+) -> Result<LmsrInitialOutpoint, String> {
     let (txid_hex, vout_str) = outpoint
         .split_once(':')
         .ok_or_else(|| format!("invalid {label}: expected '<txid>:<vout>', got '{outpoint}'"))?;
     let txid = parse_hex32(label, txid_hex)?;
+    let canonical_txid = hex::encode(txid);
+    if txid_hex != canonical_txid {
+        return Err(format!(
+            "invalid {label} txid '{txid_hex}': expected canonical lowercase 32-byte hex"
+        ));
+    }
     let vout = vout_str
         .parse::<u32>()
         .map_err(|e| format!("invalid {label} vout '{vout_str}': {e}"))?;
@@ -101,15 +114,15 @@ pub(crate) fn derive_lmsr_pool_id_hex(
         .validate()
         .map_err(|e| format!("invalid LMSR params in pool announcement: {e}"))?;
     let network = parse_network_tag(network_tag)?;
-    let initial_yes_outpoint = parse_outpoint(
+    let initial_yes_outpoint = parse_canonical_lmsr_outpoint(
         &announcement.initial_reserve_outpoints[0],
         "initial_reserve_outpoints[0]",
     )?;
-    let initial_no_outpoint = parse_outpoint(
+    let initial_no_outpoint = parse_canonical_lmsr_outpoint(
         &announcement.initial_reserve_outpoints[1],
         "initial_reserve_outpoints[1]",
     )?;
-    let initial_collateral_outpoint = parse_outpoint(
+    let initial_collateral_outpoint = parse_canonical_lmsr_outpoint(
         &announcement.initial_reserve_outpoints[2],
         "initial_reserve_outpoints[2]",
     )?;
@@ -256,7 +269,7 @@ pub fn build_pool_event(
     let mut seen_outpoints = HashSet::new();
     for (idx, outpoint) in announcement.initial_reserve_outpoints.iter().enumerate() {
         let label = format!("initial_reserve_outpoints[{idx}]");
-        let parsed = parse_outpoint(outpoint, &label)?;
+        let parsed = parse_canonical_lmsr_outpoint(outpoint, &label)?;
         let canonical = canonical_outpoint_string(parsed);
         if outpoint != &canonical {
             return Err(format!(
@@ -352,7 +365,7 @@ pub fn parse_pool_event(
     let mut seen_outpoints = HashSet::new();
     for (idx, outpoint) in announcement.initial_reserve_outpoints.iter().enumerate() {
         let label = format!("initial_reserve_outpoints[{idx}]");
-        let parsed = parse_outpoint(outpoint, &label)?;
+        let parsed = parse_canonical_lmsr_outpoint(outpoint, &label)?;
         let canonical = canonical_outpoint_string(parsed);
         if outpoint != &canonical {
             return Err(format!(

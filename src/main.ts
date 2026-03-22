@@ -39,7 +39,7 @@ import type {
   WalletTransaction,
   WalletUtxo,
 } from "./types.ts";
-import { formatEstTime, formatSatsInput } from "./utils/format.ts";
+import { formatSatsInput } from "./utils/format.ts";
 // Utils
 import {
   getBasePriceSats,
@@ -131,16 +131,6 @@ function render(): void {
   scheduleChartAspectSync();
 }
 
-function updateEstClockLabels(): void {
-  const labels = document.querySelectorAll<HTMLElement>("[data-est-label]");
-  if (!labels.length) return;
-  labels.forEach((label) => {
-    const offsetHours = Number(label.dataset.offsetHours ?? "0");
-    const timestamp = Date.now() - offsetHours * 60 * 60 * 1000;
-    label.textContent = formatEstTime(new Date(timestamp));
-  });
-}
-
 function openMarket(
   marketId: string,
   options?: { side?: string; intent?: string },
@@ -226,7 +216,7 @@ async function finishOnboarding(): Promise<void> {
   await loadMarkets();
   state.marketsLoading = false;
   render();
-  void syncCurrentHeightFromLwk("liquid-testnet", render, updateEstClockLabels);
+  void syncCurrentHeightFromLwk("liquid-testnet", render);
 
   // Fetch relay list + backup status in background
   if (state.nostrNpub) {
@@ -275,8 +265,6 @@ function dismissSplash(): void {
 
 async function initApp(): Promise<void> {
   render();
-  updateEstClockLabels();
-
   // Track when the minimum loader animation time has elapsed (2 full cycles = 4.8s)
   const splashReady = new Promise<void>((r) => setTimeout(r, 4800));
 
@@ -397,7 +385,7 @@ async function initApp(): Promise<void> {
     });
   }
 
-  void syncCurrentHeightFromLwk("liquid-testnet", render, updateEstClockLabels);
+  void syncCurrentHeightFromLwk("liquid-testnet", render);
 }
 
 // ── Backend state listener (auto-lock, etc.) ────────────────────────
@@ -557,13 +545,8 @@ window.addEventListener("resize", () => {
 // ── Timers ───────────────────────────────────────────────────────────
 
 initApp();
-setInterval(updateEstClockLabels, 1_000);
 setInterval(() => {
   if (state.onboardingStep === null) {
-    void syncCurrentHeightFromLwk(
-      "liquid-testnet",
-      render,
-      updateEstClockLabels,
-    );
+    void syncCurrentHeightFromLwk("liquid-testnet", render);
   }
 }, 60_000);
