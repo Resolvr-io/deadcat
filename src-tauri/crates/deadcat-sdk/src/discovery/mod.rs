@@ -12,6 +12,7 @@ pub(crate) mod pool;
 pub(crate) mod service;
 pub(crate) mod store_trait;
 
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use nostr_sdk::prelude::*;
@@ -33,6 +34,9 @@ pub const CONTRACT_TAG: &str = "deadcat-contract";
 
 /// Tag value identifying a deadcat limit order.
 pub const ORDER_TAG: &str = "deadcat-order";
+
+/// Tag value identifying a tagged order deletion request.
+pub const ORDER_DELETE_TAG: &str = "order";
 
 /// Tag value identifying a deadcat oracle attestation.
 pub const ATTESTATION_TAG: &str = "deadcat-attestation";
@@ -78,7 +82,8 @@ pub use events::DiscoveryEvent;
 pub use service::{DiscoveryService, NoopStore, discovered_market_to_contract_params};
 pub use store_trait::{
     ContractMetadataInput, DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource,
-    LmsrPoolStateUpdateInput, NodeStore, PredictionMarketCandidateIngestInput,
+    LmsrPoolStateUpdateInput, NodeStore, OwnMakerOrderRecordInput, OwnOrderStatusChange,
+    PendingOrderDeletion, PredictionMarketCandidateIngestInput, StoredOrderStatus,
 };
 
 // ---------------------------------------------------------------------------
@@ -130,6 +135,15 @@ pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     hex::encode(bytes)
 }
 
+pub fn order_addressable_id(market_id: &str, maker_base_pubkey: &str, order_nonce: &str) -> String {
+    format!(
+        "order:v1:{}:{}:{}",
+        market_id.to_ascii_lowercase(),
+        maker_base_pubkey.to_ascii_lowercase(),
+        order_nonce.to_ascii_lowercase()
+    )
+}
+
 fn parse_network_tag(network_tag: &str) -> Result<(), String> {
     network_tag
         .parse::<Network>()
@@ -137,7 +151,7 @@ fn parse_network_tag(network_tag: &str) -> Result<(), String> {
         .map_err(|e| format!("unsupported network tag '{network_tag}': {e}"))
 }
 
-fn event_network_tag(event: &Event) -> Option<String> {
+pub(crate) fn event_network_tag(event: &Event) -> Option<String> {
     event.tags.iter().find_map(|tag| {
         let fields = tag.as_slice();
         if fields.len() >= 2 && fields[0] == "network" {
@@ -148,6 +162,200 @@ fn event_network_tag(event: &Event) -> Option<String> {
     })
 }
 
+fn build_order_tags(
+    market_id: &str,
+    maker_base_pubkey: &str,
+    order_nonce: &str,
+    direction_label: &str,
+    price: u64,
+    network_tag: &str,
+    deleted: bool,
+) -> Vec<Tag> {
+    let mut tags = vec![
+        Tag::identifier(order_addressable_id(
+            market_id,
+            maker_base_pubkey,
+            order_nonce,
+        )),
+        Tag::hashtag(ORDER_TAG),
+        Tag::hashtag(market_id),
+        Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
+        Tag::custom(
+            TagKind::custom("direction"),
+            vec![direction_label.to_string()],
+        ),
+        Tag::custom(TagKind::custom("price"), vec![price.to_string()]),
+    ];
+    if deleted {
+        tags.push(Tag::custom(
+            TagKind::custom("deleted"),
+            vec!["true".to_string()],
+        ));
+    }
+    tags
+}
+
+pub(crate) fn event_identifier(event: &Event) -> Option<String> {
+    event.tags.iter().find_map(|tag| {
+        let fields = tag.as_slice();
+        if fields.len() >= 2 && fields[0] == "d" {
+            Some(fields[1].to_string())
+        } else {
+            None
+        }
+    })
+}
+
+pub(crate) fn event_hashtags(event: &Event) -> Vec<String> {
+    event
+        .tags
+        .iter()
+        .filter_map(|tag| {
+            let fields = tag.as_slice();
+            if fields.len() >= 2 && fields[0] == "t" {
+                Some(fields[1].to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn is_order_addressable_id(identifier: &str) -> bool {
+    identifier.starts_with("order:v1:")
+}
+
+pub(crate) fn is_order_tombstone_event(event: &Event) -> bool {
+    event.tags.iter().any(|tag| {
+        let fields = tag.as_slice();
+        fields.len() >= 2 && fields[0] == "deleted" && fields[1].eq_ignore_ascii_case("true")
+    })
+}
+
+pub(crate) fn order_invalidation_market_id(event: &Event) -> Option<String> {
+    event_hashtags(event)
+        .into_iter()
+        .find(|hashtag| hashtag != ORDER_TAG && hashtag != ORDER_DELETE_TAG)
+}
+
+pub(crate) fn event_matches_network_tag(event: &Event, expected_network_tag: &str) -> bool {
+    matches!(
+        event_network_tag(event).as_deref(),
+        Some(network_tag) if network_tag == expected_network_tag
+    )
+}
+
+pub(crate) fn select_latest_order_events(events: &[Event]) -> Vec<Event> {
+    let mut latest_by_coordinate: HashMap<(String, String), Event> = HashMap::new();
+    let mut legacy = Vec::new();
+
+    for event in events {
+        let Some(identifier) = event_identifier(event) else {
+            legacy.push(event.clone());
+            continue;
+        };
+        if !is_order_addressable_id(&identifier) {
+            legacy.push(event.clone());
+            continue;
+        }
+
+        let key = (event.pubkey.to_hex(), identifier);
+        match latest_by_coordinate.get_mut(&key) {
+            None => {
+                latest_by_coordinate.insert(key, event.clone());
+            }
+            Some(existing) => {
+                let candidate_created_at = event.created_at.as_u64();
+                let existing_created_at = existing.created_at.as_u64();
+                let should_replace = candidate_created_at > existing_created_at
+                    || (candidate_created_at == existing_created_at && event.id < existing.id);
+                if should_replace {
+                    *existing = event.clone();
+                }
+            }
+        }
+    }
+
+    legacy.extend(latest_by_coordinate.into_values());
+    legacy
+}
+
+pub(crate) fn select_fetchable_order_events(
+    events: &[Event],
+    expected_network_tag: &str,
+) -> Result<Vec<Event>, String> {
+    parse_network_tag(expected_network_tag)?;
+
+    // Filter to the requested network before replaceable dedup so same-coordinate
+    // announcements from other networks cannot shadow local orders.
+    let network_events = events
+        .iter()
+        .filter(|event| event_matches_network_tag(event, expected_network_tag))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    Ok(select_latest_order_events(&network_events))
+}
+
+pub(crate) fn deleted_order_event_ids(
+    candidate_events: &[Event],
+    deletion_events: &[Event],
+    expected_network_tag: &str,
+) -> Result<HashSet<String>, String> {
+    parse_network_tag(expected_network_tag)?;
+
+    let order_authors: HashMap<String, String> = candidate_events
+        .iter()
+        .map(|event| (event.id.to_hex(), event.pubkey.to_hex()))
+        .collect();
+
+    let mut deleted = HashSet::new();
+    for deletion in deletion_events {
+        if !event_matches_network_tag(deletion, expected_network_tag) {
+            continue;
+        }
+        let deletion_pubkey = deletion.pubkey.to_hex();
+        for tag in deletion.tags.iter() {
+            let fields = tag.as_slice();
+            if fields.len() < 2 || fields[0] != "e" {
+                continue;
+            }
+            let referenced = fields[1].to_string();
+            if order_authors
+                .get(&referenced)
+                .is_some_and(|author| author == &deletion_pubkey)
+            {
+                deleted.insert(referenced);
+            }
+        }
+    }
+
+    Ok(deleted)
+}
+
+pub async fn fetch_order_deletion_events(
+    client: &Client,
+    order_events: &[Event],
+    timeout: Duration,
+) -> Result<Vec<Event>, String> {
+    if order_events.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let filter = Filter::new().kind(Kind::Custom(5)).events(
+        order_events
+            .iter()
+            .map(|event| event.id)
+            .collect::<Vec<_>>(),
+    );
+    let events = client
+        .fetch_events(vec![filter], timeout)
+        .await
+        .map_err(|e| format!("failed to fetch order deletion events: {e}"))?;
+
+    Ok(events.iter().cloned().collect())
+}
+
 /// Build a Nostr event for a limit order announcement.
 pub fn build_order_event(
     keys: &Keys,
@@ -155,25 +363,19 @@ pub fn build_order_event(
     network_tag: &str,
 ) -> Result<Event, String> {
     parse_network_tag(network_tag)?;
-    let order_uid_hex = &announcement.market_id;
 
     let content =
         serde_json::to_string(announcement).map_err(|e| format!("failed to serialize: {e}"))?;
 
-    let tags = vec![
-        Tag::identifier(order_uid_hex),
-        Tag::hashtag(ORDER_TAG),
-        Tag::hashtag(&announcement.market_id),
-        Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
-        Tag::custom(
-            TagKind::custom("direction"),
-            vec![announcement.direction_label.clone()],
-        ),
-        Tag::custom(
-            TagKind::custom("price"),
-            vec![announcement.params.price.to_string()],
-        ),
-    ];
+    let tags = build_order_tags(
+        &announcement.market_id,
+        &announcement.maker_base_pubkey,
+        &announcement.order_nonce,
+        &announcement.direction_label,
+        announcement.params.price,
+        network_tag,
+        false,
+    );
 
     let event = EventBuilder::new(APP_EVENT_KIND, &content)
         .tags(tags)
@@ -181,6 +383,71 @@ pub fn build_order_event(
         .map_err(|e| format!("failed to build event: {e}"))?;
 
     Ok(event)
+}
+
+pub fn build_order_tombstone_event(
+    keys: &Keys,
+    market_id: &str,
+    maker_base_pubkey: &str,
+    order_nonce: &str,
+    direction_label: &str,
+    price: u64,
+    network_tag: &str,
+) -> Result<Event, String> {
+    parse_network_tag(network_tag)?;
+
+    let tags = build_order_tags(
+        market_id,
+        maker_base_pubkey,
+        order_nonce,
+        direction_label,
+        price,
+        network_tag,
+        true,
+    );
+
+    EventBuilder::new(APP_EVENT_KIND, "")
+        .tags(tags)
+        .sign_with_keys(keys)
+        .map_err(|e| format!("failed to build order tombstone event: {e}"))
+}
+
+pub fn build_order_deletion_request_event(
+    keys: &Keys,
+    original_event_id: &str,
+    market_id: &str,
+    network_tag: &str,
+) -> Result<Event, String> {
+    parse_network_tag(network_tag)?;
+    let event_id =
+        EventId::from_hex(original_event_id).map_err(|e| format!("invalid event id: {e}"))?;
+    let tags = vec![
+        Tag::event(event_id),
+        Tag::custom(
+            TagKind::custom("k"),
+            vec![APP_EVENT_KIND.as_u16().to_string()],
+        ),
+        Tag::hashtag(ORDER_DELETE_TAG),
+        Tag::hashtag(market_id),
+        Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
+    ];
+
+    EventBuilder::new(Kind::Custom(5), "delete limit order announcement")
+        .tags(tags)
+        .sign_with_keys(keys)
+        .map_err(|e| format!("failed to build order deletion event: {e}"))
+}
+
+pub fn build_order_deletion_filter(market_id_hex: Option<&str>) -> Filter {
+    let mut filter = Filter::new()
+        .kind(Kind::Custom(5))
+        .hashtag(ORDER_DELETE_TAG);
+
+    if let Some(market_id) = market_id_hex {
+        filter = filter.hashtag(market_id);
+    }
+
+    filter
 }
 
 /// Build a Nostr filter for fetching limit order announcements.
@@ -202,6 +469,9 @@ pub fn parse_order_event(
     expected_network_tag: &str,
 ) -> Result<DiscoveredOrder, String> {
     parse_network_tag(expected_network_tag)?;
+    if is_order_tombstone_event(event) {
+        return Err("order tombstone event".to_string());
+    }
     let network_tag = event_network_tag(event)
         .ok_or_else(|| "missing network tag for order event".to_string())?;
     if network_tag != expected_network_tag {
@@ -312,13 +582,26 @@ pub async fn fetch_orders(
         .fetch_events(vec![filter], Duration::from_secs(15))
         .await
         .map_err(|e| format!("failed to fetch order events: {e}"))?;
+    let selected_events = select_fetchable_order_events(
+        &events.iter().cloned().collect::<Vec<_>>(),
+        expected_network_tag,
+    )?;
+    let deletion_events =
+        fetch_order_deletion_events(client, &selected_events, Duration::from_secs(15)).await?;
+    let deleted_ids =
+        deleted_order_event_ids(&selected_events, &deletion_events, expected_network_tag)?;
 
     let mut orders = Vec::new();
-    for event in events.iter() {
-        match parse_order_event(event, expected_network_tag) {
+    for event in selected_events {
+        if deleted_ids.contains(&event.id.to_hex()) || is_order_tombstone_event(&event) {
+            continue;
+        }
+        match parse_order_event(&event, expected_network_tag) {
             Ok(order) => orders.push(order),
             Err(e) => {
-                log::warn!("skipping unparseable order event {}: {e}", event.id);
+                if e != "order tombstone event" {
+                    log::warn!("skipping unparseable order event {}: {e}", event.id);
+                }
             }
         }
     }
@@ -375,6 +658,15 @@ mod tests {
         let keys = Keys::generate();
         let announcement = test_announcement();
         let event = build_order_event(&keys, &announcement, "liquid-testnet").unwrap();
+        let expected_id = order_addressable_id(
+            &announcement.market_id,
+            &announcement.maker_base_pubkey,
+            &announcement.order_nonce,
+        );
+        assert_eq!(
+            event_identifier(&event).as_deref(),
+            Some(expected_id.as_str())
+        );
 
         let discovered = parse_order_event(&event, "liquid-testnet").unwrap();
         assert_eq!(discovered.market_id, "abcd1234");
@@ -400,6 +692,15 @@ mod tests {
     }
 
     #[test]
+    fn order_deletion_filter_with_market() {
+        let filter = build_order_deletion_filter(Some("abcd1234"));
+        let debug = format!("{filter:?}");
+        assert!(debug.contains("5"));
+        assert!(debug.contains(ORDER_DELETE_TAG));
+        assert!(debug.contains("abcd1234"));
+    }
+
+    #[test]
     fn parse_order_event_rejects_network_mismatch() {
         let keys = Keys::generate();
         let announcement = test_announcement();
@@ -408,6 +709,210 @@ mod tests {
         assert!(
             err.contains("unsupported network tag for order event"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn tombstone_event_is_marked_deleted_and_not_parseable() {
+        let keys = Keys::generate();
+        let announcement = test_announcement();
+        let event = build_order_tombstone_event(
+            &keys,
+            &announcement.market_id,
+            &announcement.maker_base_pubkey,
+            &announcement.order_nonce,
+            &announcement.direction_label,
+            announcement.params.price,
+            "liquid-testnet",
+        )
+        .unwrap();
+
+        assert!(is_order_tombstone_event(&event));
+        assert_eq!(
+            parse_order_event(&event, "liquid-testnet").unwrap_err(),
+            "order tombstone event"
+        );
+    }
+
+    #[test]
+    fn latest_order_selection_replaces_new_format_only() {
+        let keys = Keys::generate();
+        let announcement = test_announcement();
+        let older = build_order_event(&keys, &announcement, "liquid-testnet").unwrap();
+        let tombstone = build_order_tombstone_event(
+            &keys,
+            &announcement.market_id,
+            &announcement.maker_base_pubkey,
+            &announcement.order_nonce,
+            &announcement.direction_label,
+            announcement.params.price,
+            "liquid-testnet",
+        )
+        .unwrap();
+        let newer = EventBuilder::new(APP_EVENT_KIND, "")
+            .tags(tombstone.tags.clone())
+            .custom_created_at(Timestamp::from(older.created_at.as_u64() + 1))
+            .sign_with_keys(&keys)
+            .unwrap();
+
+        let legacy_content = serde_json::to_string(&announcement).unwrap();
+        let legacy = EventBuilder::new(APP_EVENT_KIND, &legacy_content)
+            .tags(vec![
+                Tag::identifier(&announcement.market_id),
+                Tag::hashtag(ORDER_TAG),
+                Tag::hashtag(&announcement.market_id),
+                Tag::custom(
+                    TagKind::custom("network"),
+                    vec!["liquid-testnet".to_string()],
+                ),
+            ])
+            .custom_created_at(Timestamp::from(older.created_at.as_u64() + 10))
+            .sign_with_keys(&keys)
+            .unwrap();
+
+        let selected = select_latest_order_events(&[older, newer.clone(), legacy.clone()]);
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().any(|event| event.id == newer.id));
+        assert!(selected.iter().any(|event| event.id == legacy.id));
+    }
+
+    #[test]
+    fn select_fetchable_order_events_prefilters_wrong_network_replacements() {
+        let keys = Keys::generate();
+        let announcement = test_announcement();
+        let order_event = build_order_event(&keys, &announcement, "liquid-testnet").unwrap();
+        let wrong_network_event = EventBuilder::new(APP_EVENT_KIND, &order_event.content)
+            .tags(vec![
+                Tag::identifier(order_addressable_id(
+                    &announcement.market_id,
+                    &announcement.maker_base_pubkey,
+                    &announcement.order_nonce,
+                )),
+                Tag::hashtag(ORDER_TAG),
+                Tag::hashtag(&announcement.market_id),
+                Tag::custom(
+                    TagKind::custom("network"),
+                    vec!["liquid-regtest".to_string()],
+                ),
+                Tag::custom(
+                    TagKind::custom("direction"),
+                    vec![announcement.direction_label.clone()],
+                ),
+                Tag::custom(
+                    TagKind::custom("price"),
+                    vec![announcement.params.price.to_string()],
+                ),
+            ])
+            .custom_created_at(Timestamp::from(order_event.created_at.as_u64() + 1))
+            .sign_with_keys(&keys)
+            .unwrap();
+
+        let selected = select_fetchable_order_events(
+            &[order_event.clone(), wrong_network_event],
+            "liquid-testnet",
+        )
+        .unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, order_event.id);
+    }
+
+    #[test]
+    fn deleted_order_event_ids_require_same_author_and_matching_network() {
+        let author_keys = Keys::generate();
+        let other_keys = Keys::generate();
+        let announcement = test_announcement();
+        let order_event = build_order_event(&author_keys, &announcement, "liquid-testnet").unwrap();
+        let foreign_delete = build_order_deletion_request_event(
+            &other_keys,
+            &order_event.id.to_hex(),
+            &announcement.market_id,
+            "liquid-testnet",
+        )
+        .unwrap();
+        let author_delete = build_order_deletion_request_event(
+            &author_keys,
+            &order_event.id.to_hex(),
+            &announcement.market_id,
+            "liquid-testnet",
+        )
+        .unwrap();
+        let wrong_network_delete = build_order_deletion_request_event(
+            &author_keys,
+            &order_event.id.to_hex(),
+            &announcement.market_id,
+            "liquid-regtest",
+        )
+        .unwrap();
+        let missing_network_delete =
+            EventBuilder::new(Kind::Custom(5), "delete limit order announcement")
+                .tags(vec![
+                    Tag::event(order_event.id),
+                    Tag::custom(
+                        TagKind::custom("k"),
+                        vec![APP_EVENT_KIND.as_u16().to_string()],
+                    ),
+                    Tag::hashtag(ORDER_DELETE_TAG),
+                    Tag::hashtag(&announcement.market_id),
+                ])
+                .sign_with_keys(&author_keys)
+                .unwrap();
+
+        let foreign_deleted = deleted_order_event_ids(
+            std::slice::from_ref(&order_event),
+            &[foreign_delete],
+            "liquid-testnet",
+        )
+        .unwrap();
+        assert!(foreign_deleted.is_empty());
+
+        let wrong_network_deleted = deleted_order_event_ids(
+            std::slice::from_ref(&order_event),
+            &[wrong_network_delete],
+            "liquid-testnet",
+        )
+        .unwrap();
+        assert!(wrong_network_deleted.is_empty());
+
+        let missing_network_deleted = deleted_order_event_ids(
+            std::slice::from_ref(&order_event),
+            &[missing_network_delete],
+            "liquid-testnet",
+        )
+        .unwrap();
+        assert!(missing_network_deleted.is_empty());
+
+        let author_deleted = deleted_order_event_ids(
+            std::slice::from_ref(&order_event),
+            &[author_delete],
+            "liquid-testnet",
+        )
+        .unwrap();
+        assert!(author_deleted.contains(&order_event.id.to_hex()));
+    }
+
+    #[test]
+    fn deletion_request_event_carries_order_market_and_network_tags() {
+        let keys = Keys::generate();
+        let announcement = test_announcement();
+        let order_event = build_order_event(&keys, &announcement, "liquid-testnet").unwrap();
+        let delete_event = build_order_deletion_request_event(
+            &keys,
+            &order_event.id.to_hex(),
+            &announcement.market_id,
+            "liquid-testnet",
+        )
+        .unwrap();
+
+        let hashtags = event_hashtags(&delete_event);
+        assert!(hashtags.iter().any(|tag| tag == ORDER_DELETE_TAG));
+        assert!(hashtags.iter().any(|tag| tag == &announcement.market_id));
+        assert_eq!(
+            event_network_tag(&delete_event).as_deref(),
+            Some("liquid-testnet")
+        );
+        assert_eq!(
+            order_invalidation_market_id(&delete_event).as_deref(),
+            Some("abcd1234")
         );
     }
 }

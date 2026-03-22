@@ -63,14 +63,14 @@ Each order derives an **order-unique scriptPubKey** for the maker’s receive ou
 
 #### Wallet restore property (mnemonic-only)
 
-If `order_nonce` is derived from the mnemonic via an HD index (like address derivation), then **no extra stored state is required** to recover:
+The live wallet derives `order_nonce` deterministically from a dedicated mnemonic-derived nonce seed plus `order_index` and the canonical order shape. Recovery still needs a known market catalog, but does not require extra per-order local bookkeeping:
 
-- active order UTXOs (scan for covenant scripts over indices within a gap limit)
+- active order UTXOs (scan wallet-authored explicit Taproot outputs and only count those that positively match canonical maker-order scripts over indices within a gap limit)
 - maker receipts (scan for tweaked pubkeys over the same index range)
 
-Nostr can accelerate discovery (query by maker pubkey), but recovery should not depend on it.
+Nostr can accelerate discovery and supply market metadata, but recovery should not depend on it as the source of truth.
 
-**Wallet requirement:** implement an **order-index gap limit** policy.
+**Current app scope:** recovery assumes the canonical app order shape (`min_fill_lots = 1`, `min_remainder_lots = 1`) and a known market catalog. Legacy random-nonce own orders are intentionally not preserved by this path, and exact duplicate same-index/same-params creates are rejected.
 
 ---
 
@@ -250,16 +250,31 @@ Outputs:
 
 ## Nostr discovery (sketch)
 
-Publish an event containing:
+Publish one parameterized-replaceable order announcement per maker order. The
+event coordinate should be a deterministic per-order `d` tag such as:
 
-- `outpoint` (txid:vout)
+- `order:v1:<market_id>:<maker_base_pubkey>:<order_nonce>`
+
+The announcement carries:
+
 - `BASE_asset_id`, `QUOTE_asset_id`
 - `p`, `LOT_SATS`
 - direction (`maker_sells`: BASE|QUOTE)
 - `expiry`, `min_fill_lots`, `min_remainder_lots`
 - covenant script hash/commitment
+- market hashtag for market-scoped lookup
+- network tag for multi-network relay hygiene
 
-Use replaceable/addressable events so makers can update the active outpoint after partial fills.
+When the maker later determines the order is no longer live:
+
+- publish a replaceable tombstone at the same `(kind, pubkey, d)` coordinate
+  with empty content and `deleted=true`
+- also publish a best-effort NIP-09 kind-5 delete targeting the original event
+  id, tagged for order subscriptions/indexing
+
+Relays and clients should treat Nostr as discovery only. The chain remains the
+source of truth for whether an order is live, cancelled, partially filled, or
+fully filled.
 
 ---
 
@@ -278,7 +293,7 @@ Use replaceable/addressable events so makers can update the active outpoint afte
 
 ## Open questions (small)
 
-1. Finalize exact derivation spec for `order_nonce` (HD path + encoding) and `P_order` tweak hashing/tagging.
+1. Whether wallet recovery should expand beyond the canonical app order shape instead of requiring explicit `order_index` for custom SDK orders.
 2. Cancel policy: always allowed vs only before expiry (recommended: always allowed).
 3. Do we enforce “QUOTE input must be multiple of p” for sell-QUOTE orders? (likely wallet policy).
-4. Finalize Nostr event kind/schema (tags, replaceability, indexing strategy).
+4. Finalize the exact order tombstone/delete indexing conventions across relays and clients.

@@ -1822,6 +1822,135 @@ fn test_sync_cancelled_order_excluded() {
 }
 
 #[test]
+fn test_cancelled_own_order_becomes_pending_deletion() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_maker_order_params();
+
+    store
+        .record_own_maker_order(deadcat_sdk::OwnMakerOrderRecordInput {
+            params: &params,
+            maker_pubkey: &[0xaa; 32],
+            order_nonce: &[0x11; 32],
+            nostr_event_id: "nostr-order-1",
+            creation_txid: "creation-tx-1",
+            market_id: "market-own-cancel",
+            direction_label: "sell-yes",
+            offered_amount: 100,
+        })
+        .unwrap();
+
+    let pending = store
+        .mark_own_maker_order_cancelled(&params, &[0xaa; 32])
+        .unwrap()
+        .expect("own cancelled order should produce a deletion candidate");
+
+    assert_eq!(pending.market_id, "market-own-cancel");
+    assert_eq!(pending.direction_label, "sell-yes");
+    assert_eq!(pending.maker_base_pubkey, [0xaa; 32]);
+    assert_eq!(pending.order_nonce, [0x11; 32]);
+    assert_eq!(pending.nostr_event_id, "nostr-order-1");
+
+    let pending_rows = store.list_pending_order_deletions().unwrap();
+    assert_eq!(pending_rows.len(), 1);
+    assert_eq!(pending_rows[0].order_id, pending.order_id);
+}
+
+#[test]
+fn test_record_order_deletion_result_tracks_retry_state() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_maker_order_params();
+
+    store
+        .record_own_maker_order(deadcat_sdk::OwnMakerOrderRecordInput {
+            params: &params,
+            maker_pubkey: &[0xaa; 32],
+            order_nonce: &[0x11; 32],
+            nostr_event_id: "nostr-order-2",
+            creation_txid: "creation-tx-2",
+            market_id: "market-delete-result",
+            direction_label: "sell-yes",
+            offered_amount: 100,
+        })
+        .unwrap();
+    let pending = store
+        .mark_own_maker_order_cancelled(&params, &[0xaa; 32])
+        .unwrap()
+        .unwrap();
+
+    store
+        .record_order_deletion_result(pending.order_id, None, Some("relay unavailable"))
+        .unwrap();
+    assert!(
+        store
+            .pending_order_deletion(pending.order_id)
+            .unwrap()
+            .is_some(),
+        "failed tombstone publish should leave the order pending"
+    );
+
+    store
+        .record_order_deletion_result(pending.order_id, Some("delete-event-2"), None)
+        .unwrap();
+    assert!(
+        store
+            .pending_order_deletion(pending.order_id)
+            .unwrap()
+            .is_none(),
+        "successful tombstone publish should clear the pending deletion"
+    );
+    assert!(store.list_pending_order_deletions().unwrap().is_empty());
+}
+
+#[test]
+fn test_fully_filled_own_order_becomes_pending_deletion() {
+    let mut store = DeadcatStore::open_in_memory().unwrap();
+    let params = test_maker_order_params();
+
+    store
+        .record_own_maker_order(deadcat_sdk::OwnMakerOrderRecordInput {
+            params: &params,
+            maker_pubkey: &[0xaa; 32],
+            order_nonce: &[0x11; 32],
+            nostr_event_id: "nostr-order-3",
+            creation_txid: "creation-tx-3",
+            market_id: "market-own-fill",
+            direction_label: "sell-yes",
+            offered_amount: 100,
+        })
+        .unwrap();
+
+    let order_id = store
+        .list_maker_orders(&OrderFilter::default())
+        .unwrap()
+        .into_iter()
+        .find(|order| order.creation_txid.as_deref() == Some("creation-tx-3"))
+        .map(|order| order.id)
+        .expect("recorded own order should exist");
+
+    let utxo = test_utxo_with_outpoint([0xEE; 32], 0, [0x01; 32], 50_000);
+    store.add_order_utxo(order_id, &utxo, Some(100)).unwrap();
+    store
+        .mark_spent(&[0xEE; 32], 0, &[0xFF; 32], Some(200))
+        .unwrap();
+
+    let chain = MockChainSource {
+        block_height: 300,
+        ..Default::default()
+    };
+    let report = store.sync(&chain).unwrap();
+    assert_eq!(report.order_status_changes.len(), 1);
+    assert_eq!(
+        report.order_status_changes[0].new_status,
+        OrderStatus::FullyFilled
+    );
+
+    let pending = store.list_pending_order_deletions().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].order_id, order_id);
+    assert_eq!(pending[0].nostr_event_id, "nostr-order-3");
+}
+
+#[test]
 fn test_sync_idempotent() {
     let mut store = DeadcatStore::open_in_memory().unwrap();
     let params = test_params();

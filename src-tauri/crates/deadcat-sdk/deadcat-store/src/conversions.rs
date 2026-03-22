@@ -381,6 +381,9 @@ pub fn new_maker_order_row(
         market_id: None,
         direction_label: None,
         offered_amount: None,
+        nostr_delete_event_id: None,
+        nostr_delete_requested_at: None,
+        nostr_delete_last_error: None,
     }
 }
 

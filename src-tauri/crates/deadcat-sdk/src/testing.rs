@@ -607,6 +607,7 @@ use nostr_sdk::Keys;
 use crate::announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement, ContractMetadata};
 use crate::discovery::store_trait::{
     DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource, LmsrPoolStateUpdateInput, NodeStore,
+    OwnMakerOrderRecordInput, OwnOrderStatusChange, PendingOrderDeletion,
     PredictionMarketCandidateIngestInput,
 };
 use crate::discovery::{OrderAnnouncement, PoolAnnouncement};
@@ -625,6 +626,25 @@ use crate::taproot::NUMS_KEY_BYTES;
 /// Minimal in-memory store implementing `DiscoveryStore` for integration tests.
 ///
 /// Deduplicates markets by `market_id` and stores orders as-is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedOwnOrder {
+    pub params: MakerOrderParams,
+    pub maker_pubkey: [u8; 32],
+    pub order_nonce: [u8; 32],
+    pub nostr_event_id: String,
+    pub creation_txid: String,
+    pub market_id: String,
+    pub direction_label: String,
+    pub offered_amount: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedDeletionResult {
+    pub order_id: i32,
+    pub delete_event_id: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Default)]
 pub struct TestStore {
     pub markets: Vec<PredictionMarketCandidateIngestInput>,
@@ -632,6 +652,12 @@ pub struct TestStore {
     pub pools: Vec<LmsrPoolIngestInput>,
     pub pool_states: Vec<LmsrPoolStateUpdateInput>,
     pub price_history: Vec<LmsrPriceHistoryEntry>,
+    pub own_orders: Vec<RecordedOwnOrder>,
+    pub cancelled_orders: Vec<(MakerOrderParams, [u8; 32])>,
+    pub pending_order_deletions: Vec<PendingOrderDeletion>,
+    pub synced_order_status_changes: Vec<OwnOrderStatusChange>,
+    pub synced_electrum_urls: Vec<String>,
+    pub deletion_results: Vec<RecordedDeletionResult>,
 }
 
 fn should_preserve_canonical_lmsr_state(
@@ -799,6 +825,84 @@ impl DiscoveryStore for TestStore {
         input: &LmsrPoolStateUpdateInput,
     ) -> std::result::Result<(), String> {
         self.pool_states.push(input.clone());
+        Ok(())
+    }
+
+    fn record_own_maker_order(
+        &mut self,
+        input: OwnMakerOrderRecordInput<'_>,
+    ) -> std::result::Result<(), String> {
+        self.own_orders.push(RecordedOwnOrder {
+            params: *input.params,
+            maker_pubkey: *input.maker_pubkey,
+            order_nonce: *input.order_nonce,
+            nostr_event_id: input.nostr_event_id.to_string(),
+            creation_txid: input.creation_txid.to_string(),
+            market_id: input.market_id.to_string(),
+            direction_label: input.direction_label.to_string(),
+            offered_amount: input.offered_amount,
+        });
+        Ok(())
+    }
+
+    fn mark_own_maker_order_cancelled(
+        &mut self,
+        params: &MakerOrderParams,
+        maker_pubkey: &[u8; 32],
+    ) -> std::result::Result<Option<PendingOrderDeletion>, String> {
+        self.cancelled_orders.push((*params, *maker_pubkey));
+        Ok(self
+            .pending_order_deletions
+            .iter()
+            .find(|pending| pending.maker_base_pubkey == *maker_pubkey)
+            .cloned())
+    }
+
+    fn sync_own_order_state(
+        &mut self,
+        electrum_url: &str,
+    ) -> std::result::Result<Vec<OwnOrderStatusChange>, String> {
+        self.synced_electrum_urls.push(electrum_url.to_string());
+        Ok(self.synced_order_status_changes.clone())
+    }
+
+    fn list_pending_order_deletions(
+        &mut self,
+    ) -> std::result::Result<Vec<PendingOrderDeletion>, String> {
+        Ok(self.pending_order_deletions.clone())
+    }
+
+    fn list_own_maker_pubkeys(&mut self) -> std::result::Result<Vec<[u8; 32]>, String> {
+        let mut pubkeys = Vec::new();
+        for order in &self.own_orders {
+            if !pubkeys.contains(&order.maker_pubkey) {
+                pubkeys.push(order.maker_pubkey);
+            }
+        }
+        Ok(pubkeys)
+    }
+
+    fn list_known_prediction_markets(
+        &mut self,
+    ) -> std::result::Result<Vec<PredictionMarketParams>, String> {
+        Ok(self.markets.iter().map(|market| market.params).collect())
+    }
+
+    fn record_order_deletion_result(
+        &mut self,
+        order_id: i32,
+        delete_event_id: Option<&str>,
+        error: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        self.deletion_results.push(RecordedDeletionResult {
+            order_id,
+            delete_event_id: delete_event_id.map(str::to_string),
+            error: error.map(str::to_string),
+        });
+        if delete_event_id.is_some() {
+            self.pending_order_deletions
+                .retain(|pending| pending.order_id != order_id);
+        }
         Ok(())
     }
 }

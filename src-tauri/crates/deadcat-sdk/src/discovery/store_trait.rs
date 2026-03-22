@@ -95,6 +95,45 @@ pub struct LmsrPoolStateUpdateInput {
     pub last_transition_txid: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoredOrderStatus {
+    Pending,
+    Active,
+    PartiallyFilled,
+    FullyFilled,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnOrderStatusChange {
+    pub order_id: i32,
+    pub old_status: StoredOrderStatus,
+    pub new_status: StoredOrderStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingOrderDeletion {
+    pub order_id: i32,
+    pub market_id: String,
+    pub direction_label: String,
+    pub maker_base_pubkey: [u8; 32],
+    pub order_nonce: [u8; 32],
+    pub price: u64,
+    pub nostr_event_id: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct OwnMakerOrderRecordInput<'a> {
+    pub params: &'a MakerOrderParams,
+    pub maker_pubkey: &'a [u8; 32],
+    pub order_nonce: &'a [u8; 32],
+    pub nostr_event_id: &'a str,
+    pub creation_txid: &'a str,
+    pub market_id: &'a str,
+    pub direction_label: &'a str,
+    pub offered_amount: u64,
+}
+
 /// Trait abstracting store operations needed by `DiscoveryService`.
 ///
 /// This avoids a circular dependency between `deadcat-sdk` and `deadcat-store`.
@@ -127,6 +166,56 @@ pub trait DiscoveryStore: Send + 'static {
 
     /// Persist canonical LMSR live-state produced by chain scan.
     fn upsert_lmsr_pool_state(&mut self, input: &LmsrPoolStateUpdateInput) -> Result<(), String>;
+
+    /// Persist a locally-created maker order and its metadata.
+    fn record_own_maker_order(
+        &mut self,
+        _input: OwnMakerOrderRecordInput<'_>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Mark a locally-created maker order as cancelled and return its deletion payload.
+    fn mark_own_maker_order_cancelled(
+        &mut self,
+        _params: &MakerOrderParams,
+        _maker_pubkey: &[u8; 32],
+    ) -> Result<Option<PendingOrderDeletion>, String> {
+        Ok(None)
+    }
+
+    /// Sync maker-order state from the chain for a store-backed node.
+    fn sync_own_order_state(
+        &mut self,
+        _electrum_url: &str,
+    ) -> Result<Vec<OwnOrderStatusChange>, String> {
+        Ok(Vec::new())
+    }
+
+    /// List own terminal orders whose discovery announcements still need cleanup.
+    fn list_pending_order_deletions(&mut self) -> Result<Vec<PendingOrderDeletion>, String> {
+        Ok(Vec::new())
+    }
+
+    /// List maker pubkeys used by locally-created orders.
+    fn list_own_maker_pubkeys(&mut self) -> Result<Vec<[u8; 32]>, String> {
+        Ok(Vec::new())
+    }
+
+    /// List prediction markets known locally for maker-index recovery.
+    fn list_known_prediction_markets(&mut self) -> Result<Vec<PredictionMarketParams>, String> {
+        Ok(Vec::new())
+    }
+
+    /// Record the result of publishing an order tombstone event.
+    fn record_order_deletion_result(
+        &mut self,
+        _order_id: i32,
+        _delete_event_id: Option<&str>,
+        _error: Option<&str>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Store operations needed by `DeadcatNode` for LMSR history sync and reads.
