@@ -1,0 +1,1 @@
+-- No-op: order deletion columns are managed by deadcat-store at open time.

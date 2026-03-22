@@ -1,6 +1,8 @@
+use std::collections::HashSet;
+
 use chrono::{TimeZone, Utc};
 use diesel::prelude::*;
-use diesel::sql_types::Integer;
+use diesel::sql_types::{Integer, Text};
 use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
@@ -20,6 +22,7 @@ use crate::conversions::{
     DecodedDormantOpenings, direction_to_i32, new_maker_order_row, new_market_candidate_row,
     new_utxo_row, vec_to_array32,
 };
+use crate::electrum_chain::ElectrumChainAdapter;
 use crate::error::StoreError;
 use crate::models::{MakerOrderRow, MarketCandidateRow, MarketRow, NewUtxoRow, UtxoRow};
 use crate::schema::{maker_orders, market_candidates, markets, sync_state, utxos};
@@ -27,6 +30,7 @@ use crate::sync::{ChainSource, ChainUtxo, MarketStateChange, OrderStatusChange, 
 
 use deadcat_sdk::elements::Txid;
 use deadcat_sdk::elements::hashes::Hash as _;
+use deadcat_sdk::{OwnOrderStatusChange, PendingOrderDeletion, StoredOrderStatus};
 
 // Keep this const near migration changes so deadcat-store rebuilds when
 // embedded migration sets are updated.
@@ -35,6 +39,39 @@ pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 /// SQL expression for SQLite's `datetime('now')`.
 const DATETIME_NOW: &str = "datetime('now')";
 const CANDIDATE_TTL_SECS: u64 = 6 * 60 * 60;
+
+#[derive(Debug, QueryableByName)]
+struct TableInfoRow {
+    #[diesel(sql_type = Text)]
+    name: String,
+}
+
+fn ensure_order_deletion_columns(conn: &mut SqliteConnection) -> crate::Result<()> {
+    let existing_columns = diesel::sql_query("PRAGMA table_info(maker_orders)")
+        .load::<TableInfoRow>(conn)?
+        .into_iter()
+        .map(|row| row.name)
+        .collect::<HashSet<_>>();
+
+    if existing_columns.is_empty() {
+        return Ok(());
+    }
+
+    for (column, sql_type) in [
+        ("nostr_delete_event_id", "TEXT"),
+        ("nostr_delete_requested_at", "TEXT"),
+        ("nostr_delete_last_error", "TEXT"),
+    ] {
+        if !existing_columns.contains(column) {
+            diesel::sql_query(format!(
+                "ALTER TABLE maker_orders ADD COLUMN {column} {sql_type}"
+            ))
+            .execute(conn)?;
+        }
+    }
+
+    Ok(())
+}
 
 fn sqlite_datetime_from_unix(now_unix: u64) -> crate::Result<String> {
     let ts = i64::try_from(now_unix)
@@ -73,6 +110,18 @@ impl OrderStatus {
 
     pub fn as_i32(self) -> i32 {
         self as i32
+    }
+}
+
+impl From<OrderStatus> for StoredOrderStatus {
+    fn from(status: OrderStatus) -> Self {
+        match status {
+            OrderStatus::Pending => StoredOrderStatus::Pending,
+            OrderStatus::Active => StoredOrderStatus::Active,
+            OrderStatus::PartiallyFilled => StoredOrderStatus::PartiallyFilled,
+            OrderStatus::FullyFilled => StoredOrderStatus::FullyFilled,
+            OrderStatus::Cancelled => StoredOrderStatus::Cancelled,
+        }
     }
 }
 
@@ -373,6 +422,7 @@ impl DeadcatStore {
         diesel::sql_query("PRAGMA foreign_keys = ON").execute(&mut conn)?;
         conn.run_pending_migrations(MIGRATIONS)
             .map_err(|e| StoreError::Migration(e.to_string()))?;
+        ensure_order_deletion_columns(&mut conn)?;
         Ok(DeadcatStore { conn })
     }
 
@@ -382,6 +432,7 @@ impl DeadcatStore {
         diesel::sql_query("PRAGMA foreign_keys = ON").execute(&mut conn)?;
         conn.run_pending_migrations(MIGRATIONS)
             .map_err(|e| StoreError::Migration(e.to_string()))?;
+        ensure_order_deletion_columns(&mut conn)?;
         Ok(DeadcatStore { conn })
     }
 
@@ -1193,6 +1244,27 @@ impl DeadcatStore {
         rows.iter().map(MarketCandidateInfo::try_from).collect()
     }
 
+    pub fn list_known_prediction_markets(&mut self) -> crate::Result<Vec<PredictionMarketParams>> {
+        let mut seen = HashSet::new();
+        let mut markets_out = Vec::new();
+
+        for market in self.list_markets(&MarketFilter::default())? {
+            let market_id = market.params.market_id();
+            if seen.insert(market_id) {
+                markets_out.push(market.params);
+            }
+        }
+
+        for candidate in self.list_unpromoted_prediction_market_candidates()? {
+            let market_id = candidate.params.market_id();
+            if seen.insert(market_id) {
+                markets_out.push(candidate.params);
+            }
+        }
+
+        Ok(markets_out)
+    }
+
     /// Delete unpromoted candidates whose TTL has expired at `now_unix`.
     ///
     /// Cleanup is explicit; the store never schedules purge work on its own.
@@ -1321,6 +1393,177 @@ impl DeadcatStore {
 
         let rows: Vec<MakerOrderRow> = query.load(&mut self.conn)?;
         rows.iter().map(MakerOrderInfo::try_from).collect()
+    }
+
+    pub fn record_own_maker_order(
+        &mut self,
+        input: deadcat_sdk::OwnMakerOrderRecordInput<'_>,
+    ) -> crate::Result<()> {
+        self.ingest_maker_order(
+            input.params,
+            Some(input.maker_pubkey),
+            Some(input.order_nonce),
+            Some(input.nostr_event_id),
+            None,
+        )?;
+
+        let compiled = CompiledMakerOrder::new(*input.params)?;
+        diesel::update(
+            maker_orders::table.filter(
+                maker_orders::cmr
+                    .eq(compiled.cmr().as_ref())
+                    .and(maker_orders::maker_base_pubkey.eq(input.maker_pubkey.to_vec())),
+            ),
+        )
+        .set((
+            maker_orders::order_nonce.eq(Some(input.order_nonce.to_vec())),
+            maker_orders::nostr_event_id.eq(Some(input.nostr_event_id.to_string())),
+            maker_orders::creation_txid.eq(Some(input.creation_txid.to_string())),
+            maker_orders::market_id.eq(Some(input.market_id.to_string())),
+            maker_orders::direction_label.eq(Some(input.direction_label.to_string())),
+            maker_orders::offered_amount.eq(Some(input.offered_amount as i64)),
+            maker_orders::nostr_delete_event_id.eq(Option::<String>::None),
+            maker_orders::nostr_delete_requested_at.eq(Option::<String>::None),
+            maker_orders::nostr_delete_last_error.eq(Option::<String>::None),
+            maker_orders::updated_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+        ))
+        .execute(&mut self.conn)?;
+
+        Ok(())
+    }
+
+    pub fn mark_own_maker_order_cancelled(
+        &mut self,
+        params: &MakerOrderParams,
+        maker_base_pubkey: &[u8; 32],
+    ) -> crate::Result<Option<PendingOrderDeletion>> {
+        let compiled = CompiledMakerOrder::new(*params)?;
+        let row: Option<MakerOrderRow> = maker_orders::table
+            .filter(
+                maker_orders::cmr
+                    .eq(compiled.cmr().as_ref())
+                    .and(maker_orders::maker_base_pubkey.eq(maker_base_pubkey.to_vec()))
+                    .and(maker_orders::creation_txid.is_not_null()),
+            )
+            .first(&mut self.conn)
+            .optional()?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        diesel::update(maker_orders::table.filter(maker_orders::id.eq(row.id)))
+            .set((
+                maker_orders::order_status.eq(OrderStatus::Cancelled.as_i32()),
+                maker_orders::updated_at
+                    .eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+            ))
+            .execute(&mut self.conn)?;
+
+        let refreshed: MakerOrderRow = maker_orders::table
+            .filter(maker_orders::id.eq(row.id))
+            .first(&mut self.conn)?;
+        pending_order_deletion_from_row(&refreshed)
+    }
+
+    pub fn sync_own_order_state(
+        &mut self,
+        electrum_url: &str,
+    ) -> crate::Result<Vec<OwnOrderStatusChange>> {
+        let chain = ElectrumChainAdapter::new(electrum_url);
+        let report = self.sync(&chain)?;
+        if report.order_status_changes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let changed_order_ids: Vec<i32> = report
+            .order_status_changes
+            .iter()
+            .map(|change| change.order_id)
+            .collect();
+        let own_order_ids: Vec<i32> = maker_orders::table
+            .select(maker_orders::id)
+            .filter(
+                maker_orders::id
+                    .eq_any(changed_order_ids)
+                    .and(maker_orders::creation_txid.is_not_null()),
+            )
+            .load(&mut self.conn)?;
+
+        let own_order_ids: std::collections::HashSet<i32> = own_order_ids.into_iter().collect();
+        Ok(report
+            .order_status_changes
+            .into_iter()
+            .filter(|change| own_order_ids.contains(&change.order_id))
+            .map(|change| OwnOrderStatusChange {
+                order_id: change.order_id,
+                old_status: change.old_status.into(),
+                new_status: change.new_status.into(),
+            })
+            .collect())
+    }
+
+    pub fn list_pending_order_deletions(&mut self) -> crate::Result<Vec<PendingOrderDeletion>> {
+        let rows: Vec<MakerOrderRow> = maker_orders::table
+            .filter(maker_orders::creation_txid.is_not_null())
+            .filter(maker_orders::market_id.is_not_null())
+            .filter(maker_orders::direction_label.is_not_null())
+            .filter(maker_orders::maker_base_pubkey.is_not_null())
+            .filter(maker_orders::order_nonce.is_not_null())
+            .filter(maker_orders::nostr_event_id.is_not_null())
+            .filter(maker_orders::nostr_delete_event_id.is_null())
+            .filter(
+                maker_orders::order_status
+                    .eq(OrderStatus::Cancelled.as_i32())
+                    .or(maker_orders::order_status.eq(OrderStatus::FullyFilled.as_i32())),
+            )
+            .load(&mut self.conn)?;
+        let mut pending = Vec::new();
+        for row in &rows {
+            if let Some(candidate) = pending_order_deletion_from_row(row)? {
+                pending.push(candidate);
+            }
+        }
+        Ok(pending)
+    }
+
+    pub fn list_own_maker_pubkeys(&mut self) -> crate::Result<Vec<[u8; 32]>> {
+        let rows: Vec<MakerOrderRow> = maker_orders::table
+            .filter(maker_orders::creation_txid.is_not_null())
+            .filter(maker_orders::maker_base_pubkey.is_not_null())
+            .load(&mut self.conn)?;
+        let mut seen = std::collections::HashSet::new();
+        let mut pubkeys = Vec::new();
+        for row in rows {
+            let Some(maker_base_pubkey) = row.maker_base_pubkey.as_ref() else {
+                continue;
+            };
+            let maker_base_pubkey = vec_to_array32(maker_base_pubkey, "maker_base_pubkey")?;
+            if seen.insert(maker_base_pubkey) {
+                pubkeys.push(maker_base_pubkey);
+            }
+        }
+        Ok(pubkeys)
+    }
+
+    pub fn record_order_deletion_result(
+        &mut self,
+        order_id: i32,
+        delete_event_id: Option<&str>,
+        error: Option<&str>,
+    ) -> crate::Result<()> {
+        diesel::update(maker_orders::table.filter(maker_orders::id.eq(order_id)))
+            .set((
+                maker_orders::nostr_delete_requested_at.eq(diesel::dsl::sql::<
+                    diesel::sql_types::Nullable<diesel::sql_types::Text>,
+                >(DATETIME_NOW)),
+                maker_orders::nostr_delete_event_id.eq(delete_event_id.map(|id| id.to_string())),
+                maker_orders::nostr_delete_last_error.eq(error.map(|err| err.to_string())),
+                maker_orders::updated_at
+                    .eq(diesel::dsl::sql::<diesel::sql_types::Text>(DATETIME_NOW)),
+            ))
+            .execute(&mut self.conn)?;
+
+        Ok(())
     }
 
     // ==================== UTXO Queries ====================
@@ -1489,6 +1732,20 @@ impl DeadcatStore {
         Ok(())
     }
 
+    pub fn pending_order_deletion(
+        &mut self,
+        order_id: i32,
+    ) -> crate::Result<Option<PendingOrderDeletion>> {
+        let row: Option<MakerOrderRow> = maker_orders::table
+            .filter(maker_orders::id.eq(order_id))
+            .first(&mut self.conn)
+            .optional()?;
+        row.as_ref()
+            .map(pending_order_deletion_from_row)
+            .transpose()
+            .map(|maybe| maybe.flatten())
+    }
+
     // ==================== Issuance Data ====================
 
     /// Manually set issuance entropy for a market (fallback if not yet synced from chain).
@@ -1643,6 +1900,46 @@ impl DeadcatStore {
 
 // ==================== DiscoveryStore trait impl ====================
 
+fn pending_order_deletion_from_row(
+    row: &MakerOrderRow,
+) -> crate::Result<Option<PendingOrderDeletion>> {
+    if row.nostr_delete_event_id.is_some() {
+        return Ok(None);
+    }
+
+    let Some(market_id) = row.market_id.clone() else {
+        return Ok(None);
+    };
+    let Some(direction_label) = row.direction_label.clone() else {
+        return Ok(None);
+    };
+    let Some(maker_base_pubkey) = row.maker_base_pubkey.as_ref() else {
+        return Ok(None);
+    };
+    let Some(order_nonce) = row.order_nonce.as_ref() else {
+        return Ok(None);
+    };
+    let Some(nostr_event_id) = row.nostr_event_id.clone() else {
+        return Ok(None);
+    };
+
+    let status = OrderStatus::from_i32(row.order_status)?;
+    if !matches!(status, OrderStatus::Cancelled | OrderStatus::FullyFilled) {
+        return Ok(None);
+    }
+
+    Ok(Some(PendingOrderDeletion {
+        order_id: row.id,
+        market_id,
+        direction_label,
+        maker_base_pubkey: vec_to_array32(maker_base_pubkey, "maker_base_pubkey")?,
+        order_nonce: vec_to_array32(order_nonce, "order_nonce")?,
+        price: u64::try_from(row.price)
+            .map_err(|_| StoreError::InvalidData(format!("invalid price: {}", row.price)))?,
+        nostr_event_id,
+    }))
+}
+
 impl deadcat_sdk::DiscoveryStore for DeadcatStore {
     fn ingest_prediction_market_candidate(
         &mut self,
@@ -1682,6 +1979,51 @@ impl deadcat_sdk::DiscoveryStore for DeadcatStore {
         input: &deadcat_sdk::LmsrPoolStateUpdateInput,
     ) -> Result<(), String> {
         self.upsert_lmsr_pool_state(input)
+            .map_err(|e| format!("{e}"))
+    }
+
+    fn record_own_maker_order(
+        &mut self,
+        input: deadcat_sdk::OwnMakerOrderRecordInput<'_>,
+    ) -> Result<(), String> {
+        DeadcatStore::record_own_maker_order(self, input).map_err(|e| format!("{e}"))
+    }
+
+    fn mark_own_maker_order_cancelled(
+        &mut self,
+        params: &MakerOrderParams,
+        maker_pubkey: &[u8; 32],
+    ) -> Result<Option<PendingOrderDeletion>, String> {
+        DeadcatStore::mark_own_maker_order_cancelled(self, params, maker_pubkey)
+            .map_err(|e| format!("{e}"))
+    }
+
+    fn sync_own_order_state(
+        &mut self,
+        electrum_url: &str,
+    ) -> Result<Vec<OwnOrderStatusChange>, String> {
+        DeadcatStore::sync_own_order_state(self, electrum_url).map_err(|e| format!("{e}"))
+    }
+
+    fn list_pending_order_deletions(&mut self) -> Result<Vec<PendingOrderDeletion>, String> {
+        DeadcatStore::list_pending_order_deletions(self).map_err(|e| format!("{e}"))
+    }
+
+    fn list_own_maker_pubkeys(&mut self) -> Result<Vec<[u8; 32]>, String> {
+        DeadcatStore::list_own_maker_pubkeys(self).map_err(|e| format!("{e}"))
+    }
+
+    fn list_known_prediction_markets(&mut self) -> Result<Vec<PredictionMarketParams>, String> {
+        DeadcatStore::list_known_prediction_markets(self).map_err(|e| format!("{e}"))
+    }
+
+    fn record_order_deletion_result(
+        &mut self,
+        order_id: i32,
+        delete_event_id: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<(), String> {
+        DeadcatStore::record_order_deletion_result(self, order_id, delete_event_id, error)
             .map_err(|e| format!("{e}"))
     }
 }

@@ -12,7 +12,6 @@ use lwk_wollet::elements_miniscript::confidential::slip77::MasterBlindingKey;
 use lwk_wollet::{
     ElectrumClient, ElectrumUrl, TxBuilder, WalletTx, WalletTxOut, Wollet, WolletDescriptor,
 };
-use rand::RngCore;
 use rand::thread_rng;
 
 use crate::assembly::{pset_to_pruning_transaction, txout_secrets_from_unblinded};
@@ -65,10 +64,45 @@ use crate::prediction_market_scan::{
 use crate::pset::{
     UnblindedUtxo, add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset,
 };
-use crate::taproot::NUMS_KEY_BYTES;
+use crate::taproot::{NUMS_KEY_BYTES, tagged_hash};
 use crate::trade::types::{LmsrPoolSwapLeg, LmsrPoolUtxos, LmsrPrimaryPath};
 
 use crate::discovery::pool::LMSR_WITNESS_SCHEMA_V2;
+
+mod recovery;
+
+const ORDER_INDEX_GAP_LIMIT_DEFAULT: u32 = 256;
+const ORDER_INDEX_RESOLUTION_LIMIT_DEFAULT: u32 = 4096;
+const ORDER_RECOVERY_MAX_CANDIDATE_OUTPUTS_DEFAULT: usize = 512;
+const LIMIT_ORDER_PRICE_MIN: u64 = 1;
+const LIMIT_ORDER_PRICE_MAX: u64 = 99;
+const LIMIT_ORDER_MIN_FILL_LOTS_V2: u64 = 1;
+const LIMIT_ORDER_MIN_REMAINDER_LOTS_V2: u64 = 1;
+
+#[derive(Debug, Clone, Copy)]
+struct OrderNonceIdentity {
+    base_asset_id: [u8; 32],
+    quote_asset_id: [u8; 32],
+    price: u64,
+    direction: OrderDirection,
+    min_fill_lots: u64,
+    min_remainder_lots: u64,
+}
+
+impl OrderNonceIdentity {
+    fn from_params(params: &MakerOrderParams) -> Self {
+        Self {
+            base_asset_id: params.base_asset_id,
+            quote_asset_id: params.quote_asset_id,
+            price: params.price,
+            direction: params.direction,
+            min_fill_lots: params.min_fill_lots,
+            min_remainder_lots: params.min_remainder_lots,
+        }
+    }
+}
+const ORDER_NONCE_SEED_PATH_CHANGE: u32 = 1;
+const ORDER_NONCE_SEED_PATH_INDEX: u32 = 0;
 
 /// Result of a successful token issuance.
 #[derive(Debug, Clone)]
@@ -1765,6 +1799,82 @@ impl DeadcatSdk {
         Ok(Keypair::from_secret_key(&secp, &secret))
     }
 
+    fn derive_order_nonce_seed(&self) -> Result<[u8; 32]> {
+        let network_path = if self.network.is_mainnet() { 1776 } else { 1 };
+        let path_str = format!(
+            "m/86'/{network_path}'/1'/{ORDER_NONCE_SEED_PATH_CHANGE}'/{ORDER_NONCE_SEED_PATH_INDEX}'"
+        );
+        let path: lwk_wollet::bitcoin::bip32::DerivationPath = path_str
+            .parse()
+            .map_err(|e| Error::Signer(format!("{e}")))?;
+        let derived = self
+            .signer
+            .derive_xprv(&path)
+            .map_err(|e| Error::Signer(format!("{e:?}")))?;
+        Ok(tagged_hash(
+            b"deadcat/order_nonce_seed",
+            &derived.private_key.secret_bytes(),
+        ))
+    }
+
+    fn direction_tag(direction: OrderDirection) -> u8 {
+        match direction {
+            OrderDirection::SellBase => 0,
+            OrderDirection::SellQuote => 1,
+        }
+    }
+
+    fn derive_order_nonce_v2(
+        order_nonce_seed: &[u8; 32],
+        order_index: u32,
+        identity: &OrderNonceIdentity,
+    ) -> [u8; 32] {
+        let mut data = Vec::with_capacity(32 + 4 + 32 + 32 + 8 + 1 + 8 + 8);
+        data.extend_from_slice(order_nonce_seed);
+        data.extend_from_slice(&order_index.to_be_bytes());
+        data.extend_from_slice(&identity.base_asset_id);
+        data.extend_from_slice(&identity.quote_asset_id);
+        data.extend_from_slice(&identity.price.to_be_bytes());
+        data.push(Self::direction_tag(identity.direction));
+        data.extend_from_slice(&identity.min_fill_lots.to_be_bytes());
+        data.extend_from_slice(&identity.min_remainder_lots.to_be_bytes());
+        tagged_hash(b"deadcat/order_nonce_v2", &data)
+    }
+
+    fn derive_order_nonce(
+        &self,
+        order_index: u32,
+        identity: &OrderNonceIdentity,
+    ) -> Result<[u8; 32]> {
+        let order_nonce_seed = self.derive_order_nonce_seed()?;
+        Ok(Self::derive_order_nonce_v2(
+            &order_nonce_seed,
+            order_index,
+            identity,
+        ))
+    }
+
+    pub(crate) fn next_maker_order_index(&self, used_maker_pubkeys: &[[u8; 32]]) -> Result<u32> {
+        let used_maker_pubkeys = used_maker_pubkeys
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        let max_candidate = u32::try_from(used_maker_pubkeys.len())
+            .map_err(|_| Error::MakerOrder("too many maker order pubkeys".to_string()))?;
+
+        for order_index in 0..=max_candidate {
+            let keypair = self.derive_maker_keypair(order_index)?;
+            let (maker_xonly, _parity) = keypair.x_only_public_key();
+            if !used_maker_pubkeys.contains(&maker_xonly.serialize()) {
+                return Ok(order_index);
+            }
+        }
+
+        Err(Error::MakerOrder(
+            "failed to derive an unused maker order index".to_string(),
+        ))
+    }
+
     // ── Pool admin key derivation ────────────────────────────────────
 
     /// Derive a secp256k1 keypair for LMSR pool admin at the given index.
@@ -1974,9 +2084,16 @@ impl DeadcatSdk {
         let (maker_xonly, _parity) = maker_keypair.x_only_public_key();
         let maker_base_pubkey: [u8; 32] = maker_xonly.serialize();
 
-        // 2. Generate random order nonce
-        let mut order_nonce = [0u8; 32];
-        thread_rng().fill_bytes(&mut order_nonce);
+        // 2. Deterministically derive the order nonce from the maker index and order shape.
+        let nonce_identity = OrderNonceIdentity {
+            base_asset_id,
+            quote_asset_id,
+            price,
+            direction,
+            min_fill_lots,
+            min_remainder_lots,
+        };
+        let order_nonce = self.derive_order_nonce(order_index, &nonce_identity)?;
 
         // 3. Build MakerOrderParams
         let (params, _p_order) = MakerOrderParams::new(
@@ -1991,15 +2108,21 @@ impl DeadcatSdk {
             &order_nonce,
         );
 
-        // 4. Compile the contract
-        let contract = CompiledMakerOrder::new(params)?;
-
-        // 5. Determine offered asset and select funding UTXO
         let offered_asset = match direction {
             OrderDirection::SellBase => &base_asset_id,
             OrderDirection::SellQuote => &quote_asset_id,
         };
 
+        if self.wallet_contains_limit_order_identity(&maker_base_pubkey, &params, offered_asset)? {
+            return Err(Error::MakerOrder(format!(
+                "deterministic maker order identity for order_index {order_index} and order params already exists in wallet history"
+            )));
+        }
+
+        // 4. Compile the contract
+        let contract = CompiledMakerOrder::new(params)?;
+
+        // 5. Determine offered asset and select funding UTXO
         let policy_bytes: [u8; 32] = self.policy_asset().into_inner().to_byte_array();
         let same_asset = *offered_asset == policy_bytes;
 
@@ -3649,15 +3772,19 @@ fn select_defining_utxos(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::prediction_market::anchor::PredictionMarketAnchor;
     use crate::prediction_market::state::MarketSlot;
     use crate::prediction_market_scan::validate_prediction_market_creation_tx;
     use crate::testing::{confidential_dormant_creation_txout, test_explicit_utxo};
+    use lwk_test_util::{TEST_MNEMONIC, TestEnv, TestEnvBuilder, regtest_policy_asset};
     use lwk_wollet::Chain;
     use lwk_wollet::elements::bitcoin::hashes::Hash;
     use lwk_wollet::elements::confidential::{AssetBlindingFactor, ValueBlindingFactor};
     use lwk_wollet::elements::{AddressParams, OutPoint, Script, TxOutSecrets};
+    use tempfile::TempDir;
 
     fn make_utxo(value: u64, asset: AssetId, vout: u32, spent: bool) -> WalletTxOut {
         let addr = lwk_wollet::elements::Address::p2sh(
@@ -3742,6 +3869,87 @@ mod tests {
             },
             table_values,
             fee_amount: 25,
+        }
+    }
+
+    fn test_sdk_for_order_index() -> (DeadcatSdk, TempDir) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let sdk = DeadcatSdk::new(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            Network::LiquidTestnet,
+            "tcp://127.0.0.1:1",
+            temp_dir.path(),
+        )
+        .unwrap();
+        (sdk, temp_dir)
+    }
+
+    fn maker_pubkey_for_index(sdk: &DeadcatSdk, order_index: u32) -> [u8; 32] {
+        let keypair = sdk.derive_maker_keypair(order_index).unwrap();
+        let (maker_xonly, _parity) = keypair.x_only_public_key();
+        maker_xonly.serialize()
+    }
+
+    struct RegtestOrderFixture {
+        env: TestEnv,
+        sdk: DeadcatSdk,
+        _temp_dir: TempDir,
+    }
+
+    impl RegtestOrderFixture {
+        fn new() -> Self {
+            let env = TestEnvBuilder::from_env().with_electrum().build();
+            let temp_dir = tempfile::tempdir().unwrap();
+            let sdk = DeadcatSdk::new(
+                TEST_MNEMONIC,
+                Network::LiquidRegtest,
+                &env.electrum_url(),
+                temp_dir.path(),
+            )
+            .unwrap();
+            Self {
+                env,
+                sdk,
+                _temp_dir: temp_dir,
+            }
+        }
+
+        fn fund_and_sync(&mut self, count: u32, sats_each: u64) {
+            for _ in 0..count {
+                let addr = self.sdk.address(None).unwrap();
+                self.env
+                    .elementsd_sendtoaddress(addr.address(), sats_each, None);
+            }
+            self.mine_and_sync(1);
+        }
+
+        fn mine_and_sync(&mut self, blocks: u32) {
+            self.env.elementsd_generate(blocks);
+            std::thread::sleep(Duration::from_millis(500));
+            self.sdk.sync().unwrap();
+        }
+    }
+
+    fn sample_prediction_market_params(collateral_asset_id: [u8; 32]) -> PredictionMarketParams {
+        PredictionMarketParams {
+            oracle_public_key: [0x21; 32],
+            collateral_asset_id,
+            yes_token_asset: [0x31; 32],
+            no_token_asset: [0x41; 32],
+            yes_reissuance_token: [0x51; 32],
+            no_reissuance_token: [0x61; 32],
+            collateral_per_token: 1_000,
+            expiry_time: 123_456,
+        }
+    }
+
+    fn raw_taproot_output(
+        asset_id: [u8; 32],
+        script_pubkey: Script,
+    ) -> recovery::WalletAuthoredTaprootOutput {
+        recovery::WalletAuthoredTaprootOutput {
+            asset_id,
+            script_pubkey,
         }
     }
 
@@ -4321,5 +4529,453 @@ mod tests {
         );
 
         assert!(!validate_prediction_market_creation_tx(&params, &tx, &anchor).unwrap());
+    }
+
+    #[test]
+    fn next_maker_order_index_returns_zero_when_none_are_used() {
+        let (sdk, _temp_dir) = test_sdk_for_order_index();
+        assert_eq!(sdk.next_maker_order_index(&[]).unwrap(), 0);
+    }
+
+    #[test]
+    fn next_maker_order_index_advances_past_contiguous_pubkeys() {
+        let (sdk, _temp_dir) = test_sdk_for_order_index();
+        let used = vec![
+            maker_pubkey_for_index(&sdk, 0),
+            maker_pubkey_for_index(&sdk, 1),
+            maker_pubkey_for_index(&sdk, 2),
+        ];
+        assert_eq!(sdk.next_maker_order_index(&used).unwrap(), 3);
+    }
+
+    #[test]
+    fn next_maker_order_index_returns_first_sparse_gap() {
+        let (sdk, _temp_dir) = test_sdk_for_order_index();
+        let used = vec![
+            maker_pubkey_for_index(&sdk, 1),
+            maker_pubkey_for_index(&sdk, 3),
+        ];
+        assert_eq!(sdk.next_maker_order_index(&used).unwrap(), 0);
+
+        let used = vec![
+            maker_pubkey_for_index(&sdk, 0),
+            maker_pubkey_for_index(&sdk, 2),
+        ];
+        assert_eq!(sdk.next_maker_order_index(&used).unwrap(), 1);
+    }
+
+    #[test]
+    fn deterministic_order_nonce_is_stable_and_changes_with_identity() {
+        let (sdk, _temp_dir) = test_sdk_for_order_index();
+        let identity = OrderNonceIdentity {
+            base_asset_id: [0x11; 32],
+            quote_asset_id: [0x22; 32],
+            price: 42,
+            direction: OrderDirection::SellQuote,
+            min_fill_lots: 1,
+            min_remainder_lots: 1,
+        };
+        let nonce_a = sdk.derive_order_nonce(7, &identity).unwrap();
+        let nonce_b = sdk.derive_order_nonce(7, &identity).unwrap();
+        let nonce_c = sdk.derive_order_nonce(8, &identity).unwrap();
+        let nonce_d = sdk
+            .derive_order_nonce(
+                7,
+                &OrderNonceIdentity {
+                    price: 43,
+                    ..identity
+                },
+            )
+            .unwrap();
+
+        assert_eq!(nonce_a, nonce_b);
+        assert_ne!(nonce_a, nonce_c);
+        assert_ne!(nonce_a, nonce_d);
+    }
+
+    #[test]
+    fn resolve_order_index_round_trips_deterministic_params() {
+        let (sdk, _temp_dir) = test_sdk_for_order_index();
+        let order_index = 19;
+        let maker_base_pubkey = maker_pubkey_for_index(&sdk, order_index);
+        let order_nonce = sdk
+            .derive_order_nonce(
+                order_index,
+                &OrderNonceIdentity {
+                    base_asset_id: [0x11; 32],
+                    quote_asset_id: [0x22; 32],
+                    price: 37,
+                    direction: OrderDirection::SellBase,
+                    min_fill_lots: 2,
+                    min_remainder_lots: 3,
+                },
+            )
+            .unwrap();
+        let (params, _p_order) = MakerOrderParams::new(
+            [0x11; 32],
+            [0x22; 32],
+            37,
+            2,
+            3,
+            OrderDirection::SellBase,
+            NUMS_KEY_BYTES,
+            &maker_base_pubkey,
+            &order_nonce,
+        );
+
+        assert_eq!(
+            sdk.resolve_order_index(&params, maker_base_pubkey).unwrap(),
+            Some(order_index)
+        );
+    }
+
+    #[test]
+    fn next_maker_order_index_ignores_unmatched_wallet_authored_taproot_outputs() {
+        let (sdk, _temp_dir) = test_sdk_for_order_index();
+        let market = sample_prediction_market_params([0x55; 32]);
+        let contract = CompiledPredictionMarket::new(market).unwrap();
+        let unrelated_output = raw_taproot_output(
+            market.collateral_asset_id,
+            contract.script_pubkey(MarketSlot::UnresolvedCollateral),
+        );
+
+        assert_eq!(
+            sdk.next_maker_order_index_with_candidates(&[market], &[unrelated_output])
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn next_maker_order_index_from_markets_recovers_contiguous_indices() {
+        if std::env::var_os("ELEMENTSD_EXEC").is_none() {
+            return;
+        }
+
+        let mut fixture = RegtestOrderFixture::new();
+        fixture.fund_and_sync(4, 200_000);
+        let market =
+            sample_prediction_market_params(regtest_policy_asset().into_inner().to_byte_array());
+
+        fixture
+            .sdk
+            .create_limit_order(
+                market.yes_token_asset,
+                market.collateral_asset_id,
+                25,
+                10_000,
+                OrderDirection::SellQuote,
+                1,
+                1,
+                0,
+                500,
+            )
+            .unwrap();
+        fixture
+            .sdk
+            .create_limit_order(
+                market.yes_token_asset,
+                market.collateral_asset_id,
+                35,
+                10_000,
+                OrderDirection::SellQuote,
+                1,
+                1,
+                1,
+                500,
+            )
+            .unwrap();
+        fixture.mine_and_sync(1);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut restored = DeadcatSdk::new(
+            TEST_MNEMONIC,
+            Network::LiquidRegtest,
+            &fixture.env.electrum_url(),
+            temp_dir.path(),
+        )
+        .unwrap();
+        restored.sync().unwrap();
+
+        assert_eq!(
+            restored
+                .next_maker_order_index_from_markets(&[market])
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn next_maker_order_index_from_markets_returns_first_sparse_gap() {
+        if std::env::var_os("ELEMENTSD_EXEC").is_none() {
+            return;
+        }
+
+        let mut fixture = RegtestOrderFixture::new();
+        fixture.fund_and_sync(4, 200_000);
+        let market =
+            sample_prediction_market_params(regtest_policy_asset().into_inner().to_byte_array());
+
+        fixture
+            .sdk
+            .create_limit_order(
+                market.no_token_asset,
+                market.collateral_asset_id,
+                11,
+                10_000,
+                OrderDirection::SellQuote,
+                1,
+                1,
+                0,
+                500,
+            )
+            .unwrap();
+        fixture
+            .sdk
+            .create_limit_order(
+                market.no_token_asset,
+                market.collateral_asset_id,
+                17,
+                10_000,
+                OrderDirection::SellQuote,
+                1,
+                1,
+                2,
+                500,
+            )
+            .unwrap();
+        fixture.mine_and_sync(1);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut restored = DeadcatSdk::new(
+            TEST_MNEMONIC,
+            Network::LiquidRegtest,
+            &fixture.env.electrum_url(),
+            temp_dir.path(),
+        )
+        .unwrap();
+        restored.sync().unwrap();
+
+        assert_eq!(
+            restored
+                .next_maker_order_index_from_markets(&[market])
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn next_maker_order_index_from_markets_fails_without_catalog_when_candidates_exist() {
+        if std::env::var_os("ELEMENTSD_EXEC").is_none() {
+            return;
+        }
+
+        let mut fixture = RegtestOrderFixture::new();
+        fixture.fund_and_sync(2, 200_000);
+        let market =
+            sample_prediction_market_params(regtest_policy_asset().into_inner().to_byte_array());
+
+        fixture
+            .sdk
+            .create_limit_order(
+                market.yes_token_asset,
+                market.collateral_asset_id,
+                29,
+                10_000,
+                OrderDirection::SellQuote,
+                1,
+                1,
+                0,
+                500,
+            )
+            .unwrap();
+        fixture.mine_and_sync(1);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut restored = DeadcatSdk::new(
+            TEST_MNEMONIC,
+            Network::LiquidRegtest,
+            &fixture.env.electrum_url(),
+            temp_dir.path(),
+        )
+        .unwrap();
+        restored.sync().unwrap();
+
+        let err = restored
+            .next_maker_order_index_from_markets(&[])
+            .expect_err("expected missing market catalog error");
+        assert!(err.to_string().contains("no market catalog"));
+    }
+
+    #[test]
+    fn duplicate_limit_order_identity_requires_unique_order_index_or_params() {
+        if std::env::var_os("ELEMENTSD_EXEC").is_none() {
+            return;
+        }
+
+        let mut fixture = RegtestOrderFixture::new();
+        fixture.fund_and_sync(6, 200_000);
+        let market =
+            sample_prediction_market_params(regtest_policy_asset().into_inner().to_byte_array());
+
+        fixture
+            .sdk
+            .create_limit_order(
+                market.yes_token_asset,
+                market.collateral_asset_id,
+                25,
+                10_000,
+                OrderDirection::SellQuote,
+                1,
+                1,
+                0,
+                500,
+            )
+            .unwrap();
+        fixture.mine_and_sync(1);
+
+        let err = fixture
+            .sdk
+            .create_limit_order(
+                market.yes_token_asset,
+                market.collateral_asset_id,
+                25,
+                10_000,
+                OrderDirection::SellQuote,
+                1,
+                1,
+                0,
+                500,
+            )
+            .expect_err("exact duplicate deterministic order identity should be rejected");
+        assert!(err.to_string().contains("already exists in wallet history"));
+    }
+
+    #[test]
+    fn same_index_with_different_params_still_creates_distinct_order_identity() {
+        if std::env::var_os("ELEMENTSD_EXEC").is_none() {
+            return;
+        }
+
+        let mut fixture = RegtestOrderFixture::new();
+        fixture.fund_and_sync(8, 200_000);
+        let market =
+            sample_prediction_market_params(regtest_policy_asset().into_inner().to_byte_array());
+
+        let first = fixture
+            .sdk
+            .create_limit_order(
+                market.yes_token_asset,
+                market.collateral_asset_id,
+                25,
+                10_000,
+                OrderDirection::SellQuote,
+                1,
+                1,
+                0,
+                500,
+            )
+            .unwrap();
+        fixture.mine_and_sync(1);
+
+        let second = fixture
+            .sdk
+            .create_limit_order(
+                market.yes_token_asset,
+                market.collateral_asset_id,
+                35,
+                10_000,
+                OrderDirection::SellQuote,
+                1,
+                1,
+                0,
+                500,
+            )
+            .unwrap();
+
+        assert_ne!(first.order_nonce, second.order_nonce);
+        assert_ne!(first.order_params, second.order_params);
+    }
+
+    #[test]
+    fn next_maker_order_index_ignores_unrelated_market_activity() {
+        if std::env::var_os("ELEMENTSD_EXEC").is_none() {
+            return;
+        }
+
+        let mut fixture = RegtestOrderFixture::new();
+        fixture.fund_and_sync(20, 500_000);
+
+        let (anchor, params) = fixture
+            .sdk
+            .create_contract_onchain([0x44; 32], 10_000, 500_000, 1_000, 500)
+            .unwrap();
+        fixture.mine_and_sync(1);
+        fixture.sdk.issue_tokens(&params, &anchor, 3, 500).unwrap();
+        fixture.mine_and_sync(1);
+
+        assert_eq!(
+            fixture
+                .sdk
+                .next_maker_order_index_from_markets(&[params])
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn next_maker_order_index_recovers_with_maker_orders_and_unrelated_market_activity() {
+        if std::env::var_os("ELEMENTSD_EXEC").is_none() {
+            return;
+        }
+
+        let mut fixture = RegtestOrderFixture::new();
+        fixture.fund_and_sync(25, 500_000);
+        let maker_market =
+            sample_prediction_market_params(regtest_policy_asset().into_inner().to_byte_array());
+
+        fixture
+            .sdk
+            .create_limit_order(
+                maker_market.yes_token_asset,
+                maker_market.collateral_asset_id,
+                25,
+                10_000,
+                OrderDirection::SellQuote,
+                1,
+                1,
+                0,
+                500,
+            )
+            .unwrap();
+        fixture.mine_and_sync(1);
+
+        let (anchor, unrelated_market) = fixture
+            .sdk
+            .create_contract_onchain([0x54; 32], 12_000, 600_000, 1_000, 500)
+            .unwrap();
+        fixture.mine_and_sync(1);
+        fixture
+            .sdk
+            .issue_tokens(&unrelated_market, &anchor, 2, 500)
+            .unwrap();
+        fixture.mine_and_sync(1);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut restored = DeadcatSdk::new(
+            TEST_MNEMONIC,
+            Network::LiquidRegtest,
+            &fixture.env.electrum_url(),
+            temp_dir.path(),
+        )
+        .unwrap();
+        restored.sync().unwrap();
+
+        assert_eq!(
+            restored
+                .next_maker_order_index_from_markets(&[maker_market, unrelated_market])
+                .unwrap(),
+            1
+        );
     }
 }

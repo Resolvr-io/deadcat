@@ -2,7 +2,8 @@
 //!
 //! Owns the wallet (SDK), Nostr discovery service, and shared store behind a
 //! single `&self` API. Combined methods (on-chain + Nostr) use
-//! `tokio::task::spawn_blocking` internally so callers stay in async land.
+//! `tokio::task::spawn_blocking` internally so callers stay in async land,
+//! including store-backed wallet sync.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -20,11 +21,12 @@ use crate::discovery::events::DiscoveryEvent;
 use crate::discovery::market::{DiscoveredMarket, ParsedDiscoveredMarketAnnouncement};
 use crate::discovery::pool::{parse_canonical_lmsr_outpoint, parse_pool_event};
 use crate::discovery::service::{
-    DiscoveryService, NoopStore, persist_canonical_lmsr_state_to_store, persist_market_to_store,
+    DiscoveryService, NoopStore, discovered_market_to_contract_params,
+    persist_canonical_lmsr_state_to_store, persist_market_to_store,
 };
 use crate::discovery::store_trait::{
     ContractMetadataInput, DiscoveryStore, LmsrPoolIngestInput, LmsrPoolStateSource, NodeStore,
-    PredictionMarketCandidateIngestInput,
+    OwnMakerOrderRecordInput, PendingOrderDeletion, PredictionMarketCandidateIngestInput,
 };
 use crate::discovery::{
     AttestationContent, AttestationResult, DEFAULT_RELAYS, DiscoveredOrder, OrderAnnouncement,
@@ -51,6 +53,8 @@ use crate::sdk::{
 };
 use crate::trade::types::{TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide};
 use crate::{LmsrPoolSyncRepairInput, LmsrPriceHistoryEntry, LmsrPriceTransitionInput};
+
+const ORDER_INDEX_AUTO_RESOLVE_SENTINEL: u32 = u32::MAX;
 
 // ── Wallet snapshot ────────────────────────────────────────────────────────
 
@@ -207,6 +211,25 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         .map_err(|e| NodeError::Task(e.to_string()))?
     }
 
+    /// Run a closure against the shared store on a blocking thread.
+    async fn with_store_blocking<F, R>(&self, f: F) -> Result<R, NodeError>
+    where
+        F: FnOnce(&mut S) -> Result<R, String> + Send + 'static,
+        R: Send + 'static,
+    {
+        let store = self
+            .store
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| NodeError::Watcher("store is not configured".to_string()))?;
+        tokio::task::spawn_blocking(move || {
+            let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+            f(&mut *guard).map_err(NodeError::Watcher)
+        })
+        .await
+        .map_err(|e| NodeError::Task(e.to_string()))?
+    }
+
     // ── Internal: store persistence helpers ──────────────────────────────
 
     fn persist_market(&self, parsed: &ParsedDiscoveredMarketAnnouncement) {
@@ -259,6 +282,133 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         if let Ok(mut store) = store.lock() {
             let _ = store.ingest_lmsr_pool(&ingest);
         }
+    }
+
+    async fn publish_pending_order_deletions(&self, pending: Vec<PendingOrderDeletion>) {
+        for order in pending {
+            self.publish_order_deletion(&order).await;
+        }
+    }
+
+    async fn record_order_deletion_result(
+        &self,
+        order_id: i32,
+        delete_event_id: Option<String>,
+        error: Option<String>,
+    ) {
+        if self.store.is_none() {
+            return;
+        }
+        if let Err(e) = self
+            .with_store_blocking(move |store| {
+                store.record_order_deletion_result(
+                    order_id,
+                    delete_event_id.as_deref(),
+                    error.as_deref(),
+                )
+            })
+            .await
+        {
+            log::warn!("failed to record deletion result for store order {order_id}: {e}");
+        }
+    }
+
+    async fn publish_order_deletion(&self, pending: &PendingOrderDeletion) {
+        let maker_base_pubkey = hex::encode(pending.maker_base_pubkey);
+        let order_nonce = hex::encode(pending.order_nonce);
+
+        let tombstone_result = self
+            .discovery
+            .publish_order_tombstone(
+                &pending.market_id,
+                &maker_base_pubkey,
+                &order_nonce,
+                &pending.direction_label,
+                pending.price,
+            )
+            .await;
+
+        match tombstone_result {
+            Ok(delete_event_id) => {
+                self.record_order_deletion_result(
+                    pending.order_id,
+                    Some(delete_event_id.to_hex()),
+                    None,
+                )
+                .await;
+            }
+            Err(e) => {
+                log::warn!(
+                    "failed to publish order tombstone for store order {}: {e}",
+                    pending.order_id
+                );
+                self.record_order_deletion_result(pending.order_id, None, Some(e))
+                    .await;
+            }
+        }
+
+        if let Err(e) = self
+            .discovery
+            .publish_order_deletion_request(&pending.nostr_event_id, &pending.market_id)
+            .await
+        {
+            log::warn!(
+                "failed to publish NIP-09 deletion request for order {} (event {}): {e}",
+                pending.order_id,
+                pending.nostr_event_id
+            );
+        }
+    }
+
+    async fn known_prediction_markets_for_order_recovery(&self) -> Vec<PredictionMarketParams> {
+        let mut known_markets = HashMap::new();
+
+        if self.store.is_some() {
+            match self
+                .with_store_blocking(|store| store.list_known_prediction_markets())
+                .await
+            {
+                Ok(markets) => {
+                    for market in markets {
+                        known_markets.entry(market.market_id()).or_insert(market);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("failed to load known prediction markets from store: {e}");
+                }
+            }
+        }
+
+        match self.discovery.fetch_markets().await {
+            Ok(markets) => {
+                for market in markets {
+                    match discovered_market_to_contract_params(&market) {
+                        Ok(params) => {
+                            known_markets.entry(params.market_id()).or_insert(params);
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "failed to convert discovered market {} for order recovery: {e}",
+                                market.market_id
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("failed to fetch recovery market catalog from relays: {e}");
+            }
+        }
+
+        known_markets.into_values().collect()
+    }
+
+    /// Resolve the next unused maker-order index for canonical app-created orders.
+    pub async fn next_maker_order_index(&self) -> Result<u32, NodeError> {
+        let known_markets = self.known_prediction_markets_for_order_recovery().await;
+
+        self.with_sdk(move |sdk| sdk.next_maker_order_index_from_markets(&known_markets))
+            .await
     }
 
     // ── Combined on-chain + Nostr operations ────────────────────────────
@@ -463,6 +613,30 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             .await
             .map_err(NodeError::Discovery)?;
 
+        if let Some(store) = &self.store {
+            match store.lock() {
+                Ok(mut store) => {
+                    let event_id_hex = event_id.to_hex();
+                    let creation_txid = result.txid.to_string();
+                    if let Err(e) = store.record_own_maker_order(OwnMakerOrderRecordInput {
+                        params: &result.order_params,
+                        maker_pubkey: &result.maker_base_pubkey,
+                        order_nonce: &result.order_nonce,
+                        nostr_event_id: &event_id_hex,
+                        creation_txid: &creation_txid,
+                        market_id: &announcement.market_id,
+                        direction_label: &announcement.direction_label,
+                        offered_amount: result.order_amount,
+                    }) {
+                        log::warn!("failed to persist locally-created maker order: {e}");
+                    }
+                }
+                Err(_) => {
+                    log::warn!("failed to lock store to persist locally-created maker order");
+                }
+            }
+        }
+
         Ok((result, event_id))
     }
 
@@ -474,10 +648,53 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         order_index: u32,
         fee_amount: u64,
     ) -> Result<CancelOrderResult, NodeError> {
-        self.with_sdk(move |sdk| {
-            sdk.cancel_limit_order(&params, maker_pubkey, order_index, fee_amount)
-        })
-        .await
+        let result = self
+            .with_sdk(move |sdk| {
+                let resolved_order_index = sdk.resolve_order_index(&params, maker_pubkey)?;
+                let effective_order_index = match (resolved_order_index, order_index) {
+                    (Some(index), ORDER_INDEX_AUTO_RESOLVE_SENTINEL) => index,
+                    (Some(index), provided) if provided == index => index,
+                    (Some(index), provided) => {
+                        return Err(Error::MakerOrder(format!(
+                            "order_index {provided} does not match resolved maker order index {index}"
+                        )));
+                    }
+                    (None, ORDER_INDEX_AUTO_RESOLVE_SENTINEL) => {
+                        return Err(Error::MakerOrder(
+                            "failed to resolve maker order index from maker_base_pubkey and order params"
+                                .to_string(),
+                        ));
+                    }
+                    (None, provided) => provided,
+                };
+                sdk.cancel_limit_order(&params, maker_pubkey, effective_order_index, fee_amount)
+            })
+            .await?;
+
+        let pending = if let Some(store) = &self.store {
+            match store.lock() {
+                Ok(mut store) => match store.mark_own_maker_order_cancelled(&params, &maker_pubkey)
+                {
+                    Ok(pending) => pending,
+                    Err(e) => {
+                        log::warn!("failed to mark locally-created maker order cancelled: {e}");
+                        None
+                    }
+                },
+                Err(_) => {
+                    log::warn!("failed to lock store to mark maker order cancelled");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if let Some(pending) = pending {
+            self.publish_order_deletion(&pending).await;
+        }
+
+        Ok(result)
     }
 
     /// Fill a limit order on-chain.
@@ -1103,7 +1320,45 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     /// Sync the wallet with the Electrum backend.
     pub async fn sync_wallet(&self) -> Result<(), NodeError> {
-        self.with_sdk(|sdk| sdk.sync()).await
+        let electrum_url = self
+            .with_sdk(|sdk| {
+                sdk.sync()?;
+                Ok(sdk.electrum_url().to_string())
+            })
+            .await?;
+
+        let pending = if self.store.is_some() {
+            let electrum_url_for_store = electrum_url.clone();
+            match self
+                .with_store_blocking(move |store| {
+                    if let Err(e) = store.sync_own_order_state(&electrum_url_for_store) {
+                        log::warn!(
+                            "failed to sync own maker order state from {}: {e}",
+                            electrum_url_for_store
+                        );
+                    }
+                    match store.list_pending_order_deletions() {
+                        Ok(pending) => Ok(pending),
+                        Err(e) => {
+                            log::warn!("failed to list pending order deletions: {e}");
+                            Ok(Vec::new())
+                        }
+                    }
+                })
+                .await
+            {
+                Ok(pending) => pending,
+                Err(e) => {
+                    log::warn!("failed to run store-backed wallet sync: {e}");
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        self.publish_pending_order_deletions(pending).await;
+        Ok(())
     }
 
     /// Get the wallet balance by asset (from cached snapshot — lock-free).
@@ -1880,6 +2135,303 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("cannot resolve LMSR sync metadata")
+        );
+    }
+}
+
+#[cfg(test)]
+mod order_cleanup_tests {
+    use super::*;
+    use std::time::Duration;
+
+    use lwk_test_util::{TEST_MNEMONIC, TestEnvBuilder, regtest_policy_asset};
+    use nostr_relay_builder::prelude::*;
+
+    use crate::testing::{TestStore, test_order_announcement};
+
+    fn sample_order_market_params(collateral_asset_id: [u8; 32]) -> PredictionMarketParams {
+        PredictionMarketParams {
+            oracle_public_key: [0x21; 32],
+            collateral_asset_id,
+            yes_token_asset: [0x31; 32],
+            no_token_asset: [0x41; 32],
+            yes_reissuance_token: [0x51; 32],
+            no_reissuance_token: [0x61; 32],
+            collateral_per_token: 1_000,
+            expiry_time: 123_456,
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_order_deletion_publishes_tombstone_and_kind5_cleanup() {
+        let mock = MockRelay::run().await.unwrap();
+        let keys = Keys::generate();
+        let store = Arc::new(Mutex::new(TestStore::default()));
+        let config = DiscoveryConfig {
+            relays: vec![mock.url()],
+            network_tag: "liquid-testnet".to_string(),
+            ..Default::default()
+        };
+        let (node, _rx) =
+            DeadcatNode::with_store(keys, Network::LiquidTestnet, store.clone(), config);
+
+        let announcement = test_order_announcement("market-node-delete");
+        let event_id = node
+            .discovery()
+            .announce_order(&announcement)
+            .await
+            .unwrap();
+        let pending = PendingOrderDeletion {
+            order_id: 7,
+            market_id: announcement.market_id.clone(),
+            direction_label: announcement.direction_label.clone(),
+            maker_base_pubkey: [0xaa; 32],
+            order_nonce: [0x11; 32],
+            price: announcement.params.price,
+            nostr_event_id: event_id.to_hex(),
+        };
+
+        node.publish_order_deletion(&pending).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let orders = node
+            .fetch_orders(Some(&announcement.market_id))
+            .await
+            .unwrap();
+        assert!(
+            orders.is_empty(),
+            "node cleanup should hide the original order"
+        );
+
+        let deletion_events = node
+            .discovery()
+            .client()
+            .fetch_events(
+                vec![Filter::new().kind(Kind::Custom(5))],
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        let deletion_event = deletion_events
+            .iter()
+            .find(|event| {
+                event.tags.iter().any(|tag| {
+                    let fields = tag.as_slice();
+                    fields.len() >= 2 && fields[0] == "e" && fields[1] == pending.nostr_event_id
+                })
+            })
+            .expect("expected a NIP-09 deletion request for the original order event");
+        let hashtags: Vec<_> = deletion_event
+            .tags
+            .iter()
+            .filter_map(|tag| {
+                let fields = tag.as_slice();
+                (fields.len() >= 2 && fields[0] == "t").then(|| fields[1].to_string())
+            })
+            .collect();
+        assert!(hashtags.iter().any(|tag| tag == "order"));
+        assert!(hashtags.iter().any(|tag| tag == &pending.market_id));
+        assert!(deletion_event.tags.iter().any(|tag| {
+            let fields = tag.as_slice();
+            fields.len() >= 2 && fields[0] == "network" && fields[1] == "liquid-testnet"
+        }));
+
+        let store = store.lock().unwrap();
+        assert_eq!(store.deletion_results.len(), 1);
+        assert_eq!(store.deletion_results[0].order_id, pending.order_id);
+        assert!(store.deletion_results[0].delete_event_id.is_some());
+        assert!(store.deletion_results[0].error.is_none());
+    }
+
+    #[tokio::test]
+    async fn sync_wallet_runs_store_sync_and_publishes_pending_deletions() {
+        if std::env::var_os("ELEMENTSD_EXEC").is_none() {
+            return;
+        }
+
+        let env = TestEnvBuilder::from_env().with_electrum().build();
+        let mock = MockRelay::run().await.unwrap();
+        let keys = Keys::generate();
+        let store = Arc::new(Mutex::new(TestStore::default()));
+        let config = DiscoveryConfig {
+            relays: vec![mock.url()],
+            network_tag: "liquid-regtest".to_string(),
+            ..Default::default()
+        };
+        let (node, _rx) =
+            DeadcatNode::with_store(keys, Network::LiquidRegtest, store.clone(), config);
+
+        let wallet_dir = tempfile::tempdir().unwrap();
+        node.unlock_wallet(TEST_MNEMONIC, &env.electrum_url(), wallet_dir.path())
+            .unwrap();
+
+        let announcement = test_order_announcement("market-node-sync-wallet");
+        let event_id = node
+            .discovery()
+            .announce_order(&announcement)
+            .await
+            .unwrap();
+        {
+            let mut store = store.lock().unwrap();
+            store.pending_order_deletions.push(PendingOrderDeletion {
+                order_id: 9,
+                market_id: announcement.market_id.clone(),
+                direction_label: announcement.direction_label.clone(),
+                maker_base_pubkey: [0xaa; 32],
+                order_nonce: [0x11; 32],
+                price: announcement.params.price,
+                nostr_event_id: event_id.to_hex(),
+            });
+        }
+
+        node.sync_wallet().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let orders = node
+            .fetch_orders(Some(&announcement.market_id))
+            .await
+            .unwrap();
+        assert!(
+            orders.is_empty(),
+            "sync should publish the pending order cleanup"
+        );
+
+        let store = store.lock().unwrap();
+        assert_eq!(store.synced_electrum_urls, vec![env.electrum_url()]);
+        assert_eq!(store.deletion_results.len(), 1);
+        assert_eq!(store.deletion_results[0].order_id, 9);
+        assert!(store.deletion_results[0].delete_event_id.is_some());
+        assert!(store.deletion_results[0].error.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancel_limit_order_auto_resolves_missing_index() {
+        if std::env::var_os("ELEMENTSD_EXEC").is_none() {
+            return;
+        }
+
+        let env = TestEnvBuilder::from_env().with_electrum().build();
+        let mock = MockRelay::run().await.unwrap();
+        let keys = Keys::generate();
+        let store = Arc::new(Mutex::new(TestStore::default()));
+        let config = DiscoveryConfig {
+            relays: vec![mock.url()],
+            network_tag: "liquid-regtest".to_string(),
+            ..Default::default()
+        };
+        let (node, _rx) =
+            DeadcatNode::with_store(keys, Network::LiquidRegtest, store.clone(), config);
+
+        let wallet_dir = tempfile::tempdir().unwrap();
+        node.unlock_wallet(TEST_MNEMONIC, &env.electrum_url(), wallet_dir.path())
+            .unwrap();
+
+        for _ in 0..3 {
+            let addr = node.address(None).await.unwrap();
+            env.elementsd_sendtoaddress(addr.address(), 200_000, None);
+        }
+        env.elementsd_generate(1);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        node.sync_wallet().await.unwrap();
+
+        let market =
+            sample_order_market_params(regtest_policy_asset().into_inner().to_byte_array());
+        let market_id = market.market_id().to_string();
+        let (created, _event_id) = node
+            .create_limit_order(
+                market.yes_token_asset,
+                market.collateral_asset_id,
+                27,
+                10_000,
+                OrderDirection::SellQuote,
+                1,
+                1,
+                1,
+                500,
+                market_id,
+                "buy-yes".to_string(),
+            )
+            .await
+            .unwrap();
+
+        env.elementsd_generate(1);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        node.sync_wallet().await.unwrap();
+
+        let cancelled = node
+            .cancel_limit_order(
+                created.order_params,
+                created.maker_base_pubkey,
+                ORDER_INDEX_AUTO_RESOLVE_SENTINEL,
+                500,
+            )
+            .await
+            .unwrap();
+        assert_eq!(cancelled.refunded_amount, 10_000);
+
+        let store = store.lock().unwrap();
+        assert_eq!(store.cancelled_orders.len(), 1);
+        assert_eq!(store.cancelled_orders[0].0, created.order_params);
+        assert_eq!(store.cancelled_orders[0].1, created.maker_base_pubkey);
+    }
+
+    #[tokio::test]
+    async fn cancel_limit_order_rejects_mismatched_explicit_index() {
+        if std::env::var_os("ELEMENTSD_EXEC").is_none() {
+            return;
+        }
+
+        let env = TestEnvBuilder::from_env().with_electrum().build();
+        let mock = MockRelay::run().await.unwrap();
+        let keys = Keys::generate();
+        let store = Arc::new(Mutex::new(TestStore::default()));
+        let config = DiscoveryConfig {
+            relays: vec![mock.url()],
+            network_tag: "liquid-regtest".to_string(),
+            ..Default::default()
+        };
+        let (node, _rx) = DeadcatNode::with_store(keys, Network::LiquidRegtest, store, config);
+
+        let wallet_dir = tempfile::tempdir().unwrap();
+        node.unlock_wallet(TEST_MNEMONIC, &env.electrum_url(), wallet_dir.path())
+            .unwrap();
+
+        for _ in 0..3 {
+            let addr = node.address(None).await.unwrap();
+            env.elementsd_sendtoaddress(addr.address(), 200_000, None);
+        }
+        env.elementsd_generate(1);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        node.sync_wallet().await.unwrap();
+
+        let market =
+            sample_order_market_params(regtest_policy_asset().into_inner().to_byte_array());
+        let market_id = market.market_id().to_string();
+        let (created, _event_id) = node
+            .create_limit_order(
+                market.yes_token_asset,
+                market.collateral_asset_id,
+                27,
+                10_000,
+                OrderDirection::SellQuote,
+                1,
+                1,
+                1,
+                500,
+                market_id,
+                "buy-yes".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let err = node
+            .cancel_limit_order(created.order_params, created.maker_base_pubkey, 0, 500)
+            .await
+            .expect_err("mismatched explicit index should be rejected");
+        assert!(
+            err.to_string()
+                .contains("does not match resolved maker order index 1"),
+            "unexpected error: {err}"
         );
     }
 }
