@@ -186,18 +186,6 @@ fn amount_to_btc_string(satoshi: u64) -> String {
 }
 
 #[allow(dead_code)]
-pub fn wait_until<T>(label: &str, timeout: Duration, mut poll: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Some(value) = poll() {
-            return value;
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for {label}");
-        std::thread::sleep(POLL_INTERVAL);
-    }
-}
-
-#[allow(dead_code)]
 pub fn sync_sdk_until<T>(
     sdk: &mut DeadcatSdk,
     label: &str,

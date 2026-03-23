@@ -67,28 +67,15 @@ impl TestFixture {
         });
     }
 
-    /// Mine `n` blocks and wait for any currently pending wallet txs to confirm.
+    /// Mine `n` blocks and resync the wallet once electrum has indexed the new tip.
     fn mine_and_sync(&mut self, n: u32) {
-        let pending: Vec<_> = self
-            .sdk
-            .transactions()
-            .unwrap()
-            .into_iter()
-            .filter(|tx| tx.height.is_none())
-            .map(|tx| tx.txid)
-            .collect();
-        self.env.generate_blocks(n);
+        let tip_height = self.env.generate_blocks(n);
+        self.env.wait_for_electrum_tip(tip_height);
         sync_sdk_until(
             &mut self.sdk,
             "wallet sync after mining",
             POLL_TIMEOUT,
-            |sdk| {
-                let txs = sdk.transactions().unwrap();
-                pending
-                    .iter()
-                    .all(|txid| txs.iter().any(|tx| tx.txid == *txid && tx.height.is_some()))
-                    .then_some(())
-            },
+            |_| Some(()),
         );
     }
 
