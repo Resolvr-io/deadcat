@@ -22,7 +22,7 @@ This is a **separate covenant** from the prediction market contract, with its ow
 - Enable multi-maker, multi-taker batched fills in a single transaction.
 - Grief-resistant batch construction — any participant can be dropped without re-signing.
 - Optional cosigner for high-volume serialization (double-spend prevention).
-- Mnemonic-only wallet recovery (no external state required).
+- Mnemonic-led wallet recovery for canonical app orders, using wallet history plus a market catalog.
 - Unblinded outputs where required for covenant introspection.
 
 ## 3. Non-goals
@@ -241,12 +241,12 @@ The corresponding `MAKER_RECEIVE_SPK_HASH = SHA256(OP_1 || PUSH32 || P_order)` i
 
 ### 7.2 Wallet restoration
 
-If `order_nonce` is derived from the mnemonic via an HD index (like standard address derivation), then **no external state** is needed to recover:
+For canonical app-created orders, `order_nonce` is derived deterministically from wallet material plus `order_index`, and wallet recovery combines wallet history with a known market catalog:
 
-- **Active orders:** Scan for covenant scripts over indices within a gap limit.
+- **Active orders:** Scan wallet-authored explicit Taproot outputs and only count those that positively match canonical maker-order scripts over indices within a gap limit.
 - **Maker receipts:** Scan for P_order tweaked pubkeys over the same index range.
 
-Nostr accelerates discovery (query by maker pubkey) but is not required for recovery.
+Nostr can accelerate discovery and supply market metadata, but the chain remains the source of truth for recovery.
 
 ---
 
@@ -425,7 +425,18 @@ MAKER_RECEIVE_SPK_HASH = SHA256(maker_receive_spk)
 
 ### 11.5 HD derivation for order_nonce
 
-`order_nonce` is derived from the mnemonic via a dedicated HD path, analogous to address derivation. The exact HD path is a wallet implementation detail (e.g. `m/purpose'/coin'/account'/order_index`). The wallet implements a gap-limit scanning policy to discover active orders and receipts on recovery.
+Canonical app-created orders use a deterministic `order_nonce` derived from:
+
+- a dedicated mnemonic-derived nonce seed;
+- `order_index`;
+- `base_asset_id`, `quote_asset_id`, `price`, `direction`;
+- `min_fill_lots` and `min_remainder_lots`.
+
+The live SDK derives maker keys at `m/86'/{network}'/1'/0/{order_index}` and derives the nonce seed from a separate hardened branch under the same maker-order account. Cancels can therefore recover `order_index` from `maker_base_pubkey` plus the order params without app-layer bookkeeping.
+
+Wallet recovery for auto-allocating the next maker index scans wallet-authored Taproot candidate outputs and matches them against canonical app-created order shapes. This recovery currently assumes the app default order shape (`min_fill_lots = 1`, `min_remainder_lots = 1`) and a known market catalog. Legacy random-nonce own orders are intentionally not preserved by this recovery path.
+
+Exact duplicate creates of the same deterministic order identity (`order_index` + canonical order params) are rejected. Reusing an `order_index` is therefore only valid when the order params differ.
 
 ---
 
@@ -543,7 +554,7 @@ Outputs: [0] refund to maker
 
 ## 15. Open Questions
 
-1. Finalize exact HD path for `order_nonce` derivation (e.g. `m/purpose'/coin'/account'/order_index`).
+1. Whether wallet recovery should eventually cover non-canonical SDK order shapes (`min_fill_lots != 1` or `min_remainder_lots != 1`) instead of requiring explicit `order_index`.
 2. Nostr event kind/schema for order publication (out of scope for SDK, but needed for interop).
-3. Gap limit policy for wallet scanning (recommended: same as address gap limit).
+3. How aggressively the wallet should bound maker-index recovery scans when many historical own orders exist.
 4. Whether to support taker-provided fee bump (CPFP) as an alternative to pre-funded fee inputs.

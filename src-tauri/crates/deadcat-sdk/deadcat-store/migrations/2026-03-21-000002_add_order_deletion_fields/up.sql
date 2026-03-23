@@ -1,0 +1,2 @@
+-- Order deletion columns are backfilled by deadcat-store at open time so
+-- legacy LMSR-only databases without maker_orders can still migrate cleanly.

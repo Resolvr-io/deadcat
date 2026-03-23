@@ -15,6 +15,8 @@ use crate::{NodeState, NostrAppState};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+const ORDER_INDEX_AUTO_RESOLVE_SENTINEL: u32 = u32::MAX;
+
 fn validate_request(request: &CreateContractRequest) -> Result<(), String> {
     if request.question.trim().is_empty() || request.question.len() > 140 {
         return Err("question must be 1-140 characters".to_string());
@@ -31,6 +33,11 @@ fn validate_request(request: &CreateContractRequest) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Serialize)]
+struct OrdersInvalidatedPayload {
+    market_id: Option<String>,
+}
+
 async fn compute_tip_and_now(
     network: crate::WalletNetwork,
 ) -> Result<(crate::ChainTipResponse, u64), String> {
@@ -40,6 +47,17 @@ async fn compute_tip_and_now(
         .map_err(|e| format!("time error: {e}"))?
         .as_secs();
     Ok((tip, now_unix))
+}
+
+#[cfg(test)]
+fn unique_test_app_dir(label: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after unix epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("deadcat-{label}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&path).expect("create test app dir");
+    path
 }
 
 /// Bump state revision and emit to frontend.
@@ -153,6 +171,10 @@ async fn construct_and_store_node(
                 }
                 DiscoveryEvent::OrderDiscovered(o) => {
                     let _ = app_handle.emit("discovery:order", &o);
+                }
+                DiscoveryEvent::OrdersInvalidated { market_id } => {
+                    let payload = OrdersInvalidatedPayload { market_id };
+                    let _ = app_handle.emit("discovery:orders-invalidated", &payload);
                 }
                 DiscoveryEvent::AttestationDiscovered(a) => {
                     let _ = app_handle.emit("discovery:attestation", &a);
@@ -1196,15 +1218,14 @@ fn validate_expected_quote(
 
 #[cfg(test)]
 mod trade_command_tests {
-    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
         execute_trade_inner, get_pool_price_history_inner, get_price_history_inner,
         parse_trade_direction, parse_trade_side, quote_matches_expected, quote_trade_inner,
-        scan_lmsr_pool_inner, validate_expected_quote, ExecuteTradeRequest, ExecuteTradeResponse,
-        RouteLegResponse, RouteLegSourceResponse, TradeQuoteRequest, TradeQuoteResponse,
+        scan_lmsr_pool_inner, unique_test_app_dir, validate_expected_quote, ExecuteTradeRequest,
+        ExecuteTradeResponse, RouteLegResponse, RouteLegSourceResponse, TradeQuoteRequest,
+        TradeQuoteResponse,
     };
     use crate::state::AppStateManager;
     use crate::NodeState;
@@ -1259,17 +1280,6 @@ mod trade_command_tests {
             .manage(NodeState::default())
             .build(mock_context(noop_assets()))
             .expect("build mock tauri app")
-    }
-
-    fn unique_test_app_dir(label: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock after unix epoch")
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("deadcat-{label}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&path).expect("create test app dir");
-        path
     }
 
     fn mock_scan_app() -> (
@@ -1653,6 +1663,44 @@ mod trade_command_tests {
     }
 }
 
+#[cfg(test)]
+mod limit_order_command_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::{resolve_create_limit_order_index, unique_test_app_dir};
+
+    #[tokio::test]
+    async fn resolve_create_limit_order_index_returns_zero_for_empty_wallet() {
+        let keys = nostr_sdk::prelude::Keys::generate();
+        let store = Arc::new(Mutex::new(
+            deadcat_store::DeadcatStore::open_in_memory().unwrap(),
+        ));
+        let config = deadcat_sdk::DiscoveryConfig {
+            relays: Vec::new(),
+            network_tag: "liquid-testnet".to_string(),
+            ..Default::default()
+        };
+        let (node, _rx) = deadcat_sdk::DeadcatNode::with_store(
+            keys,
+            deadcat_sdk::Network::LiquidTestnet,
+            store.clone(),
+            config,
+        );
+
+        let wallet_dir = unique_test_app_dir("limit-order-index");
+        node.unlock_wallet(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "tcp://127.0.0.1:1",
+            &wallet_dir,
+        )
+        .unwrap();
+
+        assert_eq!(resolve_create_limit_order_index(&node).await.unwrap(), 0);
+
+        let _ = std::fs::remove_dir_all(wallet_dir);
+    }
+}
+
 async fn quote_trade_inner<R: tauri::Runtime>(
     request: TradeQuoteRequest,
     app: tauri::AppHandle<R>,
@@ -1864,6 +1912,14 @@ pub struct CreateLimitOrderResponse {
     pub order_index: u32,
 }
 
+async fn resolve_create_limit_order_index(
+    node: &deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>,
+) -> Result<u32, String> {
+    node.next_maker_order_index()
+        .await
+        .map_err(|e| format!("{e}"))
+}
+
 #[tauri::command]
 pub async fn create_limit_order(
     request: CreateLimitOrderRequest,
@@ -1898,15 +1954,12 @@ pub async fn create_limit_order(
         }
     );
 
-    let order_index: u32 = 0;
-
     let fee_amount = request.fee_amount.unwrap_or(500);
 
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
-    let market_id_for_store = request.market_id.clone();
-    let direction_label_for_store = direction_label.clone();
+    let order_index = resolve_create_limit_order_index(node).await?;
 
     let (result, event_id) = node
         .create_limit_order(
@@ -1925,44 +1978,6 @@ pub async fn create_limit_order(
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
-
-    // Persist the order to the local store for transaction labeling
-    {
-        let store_arc = {
-            let state_handle = app.state::<Mutex<AppStateManager>>();
-            let mgr = state_handle.lock().ok();
-            mgr.and_then(|m| m.store().cloned())
-        };
-        if let Some(store_arc) = store_arc {
-            if let Ok(mut store) = store_arc.lock() {
-                // Ingest the order (deduplicates on cmr + maker_base_pubkey)
-                let event_id_hex = event_id.to_hex();
-                if let Err(e) = store.ingest_maker_order(
-                    &result.order_params,
-                    Some(&result.maker_base_pubkey),
-                    Some(&result.order_nonce),
-                    Some(event_id_hex.as_str()),
-                    None,
-                ) {
-                    log::warn!("failed to ingest order into store: {e}");
-                }
-                // Record the creation metadata
-                let compiled = deadcat_sdk::CompiledMakerOrder::new(result.order_params);
-                if let Ok(compiled) = compiled {
-                    if let Err(e) = store.record_order_creation(
-                        compiled.cmr().as_ref(),
-                        &result.maker_base_pubkey,
-                        &result.txid.to_string(),
-                        &market_id_for_store,
-                        &direction_label_for_store,
-                        result.order_amount,
-                    ) {
-                        log::warn!("failed to record order creation: {e}");
-                    }
-                }
-            }
-        }
-    }
 
     bump_revision_and_emit(&app).await?;
 
@@ -2044,7 +2059,9 @@ pub async fn cancel_limit_order(
 
     let fee_amount = request.fee_amount.unwrap_or(500);
 
-    let order_index: u32 = request.order_index.unwrap_or(0);
+    let order_index = request
+        .order_index
+        .unwrap_or(ORDER_INDEX_AUTO_RESOLVE_SENTINEL);
 
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;

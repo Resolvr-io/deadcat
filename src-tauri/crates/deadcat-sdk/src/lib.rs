@@ -112,9 +112,13 @@ pub use discovery::{
     NodeStore,
     NoopStore,
     OrderAnnouncement,
+    OwnMakerOrderRecordInput,
+    OwnOrderStatusChange,
+    PendingOrderDeletion,
     PoolAnnouncement,
     PoolParams,
     PredictionMarketCandidateIngestInput,
+    StoredOrderStatus,
     // Functions
     build_announcement_event,
     build_attestation_event,

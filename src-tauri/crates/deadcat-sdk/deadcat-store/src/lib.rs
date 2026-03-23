@@ -11,6 +11,7 @@
 //! irreversible on Liquid.
 
 mod conversions;
+mod electrum_chain;
 mod error;
 mod models;
 mod schema;

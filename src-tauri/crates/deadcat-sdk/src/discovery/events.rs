@@ -10,6 +10,8 @@ pub enum DiscoveryEvent {
     MarketDiscovered(DiscoveredMarket),
     /// A new limit order announcement was received.
     OrderDiscovered(DiscoveredOrder),
+    /// Order discovery state changed and order views should be refreshed.
+    OrdersInvalidated { market_id: Option<String> },
     /// An oracle attestation was received.
     AttestationDiscovered(AttestationContent),
     /// A pool announcement was received.

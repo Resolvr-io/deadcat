@@ -25,8 +25,11 @@ use super::store_trait::{
     PredictionMarketCandidateIngestInput,
 };
 use super::{
-    ATTESTATION_TAG, CONTRACT_TAG, DiscoveredOrder, ORDER_TAG, OrderAnnouncement, POOL_TAG,
-    build_order_event, build_order_filter, parse_order_event,
+    ATTESTATION_TAG, CONTRACT_TAG, DiscoveredOrder, ORDER_DELETE_TAG, ORDER_TAG, OrderAnnouncement,
+    POOL_TAG, build_order_deletion_filter, build_order_deletion_request_event, build_order_event,
+    build_order_filter, build_order_tombstone_event, deleted_order_event_ids, event_hashtags,
+    event_network_tag, fetch_order_deletion_events, is_order_tombstone_event,
+    order_invalidation_market_id, parse_order_event, select_fetchable_order_events,
 };
 
 /// Unified Nostr discovery service for markets, orders, and attestations.
@@ -192,17 +195,31 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
             .fetch_events(vec![filter], self.config.fetch_timeout)
             .await
             .map_err(|e| format!("failed to fetch order events: {e}"))?;
+        let selected_events = select_fetchable_order_events(
+            &events.iter().cloned().collect::<Vec<_>>(),
+            &self.config.network_tag,
+        )?;
+        let deletion_events =
+            fetch_order_deletion_events(&self.client, &selected_events, self.config.fetch_timeout)
+                .await?;
+        let deleted_ids =
+            deleted_order_event_ids(&selected_events, &deletion_events, &self.config.network_tag)?;
 
         let mut orders = Vec::new();
-        for event in events.iter() {
-            match parse_order_event(event, &self.config.network_tag) {
+        for event in selected_events {
+            if deleted_ids.contains(&event.id.to_hex()) || is_order_tombstone_event(&event) {
+                continue;
+            }
+            match parse_order_event(&event, &self.config.network_tag) {
                 Ok(mut order) => {
-                    order.nostr_event_json = serde_json::to_string(event).ok();
+                    order.nostr_event_json = serde_json::to_string(&event).ok();
                     self.persist_order(&order);
                     orders.push(order);
                 }
                 Err(e) => {
-                    log::warn!("skipping unparseable order event {}: {e}", event.id);
+                    if e != "order tombstone event" {
+                        log::warn!("skipping unparseable order event {}: {e}", event.id);
+                    }
                 }
             }
         }
@@ -262,6 +279,56 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
             .send_event(event)
             .await
             .map_err(|e| format!("failed to send order event: {e}"))?;
+        Ok(*output.id())
+    }
+
+    /// Publish a parameterized-replaceable tombstone for an order announcement.
+    pub async fn publish_order_tombstone(
+        &self,
+        market_id: &str,
+        maker_base_pubkey: &str,
+        order_nonce: &str,
+        direction_label: &str,
+        price: u64,
+    ) -> Result<EventId, String> {
+        self.ensure_connected().await?;
+
+        let event = build_order_tombstone_event(
+            &self.keys,
+            market_id,
+            maker_base_pubkey,
+            order_nonce,
+            direction_label,
+            price,
+            &self.config.network_tag,
+        )?;
+        let output = self
+            .client
+            .send_event(event)
+            .await
+            .map_err(|e| format!("failed to send order tombstone event: {e}"))?;
+        Ok(*output.id())
+    }
+
+    /// Publish a best-effort NIP-09 deletion request for an order announcement.
+    pub async fn publish_order_deletion_request(
+        &self,
+        original_event_id: &str,
+        market_id: &str,
+    ) -> Result<EventId, String> {
+        self.ensure_connected().await?;
+
+        let event = build_order_deletion_request_event(
+            &self.keys,
+            original_event_id,
+            market_id,
+            &self.config.network_tag,
+        )?;
+        let output = self
+            .client
+            .send_event(event)
+            .await
+            .map_err(|e| format!("failed to send order deletion event: {e}"))?;
         Ok(*output.id())
     }
 
@@ -457,12 +524,19 @@ async fn run_subscription_loop<S: DiscoveryStore>(
 
     let market_filter = build_contract_filter();
     let order_filter = build_order_filter(None);
+    let order_delete_filter = build_order_deletion_filter(None);
     let attestation_filter = build_attestation_subscription_filter();
     let pool_filter = build_pool_filter(None);
 
     if let Err(e) = client
         .subscribe(
-            vec![market_filter, order_filter, attestation_filter, pool_filter],
+            vec![
+                market_filter,
+                order_filter,
+                order_delete_filter,
+                attestation_filter,
+                pool_filter,
+            ],
             None,
         )
         .await
@@ -473,18 +547,7 @@ async fn run_subscription_loop<S: DiscoveryStore>(
 
     while let Ok(notification) = notifications.recv().await {
         if let RelayPoolNotification::Event { event, .. } = notification {
-            let hashtags: Vec<String> = event
-                .tags
-                .iter()
-                .filter_map(|t| {
-                    let tag_vec = t.as_slice();
-                    if tag_vec.len() >= 2 && tag_vec[0] == "t" {
-                        Some(tag_vec[1].to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            let hashtags = event_hashtags(&event);
 
             if hashtags.iter().any(|t| t == CONTRACT_TAG) {
                 match parse_announcement_event_with_ingest(&event, &network_tag) {
@@ -496,7 +559,39 @@ async fn run_subscription_loop<S: DiscoveryStore>(
                         log::warn!("skipping unparseable market announcement {}: {e}", event.id);
                     }
                 }
+            } else if event.kind == Kind::Custom(5)
+                && hashtags.iter().any(|t| t == ORDER_DELETE_TAG)
+            {
+                match event_network_tag(&event) {
+                    Some(tag) if tag != network_tag => continue,
+                    Some(_) => {
+                        let market_id = order_invalidation_market_id(&event);
+                        let _ = tx.send(DiscoveryEvent::OrdersInvalidated { market_id });
+                    }
+                    None => {
+                        log::warn!(
+                            "skipping order deletion event {}: missing network tag",
+                            event.id
+                        );
+                    }
+                }
             } else if hashtags.iter().any(|t| t == ORDER_TAG) {
+                if is_order_tombstone_event(&event) {
+                    match event_network_tag(&event) {
+                        Some(tag) if tag != network_tag => continue,
+                        Some(_) => {
+                            let market_id = order_invalidation_market_id(&event);
+                            let _ = tx.send(DiscoveryEvent::OrdersInvalidated { market_id });
+                        }
+                        None => {
+                            log::warn!(
+                                "skipping order tombstone event {}: missing network tag",
+                                event.id
+                            );
+                        }
+                    }
+                    continue;
+                }
                 if let Ok(mut order) = parse_order_event(&event, &network_tag) {
                     order.nostr_event_json = serde_json::to_string(&*event).ok();
                     persist_order_to_store(&store, &order);

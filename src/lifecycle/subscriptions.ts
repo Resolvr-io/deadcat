@@ -133,6 +133,13 @@ export function setupTauriSubscriptions(render: () => void): () => void {
     }),
   );
 
+  registerListener(
+    listen("discovery:orders-invalidated", () => {
+      scheduleMarketRefresh();
+      scheduleOrderRefresh();
+    }),
+  );
+
   return () => {
     disposed = true;
     while (unlisteners.length > 0) {

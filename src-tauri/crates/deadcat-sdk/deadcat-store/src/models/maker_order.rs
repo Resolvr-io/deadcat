@@ -30,6 +30,9 @@ pub struct MakerOrderRow {
     pub market_id: Option<String>,
     pub direction_label: Option<String>,
     pub offered_amount: Option<i64>,
+    pub nostr_delete_event_id: Option<String>,
+    pub nostr_delete_requested_at: Option<String>,
+    pub nostr_delete_last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -54,4 +57,7 @@ pub struct NewMakerOrderRow {
     pub market_id: Option<String>,
     pub direction_label: Option<String>,
     pub offered_amount: Option<i64>,
+    pub nostr_delete_event_id: Option<String>,
+    pub nostr_delete_requested_at: Option<String>,
+    pub nostr_delete_last_error: Option<String>,
 }

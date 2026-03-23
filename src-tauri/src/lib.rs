@@ -362,11 +362,14 @@ async fn delete_wallet(app: AppHandle) -> Result<AppState, String> {
 
 #[tauri::command]
 async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
-    // Sync via the node (async — uses spawn_blocking internally)
+    // Sync via the node (async — wallet/store sync use spawn_blocking internally)
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     node.sync().await.map_err(|e| format!("{e}"))?;
+    let electrum_url = node
+        .electrum_url()
+        .unwrap_or_else(|| node.default_electrum_url().to_string());
 
     // Grab balance from the snapshot (sync — no lock needed)
     let wallet_balance = node.balance().ok().map(|m| {
@@ -381,21 +384,16 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
     let app_handle = app.clone();
     tokio::task::spawn_blocking(move || {
         let manager = app_handle.state::<Mutex<AppStateManager>>();
-        let (store_arc, network) = {
+        let store_arc = {
             let mgr = manager
                 .lock()
                 .map_err(|_| "state lock failed".to_string())?;
-            (
-                mgr.store().cloned(),
-                mgr.network().unwrap_or(Network::Testnet),
-            )
+            mgr.store().cloned()
         };
 
         // Sync store using the chain adapter
         if let Some(store_arc) = store_arc {
-            let sdk_network = state::to_sdk_network(network);
-            let electrum_url = sdk_network.default_electrum_url();
-            let chain = chain_adapter::ElectrumChainAdapter::new(electrum_url);
+            let chain = chain_adapter::ElectrumChainAdapter::new(&electrum_url);
             let now_unix = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|duration| duration.as_secs())
@@ -477,11 +475,8 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
                             now_unix
                         );
                     }
-                    if let Err(e) = store.sync(&chain) {
-                        log::warn!("failed to sync store from {}: {e}", electrum_url);
-                    }
                 }
-                Err(_) => log::warn!("failed to lock store for candidate promotion and sync"),
+                Err(_) => log::warn!("failed to lock store for candidate promotion"),
             }
         }
 

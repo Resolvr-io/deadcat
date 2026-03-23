@@ -25,6 +25,9 @@ diesel::table! {
         market_id -> Nullable<Text>,
         direction_label -> Nullable<Text>,
         offered_amount -> Nullable<BigInt>,
+        nostr_delete_event_id -> Nullable<Text>,
+        nostr_delete_requested_at -> Nullable<Text>,
+        nostr_delete_last_error -> Nullable<Text>,
     }
 }
 

@@ -8,6 +8,14 @@ use deadcat_sdk::{DiscoveryConfig, DiscoveryEvent, DiscoveryService};
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
 
+fn discovery_config(mock_url: &str) -> DiscoveryConfig {
+    DiscoveryConfig {
+        relays: vec![mock_url.to_string()],
+        network_tag: "liquid-testnet".to_string(),
+        ..Default::default()
+    }
+}
+
 async fn setup_service_with_store(
     mock_url: &str,
 ) -> (
@@ -18,11 +26,7 @@ async fn setup_service_with_store(
 ) {
     let keys = Keys::generate();
     let store = Arc::new(Mutex::new(TestStore::default()));
-    let config = DiscoveryConfig {
-        relays: vec![mock_url.to_string()],
-        network_tag: "liquid-testnet".to_string(),
-        ..Default::default()
-    };
+    let config = discovery_config(mock_url);
     let (service, rx) = DiscoveryService::with_store(keys.clone(), store.clone(), config);
     (service, rx, store, keys)
 }
@@ -214,6 +218,190 @@ async fn store_persistence_on_discovery() {
 
     handle.abort();
     let _ = publisher.disconnect().await;
+}
+
+#[tokio::test]
+async fn fetch_orders_hides_latest_tombstone_replacement() {
+    let mock = MockRelay::run().await.unwrap();
+    let (service, _rx, _store, _keys) = setup_service_with_store(&mock.url()).await;
+
+    let announcement = test_order_announcement("market-tombstone");
+    service.announce_order(&announcement).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    service
+        .publish_order_tombstone(
+            &announcement.market_id,
+            &announcement.maker_base_pubkey,
+            &announcement.order_nonce,
+            &announcement.direction_label,
+            announcement.params.price,
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let orders = service
+        .fetch_orders(Some(&announcement.market_id))
+        .await
+        .unwrap();
+    assert!(orders.is_empty(), "tombstoned order should be hidden");
+}
+
+#[tokio::test]
+async fn fetch_orders_hides_valid_nip09_deletion() {
+    let mock = MockRelay::run().await.unwrap();
+    let (service, _rx, _store, _keys) = setup_service_with_store(&mock.url()).await;
+
+    let announcement = test_order_announcement("market-delete");
+    let event_id = service.announce_order(&announcement).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    service
+        .publish_order_deletion_request(&event_id.to_hex(), &announcement.market_id)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let orders = service
+        .fetch_orders(Some(&announcement.market_id))
+        .await
+        .unwrap();
+    assert!(orders.is_empty(), "deleted order should be hidden");
+}
+
+#[tokio::test]
+async fn fetch_orders_ignores_foreign_nip09_deletion() {
+    let mock = MockRelay::run().await.unwrap();
+    let (service, _rx, _store, _keys) = setup_service_with_store(&mock.url()).await;
+
+    let publisher_keys = Keys::generate();
+    let (publisher, _rx) = DiscoveryService::new(publisher_keys, discovery_config(&mock.url()));
+    let foreign_keys = Keys::generate();
+    let (foreign_publisher, _rx) =
+        DiscoveryService::new(foreign_keys, discovery_config(&mock.url()));
+    let announcement = test_order_announcement("market-foreign-delete");
+
+    let event_id = publisher.announce_order(&announcement).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let deletion_result = foreign_publisher
+        .publish_order_deletion_request(&event_id.to_hex(), &announcement.market_id)
+        .await;
+    assert!(
+        deletion_result.is_err(),
+        "relay should not accept a foreign NIP-09 deletion request"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let orders = service
+        .fetch_orders(Some(&announcement.market_id))
+        .await
+        .unwrap();
+    assert_eq!(orders.len(), 1, "foreign delete should not hide the order");
+    assert_eq!(orders[0].id, event_id.to_hex());
+}
+
+#[tokio::test]
+async fn subscription_emits_order_invalidation_for_tombstone() {
+    let mock = MockRelay::run().await.unwrap();
+    let (service, mut rx, _store, _keys) = setup_service_with_store(&mock.url()).await;
+    let handle = service.start().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let publisher_keys = Keys::generate();
+    let (publisher, _rx) = DiscoveryService::new(publisher_keys, discovery_config(&mock.url()));
+    let announcement = test_order_announcement("market-live-tombstone");
+
+    publisher.announce_order(&announcement).await.unwrap();
+    match tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        DiscoveryEvent::OrderDiscovered(order) => {
+            assert_eq!(order.market_id, announcement.market_id);
+        }
+        other => panic!("expected OrderDiscovered, got {other:?}"),
+    }
+
+    publisher
+        .publish_order_tombstone(
+            &announcement.market_id,
+            &announcement.maker_base_pubkey,
+            &announcement.order_nonce,
+            &announcement.direction_label,
+            announcement.params.price,
+        )
+        .await
+        .unwrap();
+
+    match tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        DiscoveryEvent::OrdersInvalidated { market_id } => {
+            assert_eq!(market_id.as_deref(), Some(announcement.market_id.as_str()));
+        }
+        other => panic!("expected OrdersInvalidated, got {other:?}"),
+    }
+
+    let orders = service
+        .fetch_orders(Some(&announcement.market_id))
+        .await
+        .unwrap();
+    assert!(orders.is_empty(), "tombstoned order should be hidden");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn subscription_emits_order_invalidation_for_tagged_deletion() {
+    let mock = MockRelay::run().await.unwrap();
+    let (service, mut rx, _store, _keys) = setup_service_with_store(&mock.url()).await;
+    let handle = service.start().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let publisher_keys = Keys::generate();
+    let (publisher, _rx) = DiscoveryService::new(publisher_keys, discovery_config(&mock.url()));
+    let announcement = test_order_announcement("market-live-delete");
+
+    let event_id = publisher.announce_order(&announcement).await.unwrap();
+    match tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        DiscoveryEvent::OrderDiscovered(order) => {
+            assert_eq!(order.market_id, announcement.market_id);
+        }
+        other => panic!("expected OrderDiscovered, got {other:?}"),
+    }
+
+    publisher
+        .publish_order_deletion_request(&event_id.to_hex(), &announcement.market_id)
+        .await
+        .unwrap();
+
+    match tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        DiscoveryEvent::OrdersInvalidated { market_id } => {
+            assert_eq!(market_id.as_deref(), Some(announcement.market_id.as_str()));
+        }
+        other => panic!("expected OrdersInvalidated, got {other:?}"),
+    }
+
+    let orders = service
+        .fetch_orders(Some(&announcement.market_id))
+        .await
+        .unwrap();
+    assert!(orders.is_empty(), "deleted order should be hidden");
+
+    handle.abort();
 }
 
 #[tokio::test]
