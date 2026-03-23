@@ -49,6 +49,17 @@ async fn compute_tip_and_now(
     Ok((tip, now_unix))
 }
 
+#[cfg(test)]
+fn unique_test_app_dir(label: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after unix epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("deadcat-{label}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&path).expect("create test app dir");
+    path
+}
+
 /// Bump state revision and emit to frontend.
 async fn bump_revision_and_emit<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -1207,15 +1218,14 @@ fn validate_expected_quote(
 
 #[cfg(test)]
 mod trade_command_tests {
-    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
         execute_trade_inner, get_pool_price_history_inner, get_price_history_inner,
         parse_trade_direction, parse_trade_side, quote_matches_expected, quote_trade_inner,
-        scan_lmsr_pool_inner, validate_expected_quote, ExecuteTradeRequest, ExecuteTradeResponse,
-        RouteLegResponse, RouteLegSourceResponse, TradeQuoteRequest, TradeQuoteResponse,
+        scan_lmsr_pool_inner, unique_test_app_dir, validate_expected_quote, ExecuteTradeRequest,
+        ExecuteTradeResponse, RouteLegResponse, RouteLegSourceResponse, TradeQuoteRequest,
+        TradeQuoteResponse,
     };
     use crate::state::AppStateManager;
     use crate::NodeState;
@@ -1270,17 +1280,6 @@ mod trade_command_tests {
             .manage(NodeState::default())
             .build(mock_context(noop_assets()))
             .expect("build mock tauri app")
-    }
-
-    fn unique_test_app_dir(label: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock after unix epoch")
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("deadcat-{label}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&path).expect("create test app dir");
-        path
     }
 
     fn mock_scan_app() -> (
@@ -1668,7 +1667,7 @@ mod trade_command_tests {
 mod limit_order_command_tests {
     use std::sync::{Arc, Mutex};
 
-    use super::resolve_create_limit_order_index;
+    use super::{resolve_create_limit_order_index, unique_test_app_dir};
 
     #[tokio::test]
     async fn resolve_create_limit_order_index_returns_zero_for_empty_wallet() {
@@ -1688,11 +1687,7 @@ mod limit_order_command_tests {
             config,
         );
 
-        let wallet_dir = std::env::temp_dir().join(format!(
-            "deadcat-limit-order-index-test-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&wallet_dir).unwrap();
+        let wallet_dir = unique_test_app_dir("limit-order-index");
         node.unlock_wallet(
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
             "tcp://127.0.0.1:1",

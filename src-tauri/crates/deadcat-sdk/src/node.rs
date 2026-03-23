@@ -613,27 +613,31 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             .await
             .map_err(NodeError::Discovery)?;
 
-        if let Some(store) = &self.store {
-            match store.lock() {
-                Ok(mut store) => {
-                    let event_id_hex = event_id.to_hex();
-                    let creation_txid = result.txid.to_string();
-                    if let Err(e) = store.record_own_maker_order(OwnMakerOrderRecordInput {
-                        params: &result.order_params,
-                        maker_pubkey: &result.maker_base_pubkey,
-                        order_nonce: &result.order_nonce,
+        if self.store.is_some() {
+            let event_id_hex = event_id.to_hex();
+            let creation_txid = result.txid.to_string();
+            let order_params = result.order_params;
+            let maker_base_pubkey = result.maker_base_pubkey;
+            let order_nonce = result.order_nonce;
+            let market_id = announcement.market_id.clone();
+            let direction_label = announcement.direction_label.clone();
+            let offered_amount = result.order_amount;
+            if let Err(e) = self
+                .with_store_blocking(move |store| {
+                    store.record_own_maker_order(OwnMakerOrderRecordInput {
+                        params: &order_params,
+                        maker_pubkey: &maker_base_pubkey,
+                        order_nonce: &order_nonce,
                         nostr_event_id: &event_id_hex,
                         creation_txid: &creation_txid,
-                        market_id: &announcement.market_id,
-                        direction_label: &announcement.direction_label,
-                        offered_amount: result.order_amount,
-                    }) {
-                        log::warn!("failed to persist locally-created maker order: {e}");
-                    }
-                }
-                Err(_) => {
-                    log::warn!("failed to lock store to persist locally-created maker order");
-                }
+                        market_id: &market_id,
+                        direction_label: &direction_label,
+                        offered_amount,
+                    })
+                })
+                .await
+            {
+                log::warn!("failed to persist locally-created maker order: {e}");
             }
         }
 
@@ -671,18 +675,16 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             })
             .await?;
 
-        let pending = if let Some(store) = &self.store {
-            match store.lock() {
-                Ok(mut store) => match store.mark_own_maker_order_cancelled(&params, &maker_pubkey)
-                {
-                    Ok(pending) => pending,
-                    Err(e) => {
-                        log::warn!("failed to mark locally-created maker order cancelled: {e}");
-                        None
-                    }
-                },
-                Err(_) => {
-                    log::warn!("failed to lock store to mark maker order cancelled");
+        let pending = if self.store.is_some() {
+            match self
+                .with_store_blocking(move |store| {
+                    store.mark_own_maker_order_cancelled(&params, &maker_pubkey)
+                })
+                .await
+            {
+                Ok(pending) => pending,
+                Err(e) => {
+                    log::warn!("failed to mark locally-created maker order cancelled: {e}");
                     None
                 }
             }
