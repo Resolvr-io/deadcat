@@ -9,6 +9,7 @@ use crate::lmsr_pool::table::LmsrTableManifest;
 use crate::pool::PoolReserves;
 use crate::prediction_market::params::{MarketId, PredictionMarketParams};
 use crate::trade::types::LmsrPoolUtxos;
+use crate::tx::{PreparedTransaction, ResolvedMinerFee};
 
 /// LMSR scan inputs plus the caller-supplied pool identity hint.
 ///
@@ -47,7 +48,6 @@ pub struct CreateLmsrPoolRequest {
     pub initial_s_index: u64,
     pub initial_reserves: PoolReserves,
     pub table_values: Vec<u64>,
-    pub fee_amount: u64,
 }
 
 /// Result returned after a successful on-chain LMSR pool bootstrap.
@@ -56,6 +56,15 @@ pub struct CreateLmsrPoolResult {
     pub txid: Txid,
     pub snapshot: LmsrPoolSnapshot,
     pub announcement: PoolAnnouncement,
+    pub fee: ResolvedMinerFee,
+}
+
+/// Prepared LMSR pool bootstrap transaction ready for broadcast.
+#[derive(Debug, Clone)]
+pub struct PreparedCreateLmsrPool {
+    pub snapshot: LmsrPoolSnapshot,
+    pub announcement: PoolAnnouncement,
+    pub prepared_tx: PreparedTransaction,
 }
 
 /// Request for adjusting an existing LMSR pool's reserves (AdminAdjust transition).
@@ -70,7 +79,6 @@ pub struct AdjustLmsrPoolRequest {
     pub current_reserves: PoolReserves,
     pub new_reserves: PoolReserves,
     pub table_values: Vec<u64>,
-    pub fee_amount: u64,
     pub pool_index: u32,
 }
 
@@ -79,6 +87,14 @@ pub struct AdjustLmsrPoolRequest {
 pub struct AdjustLmsrPoolResult {
     pub txid: Txid,
     pub new_snapshot: LmsrPoolSnapshot,
+    pub fee: ResolvedMinerFee,
+}
+
+/// Prepared LMSR pool adjustment transaction ready for broadcast.
+#[derive(Debug, Clone)]
+pub struct PreparedAdjustLmsrPool {
+    pub new_snapshot: LmsrPoolSnapshot,
+    pub prepared_tx: PreparedTransaction,
 }
 
 /// Request for closing an LMSR pool (AdminAdjust to minimum reserves).
@@ -92,7 +108,6 @@ pub struct CloseLmsrPoolRequest {
     pub current_s_index: u64,
     pub current_reserves: PoolReserves,
     pub table_values: Vec<u64>,
-    pub fee_amount: u64,
     pub pool_index: u32,
 }
 
@@ -103,6 +118,16 @@ pub struct CloseLmsrPoolResult {
     pub reclaimed_yes: u64,
     pub reclaimed_no: u64,
     pub reclaimed_collateral: u64,
+    pub fee: ResolvedMinerFee,
+}
+
+/// Prepared LMSR pool close transaction ready for broadcast.
+#[derive(Debug, Clone)]
+pub struct PreparedCloseLmsrPool {
+    pub reclaimed_yes: u64,
+    pub reclaimed_no: u64,
+    pub reclaimed_collateral: u64,
+    pub prepared_tx: PreparedTransaction,
 }
 
 impl TryFrom<&PoolAnnouncement> for LmsrPoolLocator {

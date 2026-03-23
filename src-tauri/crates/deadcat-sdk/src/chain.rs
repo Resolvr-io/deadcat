@@ -23,6 +23,12 @@ pub trait ChainBackend {
 
     /// Broadcast a signed transaction and return its txid.
     fn broadcast(&self, tx: &Transaction) -> Result<Txid>;
+
+    /// Estimate the rate needed to confirm within the target, in sat/vB.
+    fn estimate_fee_rate_sat_per_vb(&self, target_blocks: u16) -> Result<f32>;
+
+    /// Return the relay floor, in sat/vB.
+    fn relay_fee_rate_sat_per_vb(&self) -> Result<f32>;
 }
 
 /// Electrum-based chain backend for Liquid.
@@ -241,5 +247,27 @@ impl ChainBackend for ElectrumBackend {
         client
             .broadcast(tx)
             .map_err(|e| Error::Broadcast(e.to_string()))
+    }
+
+    fn estimate_fee_rate_sat_per_vb(&self, target_blocks: u16) -> Result<f32> {
+        use electrum_client::ElectrumApi;
+
+        let client = electrum_client::Client::new(&self.electrum_url)
+            .map_err(|e| Error::FeeEstimation(e.to_string()))?;
+        let estimate = client
+            .estimate_fee(target_blocks as usize)
+            .map_err(|e| Error::FeeEstimation(e.to_string()))?;
+        crate::tx::btc_per_kvb_to_sat_per_vb(estimate)
+    }
+
+    fn relay_fee_rate_sat_per_vb(&self) -> Result<f32> {
+        use electrum_client::ElectrumApi;
+
+        let client = electrum_client::Client::new(&self.electrum_url)
+            .map_err(|e| Error::FeeEstimation(e.to_string()))?;
+        let relay = client
+            .relay_fee()
+            .map_err(|e| Error::FeeEstimation(e.to_string()))?;
+        crate::tx::btc_per_kvb_to_sat_per_vb(relay)
     }
 }

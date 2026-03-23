@@ -27,6 +27,7 @@ pub(crate) mod taproot;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub(crate) mod trade;
+pub(crate) mod tx;
 
 // ── Core types ─────────────────────────────────────────────────────
 pub use announcement::{CONTRACT_ANNOUNCEMENT_VERSION, ContractAnnouncement, ContractMetadata};
@@ -45,8 +46,10 @@ pub use prediction_market::params::{MarketId, PredictionMarketParams};
 pub use prediction_market::state::{MarketSlot, MarketState};
 pub use pset::UnblindedUtxo;
 pub use sdk::{
-    CancelOrderResult, CancellationResult, CreateOrderResult, FillOrderResult, IssuanceResult,
-    RedemptionResult, ResolutionResult,
+    CancelOrderResult, CancellationResult, ContractCreationResult, CreateOrderResult,
+    FillOrderResult, IssuanceResult, PreparedCancelOrder, PreparedCancellation,
+    PreparedContractCreation, PreparedCreateOrder, PreparedFillOrder, PreparedIssuance,
+    PreparedRedemption, PreparedResolution, PreparedSendLbtc, RedemptionResult, ResolutionResult,
 };
 pub use taproot::NUMS_KEY_BYTES;
 
@@ -54,7 +57,10 @@ pub use taproot::NUMS_KEY_BYTES;
 pub use lwk_wollet;
 
 // ── Node ──────────────────────────────────────────────────────────
-pub use node::WalletSnapshot;
+pub use node::{
+    MarketCreationResult, PreparedLimitOrderCancellation, PreparedLimitOrderCreation,
+    PreparedMarketCreation, WalletSnapshot,
+};
 
 // ── Maker orders ───────────────────────────────────────────────────
 pub use maker_order::contract::CompiledMakerOrder;
@@ -66,6 +72,7 @@ pub use maker_order::params::{
 pub use lmsr_pool::api::{
     AdjustLmsrPoolRequest, AdjustLmsrPoolResult, CloseLmsrPoolRequest, CloseLmsrPoolResult,
     CreateLmsrPoolRequest, CreateLmsrPoolResult, LmsrPoolLocator, LmsrPoolSnapshot,
+    PreparedAdjustLmsrPool, PreparedCloseLmsrPool, PreparedCreateLmsrPool,
     build_pool_announcement_from_snapshot,
 };
 pub use lmsr_pool::contract::CompiledLmsrPool;
@@ -84,8 +91,10 @@ pub use pool::{PoolReserves, implied_probability_bps};
 
 // ── Trade routing ──────────────────────────────────────────────────
 pub use trade::types::{
-    LiquiditySource, RouteLeg, TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide,
+    LiquiditySource, PreparedTrade, RouteLeg, TradeAmount, TradeDirection, TradeQuote, TradeResult,
+    TradeSide,
 };
+pub use tx::{MinerFeePolicy, PreparedTransaction, ResolvedMinerFee, TxOptions};
 
 // ── Discovery ─────────────────────────────────────────────────────
 pub use discovery::{

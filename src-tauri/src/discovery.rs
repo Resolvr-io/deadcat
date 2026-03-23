@@ -56,6 +56,7 @@ pub struct CreateContractRequest {
     pub resolution_source: String,
     pub settlement_deadline_unix: u64,
     pub collateral_per_token: u64,
+    pub tx_options: deadcat_sdk::TxOptions,
 }
 
 /// A relay entry with connection status and backup indicator.

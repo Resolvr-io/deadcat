@@ -160,11 +160,67 @@ export type DiscoveredOrder = {
   nostr_event_json?: string | null;
 };
 
+export type MinerFeePolicy =
+  | {
+      kind: "confirmation_target_blocks";
+      blocks: number;
+    }
+  | {
+      kind: "rate_sat_per_vb";
+      sat_per_vb: number;
+    }
+  | {
+      kind: "exact_amount_sat";
+      amount_sat: number;
+    };
+
+export type TxOptions = {
+  feePolicy: MinerFeePolicy;
+};
+
+export type ResolvedMinerFee = {
+  policy: MinerFeePolicy;
+  amountSat: number;
+  rateSatPerVb: number;
+  discountVsize: number;
+};
+
+export type CreateContractOnchainResponse = {
+  market: DiscoveredMarket;
+  fee: ResolvedMinerFee;
+};
+
 export type IssuanceResult = {
   txid: string;
   previous_state: number;
   new_state: number;
   pairs_issued: number;
+  fee: ResolvedMinerFee;
+};
+
+export type ResolutionResult = {
+  txid: string;
+  previous_state: number;
+  new_state: number;
+  outcome_yes: boolean;
+  fee: ResolvedMinerFee;
+};
+
+export type CancellationResult = {
+  txid: string;
+  previous_state: number;
+  new_state: number;
+  pairs_burned: number;
+  is_full_cancellation: boolean;
+  fee: ResolvedMinerFee;
+};
+
+export type RedemptionResult = {
+  txid: string;
+  previous_state: number;
+  tokens_redeemed: number;
+  payout_sats: number;
+  fee: ResolvedMinerFee;
 };
 
 export type IdentityResponse = { pubkey_hex: string; npub: string };
@@ -365,6 +421,7 @@ export type ExecuteTradeResponse = {
     r_no: number;
     r_lbtc: number;
   } | null;
+  fee: ResolvedMinerFee;
 };
 
 export type CreateLimitOrderResponse = {
@@ -373,11 +430,13 @@ export type CreateLimitOrderResponse = {
   covenant_address: string;
   order_amount: number;
   order_index: number;
+  fee: ResolvedMinerFee;
 };
 
 export type CancelLimitOrderResponse = {
   txid: string;
   refunded_amount: number;
+  fee: ResolvedMinerFee;
 };
 
 export type OwnOrderSummary = {
@@ -430,6 +489,7 @@ export type ChartTimescale = "10B" | "25B" | "50B" | "100B";
 export type CreateLmsrPoolResponse = {
   txid: string;
   pool_id: string;
+  fee: ResolvedMinerFee;
 };
 
 export type ScanLmsrPoolResponse = {
@@ -445,4 +505,10 @@ export type CloseLmsrPoolResponse = {
   reclaimed_yes: number;
   reclaimed_no: number;
   reclaimed_collateral: number;
+};
+
+export type LiquidSendResult = {
+  txid: string;
+  feeSat: number;
+  fee: ResolvedMinerFee;
 };

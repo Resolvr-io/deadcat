@@ -552,14 +552,19 @@ async fn get_wallet_transactions(
 async fn send_lbtc(
     address: String,
     amount_sat: u64,
-    fee_rate: Option<f32>,
+    tx_options: deadcat_sdk::TxOptions,
     app: AppHandle,
 ) -> Result<wallet::types::LiquidSendResult, String> {
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
+    let prepared = node
+        .prepare_send_lbtc(address, amount_sat, tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let fee = prepared.prepared_tx.fee.clone();
     let (txid, fee_sat) = node
-        .send_lbtc(address, amount_sat, fee_rate)
+        .broadcast_prepared_send_lbtc(prepared)
         .await
         .map_err(|e| format!("{e}"))?;
 
@@ -589,6 +594,7 @@ async fn send_lbtc(
     Ok(wallet::types::LiquidSendResult {
         txid: txid.to_string(),
         fee_sat,
+        fee,
     })
 }
 

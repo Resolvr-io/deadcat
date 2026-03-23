@@ -4,13 +4,16 @@ use std::time::Duration;
 
 use bitcoincore_rpc::{Auth, Client as RpcClient, RpcApi};
 use deadcat_sdk::lwk_wollet::elements::confidential::{Asset, Value as ConfValue};
-use deadcat_sdk::lwk_wollet::elements::{Address, AddressParams, AssetId, Script, Txid};
+use deadcat_sdk::lwk_wollet::elements::{
+    Address, AddressParams, AssetId, Script, Transaction, Txid,
+};
 use deadcat_sdk::taproot::NUMS_KEY_BYTES;
 use deadcat_sdk::testing::TestStore;
 use deadcat_sdk::{
     CompiledLmsrPool, DeadcatNode, DiscoveryConfig, Error, LiquiditySource, LmsrInitialOutpoint,
-    LmsrPoolId, LmsrPoolIdInput, LmsrPoolParams, Network, NodeError, PoolAnnouncement, PoolParams,
-    PoolReserves, PredictionMarketParams, TradeAmount, TradeDirection, TradeSide,
+    LmsrPoolId, LmsrPoolIdInput, LmsrPoolParams, MinerFeePolicy, Network, NodeError,
+    PoolAnnouncement, PoolParams, PoolReserves, PredictionMarketParams, ResolvedMinerFee,
+    TradeAmount, TradeDirection, TradeSide, TxOptions,
 };
 use lwk_test_util::{TEST_MNEMONIC, TestEnv, TestEnvBuilder, regtest_policy_asset};
 use nostr_relay_builder::prelude::MockRelay;
@@ -32,6 +35,36 @@ fn sats_to_btc_string(sats: u64) -> String {
 
 fn asset_bytes(asset: AssetId) -> [u8; 32] {
     asset.into_inner().to_byte_array()
+}
+
+fn exact_fee_tx_options(amount_sat: u64) -> TxOptions {
+    TxOptions {
+        fee_policy: MinerFeePolicy::ExactAmountSat { amount_sat },
+    }
+}
+
+fn default_confirmation_target_tx_options() -> TxOptions {
+    TxOptions {
+        fee_policy: MinerFeePolicy::ConfirmationTargetBlocks { blocks: 6 },
+    }
+}
+
+fn actual_fee_amount(tx: &Transaction) -> u64 {
+    tx.output
+        .iter()
+        .filter(|output| output.script_pubkey.is_empty())
+        .map(|output| output.value.explicit().unwrap_or(0))
+        .sum()
+}
+
+fn assert_effective_fee_metadata(tx: &Transaction, fee: &ResolvedMinerFee) {
+    assert_eq!(fee.amount_sat, actual_fee_amount(tx));
+    let expected_rate = fee.amount_sat as f32 / tx.discount_vsize().max(1) as f32;
+    assert!(
+        (fee.rate_sat_per_vb - expected_rate).abs() < 1e-6,
+        "expected effective rate {expected_rate}, got {}",
+        fee.rate_sat_per_vb
+    );
 }
 
 fn parse_lmsr_outpoint(outpoint: &str) -> LmsrInitialOutpoint {
@@ -426,9 +459,14 @@ async fn lmsr_quote_execute_buy_yes_and_no_regtest() {
             "quote must include LMSR leg"
         );
 
+        let prepared = fixture
+            .node
+            .prepare_trade(quote, exact_fee_tx_options(500))
+            .await
+            .expect("prepare buy trade");
         let result = fixture
             .node
-            .execute_trade(quote, 500, &fixture.market_id)
+            .broadcast_prepared_trade(prepared)
             .await
             .expect("execute buy trade");
         assert!(result.pool_used, "execution should use LMSR pool");
@@ -456,9 +494,14 @@ async fn lmsr_quote_execute_sell_yes_and_no_regtest() {
             "quote must include LMSR leg"
         );
 
+        let prepared = fixture
+            .node
+            .prepare_trade(quote, exact_fee_tx_options(500))
+            .await
+            .expect("prepare sell trade");
         let result = fixture
             .node
-            .execute_trade(quote, 500, &fixture.market_id)
+            .broadcast_prepared_trade(prepared)
             .await
             .expect("execute sell trade");
         assert!(result.pool_used, "execution should use LMSR pool");
@@ -468,13 +511,54 @@ async fn lmsr_quote_execute_sell_yes_and_no_regtest() {
 }
 
 #[tokio::test]
+async fn lmsr_trade_executes_with_default_confirmation_target_fee_policy() {
+    let _guard = hold_test_lock();
+    let fixture = RegtestFixture::new().await;
+
+    let tx_options = default_confirmation_target_tx_options();
+    let quote = quote_with_retry(&fixture, TradeSide::Yes, TradeDirection::Buy, 10_000).await;
+    let prepared = fixture
+        .node
+        .prepare_trade(quote, tx_options.clone())
+        .await
+        .expect("prepare confirmation-target trade");
+
+    assert_eq!(prepared.prepared_tx.fee.policy, tx_options.fee_policy);
+    assert!(prepared.prepared_tx.fee.amount_sat > 0);
+    assert_effective_fee_metadata(&prepared.prepared_tx.tx, &prepared.prepared_tx.fee);
+
+    let expected_fee = prepared.prepared_tx.fee.clone();
+    let expected_txid = prepared.prepared_tx.txid;
+    let result = fixture
+        .node
+        .broadcast_prepared_trade(prepared)
+        .await
+        .expect("broadcast confirmation-target trade");
+
+    assert_eq!(result.txid, expected_txid);
+    assert_eq!(result.fee.policy, tx_options.fee_policy);
+    assert!(result.fee.amount_sat > 0);
+    assert!(result.pool_used, "execution should use LMSR pool");
+
+    let tx = fixture
+        .node
+        .fetch_transaction(result.txid)
+        .await
+        .expect("fetch trade tx");
+    assert_effective_fee_metadata(&tx, &result.fee);
+    assert_eq!(result.fee, expected_fee);
+
+    mine_and_sync(&fixture.node, &fixture.env, 1).await;
+}
+
+#[tokio::test]
 async fn lmsr_mixed_maker_and_pool_route_executes_regtest() {
     let _guard = hold_test_lock();
     let fixture = RegtestFixture::new().await;
 
-    let (_create_result, _event_id) = fixture
+    let prepared = fixture
         .node
-        .create_limit_order(
+        .prepare_create_limit_order(
             fixture.yes_asset,
             fixture.lbtc_asset,
             1, // intentionally cheap: deterministic maker-first fill
@@ -483,10 +567,15 @@ async fn lmsr_mixed_maker_and_pool_route_executes_regtest() {
             1,
             1,
             44,
-            500,
+            exact_fee_tx_options(500),
             fixture.market_id.clone(),
             "sell-yes".to_string(),
         )
+        .await
+        .expect("prepare limit order");
+    let (_create_result, _event_id) = fixture
+        .node
+        .broadcast_prepared_create_limit_order(prepared)
         .await
         .expect("create limit order");
     mine_and_sync(&fixture.node, &fixture.env, 1).await;
@@ -507,9 +596,14 @@ async fn lmsr_mixed_maker_and_pool_route_executes_regtest() {
         "quote should include both maker and LMSR legs"
     );
 
+    let prepared = fixture
+        .node
+        .prepare_trade(quote, exact_fee_tx_options(500))
+        .await
+        .expect("prepare mixed route");
     let result = fixture
         .node
-        .execute_trade(quote, 500, &fixture.market_id)
+        .broadcast_prepared_trade(prepared)
         .await
         .expect("execute mixed route");
     assert!(result.pool_used, "mixed route should use LMSR pool");
@@ -527,18 +621,23 @@ async fn lmsr_execute_rejects_stale_quote_after_pool_transition() {
     let stale_quote = quote_with_retry(&fixture, TradeSide::Yes, TradeDirection::Buy, 7_000).await;
     let fresh_quote = quote_with_retry(&fixture, TradeSide::Yes, TradeDirection::Buy, 7_000).await;
 
+    let prepared = fixture
+        .node
+        .prepare_trade(fresh_quote, exact_fee_tx_options(500))
+        .await
+        .expect("prepare fresh quote");
     fixture
         .node
-        .execute_trade(fresh_quote, 500, &fixture.market_id)
+        .broadcast_prepared_trade(prepared)
         .await
         .expect("execute fresh quote");
     mine_and_sync(&fixture.node, &fixture.env, 1).await;
 
     let err = fixture
         .node
-        .execute_trade(stale_quote, 500, &fixture.market_id)
+        .prepare_trade(stale_quote, exact_fee_tx_options(500))
         .await
-        .expect_err("stale quote must be rejected");
+        .expect_err("stale quote must be rejected during prepare");
     match err {
         NodeError::Sdk(Error::TradeRouting(msg)) => {
             assert!(msg.contains("stale/non-canonical LMSR reserve anchors"));

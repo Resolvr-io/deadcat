@@ -51,6 +51,7 @@ pub struct WalletTransaction {
 pub struct LiquidSendResult {
     pub txid: String,
     pub fee_sat: u64,
+    pub fee: deadcat_sdk::ResolvedMinerFee,
 }
 
 /// Serializable event payload pushed to the frontend whenever the wallet

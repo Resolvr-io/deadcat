@@ -51,11 +51,16 @@ async fn compute_tip_and_now(
 
 #[cfg(test)]
 fn unique_test_app_dir(label: &str) -> std::path::PathBuf {
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock after unix epoch")
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("deadcat-{label}-{}-{nanos}", std::process::id()));
+    let unique = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "deadcat-{label}-{}-{nanos}-{unique}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&path).expect("create test app dir");
     path
 }
@@ -757,11 +762,17 @@ pub async fn oracle_attest(
 // On-chain contract creation command
 // =========================================================================
 
+#[derive(Serialize, Deserialize)]
+pub struct CreateContractOnchainResponse {
+    pub market: DiscoveredMarket,
+    pub fee: deadcat_sdk::ResolvedMinerFee,
+}
+
 #[tauri::command]
 pub async fn create_contract_onchain(
     request: CreateContractRequest,
     app: tauri::AppHandle,
-) -> Result<DiscoveredMarket, String> {
+) -> Result<CreateContractOnchainResponse, String> {
     validate_request(&request)?;
 
     let node_state = app.state::<NodeState>();
@@ -804,22 +815,29 @@ pub async fn create_contract_onchain(
         resolution_source: request.resolution_source,
     };
 
-    let market = node
-        .create_market(
+    let prepared = node
+        .prepare_create_market(
             oracle_pubkey_bytes,
             request.collateral_per_token,
             expiry_time,
             300,
-            300,
+            request.tx_options,
             metadata,
         )
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let result = node
+        .broadcast_prepared_market_creation(prepared)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
 
     bump_revision_and_emit(&app).await?;
 
-    Ok(market)
+    Ok(CreateContractOnchainResponse {
+        market: result.market,
+        fee: result.fee,
+    })
 }
 
 // =========================================================================
@@ -832,6 +850,7 @@ pub struct IssuanceResultResponse {
     pub previous_state: u8,
     pub new_state: u8,
     pub pairs_issued: u64,
+    pub fee: deadcat_sdk::ResolvedMinerFee,
 }
 
 /// Issue new YES+NO token pairs by locking collateral.
@@ -840,6 +859,7 @@ pub async fn issue_tokens(
     contract_params_json: String,
     anchor: deadcat_sdk::PredictionMarketAnchor,
     pairs: u64,
+    tx_options: deadcat_sdk::TxOptions,
     app: tauri::AppHandle,
 ) -> Result<IssuanceResultResponse, String> {
     let params: deadcat_sdk::PredictionMarketParams =
@@ -849,8 +869,12 @@ pub async fn issue_tokens(
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
+    let prepared = node
+        .prepare_issue_tokens(params, anchor, pairs, tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
     let result = node
-        .issue_tokens(params, anchor, pairs, 500)
+        .broadcast_prepared_issuance(prepared)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -862,6 +886,7 @@ pub async fn issue_tokens(
         previous_state: result.previous_state as u8,
         new_state: result.new_state as u8,
         pairs_issued: result.pairs_issued,
+        fee: result.fee,
     })
 }
 
@@ -876,6 +901,7 @@ pub struct CancellationResultResponse {
     pub new_state: u8,
     pub pairs_burned: u64,
     pub is_full_cancellation: bool,
+    pub fee: deadcat_sdk::ResolvedMinerFee,
 }
 
 /// Cancel paired YES+NO tokens back into collateral.
@@ -884,6 +910,7 @@ pub async fn cancel_tokens(
     contract_params_json: String,
     anchor: deadcat_sdk::PredictionMarketAnchor,
     pairs: u64,
+    tx_options: deadcat_sdk::TxOptions,
     app: tauri::AppHandle,
 ) -> Result<CancellationResultResponse, String> {
     let params: deadcat_sdk::PredictionMarketParams =
@@ -893,8 +920,12 @@ pub async fn cancel_tokens(
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
+    let prepared = node
+        .prepare_cancel_tokens(params, anchor, pairs, tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
     let result = node
-        .cancel_tokens(params, anchor, pairs, 500)
+        .broadcast_prepared_cancellation(prepared)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -907,6 +938,7 @@ pub async fn cancel_tokens(
         new_state: result.new_state as u8,
         pairs_burned: result.pairs_burned,
         is_full_cancellation: result.is_full_cancellation,
+        fee: result.fee,
     })
 }
 
@@ -920,6 +952,7 @@ pub struct ResolutionResultResponse {
     pub previous_state: u8,
     pub new_state: u8,
     pub outcome_yes: bool,
+    pub fee: deadcat_sdk::ResolvedMinerFee,
 }
 
 /// Resolve a market with an oracle signature.
@@ -929,6 +962,7 @@ pub async fn resolve_market(
     anchor: deadcat_sdk::PredictionMarketAnchor,
     outcome_yes: bool,
     oracle_signature_hex: String,
+    tx_options: deadcat_sdk::TxOptions,
     app: tauri::AppHandle,
 ) -> Result<ResolutionResultResponse, String> {
     let params: deadcat_sdk::PredictionMarketParams =
@@ -943,8 +977,12 @@ pub async fn resolve_market(
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
+    let prepared = node
+        .prepare_resolve_market(params, anchor, outcome_yes, sig_bytes, tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
     let result = node
-        .resolve_market(params, anchor, outcome_yes, sig_bytes, 500)
+        .broadcast_prepared_resolution(prepared)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -956,6 +994,7 @@ pub async fn resolve_market(
         previous_state: result.previous_state as u8,
         new_state: result.new_state as u8,
         outcome_yes: result.outcome_yes,
+        fee: result.fee,
     })
 }
 
@@ -969,6 +1008,7 @@ pub struct RedemptionResultResponse {
     pub previous_state: u8,
     pub tokens_redeemed: u64,
     pub payout_sats: u64,
+    pub fee: deadcat_sdk::ResolvedMinerFee,
 }
 
 /// Redeem winning tokens after market resolution.
@@ -977,6 +1017,7 @@ pub async fn redeem_tokens(
     contract_params_json: String,
     anchor: deadcat_sdk::PredictionMarketAnchor,
     tokens: u64,
+    tx_options: deadcat_sdk::TxOptions,
     app: tauri::AppHandle,
 ) -> Result<RedemptionResultResponse, String> {
     let params: deadcat_sdk::PredictionMarketParams =
@@ -986,8 +1027,12 @@ pub async fn redeem_tokens(
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
+    let prepared = node
+        .prepare_redeem_tokens(params, anchor, tokens, tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
     let result = node
-        .redeem_tokens(params, anchor, tokens, 500)
+        .broadcast_prepared_redemption(prepared)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -999,6 +1044,7 @@ pub async fn redeem_tokens(
         previous_state: result.previous_state as u8,
         tokens_redeemed: result.tokens_redeemed,
         payout_sats: result.payout_sats,
+        fee: result.fee,
     })
 }
 
@@ -1007,13 +1053,13 @@ pub async fn redeem_tokens(
 // =========================================================================
 
 /// Redeem tokens via the expiry path after the locktime has passed.
-#[tauri::command]
-pub async fn redeem_expired(
+async fn redeem_expired_inner<R: tauri::Runtime>(
     contract_params_json: String,
     anchor: deadcat_sdk::PredictionMarketAnchor,
     token_asset_hex: String,
     tokens: u64,
-    app: tauri::AppHandle,
+    tx_options: deadcat_sdk::TxOptions,
+    app: tauri::AppHandle<R>,
 ) -> Result<RedemptionResultResponse, String> {
     let params: deadcat_sdk::PredictionMarketParams =
         serde_json::from_str(&contract_params_json)
@@ -1028,7 +1074,7 @@ pub async fn redeem_expired(
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let result = node
-        .redeem_expired(params, anchor, token_asset, tokens, 500)
+        .redeem_expired_with_tx_options(params, anchor, token_asset, tokens, tx_options)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -1040,7 +1086,28 @@ pub async fn redeem_expired(
         previous_state: result.previous_state as u8,
         tokens_redeemed: result.tokens_redeemed,
         payout_sats: result.payout_sats,
+        fee: result.fee,
     })
+}
+
+#[tauri::command]
+pub async fn redeem_expired(
+    contract_params_json: String,
+    anchor: deadcat_sdk::PredictionMarketAnchor,
+    token_asset_hex: String,
+    tokens: u64,
+    tx_options: deadcat_sdk::TxOptions,
+    app: tauri::AppHandle,
+) -> Result<RedemptionResultResponse, String> {
+    redeem_expired_inner(
+        contract_params_json,
+        anchor,
+        token_asset_hex,
+        tokens,
+        tx_options,
+        app,
+    )
+    .await
 }
 
 // =========================================================================
@@ -1125,8 +1192,7 @@ pub struct ExecuteTradeRequest {
     pub side: String,
     pub direction: String,
     pub exact_input: u64,
-    #[serde(default)]
-    pub fee_amount: Option<u64>,
+    pub tx_options: deadcat_sdk::TxOptions,
     #[serde(default)]
     pub expected_quote: Option<TradeQuoteResponse>,
 }
@@ -1139,6 +1205,7 @@ pub struct ExecuteTradeResponse {
     pub num_orders_filled: usize,
     pub pool_used: bool,
     pub new_reserves: Option<deadcat_sdk::PoolReserves>,
+    pub fee: deadcat_sdk::ResolvedMinerFee,
 }
 
 fn parse_trade_side(side: &str) -> Result<deadcat_sdk::TradeSide, String> {
@@ -1223,9 +1290,9 @@ mod trade_command_tests {
     use super::{
         execute_trade_inner, get_pool_price_history_inner, get_price_history_inner,
         parse_trade_direction, parse_trade_side, quote_matches_expected, quote_trade_inner,
-        scan_lmsr_pool_inner, unique_test_app_dir, validate_expected_quote, ExecuteTradeRequest,
-        ExecuteTradeResponse, RouteLegResponse, RouteLegSourceResponse, TradeQuoteRequest,
-        TradeQuoteResponse,
+        redeem_expired_inner, scan_lmsr_pool_inner, unique_test_app_dir, validate_expected_quote,
+        ExecuteTradeRequest, ExecuteTradeResponse, RouteLegResponse, RouteLegSourceResponse,
+        TradeQuoteRequest, TradeQuoteResponse,
     };
     use crate::state::AppStateManager;
     use crate::NodeState;
@@ -1273,6 +1340,31 @@ mod trade_command_tests {
             "expiry_time": 12345u32
         })
         .to_string()
+    }
+
+    fn sample_tx_options() -> deadcat_sdk::TxOptions {
+        deadcat_sdk::TxOptions {
+            fee_policy: deadcat_sdk::MinerFeePolicy::ConfirmationTargetBlocks { blocks: 6 },
+        }
+    }
+
+    fn sample_fee() -> deadcat_sdk::ResolvedMinerFee {
+        deadcat_sdk::ResolvedMinerFee {
+            policy: sample_tx_options().fee_policy,
+            amount_sat: 321,
+            rate_sat_per_vb: 3.21,
+            discount_vsize: 100,
+        }
+    }
+
+    fn sample_anchor() -> deadcat_sdk::PredictionMarketAnchor {
+        deadcat_sdk::PredictionMarketAnchor {
+            creation_txid: "00".repeat(32),
+            yes_dormant_opening: deadcat_sdk::DormantOutputOpening::from_bytes(
+                [1u8; 32], [2u8; 32],
+            ),
+            no_dormant_opening: deadcat_sdk::DormantOutputOpening::from_bytes([3u8; 32], [4u8; 32]),
+        }
     }
 
     fn mock_trade_app() -> tauri::App<tauri::test::MockRuntime> {
@@ -1402,7 +1494,7 @@ mod trade_command_tests {
             side: "no".to_string(),
             direction: "sell".to_string(),
             exact_input: 2000,
-            fee_amount: Some(600),
+            tx_options: sample_tx_options(),
             expected_quote: Some(expected_quote.clone()),
         };
         let json = serde_json::to_string(&request).unwrap();
@@ -1410,7 +1502,7 @@ mod trade_command_tests {
         assert_eq!(parsed.market_id, "market-b");
         assert_eq!(parsed.side, "no");
         assert_eq!(parsed.direction, "sell");
-        assert_eq!(parsed.fee_amount, Some(600));
+        assert_eq!(parsed.tx_options, sample_tx_options());
         assert_eq!(parsed.expected_quote.unwrap().legs, expected_quote.legs);
     }
 
@@ -1427,6 +1519,7 @@ mod trade_command_tests {
                 r_no: 20,
                 r_lbtc: 30,
             }),
+            fee: sample_fee(),
         };
         let json = serde_json::to_string(&response).unwrap();
         let parsed: ExecuteTradeResponse = serde_json::from_str(&json).unwrap();
@@ -1443,6 +1536,7 @@ mod trade_command_tests {
                 r_lbtc: 30,
             }
         );
+        assert_eq!(parsed.fee, sample_fee());
     }
 
     #[tokio::test]
@@ -1486,7 +1580,7 @@ mod trade_command_tests {
             side: "yes".to_string(),
             direction: "buy".to_string(),
             exact_input: 10_000,
-            fee_amount: Some(500),
+            tx_options: sample_tx_options(),
             expected_quote: None,
         };
         let result = execute_trade_inner(request, app.handle().clone()).await;
@@ -1506,7 +1600,7 @@ mod trade_command_tests {
             side: "yes".to_string(),
             direction: "hold".to_string(),
             exact_input: 10_000,
-            fee_amount: Some(500),
+            tx_options: sample_tx_options(),
             expected_quote: None,
         };
         let result = execute_trade_inner(request, app.handle().clone()).await;
@@ -1661,6 +1755,26 @@ mod trade_command_tests {
 
         assert!(err.contains("Store not initialized"));
     }
+
+    #[tokio::test]
+    // SDK regtests cover real confirmation-target execution; this just checks command plumbing.
+    async fn redeem_expired_command_smoke_accepts_confirmation_target_tx_options() {
+        let app = mock_trade_app();
+        let result = redeem_expired_inner(
+            sample_contract_params_json(),
+            sample_anchor(),
+            "11".repeat(32),
+            1,
+            sample_tx_options(),
+            app.handle().clone(),
+        )
+        .await;
+        let err = match result {
+            Ok(_) => panic!("expected redeem_expired error"),
+            Err(err) => err,
+        };
+        assert!(err.contains("Node not initialized"));
+    }
 }
 
 #[cfg(test)]
@@ -1737,8 +1851,6 @@ async fn execute_trade_inner<R: tauri::Runtime>(
             .map_err(|e| format!("invalid contract params: {e}"))?;
     let side = parse_trade_side(&request.side)?;
     let direction = parse_trade_direction(&request.direction)?;
-    let fee_amount = request.fee_amount.unwrap_or(500);
-
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
@@ -1754,8 +1866,12 @@ async fn execute_trade_inner<R: tauri::Runtime>(
         .map_err(|e| format!("{e}"))?;
     let live_quote = map_trade_quote(&quote);
     validate_expected_quote(&live_quote, request.expected_quote.as_ref())?;
+    let prepared = node
+        .prepare_trade(quote, request.tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
     let result = node
-        .execute_trade(quote, fee_amount, &request.market_id)
+        .broadcast_prepared_trade(prepared)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -1769,6 +1885,7 @@ async fn execute_trade_inner<R: tauri::Runtime>(
         num_orders_filled: result.num_orders_filled,
         pool_used: result.pool_used,
         new_reserves: result.new_reserves,
+        fee: result.fee,
     })
 }
 
@@ -1899,8 +2016,7 @@ pub struct CreateLimitOrderRequest {
     pub direction: String,
     pub price: u64,
     pub amount: u64,
-    #[serde(default)]
-    pub fee_amount: Option<u64>,
+    pub tx_options: deadcat_sdk::TxOptions,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1910,6 +2026,7 @@ pub struct CreateLimitOrderResponse {
     pub covenant_address: String,
     pub order_amount: u64,
     pub order_index: u32,
+    pub fee: deadcat_sdk::ResolvedMinerFee,
 }
 
 async fn resolve_create_limit_order_index(
@@ -1954,15 +2071,13 @@ pub async fn create_limit_order(
         }
     );
 
-    let fee_amount = request.fee_amount.unwrap_or(500);
-
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let order_index = resolve_create_limit_order_index(node).await?;
 
-    let (result, event_id) = node
-        .create_limit_order(
+    let prepared = node
+        .prepare_create_limit_order(
             base_asset_id,
             quote_asset_id,
             request.price,
@@ -1971,10 +2086,14 @@ pub async fn create_limit_order(
             1,
             1,
             order_index,
-            fee_amount,
+            request.tx_options,
             request.market_id,
             direction_label,
         )
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let (result, event_id) = node
+        .broadcast_prepared_create_limit_order(prepared)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -1987,6 +2106,7 @@ pub async fn create_limit_order(
         covenant_address: result.covenant_address,
         order_amount: result.order_amount,
         order_index,
+        fee: result.fee,
     })
 }
 
@@ -2003,8 +2123,7 @@ pub struct CancelLimitOrderRequest {
     pub order_nonce: String,
     pub cosigner_pubkey: String,
     pub maker_receive_spk_hash: String,
-    #[serde(default)]
-    pub fee_amount: Option<u64>,
+    pub tx_options: deadcat_sdk::TxOptions,
     #[serde(default)]
     pub order_index: Option<u32>,
 }
@@ -2013,6 +2132,7 @@ pub struct CancelLimitOrderRequest {
 pub struct CancelLimitOrderResponse {
     pub txid: String,
     pub refunded_amount: u64,
+    pub fee: deadcat_sdk::ResolvedMinerFee,
 }
 
 fn decode_hex_32(hex_str: &str, field: &str) -> Result<[u8; 32], String> {
@@ -2057,8 +2177,6 @@ pub async fn cancel_limit_order(
         maker_pubkey,
     };
 
-    let fee_amount = request.fee_amount.unwrap_or(500);
-
     let order_index = request
         .order_index
         .unwrap_or(ORDER_INDEX_AUTO_RESOLVE_SENTINEL);
@@ -2066,8 +2184,12 @@ pub async fn cancel_limit_order(
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
+    let prepared = node
+        .prepare_cancel_limit_order(params, maker_pubkey, order_index, request.tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
     let result = node
-        .cancel_limit_order(params, maker_pubkey, order_index, fee_amount)
+        .broadcast_prepared_cancel_limit_order(prepared)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -2077,6 +2199,7 @@ pub async fn cancel_limit_order(
     Ok(CancelLimitOrderResponse {
         txid: result.txid.to_string(),
         refunded_amount: result.refunded_amount,
+        fee: result.fee,
     })
 }
 
@@ -2162,13 +2285,14 @@ pub struct CreateLmsrPoolRequest {
     pub initial_reserves_no: u64,
     pub initial_reserves_lbtc: u64,
     pub table_values: Vec<u64>,
-    pub fee_amount: Option<u64>,
+    pub tx_options: deadcat_sdk::TxOptions,
 }
 
 #[derive(Serialize)]
 pub struct CreateLmsrPoolResponse {
     pub txid: String,
     pub pool_id: String,
+    pub fee: deadcat_sdk::ResolvedMinerFee,
 }
 
 #[tauri::command]
@@ -2192,14 +2316,17 @@ pub async fn create_lmsr_pool(
             r_lbtc: request.initial_reserves_lbtc,
         },
         table_values: request.table_values,
-        fee_amount: request.fee_amount.unwrap_or(500),
     };
 
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
+    let prepared = node
+        .prepare_create_lmsr_pool(sdk_request, request.tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
     let result = node
-        .create_lmsr_pool(sdk_request)
+        .broadcast_prepared_create_lmsr_pool(prepared)
         .await
         .map_err(|e| format!("{e}"))?;
     drop(guard);
@@ -2209,6 +2336,7 @@ pub async fn create_lmsr_pool(
     Ok(CreateLmsrPoolResponse {
         txid: result.txid.to_string(),
         pool_id: result.snapshot.locator.pool_id.to_hex(),
+        fee: result.fee,
     })
 }
 
@@ -2261,7 +2389,7 @@ pub struct AdjustLmsrPoolTauriRequest {
     pub new_reserves_no: u64,
     pub new_reserves_lbtc: u64,
     pub table_values: Vec<u64>,
-    pub fee_amount: Option<u64>,
+    pub tx_options: deadcat_sdk::TxOptions,
     pub pool_index: Option<u32>,
 }
 
@@ -2291,7 +2419,7 @@ pub async fn adjust_lmsr_pool(
 pub struct CloseLmsrPoolTauriRequest {
     pub pool_id: String,
     pub table_values: Vec<u64>,
-    pub fee_amount: Option<u64>,
+    pub tx_options: deadcat_sdk::TxOptions,
     pub pool_index: Option<u32>,
 }
 

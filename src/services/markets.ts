@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { markets, setMarkets } from "../state.ts";
 import type {
   CancelLimitOrderResponse,
+  CancellationResult,
+  CreateContractOnchainResponse,
   CreateLimitOrderResponse,
   DiscoveredMarket,
   DiscoveredOrder,
@@ -11,11 +13,15 @@ import type {
   Market,
   MarketCategory,
   OwnOrderSummary,
+  RedemptionResult,
+  ResolutionResult,
   Side,
   TradeDirection,
   TradeQuoteResponse,
+  TxOptions,
 } from "../types.ts";
 import { hexToBytes } from "../utils/crypto.ts";
+import { DEFAULT_TX_OPTIONS } from "./tx.ts";
 
 export function discoveredToMarket(d: DiscoveredMarket): Market {
   return {
@@ -101,9 +107,24 @@ export function marketToContractParamsJson(market: Market): string {
   });
 }
 
+export async function createContractOnchain(request: {
+  question: string;
+  description: string;
+  category: MarketCategory;
+  resolution_source: string;
+  settlement_deadline_unix: number;
+  collateral_per_token: number;
+  tx_options: TxOptions;
+}): Promise<CreateContractOnchainResponse> {
+  return invoke<CreateContractOnchainResponse>("create_contract_onchain", {
+    request,
+  });
+}
+
 export async function issueTokens(
   market: Market,
   pairs: number,
+  txOptions: TxOptions = DEFAULT_TX_OPTIONS,
 ): Promise<IssuanceResult> {
   if (!market.anchor) {
     throw new Error("Market has no canonical anchor — cannot issue tokens");
@@ -112,6 +133,67 @@ export async function issueTokens(
     contractParamsJson: marketToContractParamsJson(market),
     anchor: market.anchor,
     pairs,
+    txOptions,
+  });
+}
+
+export async function resolveMarket(
+  market: Market,
+  anchor: NonNullable<Market["anchor"]>,
+  outcomeYes: boolean,
+  oracleSignatureHex: string,
+  txOptions: TxOptions = DEFAULT_TX_OPTIONS,
+): Promise<ResolutionResult> {
+  return invoke<ResolutionResult>("resolve_market", {
+    contractParamsJson: marketToContractParamsJson(market),
+    anchor,
+    outcomeYes,
+    oracleSignatureHex,
+    txOptions,
+  });
+}
+
+export async function cancelTokens(
+  market: Market,
+  anchor: NonNullable<Market["anchor"]>,
+  pairs: number,
+  txOptions: TxOptions = DEFAULT_TX_OPTIONS,
+): Promise<CancellationResult> {
+  return invoke<CancellationResult>("cancel_tokens", {
+    contractParamsJson: marketToContractParamsJson(market),
+    anchor,
+    pairs,
+    txOptions,
+  });
+}
+
+export async function redeemTokens(
+  market: Market,
+  anchor: NonNullable<Market["anchor"]>,
+  tokens: number,
+  txOptions: TxOptions = DEFAULT_TX_OPTIONS,
+): Promise<RedemptionResult> {
+  return invoke<RedemptionResult>("redeem_tokens", {
+    contractParamsJson: marketToContractParamsJson(market),
+    anchor,
+    tokens,
+    txOptions,
+  });
+}
+
+export async function redeemExpiredTokens(
+  market: Market,
+  anchor: NonNullable<Market["anchor"]>,
+  tokenAssetHex: string,
+  tokens: number,
+  txOptions: TxOptions = DEFAULT_TX_OPTIONS,
+): Promise<RedemptionResult> {
+  return invoke<RedemptionResult>("redeem_expired", {
+    contractParamsJson: marketToContractParamsJson(market),
+    anchor,
+    tokenAssetHex,
+    tokens,
+    txOptions,
   });
 }
 
@@ -137,7 +219,7 @@ export async function executeTrade(
   side: Side,
   direction: TradeDirection,
   exactInput: number,
-  feeAmount = 500,
+  txOptions: TxOptions = DEFAULT_TX_OPTIONS,
   expectedQuote?: ExecuteTradeExpectedQuote,
 ): Promise<ExecuteTradeResponse> {
   return invoke<ExecuteTradeResponse>("execute_trade", {
@@ -147,7 +229,7 @@ export async function executeTrade(
       side,
       direction,
       exact_input: Math.max(1, Math.floor(exactInput)),
-      fee_amount: feeAmount,
+      tx_options: txOptions,
       expected_quote: expectedQuote,
     },
   });
@@ -167,7 +249,7 @@ export async function createLimitOrder(
   direction: TradeDirection,
   price: number,
   amount: number,
-  feeAmount = 500,
+  txOptions: TxOptions = DEFAULT_TX_OPTIONS,
 ): Promise<CreateLimitOrderResponse> {
   return invoke<CreateLimitOrderResponse>("create_limit_order", {
     request: {
@@ -177,7 +259,7 @@ export async function createLimitOrder(
       direction,
       price: Math.floor(price),
       amount: Math.floor(amount),
-      fee_amount: feeAmount,
+      tx_options: txOptions,
     },
   });
 }
@@ -185,7 +267,7 @@ export async function createLimitOrder(
 export async function cancelLimitOrder(
   order: DiscoveredOrder,
   orderIndex?: number,
-  feeAmount = 500,
+  txOptions: TxOptions = DEFAULT_TX_OPTIONS,
 ): Promise<CancelLimitOrderResponse> {
   return invoke<CancelLimitOrderResponse>("cancel_limit_order", {
     request: {
@@ -200,7 +282,7 @@ export async function cancelLimitOrder(
       order_nonce: order.order_nonce,
       cosigner_pubkey: order.cosigner_pubkey,
       maker_receive_spk_hash: order.maker_receive_spk_hash,
-      fee_amount: feeAmount,
+      tx_options: txOptions,
       order_index: orderIndex ?? null,
     },
   });

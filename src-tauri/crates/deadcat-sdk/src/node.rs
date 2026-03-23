@@ -35,7 +35,7 @@ use crate::discovery::{
 use crate::error::{Error, NodeError};
 use crate::lmsr_pool::api::{
     CreateLmsrPoolRequest, CreateLmsrPoolResult, LmsrPoolLocator, LmsrPoolSnapshot,
-    build_pool_announcement_from_snapshot, txid_to_canonical_bytes,
+    PreparedAdjustLmsrPool, PreparedCloseLmsrPool, PreparedCreateLmsrPool, txid_to_canonical_bytes,
 };
 use crate::lmsr_pool::identity::{derive_lmsr_market_id, derive_lmsr_pool_id};
 use crate::lmsr_pool::math::fee_free_yes_spot_price_bps;
@@ -48,10 +48,15 @@ use crate::prediction_market::contract::CompiledPredictionMarket;
 use crate::prediction_market::params::{MarketId, PredictionMarketParams};
 use crate::prediction_market::state::MarketState;
 use crate::sdk::{
-    CancelOrderResult, CancellationResult, CreateOrderResult, DeadcatSdk, FillOrderResult,
-    IssuanceResult, RedemptionResult, ResolutionResult,
+    CancelOrderResult, CancellationResult, ContractCreationResult, CreateOrderResult, DeadcatSdk,
+    FillOrderResult, IssuanceResult, PreparedCancelOrder, PreparedCancellation,
+    PreparedContractCreation, PreparedCreateOrder, PreparedFillOrder, PreparedIssuance,
+    PreparedRedemption, PreparedResolution, PreparedSendLbtc, RedemptionResult, ResolutionResult,
 };
-use crate::trade::types::{TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide};
+use crate::trade::types::{
+    PreparedTrade, TradeAmount, TradeDirection, TradeQuote, TradeResult, TradeSide,
+};
+use crate::tx::TxOptions;
 use crate::{LmsrPoolSyncRepairInput, LmsrPriceHistoryEntry, LmsrPriceTransitionInput};
 
 const ORDER_INDEX_AUTO_RESOLVE_SENTINEL: u32 = u32::MAX;
@@ -67,6 +72,32 @@ pub struct WalletSnapshot {
     pub balance: HashMap<AssetId, u64>,
     pub utxos: Vec<WalletTxOut>,
     pub transactions: Vec<WalletTx>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PreparedMarketCreation {
+    pub metadata: ContractMetadata,
+    pub prepared: PreparedContractCreation,
+}
+
+#[derive(Clone, Debug)]
+pub struct PreparedLimitOrderCreation {
+    pub market_id: String,
+    pub direction_label: String,
+    pub prepared: PreparedCreateOrder,
+}
+
+#[derive(Clone, Debug)]
+pub struct PreparedLimitOrderCancellation {
+    pub params: MakerOrderParams,
+    pub maker_pubkey: [u8; 32],
+    pub prepared: PreparedCancelOrder,
+}
+
+#[derive(Clone, Debug)]
+pub struct MarketCreationResult {
+    pub market: DiscoveredMarket,
+    pub fee: crate::ResolvedMinerFee,
 }
 
 // ── Struct ──────────────────────────────────────────────────────────────────
@@ -413,52 +444,56 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     // ── Combined on-chain + Nostr operations ────────────────────────────
 
-    /// Create a market on-chain and announce it via Nostr.
+    /// Prepare a market-creation transaction for later broadcast and announcement.
     ///
-    /// Returns the parsed `DiscoveredMarket` (with Nostr event data) and the
-    /// Returns the discovered market announcement persisted for the newly
-    /// created on-chain market.
+    /// Returns a prepared on-chain transaction plus the metadata needed to
+    /// build and persist the discovered market once it is broadcast.
     ///
-    /// **Non-atomic:** If the on-chain transaction succeeds but the Nostr
-    /// announcement fails, the caller receives an error even though on-chain
-    /// state has changed. Use [`announce_market`](Self::announce_market) to
-    /// retry the announcement independently.
-    pub async fn create_market(
+    /// Call [`broadcast_prepared_market_creation`](Self::broadcast_prepared_market_creation)
+    /// to publish the exact prepared transaction, announce it via Nostr, and
+    /// receive the final discovered market plus resolved miner fee metadata.
+    pub async fn prepare_create_market(
         &self,
         oracle_pubkey: [u8; 32],
         collateral_per_token: u64,
         expiry_time: u32,
         min_utxo_value: u64,
-        fee_amount: u64,
+        tx_options: TxOptions,
         metadata: ContractMetadata,
-    ) -> Result<DiscoveredMarket, NodeError> {
-        // 1. On-chain via spawn_blocking
-        let (anchor, params) = self
+    ) -> Result<PreparedMarketCreation, NodeError> {
+        let prepared = self
             .with_sdk(move |sdk| {
-                sdk.create_contract_onchain(
+                sdk.prepare_contract_creation(
                     oracle_pubkey,
                     collateral_per_token,
                     expiry_time,
                     min_utxo_value,
-                    fee_amount,
+                    tx_options,
                 )
             })
             .await?;
+        Ok(PreparedMarketCreation { metadata, prepared })
+    }
 
-        let creation_tx = self
+    pub async fn broadcast_prepared_market_creation(
+        &self,
+        prepared: PreparedMarketCreation,
+    ) -> Result<MarketCreationResult, NodeError> {
+        let PreparedMarketCreation { metadata, prepared } = prepared;
+        let ContractCreationResult {
+            anchor,
+            params,
+            fee,
+        } = self
             .with_sdk({
-                let anchor = anchor.clone();
-                move |sdk| {
-                    let txid = crate::parse_market_creation_txid(&anchor.creation_txid)
-                        .map_err(Error::Query)?;
-                    sdk.fetch_transaction(&txid)
-                }
+                let prepared = prepared.clone();
+                move |sdk| sdk.broadcast_prepared_contract_creation(&prepared)
             })
             .await?;
-        let creation_tx_bytes = crate::elements::encode::serialize(&creation_tx);
+
+        let creation_tx_bytes = crate::elements::encode::serialize(&prepared.prepared_tx.tx);
         let creation_tx_hex = hex::encode(&creation_tx_bytes);
 
-        // 2. Build and publish Nostr announcement
         let announcement = ContractAnnouncement {
             version: CONTRACT_ANNOUNCEMENT_VERSION,
             contract_params: params,
@@ -473,7 +508,6 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             .await
             .map_err(NodeError::Discovery)?;
 
-        // 3. Build DiscoveredMarket from announcement data + the real event ID
         let market_id = params.market_id();
         let nevent = Nip19Event::new(event_id, DEFAULT_RELAYS.iter().map(|r| r.to_string()))
             .to_bech32()
@@ -523,10 +557,8 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             },
         };
 
-        // 4. Persist to store
         self.persist_market(&parsed);
-
-        Ok(market)
+        Ok(MarketCreationResult { market, fee })
     }
 
     /// Announce an existing market to Nostr (no on-chain operation).
@@ -541,14 +573,22 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     }
 
     /// Issue token pairs for an existing market.
-    pub async fn issue_tokens(
+    pub async fn prepare_issue_tokens(
         &self,
         params: PredictionMarketParams,
         anchor: PredictionMarketAnchor,
         pairs: u64,
-        fee_amount: u64,
+        tx_options: TxOptions,
+    ) -> Result<PreparedIssuance, NodeError> {
+        self.with_sdk(move |sdk| sdk.prepare_issue_tokens(&params, &anchor, pairs, tx_options))
+            .await
+    }
+
+    pub async fn broadcast_prepared_issuance(
+        &self,
+        prepared: PreparedIssuance,
     ) -> Result<IssuanceResult, NodeError> {
-        self.with_sdk(move |sdk| sdk.issue_tokens(&params, &anchor, pairs, fee_amount))
+        self.with_sdk(move |sdk| sdk.broadcast_prepared_issuance(&prepared))
             .await
     }
 
@@ -564,7 +604,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// state has changed. The order can be re-announced independently via the
     /// discovery service.
     #[allow(clippy::too_many_arguments)]
-    pub async fn create_limit_order(
+    pub async fn prepare_create_limit_order(
         &self,
         base_asset_id: [u8; 32],
         quote_asset_id: [u8; 32],
@@ -574,14 +614,13 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         min_fill_lots: u64,
         min_remainder_lots: u64,
         order_index: u32,
-        fee_amount: u64,
+        tx_options: TxOptions,
         market_id: String,
         direction_label: String,
-    ) -> Result<(CreateOrderResult, EventId), NodeError> {
-        // 1. On-chain
-        let result = self
+    ) -> Result<PreparedLimitOrderCreation, NodeError> {
+        let prepared = self
             .with_sdk(move |sdk| {
-                sdk.create_limit_order(
+                sdk.prepare_create_limit_order(
                     base_asset_id,
                     quote_asset_id,
                     price,
@@ -590,21 +629,42 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                     min_fill_lots,
                     min_remainder_lots,
                     order_index,
-                    fee_amount,
+                    tx_options,
                 )
             })
             .await?;
+        Ok(PreparedLimitOrderCreation {
+            market_id,
+            direction_label,
+            prepared,
+        })
+    }
 
-        // 2. Nostr announcement
+    pub async fn broadcast_prepared_create_limit_order(
+        &self,
+        prepared: PreparedLimitOrderCreation,
+    ) -> Result<(CreateOrderResult, EventId), NodeError> {
+        let PreparedLimitOrderCreation {
+            market_id,
+            direction_label,
+            prepared,
+        } = prepared;
+        let result = self
+            .with_sdk({
+                let prepared = prepared.clone();
+                move |sdk| sdk.broadcast_prepared_create_order(&prepared)
+            })
+            .await?;
+
         let announcement = OrderAnnouncement {
             version: 1,
             params: result.order_params,
-            market_id,
+            market_id: market_id.clone(),
             maker_base_pubkey: hex::encode(result.maker_base_pubkey),
             order_nonce: hex::encode(result.order_nonce),
             covenant_address: result.covenant_address.clone(),
             offered_amount: result.order_amount,
-            direction_label,
+            direction_label: direction_label.clone(),
         };
 
         let event_id = self
@@ -645,34 +705,58 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     }
 
     /// Cancel a limit order on-chain.
-    pub async fn cancel_limit_order(
+    pub async fn prepare_cancel_limit_order(
         &self,
         params: MakerOrderParams,
         maker_pubkey: [u8; 32],
         order_index: u32,
-        fee_amount: u64,
-    ) -> Result<CancelOrderResult, NodeError> {
-        let result = self
+        tx_options: TxOptions,
+    ) -> Result<PreparedLimitOrderCancellation, NodeError> {
+        let effective_order_index = self
             .with_sdk(move |sdk| {
                 let resolved_order_index = sdk.resolve_order_index(&params, maker_pubkey)?;
-                let effective_order_index = match (resolved_order_index, order_index) {
-                    (Some(index), ORDER_INDEX_AUTO_RESOLVE_SENTINEL) => index,
-                    (Some(index), provided) if provided == index => index,
-                    (Some(index), provided) => {
-                        return Err(Error::MakerOrder(format!(
-                            "order_index {provided} does not match resolved maker order index {index}"
-                        )));
-                    }
-                    (None, ORDER_INDEX_AUTO_RESOLVE_SENTINEL) => {
-                        return Err(Error::MakerOrder(
-                            "failed to resolve maker order index from maker_base_pubkey and order params"
-                                .to_string(),
-                        ));
-                    }
-                    (None, provided) => provided,
-                };
-                sdk.cancel_limit_order(&params, maker_pubkey, effective_order_index, fee_amount)
+                match (resolved_order_index, order_index) {
+                    (Some(index), ORDER_INDEX_AUTO_RESOLVE_SENTINEL) => Ok(index),
+                    (Some(index), provided) if provided == index => Ok(index),
+                    (Some(index), provided) => Err(Error::MakerOrder(format!(
+                        "order_index {provided} does not match resolved maker order index {index}"
+                    ))),
+                    (None, ORDER_INDEX_AUTO_RESOLVE_SENTINEL) => Err(Error::MakerOrder(
+                        "failed to resolve maker order index from maker_base_pubkey and order params"
+                            .to_string(),
+                    )),
+                    (None, provided) => Ok(provided),
+                }
             })
+            .await?;
+        let prepared = self
+            .with_sdk(move |sdk| {
+                sdk.prepare_cancel_limit_order(
+                    &params,
+                    maker_pubkey,
+                    effective_order_index,
+                    tx_options,
+                )
+            })
+            .await?;
+        Ok(PreparedLimitOrderCancellation {
+            params,
+            maker_pubkey,
+            prepared,
+        })
+    }
+
+    pub async fn broadcast_prepared_cancel_limit_order(
+        &self,
+        prepared: PreparedLimitOrderCancellation,
+    ) -> Result<CancelOrderResult, NodeError> {
+        let PreparedLimitOrderCancellation {
+            params,
+            maker_pubkey,
+            prepared,
+        } = prepared;
+        let result = self
+            .with_sdk(move |sdk| sdk.broadcast_prepared_cancel_order(&prepared))
             .await?;
 
         let pending = if self.store.is_some() {
@@ -700,18 +784,26 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     }
 
     /// Fill a limit order on-chain.
-    pub async fn fill_limit_order(
+    pub async fn prepare_fill_limit_order(
         &self,
         params: MakerOrderParams,
         maker_pubkey: [u8; 32],
         nonce: [u8; 32],
         lots: u64,
-        fee_amount: u64,
-    ) -> Result<FillOrderResult, NodeError> {
+        tx_options: TxOptions,
+    ) -> Result<PreparedFillOrder, NodeError> {
         self.with_sdk(move |sdk| {
-            sdk.fill_limit_order(&params, maker_pubkey, nonce, lots, fee_amount)
+            sdk.prepare_fill_limit_order(&params, maker_pubkey, nonce, lots, tx_options)
         })
         .await
+    }
+
+    pub async fn broadcast_prepared_fill_limit_order(
+        &self,
+        prepared: PreparedFillOrder,
+    ) -> Result<FillOrderResult, NodeError> {
+        self.with_sdk(move |sdk| sdk.broadcast_prepared_fill_order(&prepared))
+            .await
     }
 
     // ── Oracle ──────────────────────────────────────────────────────────
@@ -730,58 +822,82 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     }
 
     /// Resolve a market on-chain with an oracle signature.
-    pub async fn resolve_market(
+    pub async fn prepare_resolve_market(
         &self,
         params: PredictionMarketParams,
         anchor: PredictionMarketAnchor,
         outcome_yes: bool,
         oracle_sig: [u8; 64],
-        fee_amount: u64,
-    ) -> Result<ResolutionResult, NodeError> {
+        tx_options: TxOptions,
+    ) -> Result<PreparedResolution, NodeError> {
         self.with_sdk(move |sdk| {
-            sdk.resolve_market(&params, &anchor, outcome_yes, oracle_sig, fee_amount)
+            sdk.prepare_resolution(&params, &anchor, outcome_yes, oracle_sig, tx_options)
         })
         .await
+    }
+
+    pub async fn broadcast_prepared_resolution(
+        &self,
+        prepared: PreparedResolution,
+    ) -> Result<ResolutionResult, NodeError> {
+        self.with_sdk(move |sdk| sdk.broadcast_prepared_resolution(&prepared))
+            .await
     }
 
     // ── Redemption ──────────────────────────────────────────────────────
 
     /// Redeem winning tokens after oracle resolution.
-    pub async fn redeem_tokens(
+    pub async fn prepare_redeem_tokens(
         &self,
         params: PredictionMarketParams,
         anchor: PredictionMarketAnchor,
         tokens: u64,
-        fee_amount: u64,
+        tx_options: TxOptions,
+    ) -> Result<PreparedRedemption, NodeError> {
+        self.with_sdk(move |sdk| sdk.prepare_redeem_tokens(&params, &anchor, tokens, tx_options))
+            .await
+    }
+
+    pub async fn broadcast_prepared_redemption(
+        &self,
+        prepared: PreparedRedemption,
     ) -> Result<RedemptionResult, NodeError> {
-        self.with_sdk(move |sdk| sdk.redeem_tokens(&params, &anchor, tokens, fee_amount))
+        self.with_sdk(move |sdk| sdk.broadcast_prepared_redemption(&prepared))
             .await
     }
 
     /// Redeem tokens after market expiry (no oracle resolution).
-    pub async fn redeem_expired(
+    pub async fn redeem_expired_with_tx_options(
         &self,
         params: PredictionMarketParams,
         anchor: PredictionMarketAnchor,
         token_asset: [u8; 32],
         tokens: u64,
-        fee_amount: u64,
+        tx_options: TxOptions,
     ) -> Result<RedemptionResult, NodeError> {
         self.with_sdk(move |sdk| {
-            sdk.redeem_expired(&params, &anchor, token_asset, tokens, fee_amount)
+            sdk.redeem_expired_with_tx_options(&params, &anchor, token_asset, tokens, tx_options)
         })
         .await
     }
 
     /// Cancel token pairs by burning equal YES and NO tokens.
-    pub async fn cancel_tokens(
+    pub async fn prepare_cancel_tokens(
         &self,
         params: PredictionMarketParams,
         anchor: PredictionMarketAnchor,
         pairs: u64,
-        fee_amount: u64,
+        tx_options: TxOptions,
+    ) -> Result<PreparedCancellation, NodeError> {
+        self.with_sdk(move |sdk| sdk.prepare_cancel_tokens(&params, &anchor, pairs, tx_options))
+            .await
+    }
+
+    pub async fn broadcast_prepared_cancellation(
+        &self,
+        prepared: PreparedCancellation,
     ) -> Result<CancellationResult, NodeError> {
-        self.with_sdk(move |sdk| sdk.cancel_tokens(&params, &anchor, pairs, fee_amount))
+        self.with_sdk(move |sdk| sdk.broadcast_prepared_cancellation(&prepared))
             .await
     }
 
@@ -789,9 +905,9 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     /// Fetch liquidity from Nostr, scan the chain, and compute a trade quote.
     ///
-    /// The returned [`TradeQuote`] can be
-    /// inspected for display (price, legs, totals) and then passed to
-    /// [`execute_trade`](Self::execute_trade) to broadcast the transaction.
+    /// The returned [`TradeQuote`] can be inspected for display (price, legs,
+    /// totals) and then passed to [`prepare_trade`](Self::prepare_trade) to
+    /// build the broadcastable transaction with explicit [`TxOptions`].
     #[allow(clippy::too_many_arguments)]
     pub async fn quote_trade(
         &self,
@@ -986,39 +1102,47 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         .await
     }
 
-    /// Execute a previously quoted trade.
-    ///
-    /// Broadcasts the transaction on-chain.
-    pub async fn execute_trade(
+    /// Prepare a previously quoted trade for later broadcast.
+    pub async fn prepare_trade(
         &self,
         quote: TradeQuote,
-        fee_amount: u64,
-        _market_id: &str,
-    ) -> Result<TradeResult, NodeError> {
+        tx_options: TxOptions,
+    ) -> Result<PreparedTrade, NodeError> {
         let plan = quote.plan;
-        self.with_sdk(move |sdk| sdk.execute_trade_plan(&plan, fee_amount))
+        self.with_sdk(move |sdk| sdk.prepare_trade_plan(&plan, tx_options))
+            .await
+    }
+
+    pub async fn broadcast_prepared_trade(
+        &self,
+        prepared: PreparedTrade,
+    ) -> Result<TradeResult, NodeError> {
+        self.with_sdk(move |sdk| sdk.broadcast_prepared_trade(&prepared))
             .await
     }
 
     /// Bootstrap a new LMSR reserve bundle on-chain and return a publish-ready announcement.
-    pub async fn create_lmsr_pool(
+    pub async fn prepare_create_lmsr_pool(
         &self,
         request: CreateLmsrPoolRequest,
-    ) -> Result<CreateLmsrPoolResult, NodeError> {
-        let table_values = request.table_values.clone();
-        let request_for_sdk = request.clone();
-        let snapshot = self
-            .with_sdk(move |sdk| sdk.create_lmsr_pool_bootstrap(&request_for_sdk))
-            .await?;
-        let announcement = build_pool_announcement_from_snapshot(&snapshot, table_values)
-            .map_err(|e| NodeError::Sdk(Error::LmsrPool(e)))?;
-        self.persist_lmsr_pool_snapshot(&snapshot, Some(request.table_values.clone()));
+        tx_options: TxOptions,
+    ) -> Result<PreparedCreateLmsrPool, NodeError> {
+        self.with_sdk(move |sdk| sdk.prepare_create_lmsr_pool(&request, tx_options))
+            .await
+    }
 
-        Ok(CreateLmsrPoolResult {
-            txid: snapshot.locator.creation_txid,
-            snapshot,
-            announcement,
-        })
+    pub async fn broadcast_prepared_create_lmsr_pool(
+        &self,
+        prepared: PreparedCreateLmsrPool,
+    ) -> Result<CreateLmsrPoolResult, NodeError> {
+        let result = self
+            .with_sdk(move |sdk| sdk.broadcast_prepared_create_lmsr_pool(&prepared))
+            .await?;
+        self.persist_lmsr_pool_snapshot(
+            &result.snapshot,
+            result.announcement.lmsr_table_values.clone(),
+        );
+        Ok(result)
     }
 
     /// Re-scan canonical LMSR reserve state from a typed pool locator.
@@ -1115,9 +1239,9 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     /// Scan a pool and return a pre-populated adjust request with current UTXOs.
     ///
-    /// The caller sets `new_reserves`, `table_values`, `fee_amount`, and
-    /// `pool_index` on the returned request, then passes it to
-    /// [`adjust_lmsr_pool`](Self::adjust_lmsr_pool).
+    /// The caller sets `new_reserves`, `table_values`, and `pool_index` on the
+    /// returned request, then supplies `TxOptions` to
+    /// [`prepare_adjust_lmsr_pool`](Self::prepare_adjust_lmsr_pool).
     pub async fn scan_for_adjust(
         &self,
         locator: LmsrPoolLocator,
@@ -1200,40 +1324,96 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             current_pool_utxos: scan.pool_utxos,
             current_s_index: scan.current_s_index,
             current_reserves: scan.reserves,
-            // Caller must set these:
-            new_reserves: scan.reserves, // default: no change
-            table_values: Vec::new(),    // caller must provide
-            fee_amount: 0,               // caller must provide
-            pool_index: 0,               // caller must provide
+            new_reserves: scan.reserves,
+            table_values: Vec::new(),
+            pool_index: 0,
         };
 
         Ok((snapshot, request))
     }
 
     /// Adjust LMSR pool reserves via AdminAdjust transition.
-    pub async fn adjust_lmsr_pool(
+    pub async fn prepare_adjust_lmsr_pool(
         &self,
         request: crate::lmsr_pool::api::AdjustLmsrPoolRequest,
+        tx_options: TxOptions,
+    ) -> Result<PreparedAdjustLmsrPool, NodeError> {
+        self.with_sdk(move |sdk| sdk.prepare_adjust_lmsr_pool(&request, tx_options))
+            .await
+    }
+
+    pub async fn broadcast_prepared_adjust_lmsr_pool(
+        &self,
+        prepared: PreparedAdjustLmsrPool,
     ) -> Result<crate::lmsr_pool::api::AdjustLmsrPoolResult, NodeError> {
-        let table_values = request.table_values.clone();
         let result = self
-            .with_sdk(move |sdk| sdk.adjust_lmsr_pool(&request))
+            .with_sdk(move |sdk| sdk.broadcast_prepared_adjust_lmsr_pool(&prepared))
             .await?;
-        self.persist_lmsr_pool_snapshot(&result.new_snapshot, Some(table_values));
+        self.persist_lmsr_pool_snapshot(&result.new_snapshot, None);
         Ok(result)
     }
 
     /// Close an LMSR pool by adjusting reserves to covenant minimums.
     ///
-    /// NOTE: Unlike `adjust_lmsr_pool`, this does NOT persist the post-close
+    /// NOTE: Broadcasting a prepared close does NOT persist the post-close
     /// snapshot because `CloseLmsrPoolResult` doesn't carry one. A follow-up
     /// `scan_lmsr_pool` call will pick up the new on-chain state.
-    pub async fn close_lmsr_pool(
+    pub async fn prepare_close_lmsr_pool(
         &self,
         request: crate::lmsr_pool::api::CloseLmsrPoolRequest,
+        tx_options: TxOptions,
+    ) -> Result<PreparedCloseLmsrPool, NodeError> {
+        self.with_sdk(move |sdk| {
+            let params = request.locator.params;
+            let min_reserves = crate::PoolReserves {
+                r_yes: params.min_r_yes,
+                r_no: params.min_r_no,
+                r_lbtc: params.min_r_collateral,
+            };
+            let adjust_request = crate::lmsr_pool::api::AdjustLmsrPoolRequest {
+                locator: request.locator.clone(),
+                current_pool_utxos: request.current_pool_utxos.clone(),
+                current_s_index: request.current_s_index,
+                current_reserves: request.current_reserves,
+                new_reserves: min_reserves,
+                table_values: request.table_values.clone(),
+                pool_index: request.pool_index,
+            };
+            let prepared = sdk.prepare_adjust_lmsr_pool(&adjust_request, tx_options)?;
+            Ok(PreparedCloseLmsrPool {
+                reclaimed_yes: request
+                    .current_reserves
+                    .r_yes
+                    .saturating_sub(min_reserves.r_yes),
+                reclaimed_no: request
+                    .current_reserves
+                    .r_no
+                    .saturating_sub(min_reserves.r_no),
+                reclaimed_collateral: request
+                    .current_reserves
+                    .r_lbtc
+                    .saturating_sub(min_reserves.r_lbtc),
+                prepared_tx: prepared.prepared_tx,
+            })
+        })
+        .await
+    }
+
+    pub async fn broadcast_prepared_close_lmsr_pool(
+        &self,
+        prepared: PreparedCloseLmsrPool,
     ) -> Result<crate::lmsr_pool::api::CloseLmsrPoolResult, NodeError> {
-        self.with_sdk(move |sdk| sdk.close_lmsr_pool(&request))
-            .await
+        self.with_sdk(move |sdk| {
+            let txid = sdk.broadcast_and_sync(&prepared.prepared_tx.tx)?;
+            Ok(crate::lmsr_pool::api::CloseLmsrPoolResult {
+                txid,
+                reclaimed_yes: prepared.reclaimed_yes,
+                reclaimed_no: prepared.reclaimed_no,
+                reclaimed_collateral: prepared.reclaimed_collateral,
+                fee: prepared.prepared_tx.fee.clone(),
+            })
+        })
+        .await
     }
 
     // ── Discovery (delegated to DiscoveryService) ───────────────────────
@@ -1422,14 +1602,32 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     }
 
     /// Send L-BTC to an address.
+    pub async fn prepare_send_lbtc(
+        &self,
+        address: String,
+        amount: u64,
+        tx_options: TxOptions,
+    ) -> Result<PreparedSendLbtc, NodeError> {
+        self.with_sdk(move |sdk| sdk.prepare_send_lbtc(&address, amount, tx_options))
+            .await
+    }
+
+    pub async fn broadcast_prepared_send_lbtc(
+        &self,
+        prepared: PreparedSendLbtc,
+    ) -> Result<(Txid, u64), NodeError> {
+        self.with_sdk(move |sdk| sdk.broadcast_prepared_send_lbtc(&prepared))
+            .await
+    }
+
     pub async fn send_lbtc(
         &self,
         address: String,
         amount: u64,
-        fee_rate: Option<f32>,
+        tx_options: TxOptions,
     ) -> Result<(Txid, u64), NodeError> {
-        self.with_sdk(move |sdk| sdk.send_lbtc(&address, amount, fee_rate))
-            .await
+        let prepared = self.prepare_send_lbtc(address, amount, tx_options).await?;
+        self.broadcast_prepared_send_lbtc(prepared).await
     }
 
     /// Validate a market was created with the canonical proof-carrying dormant bootstrap.
@@ -2339,8 +2537,8 @@ mod order_cleanup_tests {
         let market =
             sample_order_market_params(regtest_policy_asset().into_inner().to_byte_array());
         let market_id = market.market_id().to_string();
-        let (created, _event_id) = node
-            .create_limit_order(
+        let prepared = node
+            .prepare_create_limit_order(
                 market.yes_token_asset,
                 market.collateral_asset_id,
                 27,
@@ -2349,10 +2547,16 @@ mod order_cleanup_tests {
                 1,
                 1,
                 1,
-                500,
+                crate::TxOptions {
+                    fee_policy: crate::MinerFeePolicy::ExactAmountSat { amount_sat: 500 },
+                },
                 market_id,
                 "buy-yes".to_string(),
             )
+            .await
+            .unwrap();
+        let (created, _event_id) = node
+            .broadcast_prepared_create_limit_order(prepared)
             .await
             .unwrap();
 
@@ -2360,13 +2564,19 @@ mod order_cleanup_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
         node.sync_wallet().await.unwrap();
 
-        let cancelled = node
-            .cancel_limit_order(
+        let prepared = node
+            .prepare_cancel_limit_order(
                 created.order_params,
                 created.maker_base_pubkey,
                 ORDER_INDEX_AUTO_RESOLVE_SENTINEL,
-                500,
+                crate::TxOptions {
+                    fee_policy: crate::MinerFeePolicy::ExactAmountSat { amount_sat: 500 },
+                },
             )
+            .await
+            .unwrap();
+        let cancelled = node
+            .broadcast_prepared_cancel_limit_order(prepared)
             .await
             .unwrap();
         assert_eq!(cancelled.refunded_amount, 10_000);
@@ -2409,8 +2619,8 @@ mod order_cleanup_tests {
         let market =
             sample_order_market_params(regtest_policy_asset().into_inner().to_byte_array());
         let market_id = market.market_id().to_string();
-        let (created, _event_id) = node
-            .create_limit_order(
+        let prepared = node
+            .prepare_create_limit_order(
                 market.yes_token_asset,
                 market.collateral_asset_id,
                 27,
@@ -2419,15 +2629,28 @@ mod order_cleanup_tests {
                 1,
                 1,
                 1,
-                500,
+                crate::TxOptions {
+                    fee_policy: crate::MinerFeePolicy::ExactAmountSat { amount_sat: 500 },
+                },
                 market_id,
                 "buy-yes".to_string(),
             )
             .await
             .unwrap();
+        let (created, _event_id) = node
+            .broadcast_prepared_create_limit_order(prepared)
+            .await
+            .unwrap();
 
         let err = node
-            .cancel_limit_order(created.order_params, created.maker_base_pubkey, 0, 500)
+            .prepare_cancel_limit_order(
+                created.order_params,
+                created.maker_base_pubkey,
+                0,
+                crate::TxOptions {
+                    fee_policy: crate::MinerFeePolicy::ExactAmountSat { amount_sat: 500 },
+                },
+            )
             .await
             .expect_err("mismatched explicit index should be rejected");
         assert!(
