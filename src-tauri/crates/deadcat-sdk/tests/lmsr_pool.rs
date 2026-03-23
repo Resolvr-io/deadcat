@@ -1,5 +1,10 @@
+mod common;
+
+use common::{
+    POLL_INTERVAL, POLL_TIMEOUT, SharedTestEnv, sync_node_until, wait_for_lmsr_transition_indexed,
+};
+use std::future::Future;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 
 use bitcoincore_rpc::RpcApi;
 use deadcat_sdk::lwk_wollet::elements::AssetId;
@@ -11,7 +16,7 @@ use deadcat_sdk::{
     LmsrPoolParams, Network, NodeError, PoolReserves, PredictionMarketParams, TradeAmount,
     TradeDirection, TradeSide,
 };
-use lwk_test_util::{TEST_MNEMONIC, TestEnv, TestEnvBuilder, regtest_policy_asset};
+use lwk_test_util::{generate_mnemonic, regtest_policy_asset};
 use nostr_relay_builder::prelude::MockRelay;
 use nostr_sdk::Keys;
 use tempfile::TempDir;
@@ -20,10 +25,40 @@ fn asset_bytes(asset: AssetId) -> [u8; 32] {
     asset.into_inner().to_byte_array()
 }
 
-async fn mine_and_sync(node: &DeadcatNode<TestStore>, env: &TestEnv, blocks: u32) {
-    env.elementsd_generate(blocks);
-    tokio::time::sleep(Duration::from_millis(900)).await;
-    node.sync_wallet().await.expect("sync wallet");
+async fn wait_for_chain_tx(
+    node: &DeadcatNode<TestStore>,
+    env: &SharedTestEnv,
+    blocks: u32,
+    txid: deadcat_sdk::lwk_wollet::elements::Txid,
+) {
+    env.generate_blocks(blocks);
+    wait_for("chain transaction visibility", || async {
+        let _ = node.sync_wallet().await;
+        node.fetch_transaction(txid).await.ok().map(|_| ())
+    })
+    .await;
+}
+
+async fn confirm_external_tx(
+    node: &DeadcatNode<TestStore>,
+    env: &SharedTestEnv,
+    blocks: u32,
+    txid: deadcat_sdk::lwk_wollet::elements::Txid,
+    min_utxos: usize,
+) {
+    env.generate_blocks(blocks);
+    sync_node_until(
+        node,
+        "external funding transaction confirmation",
+        POLL_TIMEOUT,
+        |node| {
+            let txs = node.transactions().unwrap();
+            let utxos = node.utxos().unwrap();
+            let confirmed = txs.iter().any(|tx| tx.txid == txid && tx.height.is_some());
+            (confirmed && utxos.len() >= min_utxos).then_some(())
+        },
+    )
+    .await;
 }
 
 fn hold_test_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -34,6 +69,32 @@ fn hold_test_lock() -> std::sync::MutexGuard<'static, ()> {
     }
 }
 
+async fn wait_for<T, F, Fut>(label: &str, mut poll: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
+    let deadline = tokio::time::Instant::now() + POLL_TIMEOUT;
+    loop {
+        if let Some(value) = poll().await {
+            return value;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+async fn wait_for_pool_visibility(node: &DeadcatNode<TestStore>, market_id: &str) {
+    wait_for("pool announcement to be fetchable", || async {
+        let pools = node.fetch_pools(Some(market_id)).await.unwrap();
+        (!pools.is_empty()).then_some(())
+    })
+    .await;
+}
+
 async fn quote_with_retry(
     node: &DeadcatNode<TestStore>,
     market_params: PredictionMarketParams,
@@ -42,8 +103,8 @@ async fn quote_with_retry(
     direction: TradeDirection,
     amount: u64,
 ) -> deadcat_sdk::TradeQuote {
-    let mut last_error = None;
-    for _ in 0..16 {
+    let deadline = tokio::time::Instant::now() + POLL_TIMEOUT;
+    loop {
         match node
             .quote_trade(
                 market_params,
@@ -56,21 +117,20 @@ async fn quote_with_retry(
         {
             Ok(quote) => return quote,
             Err(NodeError::Sdk(Error::Electrum(msg))) if msg.contains("missing transaction") => {
-                last_error = Some(msg);
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "quote did not succeed before timeout; last electrum error: {msg}"
+                );
                 let _ = node.sync_wallet().await;
-                tokio::time::sleep(Duration::from_millis(1_000)).await;
             }
             Err(err) => panic!("quote failed: {err:?}"),
         }
+        tokio::time::sleep(POLL_INTERVAL).await;
     }
-    panic!(
-        "quote did not succeed after retries; last electrum error: {:?}",
-        last_error
-    );
 }
 
 struct Fixture {
-    env: TestEnv,
+    env: SharedTestEnv,
     _relay: MockRelay,
     _wallet_dir: TempDir,
     node: DeadcatNode<TestStore>,
@@ -79,7 +139,7 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        let env = TestEnvBuilder::from_env().with_electrum().build();
+        let env = SharedTestEnv::global();
         let relay = MockRelay::run().await.expect("start mock relay");
         let keys = Keys::generate();
         let store = Arc::new(Mutex::new(TestStore::default()));
@@ -91,7 +151,8 @@ impl Fixture {
         let (node, _rx) =
             DeadcatNode::with_store(keys, Network::LiquidRegtest, store.clone(), config);
         let wallet_dir = tempfile::tempdir().expect("wallet tempdir");
-        node.unlock_wallet(TEST_MNEMONIC, &env.electrum_url(), wallet_dir.path())
+        let mnemonic = generate_mnemonic();
+        node.unlock_wallet(&mnemonic, env.electrum_url(), wallet_dir.path())
             .expect("unlock wallet");
 
         // Set the actual chain genesis hash (regtest has unique genesis per instance)
@@ -113,11 +174,17 @@ impl Fixture {
                 .expect("set genesis hash");
         }
 
-        for _ in 0..10 {
-            let addr = node.address(None).await.expect("wallet address");
-            env.elementsd_sendtoaddress(addr.address(), 200_000, None);
+        let mut addresses = Vec::with_capacity(10);
+        for index in 0..10 {
+            addresses.push(node.address(Some(index)).await.expect("wallet address"));
         }
-        mine_and_sync(&node, &env, 1).await;
+        let outputs: Vec<_> = addresses
+            .iter()
+            .map(|addr| (addr.address(), 200_000, None))
+            .collect();
+        let initial_utxos = node.utxos().unwrap().len();
+        let txid = env.elementsd_send_outputs(&outputs);
+        confirm_external_tx(&node, &env, 1, txid, initial_utxos + outputs.len()).await;
 
         Self {
             env,
@@ -129,16 +196,30 @@ impl Fixture {
     }
 
     async fn fund_wallet_asset_splits(&self, asset_id: AssetId, amounts: &[u64]) {
-        for amount in amounts {
-            let addr = self
-                .node
-                .address(None)
-                .await
-                .expect("asset receive address");
-            self.env
-                .elementsd_sendtoaddress(addr.address(), *amount, Some(asset_id));
+        let mut addresses = Vec::with_capacity(amounts.len());
+        for (index, _) in amounts.iter().enumerate() {
+            addresses.push(
+                self.node
+                    .address(Some(index as u32))
+                    .await
+                    .expect("asset receive address"),
+            );
         }
-        mine_and_sync(&self.node, &self.env, 1).await;
+        let outputs: Vec<_> = addresses
+            .iter()
+            .zip(amounts.iter().copied())
+            .map(|(addr, amount)| (addr.address(), amount, Some(asset_id)))
+            .collect();
+        let initial_utxos = self.node.utxos().unwrap().len();
+        let txid = self.env.elementsd_send_outputs(&outputs);
+        confirm_external_tx(
+            &self.node,
+            &self.env,
+            1,
+            txid,
+            initial_utxos + outputs.len(),
+        )
+        .await;
     }
 }
 
@@ -202,7 +283,7 @@ async fn bootstrap_pool(
         .create_lmsr_pool(request.clone())
         .await
         .expect("create lmsr pool");
-    mine_and_sync(&fixture.node, &fixture.env, 1).await;
+    wait_for_chain_tx(&fixture.node, &fixture.env, 1, created.txid).await;
     (request, created)
 }
 
@@ -307,9 +388,9 @@ async fn create_scan_lmsr_pool_and_route_trade_regtest() {
         .announce_pool(&created.announcement)
         .await
         .expect("announce pool");
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     let market_id = request.market_params.market_id().to_string();
+    wait_for_pool_visibility(&fixture.node, &market_id).await;
+
     let quote = quote_with_retry(
         &fixture.node,
         request.market_params,
@@ -333,7 +414,16 @@ async fn create_scan_lmsr_pool_and_route_trade_regtest() {
         .await
         .expect("execute routed trade");
     assert!(result.pool_used, "execution should spend the LMSR pool");
-    mine_and_sync(&fixture.node, &fixture.env, 1).await;
+    fixture.env.generate_blocks(1);
+    let contract =
+        deadcat_sdk::CompiledLmsrPool::new(created.snapshot.locator.params).expect("compile pool");
+    let old_script = contract.script_pubkey(created.snapshot.current_s_index);
+    wait_for_lmsr_transition_indexed(
+        &fixture.env,
+        &old_script,
+        &created.snapshot.current_reserve_outpoints,
+        result.txid,
+    );
 
     let scanned = fixture
         .node
@@ -554,7 +644,7 @@ async fn bootstrap_admin_pool(
         .create_lmsr_pool(request.clone())
         .await
         .expect("create admin-cosigned lmsr pool");
-    mine_and_sync(&fixture.node, &fixture.env, 1).await;
+    wait_for_chain_tx(&fixture.node, &fixture.env, 1, created.txid).await;
     (pool_index, request, created)
 }
 
@@ -606,8 +696,16 @@ async fn adjust_lmsr_pool_increases_reserves_regtest() {
         created.snapshot.locator.creation_txid
     );
 
+    let contract = deadcat_sdk::CompiledLmsrPool::new(request.pool_params).expect("compile pool");
+    let reserve_script = contract.script_pubkey(request.initial_s_index);
     // Mine and verify on-chain
-    mine_and_sync(&fixture.node, &fixture.env, 1).await;
+    fixture.env.generate_blocks(1);
+    wait_for_lmsr_transition_indexed(
+        &fixture.env,
+        &reserve_script,
+        &snapshot.current_reserve_outpoints,
+        result.txid,
+    );
     let adjust_tx = fixture
         .node
         .fetch_transaction(result.txid)
@@ -615,8 +713,6 @@ async fn adjust_lmsr_pool_increases_reserves_regtest() {
         .expect("fetch adjust tx");
 
     // Reserve outputs are at indices 0, 1, 2
-    let contract = deadcat_sdk::CompiledLmsrPool::new(request.pool_params).expect("compile pool");
-    let reserve_script = contract.script_pubkey(request.initial_s_index);
     for (index, asset_id, amount) in [
         (
             0,
@@ -703,7 +799,15 @@ async fn adjust_lmsr_pool_decreases_reserves_returns_change_regtest() {
     };
     assert_eq!(result.new_snapshot.reserves, adjust_req.new_reserves);
 
-    mine_and_sync(&fixture.node, &fixture.env, 1).await;
+    fixture.env.generate_blocks(1);
+    let contract = deadcat_sdk::CompiledLmsrPool::new(request.pool_params).expect("compile pool");
+    let old_script = contract.script_pubkey(created.snapshot.current_s_index);
+    wait_for_lmsr_transition_indexed(
+        &fixture.env,
+        &old_script,
+        &created.snapshot.current_reserve_outpoints,
+        result.txid,
+    );
 
     let rescanned = fixture
         .node

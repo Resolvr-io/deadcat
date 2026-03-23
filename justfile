@@ -41,14 +41,28 @@ cargo-clippy:
 	cd src-tauri && cargo clippy --all-targets -- -D warnings
 
 cargo-test:
-	cd src-tauri && cargo test --workspace --exclude deadcat-sdk
-	cd src-tauri/crates/deadcat-sdk && ulimit -n 10240 && \
-		ARCH="$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]')"; \
-		case "$ARCH" in \
-			arm64-darwin)  TRIPLE="aarch64-apple-darwin" ;; \
-			x86_64-linux)  TRIPLE="x86_64-unknown-linux-gnu" ;; \
-			*) echo "Unsupported platform: $ARCH" >&2; exit 1 ;; \
-		esac; \
-		ELEMENTSD_EXEC=$PWD/tests/elementsd-$TRIPLE \
-		ELECTRS_LIQUID_EXEC=$PWD/tests/electrs-$TRIPLE \
-		cargo test -- --test-threads=4
+	#!/usr/bin/env bash
+	set -euo pipefail
+
+	cd src-tauri
+	cargo test --workspace --exclude deadcat-sdk
+
+	cd crates/deadcat-sdk
+	ulimit -n 10240
+
+	ARCH="$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]')"
+	case "$ARCH" in
+		arm64-darwin)  TRIPLE="aarch64-apple-darwin" ;;
+		x86_64-linux)  TRIPLE="x86_64-unknown-linux-gnu" ;;
+		*) echo "Unsupported platform: $ARCH" >&2; exit 1 ;;
+	esac
+
+	export ELEMENTSD_EXEC="$PWD/tests/elementsd-$TRIPLE"
+	export ELECTRS_LIQUID_EXEC="$PWD/tests/electrs-$TRIPLE"
+
+	cargo test --lib --test contract_compilation --test discovery --test elements_env_execution --test maker_order --test node
+	cargo test --doc
+
+	cargo test --test sdk -- --test-threads=1
+	cargo test --test lmsr_pool -- --test-threads=1
+	cargo test --test lmsr_trade -- --test-threads=1

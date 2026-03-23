@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::time::Duration;
 
 use deadcat_sdk::{
@@ -20,6 +21,32 @@ use nostr_sdk::prelude::*;
 use nostr_sdk::secp256k1;
 
 const NETWORK_TAG: &str = "liquid-testnet";
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const POLL_TIMEOUT: Duration = Duration::from_secs(5);
+const FETCH_TIMEOUT: Duration = Duration::from_millis(500);
+
+async fn wait_for<T, F, Fut>(label: &str, mut poll: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
+    let deadline = tokio::time::Instant::now() + POLL_TIMEOUT;
+    loop {
+        if let Some(value) = poll().await {
+            return value;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+fn is_timeout_like_fetch_error(err: &impl std::fmt::Display) -> bool {
+    let lower = err.to_string().to_ascii_lowercase();
+    lower.contains("timeout") || lower.contains("timed out") || lower.contains("elapsed")
+}
 
 fn oracle_pubkey_from_keys(keys: &Keys) -> [u8; 32] {
     let h = keys.public_key().to_hex();
@@ -185,17 +212,19 @@ async fn publish_discover_roundtrip() {
 
     client.send_event(event.clone()).await.unwrap();
 
-    // Small delay to let the relay process
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Fetch announcements
     let filter = build_contract_filter();
-    let events = client
-        .fetch_events(vec![filter], Duration::from_secs(5))
-        .await
-        .unwrap();
-
-    assert!(!events.is_empty(), "should have fetched at least one event");
+    let events = wait_for("market announcement to be fetchable", || async {
+        match client
+            .fetch_events(vec![filter.clone()], FETCH_TIMEOUT)
+            .await
+        {
+            Ok(events) => (!events.is_empty()).then_some(events),
+            Err(err) if is_timeout_like_fetch_error(&err) => None,
+            Err(err) => panic!("fetch events failed while waiting for market announcement: {err}"),
+        }
+    })
+    .await;
 
     // Parse and verify
     let fetched_event = events.iter().next().unwrap();
@@ -241,8 +270,6 @@ async fn oracle_attestation_roundtrip() {
     client.connect().await;
     client.send_event(ann_event).await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Sign attestation
     let (sig_bytes, msg_bytes) = sign_attestation(&keys, &market_id, true).unwrap();
     let sig_hex = hex::encode(sig_bytes);
@@ -261,16 +288,20 @@ async fn oracle_attestation_roundtrip() {
     .unwrap();
 
     client.send_event(att_event).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Fetch attestation events
     let att_filter = build_attestation_filter(&market_id_hex);
-    let att_events = client
-        .fetch_events(vec![att_filter], Duration::from_secs(5))
-        .await
-        .unwrap();
-
-    assert!(!att_events.is_empty(), "should find attestation event");
+    let att_events = wait_for("attestation event to be fetchable", || async {
+        match client
+            .fetch_events(vec![att_filter.clone()], FETCH_TIMEOUT)
+            .await
+        {
+            Ok(events) => (!events.is_empty()).then_some(events),
+            Err(err) if is_timeout_like_fetch_error(&err) => None,
+            Err(err) => panic!("fetch events failed while waiting for attestation event: {err}"),
+        }
+    })
+    .await;
 
     let att_ev = att_events.iter().next().unwrap();
     let content: AttestationContent = serde_json::from_str(&att_ev.content).unwrap();

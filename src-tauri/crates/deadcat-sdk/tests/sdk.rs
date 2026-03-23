@@ -1,41 +1,42 @@
+mod common;
+
+use common::{POLL_TIMEOUT, SharedTestEnv, sync_sdk_until};
 use deadcat_sdk::PredictionMarketParams;
 use deadcat_sdk::{DeadcatSdk, MarketState, OrderDirection, PredictionMarketAnchor};
 use lwk_signer::SwSigner;
-use lwk_test_util::{
-    TEST_MNEMONIC, TestEnv, TestEnvBuilder, generate_mnemonic, regtest_policy_asset,
-};
-use lwk_wollet::blocking::BlockchainBackend;
+use lwk_test_util::{generate_mnemonic, regtest_policy_asset};
 use lwk_wollet::elements::Txid;
 use lwk_wollet::elements::secp256k1_zkp::{Keypair, Message, Secp256k1, XOnlyPublicKey};
-use lwk_wollet::{ElectrumClient, ElectrumUrl, Wollet};
 use tempfile::TempDir;
 
-use std::str::FromStr;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 struct TestFixture {
-    env: TestEnv,
+    _guard: std::sync::MutexGuard<'static, ()>,
+    env: SharedTestEnv,
     sdk: DeadcatSdk,
     _temp_dir: TempDir,
 }
 
 impl TestFixture {
     fn new() -> Self {
-        let test_env = TestEnvBuilder::from_env().with_electrum().build();
-
+        let guard = hold_test_lock();
+        let test_env = SharedTestEnv::global();
         let temp_dir = tempfile::tempdir().unwrap();
+        let mnemonic = generate_mnemonic();
 
         let sdk = DeadcatSdk::new(
-            TEST_MNEMONIC,
+            &mnemonic,
             deadcat_sdk::Network::LiquidRegtest,
-            &test_env.electrum_url(),
+            test_env.electrum_url(),
             temp_dir.path(),
         )
         .unwrap();
 
         TestFixture {
+            _guard: guard,
             env: test_env,
             sdk,
             _temp_dir: temp_dir,
@@ -43,56 +44,95 @@ impl TestFixture {
     }
 
     /// Fund the SDK wallet with `count` separate UTXOs of `sats_each` sats.
-    fn fund(&self, count: u32, sats_each: u64) {
-        for _ in 0..count {
-            let addr = self.sdk.address(None).unwrap();
-            self.env
-                .elementsd_sendtoaddress(addr.address(), sats_each, None);
-        }
-        self.env.elementsd_generate(1);
+    fn fund(&self, count: u32, sats_each: u64) -> Txid {
+        let addresses: Vec<_> = (0..count)
+            .map(|index| self.sdk.address(Some(index)).unwrap())
+            .collect();
+        let outputs: Vec<_> = addresses
+            .iter()
+            .map(|addr| (addr.address(), sats_each, None))
+            .collect();
+        self.env.elementsd_send_outputs(&outputs)
     }
 
     /// Fund + sync in one call.
     fn fund_and_sync(&mut self, count: u32, sats_each: u64) {
-        self.fund(count, sats_each);
-        self.mine_and_sync(1);
+        let prev_utxo_count = self.sdk.utxos().unwrap().len();
+        let txid = self.fund(count, sats_each);
+        self.confirm_tx_with_predicate(1, txid, "funding transaction confirmation", |sdk| {
+            let txs = sdk.transactions().unwrap();
+            let utxos = sdk.utxos().unwrap();
+            let confirmed = txs.iter().any(|tx| tx.txid == txid && tx.height.is_some());
+            (confirmed && utxos.len() >= prev_utxo_count + count as usize).then_some(())
+        });
     }
 
-    /// Mine `n` blocks, wait for electrs to index, then sync the wallet.
+    /// Mine `n` blocks and wait for any currently pending wallet txs to confirm.
     fn mine_and_sync(&mut self, n: u32) {
-        self.env.elementsd_generate(n);
-        std::thread::sleep(Duration::from_millis(500));
-        self.sdk.sync().unwrap();
+        let pending: Vec<_> = self
+            .sdk
+            .transactions()
+            .unwrap()
+            .into_iter()
+            .filter(|tx| tx.height.is_none())
+            .map(|tx| tx.txid)
+            .collect();
+        self.env.generate_blocks(n);
+        sync_sdk_until(
+            &mut self.sdk,
+            "wallet sync after mining",
+            POLL_TIMEOUT,
+            |sdk| {
+                let txs = sdk.transactions().unwrap();
+                pending
+                    .iter()
+                    .all(|txid| txs.iter().any(|tx| tx.txid == *txid && tx.height.is_some()))
+                    .then_some(())
+            },
+        );
+    }
+
+    fn confirm_tx(&mut self, blocks: u32, txid: Txid) {
+        self.confirm_tx_with_predicate(blocks, txid, "wallet transaction confirmation", |_| {
+            Some(())
+        });
+    }
+
+    fn confirm_tx_with_predicate<T>(
+        &mut self,
+        blocks: u32,
+        txid: Txid,
+        label: &str,
+        mut poll: impl FnMut(&DeadcatSdk) -> Option<T>,
+    ) -> T {
+        self.env.generate_blocks(blocks);
+        sync_sdk_until(&mut self.sdk, label, POLL_TIMEOUT, |sdk| {
+            let confirmed = sdk
+                .transactions()
+                .unwrap()
+                .iter()
+                .any(|tx| tx.txid == txid && tx.height.is_some());
+            confirmed.then(|| poll(sdk)).flatten()
+        })
+    }
+
+    fn advance_chain_tip(&self, blocks: u32) {
+        let tip_height = self.env.generate_blocks(blocks);
+        self.env.wait_for_electrum_tip(tip_height);
+    }
+}
+
+fn hold_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    match LOCK.get_or_init(|| Mutex::new(())).lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
     }
 }
 
 pub fn generate_signer() -> SwSigner {
     let mnemonic = generate_mnemonic();
     SwSigner::new(&mnemonic, false).unwrap()
-}
-
-pub fn electrum_client(env: &TestEnv) -> ElectrumClient {
-    let electrum_url = ElectrumUrl::from_str(&env.electrum_url()).unwrap();
-    ElectrumClient::new(&electrum_url).unwrap()
-}
-
-pub fn sync<S: BlockchainBackend>(wollet: &mut Wollet, client: &mut S) {
-    let update = client.full_scan(wollet).unwrap();
-    if let Some(update) = update {
-        wollet.apply_update(update).unwrap();
-    }
-}
-
-pub fn wait_for_tx<S: BlockchainBackend>(wollet: &mut Wollet, client: &mut S, txid: &Txid) {
-    for _ in 0..120 {
-        sync(wollet, client);
-        let list = wollet.transactions().unwrap();
-        if list.iter().any(|e| &e.txid == txid) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    panic!("Wallet does not have {txid} in its list");
 }
 
 /// A dummy oracle pubkey for tests.
@@ -211,7 +251,7 @@ fn test_send_lbtc() {
     assert!(fee > 0);
 
     // Confirm and check sender balance decreased.
-    fixture.mine_and_sync(1);
+    fixture.confirm_tx(1, txid);
 
     let sender_balance = *fixture.sdk.balance().unwrap().get(&lbtc).unwrap();
     assert_eq!(sender_balance, 200_000 - 50_000 - fee);
@@ -320,7 +360,7 @@ fn test_create_contract_onchain() {
         .unwrap();
     let txid = anchor_txid(&anchor);
 
-    fixture.mine_and_sync(1);
+    fixture.confirm_tx(1, txid);
 
     // Verify the creation tx is in the wallet's history.
     let txs = fixture.sdk.transactions().unwrap();
@@ -515,14 +555,14 @@ fn create_and_issue(
         .create_contract_onchain(oracle_pubkey, cpt, expiry_time, 1_000, 500)
         .unwrap();
 
-    fixture.mine_and_sync(1);
+    fixture.confirm_tx(1, anchor_txid(&creation_txid));
 
-    let _issuance = fixture
+    let issuance = fixture
         .sdk
         .issue_tokens(&params, &creation_txid, pairs, 500)
         .unwrap();
 
-    fixture.mine_and_sync(1);
+    fixture.confirm_tx(1, issuance.txid);
 
     (creation_txid, params)
 }
@@ -791,15 +831,13 @@ fn test_expiry_redemption() {
     let mut fixture = TestFixture::new();
     fixture.fund_and_sync(20, 500_000);
 
-    // Use a very low expiry height so we can pass it in regtest
     let (oracle_pubkey, _keypair) = generate_oracle_keypair();
-    let expiry_height = 200u32;
+    let expiry_height = fixture.env.elementsd_height() as u32 + 3;
 
     let (creation_txid, params) =
         create_and_issue(&mut fixture, oracle_pubkey, 10_000, expiry_height, 5);
 
-    // Generate blocks past expiry
-    fixture.mine_and_sync(250);
+    fixture.advance_chain_tip(4);
 
     // Redeem YES tokens via expiry path
     let redeem = fixture
@@ -825,11 +863,11 @@ fn test_expiry_redemption_with_exact_fee_auto_finalize() {
     fixture.fund_and_sync(20, 500_000);
 
     let (oracle_pubkey, _keypair) = generate_oracle_keypair();
-    let expiry_height = 200u32;
+    let expiry_height = fixture.env.elementsd_height() as u32 + 3;
     let (creation_txid, params) =
         create_and_issue(&mut fixture, oracle_pubkey, 10_000, expiry_height, 5);
 
-    fixture.mine_and_sync(250);
+    fixture.advance_chain_tip(4);
 
     // Add an exact-fee UTXO after expiry so the implicit expire_market path selects it.
     fixture.fund_and_sync(1, 700);

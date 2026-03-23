@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -7,6 +8,9 @@ use deadcat_sdk::testing::{
 use deadcat_sdk::{DiscoveryConfig, DiscoveryEvent, DiscoveryService};
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
+
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn setup_service_with_store(
     mock_url: &str,
@@ -27,6 +31,48 @@ async fn setup_service_with_store(
     (service, rx, store, keys)
 }
 
+async fn wait_for<T, F, Fut>(label: &str, mut poll: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
+    let deadline = tokio::time::Instant::now() + POLL_TIMEOUT;
+    loop {
+        if let Some(value) = poll().await {
+            return value;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+async fn recv_matching_event<M>(
+    label: &str,
+    rx: &mut tokio::sync::broadcast::Receiver<DiscoveryEvent>,
+    mut matches: M,
+) -> DiscoveryEvent
+where
+    M: FnMut(&DiscoveryEvent) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + POLL_TIMEOUT;
+    loop {
+        match tokio::time::timeout(POLL_INTERVAL, rx.recv()).await {
+            Ok(Ok(event)) if matches(&event) => return event,
+            Ok(Ok(_)) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) | Err(_) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                panic!("subscription channel closed while waiting for {label}");
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -43,14 +89,12 @@ async fn market_announce_discover_roundtrip() {
     let event_id = service.announce_market(&announcement).await.unwrap();
     assert!(!event_id.to_hex().is_empty());
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Fetch
-    let markets = service.fetch_markets().await.unwrap();
-    assert!(
-        !markets.is_empty(),
-        "should have fetched at least one market"
-    );
+    let markets = wait_for("market announcement to be fetchable", || async {
+        let markets = service.fetch_markets().await.unwrap();
+        (!markets.is_empty()).then_some(markets)
+    })
+    .await;
 
     let market = &markets[0];
     assert_eq!(market.question, "Will BTC close above $120k by Dec 2026?");
@@ -84,11 +128,12 @@ async fn order_announce_discover_roundtrip() {
     let event_id = service.announce_order(&announcement).await.unwrap();
     assert!(!event_id.to_hex().is_empty());
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Fetch
-    let orders = service.fetch_orders(None).await.unwrap();
-    assert!(!orders.is_empty(), "should have fetched at least one order");
+    let orders = wait_for("order announcement to be fetchable", || async {
+        let orders = service.fetch_orders(None).await.unwrap();
+        (!orders.is_empty()).then_some(orders)
+    })
+    .await;
 
     let order = &orders[0];
     assert_eq!(order.market_id, "market123");
@@ -112,9 +157,6 @@ async fn subscription_delivers_market_events() {
     // Start subscription loop
     let handle = service.start().await.unwrap();
 
-    // Allow time for the subscription to be established
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     // Publish via a SEPARATE client (relay echoes to the subscribing service)
     let publisher = Client::new(keys.clone());
     publisher.add_relay(mock.url()).await.unwrap();
@@ -122,16 +164,16 @@ async fn subscription_delivers_market_events() {
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
     let (announcement, _params) = test_market_announcement(oracle_pubkey, 0x22);
-
     let event =
         deadcat_sdk::build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
     publisher.send_event(event).await.unwrap();
 
-    // Wait for the broadcast event
-    let result = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
-    assert!(result.is_ok(), "should receive event within timeout");
+    let event = recv_matching_event("market discovery subscription event", &mut rx, |event| {
+        matches!(event, DiscoveryEvent::MarketDiscovered(_))
+    })
+    .await;
 
-    match result.unwrap().unwrap() {
+    match event {
         DiscoveryEvent::MarketDiscovered(market) => {
             assert_eq!(market.question, "Will BTC close above $120k by Dec 2026?");
         }
@@ -148,7 +190,6 @@ async fn subscription_delivers_order_events() {
     let (service, mut rx, _store, keys) = setup_service_with_store(&mock.url()).await;
 
     let handle = service.start().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Publish via a separate client
     let publisher = Client::new(keys.clone());
@@ -159,10 +200,12 @@ async fn subscription_delivers_order_events() {
     let event = deadcat_sdk::build_order_event(&keys, &announcement, "liquid-testnet").unwrap();
     publisher.send_event(event).await.unwrap();
 
-    let result = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
-    assert!(result.is_ok(), "should receive event within timeout");
+    let event = recv_matching_event("order discovery subscription event", &mut rx, |event| {
+        matches!(event, DiscoveryEvent::OrderDiscovered(_))
+    })
+    .await;
 
-    match result.unwrap().unwrap() {
+    match event {
         DiscoveryEvent::OrderDiscovered(order) => {
             assert_eq!(order.market_id, "market456");
             assert_eq!(order.price, 50_000);
@@ -180,7 +223,6 @@ async fn store_persistence_on_discovery() {
     let (service, mut rx, store, keys) = setup_service_with_store(&mock.url()).await;
 
     let handle = service.start().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Publish via a separate client
     let publisher = Client::new(keys.clone());
@@ -194,8 +236,10 @@ async fn store_persistence_on_discovery() {
         deadcat_sdk::build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
     publisher.send_event(event).await.unwrap();
 
-    // Wait for broadcast
-    let _ = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+    let _ = recv_matching_event("market persistence subscription event", &mut rx, |event| {
+        matches!(event, DiscoveryEvent::MarketDiscovered(_))
+    })
+    .await;
 
     // Publish an order
     let order_announcement = test_order_announcement("market789");
@@ -203,7 +247,10 @@ async fn store_persistence_on_discovery() {
         deadcat_sdk::build_order_event(&keys, &order_announcement, "liquid-testnet").unwrap();
     publisher.send_event(order_event).await.unwrap();
 
-    let _ = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+    let _ = recv_matching_event("order persistence subscription event", &mut rx, |event| {
+        matches!(event, DiscoveryEvent::OrderDiscovered(_))
+    })
+    .await;
 
     // Verify both are persisted
     {
@@ -228,8 +275,6 @@ async fn attestation_roundtrip() {
     // First publish the announcement
     let ann_event_id = service.announce_market(&announcement).await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Publish attestation
     let result = service
         .publish_attestation(&market_id, &ann_event_id.to_hex(), true)
@@ -240,14 +285,12 @@ async fn attestation_roundtrip() {
     assert!(!result.signature_hex.is_empty());
     assert!(!result.nostr_event_id.is_empty());
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Fetch attestation
     let market_id_hex = hex::encode(market_id.as_bytes());
-    let content = service.fetch_attestation(&market_id_hex).await.unwrap();
-    assert!(content.is_some());
-
-    let att = content.unwrap();
+    let att = wait_for("attestation to be fetchable", || async {
+        service.fetch_attestation(&market_id_hex).await.unwrap()
+    })
+    .await;
     assert_eq!(att.market_id, market_id_hex);
     assert!(att.outcome_yes);
     assert_eq!(att.oracle_signature, result.signature_hex);
@@ -279,11 +322,13 @@ async fn duplicate_markets_are_idempotent() {
     service.announce_market(&announcement).await.unwrap();
     service.announce_market(&announcement).await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
     // Fetch — both events come back but store should deduplicate
-    let markets = service.fetch_markets().await.unwrap();
-    assert!(!markets.is_empty());
+    let _markets = wait_for("duplicate market fetch to settle", || async {
+        let markets = service.fetch_markets().await.unwrap();
+        let deduped = store.lock().unwrap().markets.len() == 1;
+        (!markets.is_empty() && deduped).then_some(markets)
+    })
+    .await;
 
     let s = store.lock().unwrap();
     assert_eq!(s.markets.len(), 1, "store should deduplicate by market_id");
@@ -300,11 +345,12 @@ async fn fetch_orders_filters_by_market() {
     service.announce_order(&announcement_a).await.unwrap();
     service.announce_order(&announcement_b).await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
     // Fetch all
-    let all_orders = service.fetch_orders(None).await.unwrap();
-    assert!(all_orders.len() >= 2);
+    let _all_orders = wait_for("all orders to be fetchable", || async {
+        let orders = service.fetch_orders(None).await.unwrap();
+        (orders.len() >= 2).then_some(orders)
+    })
+    .await;
 
     // Fetch filtered — the relay should filter, but we also verify client-side
     let filtered = service.fetch_orders(Some("marketAAA")).await.unwrap();

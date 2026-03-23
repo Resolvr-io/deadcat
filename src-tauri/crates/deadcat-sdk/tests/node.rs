@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,6 +15,9 @@ use deadcat_sdk::{NodeError, TradeAmount, TradeDirection, TradeSide};
 use deadcat_store::DeadcatStore;
 use nostr_relay_builder::prelude::*;
 use nostr_sdk::prelude::*;
+
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn setup_node_with_store(
     mock_url: &str,
@@ -54,6 +58,48 @@ fn setup_node_with_deadcat_store() -> (DeadcatNode<DeadcatStore>, Arc<Mutex<Dead
         config,
     );
     (node, store, keys)
+}
+
+async fn wait_for<T, F, Fut>(label: &str, mut poll: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
+    let deadline = tokio::time::Instant::now() + POLL_TIMEOUT;
+    loop {
+        if let Some(value) = poll().await {
+            return value;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+async fn recv_matching_event<M>(
+    label: &str,
+    rx: &mut tokio::sync::broadcast::Receiver<DiscoveryEvent>,
+    mut matches: M,
+) -> DiscoveryEvent
+where
+    M: FnMut(&DiscoveryEvent) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + POLL_TIMEOUT;
+    loop {
+        match tokio::time::timeout(POLL_INTERVAL, rx.recv()).await {
+            Ok(Ok(event)) if matches(&event) => return event,
+            Ok(Ok(_)) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) | Err(_) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                panic!("subscription channel closed while waiting for {label}");
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+    }
 }
 
 fn parse_lmsr_outpoint(outpoint: &str) -> LmsrInitialOutpoint {
@@ -147,14 +193,12 @@ async fn node_announce_and_fetch_market() {
     let event_id = node.announce_market(&announcement).await.unwrap();
     assert!(!event_id.to_hex().is_empty());
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Fetch back
-    let markets = node.fetch_markets().await.unwrap();
-    assert!(
-        !markets.is_empty(),
-        "should have fetched at least one market"
-    );
+    let markets = wait_for("market announcement to be fetchable", || async {
+        let markets = node.fetch_markets().await.unwrap();
+        (!markets.is_empty()).then_some(markets)
+    })
+    .await;
 
     let market = &markets[0];
     assert_eq!(market.question, "Will BTC close above $120k by Dec 2026?");
@@ -182,11 +226,12 @@ async fn node_announce_and_fetch_order() {
         .unwrap();
     assert!(!event_id.to_hex().is_empty());
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Fetch back via node
-    let orders = node.fetch_orders(None).await.unwrap();
-    assert!(!orders.is_empty(), "should have fetched at least one order");
+    let orders = wait_for("order announcement to be fetchable", || async {
+        let orders = node.fetch_orders(None).await.unwrap();
+        (!orders.is_empty()).then_some(orders)
+    })
+    .await;
 
     let order = &orders[0];
     assert_eq!(order.market_id, "market123");
@@ -209,8 +254,6 @@ async fn node_attestation() {
     // First publish the announcement
     let ann_event_id = node.announce_market(&announcement).await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Attest
     let result = node
         .attest_market(&market_id, &ann_event_id.to_hex(), true)
@@ -219,14 +262,12 @@ async fn node_attestation() {
     assert!(result.outcome_yes);
     assert!(!result.signature_hex.is_empty());
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Fetch attestation
     let market_id_hex = hex::encode(market_id.as_bytes());
-    let content = node.fetch_attestation(&market_id_hex).await.unwrap();
-    assert!(content.is_some());
-
-    let att = content.unwrap();
+    let att = wait_for("attestation to be fetchable", || async {
+        node.fetch_attestation(&market_id_hex).await.unwrap()
+    })
+    .await;
     assert_eq!(att.market_id, market_id_hex);
     assert!(att.outcome_yes);
 }
@@ -238,7 +279,6 @@ async fn node_subscription_delivers_events() {
 
     // Start subscription loop
     let handle = node.start_subscription().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Publish via a SEPARATE client
     let publisher = Client::new(keys.clone());
@@ -247,16 +287,16 @@ async fn node_subscription_delivers_events() {
 
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
     let (announcement, _params) = test_market_announcement(oracle_pubkey, 0x33);
-
     let event =
         deadcat_sdk::build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
     publisher.send_event(event).await.unwrap();
 
-    // Wait for broadcast event
-    let result = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
-    assert!(result.is_ok(), "should receive event within timeout");
+    let event = recv_matching_event("node market subscription event", &mut rx, |event| {
+        matches!(event, DiscoveryEvent::MarketDiscovered(_))
+    })
+    .await;
 
-    match result.unwrap().unwrap() {
+    match event {
         DiscoveryEvent::MarketDiscovered(market) => {
             assert_eq!(market.question, "Will BTC close above $120k by Dec 2026?");
         }
@@ -495,7 +535,11 @@ async fn quote_trade_requires_chain_access_for_lmsr_pool_scan() {
     announcement.lmsr_pool_id = derive_test_lmsr_pool_id(&announcement);
 
     node.announce_pool(&announcement).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for("pool announcement to be fetchable", || async {
+        let pools = node.fetch_pools(Some(&market_id)).await.unwrap();
+        (!pools.is_empty()).then_some(())
+    })
+    .await;
 
     let result = node
         .quote_trade(
@@ -652,7 +696,14 @@ async fn quote_trade_rejects_lmsr_pool_without_table_values() {
     announcement.lmsr_pool_id = derive_test_lmsr_pool_id(&announcement);
 
     node.announce_pool(&announcement).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for(
+        "pool announcement without table values to be fetchable",
+        || async {
+            let pools = node.fetch_pools(Some(&market_id)).await.unwrap();
+            (!pools.is_empty()).then_some(())
+        },
+    )
+    .await;
 
     let result = node
         .quote_trade(

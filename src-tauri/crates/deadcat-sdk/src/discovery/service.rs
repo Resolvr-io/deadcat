@@ -136,13 +136,18 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
         }
         self.client.connect().await;
 
+        // Subscribe before returning so callers can rely on the subscription
+        // being active as soon as `start()` succeeds.
+        let notifications = self.client.notifications();
+        subscribe_client(&self.client).await?;
+
         let client = self.client.clone();
         let store = self.store.clone();
         let tx = self.tx.clone();
         let network_tag = self.config.network_tag.clone();
 
         let handle = tokio::spawn(async move {
-            run_subscription_loop(client, store, tx, network_tag).await;
+            run_subscription_loop(client, notifications, store, tx, network_tag).await;
         });
 
         Ok(handle)
@@ -447,30 +452,12 @@ fn discovered_order_to_maker_params(
 
 /// Background subscription loop that listens for Nostr events and dispatches them.
 async fn run_subscription_loop<S: DiscoveryStore>(
-    client: Client,
+    _client: Client,
+    mut notifications: broadcast::Receiver<RelayPoolNotification>,
     store: Option<Arc<Mutex<S>>>,
     tx: broadcast::Sender<DiscoveryEvent>,
     network_tag: String,
 ) {
-    // Set up the notification receiver BEFORE subscribing so we don't miss events
-    let mut notifications = client.notifications();
-
-    let market_filter = build_contract_filter();
-    let order_filter = build_order_filter(None);
-    let attestation_filter = build_attestation_subscription_filter();
-    let pool_filter = build_pool_filter(None);
-
-    if let Err(e) = client
-        .subscribe(
-            vec![market_filter, order_filter, attestation_filter, pool_filter],
-            None,
-        )
-        .await
-    {
-        log::error!("failed to subscribe: {e}");
-        return;
-    }
-
     while let Ok(notification) = notifications.recv().await {
         if let RelayPoolNotification::Event { event, .. } = notification {
             let hashtags: Vec<String> = event
@@ -515,6 +502,22 @@ async fn run_subscription_loop<S: DiscoveryStore>(
             }
         }
     }
+}
+
+async fn subscribe_client(client: &Client) -> Result<(), String> {
+    let market_filter = build_contract_filter();
+    let order_filter = build_order_filter(None);
+    let attestation_filter = build_attestation_subscription_filter();
+    let pool_filter = build_pool_filter(None);
+
+    client
+        .subscribe(
+            vec![market_filter, order_filter, attestation_filter, pool_filter],
+            None,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("failed to subscribe: {e}"))
 }
 
 pub(crate) fn persist_market_to_store<S: DiscoveryStore>(
