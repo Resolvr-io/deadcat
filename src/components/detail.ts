@@ -256,8 +256,9 @@ export function chartSkeleton(
     )
     .join("");
 
-  const yesEnd = yesPoints[yesPoints.length - 1];
-  const noEnd = noPoints[noPoints.length - 1];
+  const defaultPoint = { x: plotRight, y: plotTop + plotYSpan / 2 };
+  const yesEnd = yesPoints[yesPoints.length - 1] ?? defaultPoint;
+  const noEnd = noPoints[noPoints.length - 1] ?? defaultPoint;
   const yesPct = Math.round(displayedYes * 100);
   const noPct = 100 - yesPct;
   const hoverRequested =
@@ -522,11 +523,16 @@ export function renderActionTicket(market: Market): string {
       : 0;
   const redeemCollateral = state.tokensInput * redeemRate;
   const fc = fullContractSats(market);
-  const yesDisplaySats = clampContractPriceSats(
-    Math.round((market.yesPrice ?? 0.5) * fc),
-    fc,
-  );
-  const noDisplaySats = fc - yesDisplaySats;
+  const yesPrice = market.yesPrice;
+  const yesDisplaySats =
+    yesPrice != null
+      ? clampContractPriceSats(Math.round(yesPrice * fc), fc)
+      : null;
+  const noDisplaySats = yesDisplaySats != null ? fc - yesDisplaySats : null;
+  const yesLabel =
+    yesDisplaySats != null ? `Yes ${yesDisplaySats} sats` : "Yes \u2014";
+  const noLabel =
+    noDisplaySats != null ? `No ${noDisplaySats} sats` : "No \u2014";
   const estimatedGrossPayoutSats = Math.floor(preview.requestedContracts * fc);
   const routeLegsHtml = quote
     ? quote.legs
@@ -554,8 +560,8 @@ export function renderActionTicket(market: Market): string {
         </div>
       </div>
       <div class="mb-3 grid grid-cols-2 gap-2">
-        <button data-side="yes" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "yes" ? (state.tradeIntent === "open" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">Yes ${yesDisplaySats} sats</button>
-        <button data-side="no" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "no" ? (state.tradeIntent === "open" ? "border-rose-400 bg-rose-400/20 text-rose-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">No ${noDisplaySats} sats</button>
+        <button data-side="yes" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "yes" ? (state.tradeIntent === "open" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">${yesLabel}</button>
+        <button data-side="no" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "no" ? (state.tradeIntent === "open" ? "border-rose-400 bg-rose-400/20 text-rose-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">${noLabel}</button>
       </div>
       ${
         state.orderType === "limit"

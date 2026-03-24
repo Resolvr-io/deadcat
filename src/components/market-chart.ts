@@ -238,8 +238,9 @@ export function chartSkeleton(
     )
     .join("");
 
-  const yesEnd = yesPoints[yesPoints.length - 1];
-  const noEnd = noPoints[noPoints.length - 1];
+  const defaultPoint = { x: plotRight, y: plotTop + plotYSpan / 2 };
+  const yesEnd = yesPoints[yesPoints.length - 1] ?? defaultPoint;
+  const noEnd = noPoints[noPoints.length - 1] ?? defaultPoint;
   const yesPct = Math.round(displayedYes * 100);
   const noPct = 100 - yesPct;
   const hoverRequested =
