@@ -68,14 +68,18 @@ pub fn build_initial_issuance_pset(
     let unresolved_no_spk = covenant_spk(contract, MarketSlot::UnresolvedNoRt);
     let unresolved_collateral_spk = covenant_spk(contract, MarketSlot::UnresolvedCollateral);
 
+    let shared_wallet_utxo = params.collateral_utxo.outpoint == params.fee_utxo.outpoint;
+
     // Input 0: YES reissuance token (from Dormant)
     add_pset_input(&mut pset, &params.yes_reissuance_utxo);
     // Input 1: NO reissuance token (from Dormant)
     add_pset_input(&mut pset, &params.no_reissuance_utxo);
-    // Input 2: collateral (external)
+    // Input 2: collateral (+ fee when shared)
     add_pset_input(&mut pset, &params.collateral_utxo);
-    // Input 3: fee
-    add_pset_input(&mut pset, &params.fee_utxo);
+    // Input 3: fee (only when separate UTXOs)
+    if !shared_wallet_utxo {
+        add_pset_input(&mut pset, &params.fee_utxo);
+    }
 
     // Mark inputs 0 and 1 as reissuance
     if let Some(input) = pset.inputs_mut().get_mut(0) {
@@ -132,30 +136,46 @@ pub fn build_initial_issuance_pset(
         fee_txout(&contract.params().collateral_asset_id, params.fee_amount),
     );
 
-    // Collateral change
-    let change = params.collateral_utxo.value - required_collateral;
-    if change > 0
-        && let Some(ref change_spk) = params.collateral_change_destination
-    {
-        add_pset_output(
-            &mut pset,
-            explicit_txout(&contract.params().collateral_asset_id, change, change_spk),
-        );
-    }
+    if shared_wallet_utxo {
+        // Single UTXO covers both collateral and fee — one combined change output.
+        let change = params
+            .collateral_utxo
+            .value
+            .saturating_sub(required_collateral + params.fee_amount);
+        if change > 0
+            && let Some(ref change_spk) = params.collateral_change_destination
+        {
+            add_pset_output(
+                &mut pset,
+                explicit_txout(&contract.params().collateral_asset_id, change, change_spk),
+            );
+        }
+    } else {
+        // Collateral change
+        let change = params.collateral_utxo.value - required_collateral;
+        if change > 0
+            && let Some(ref change_spk) = params.collateral_change_destination
+        {
+            add_pset_output(
+                &mut pset,
+                explicit_txout(&contract.params().collateral_asset_id, change, change_spk),
+            );
+        }
 
-    // Fee change
-    let fee_change = params.fee_utxo.value.saturating_sub(params.fee_amount);
-    if fee_change > 0
-        && let Some(ref change_spk) = params.fee_change_destination
-    {
-        add_pset_output(
-            &mut pset,
-            explicit_txout(
-                &contract.params().collateral_asset_id,
-                fee_change,
-                change_spk,
-            ),
-        );
+        // Fee change
+        let fee_change = params.fee_utxo.value.saturating_sub(params.fee_amount);
+        if fee_change > 0
+            && let Some(ref change_spk) = params.fee_change_destination
+        {
+            add_pset_output(
+                &mut pset,
+                explicit_txout(
+                    &contract.params().collateral_asset_id,
+                    fee_change,
+                    change_spk,
+                ),
+            );
+        }
     }
 
     pset.global.tx_data.fallback_locktime = Some(LockTime::from_consensus(params.lock_time));

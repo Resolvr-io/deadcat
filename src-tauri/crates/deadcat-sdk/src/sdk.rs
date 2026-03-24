@@ -1805,6 +1805,11 @@ impl DeadcatSdk {
     }
 
     /// Select wallet UTXOs for collateral and fee, returning unblinded UTXOs and change address.
+    ///
+    /// When the collateral asset is L-BTC (policy asset), a single UTXO can
+    /// fund both collateral and fee.  The returned UTXOs will share the same
+    /// outpoint in that case — downstream PSET builders detect this and emit
+    /// one input instead of two.
     fn select_wallet_utxos(
         &mut self,
         params: &PredictionMarketParams,
@@ -1819,19 +1824,54 @@ impl DeadcatSdk {
             .ok_or(Error::CollateralOverflow)?;
 
         let policy_asset = self.policy_asset();
+        let collateral_asset = AssetId::from_slice(&params.collateral_asset_id)
+            .map_err(|e| Error::Query(format!("bad collateral asset: {e}")))?;
+        let collateral_is_lbtc = collateral_asset == policy_asset;
         let raw_utxos = self.utxos()?;
 
+        // When collateral is L-BTC, try to find one UTXO that covers both.
+        if collateral_is_lbtc {
+            let combined_min = required_collateral.saturating_add(fee_amount);
+            if let Some(shared) = raw_utxos
+                .iter()
+                .filter(|u| {
+                    !u.is_spent
+                        && u.unblinded.asset == policy_asset
+                        && u.unblinded.value >= combined_min
+                })
+                .min_by_key(|u| u.unblinded.value)
+            {
+                let shared = shared.clone();
+                let tx = self.fetch_transaction(&shared.outpoint.txid)?;
+                let txout = tx
+                    .output
+                    .get(shared.outpoint.vout as usize)
+                    .ok_or_else(|| Error::Query("shared UTXO vout out of range".into()))?
+                    .clone();
+                let unblinded = wallet_txout_to_unblinded(&shared, &txout);
+                let addr_result = self.address(None)?;
+                let change_addr: lwk_wollet::elements::Address = addr_result
+                    .address()
+                    .to_string()
+                    .parse()
+                    .map_err(|e| Error::Query(format!("bad change address: {e}")))?;
+                return Ok((unblinded.clone(), unblinded, change_addr));
+            }
+        }
+
+        // Fallback: two separate UTXOs (required for non-L-BTC collateral,
+        // or when no single L-BTC UTXO is large enough).
         let collateral_wallet_utxo = raw_utxos
             .iter()
             .filter(|u| {
                 !u.is_spent
-                    && u.unblinded.asset == policy_asset
+                    && u.unblinded.asset == collateral_asset
                     && u.unblinded.value >= required_collateral
             })
             .max_by_key(|u| u.unblinded.value)
             .ok_or_else(|| {
                 Error::InsufficientUtxos(format!(
-                    "need L-BTC UTXO with >= {} sats for collateral",
+                    "need UTXO with >= {} sats for collateral",
                     required_collateral
                 ))
             })?
@@ -1848,9 +1888,8 @@ impl DeadcatSdk {
             .min_by_key(|u| u.unblinded.value)
             .ok_or_else(|| {
                 Error::InsufficientUtxos(format!(
-                    "need a second L-BTC UTXO with >= {} sats for the fee \
+                    "need a second L-BTC UTXO with >= {fee_amount} sats for the fee \
                      (send yourself a small amount first to create another UTXO)",
-                    fee_amount
                 ))
             })?
             .clone();
@@ -1877,7 +1916,7 @@ impl DeadcatSdk {
             .address()
             .to_string()
             .parse()
-            .map_err(|e| Error::Query(format!("bad change address: {}", e)))?;
+            .map_err(|e| Error::Query(format!("bad change address: {e}")))?;
 
         Ok((collateral_unblinded, fee_unblinded, change_addr))
     }

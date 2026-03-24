@@ -370,10 +370,14 @@ pub(crate) fn blind_issuance_pset(
     match (&inputs.current_state, &inputs.collateral_source) {
         (MarketState::Dormant, CollateralSource::Initial { wallet_utxo }) => {
             inp_txout_sec.insert(2, txout_secrets_from_unblinded(wallet_utxo, collateral_id)?);
-            inp_txout_sec.insert(
-                3,
-                txout_secrets_from_unblinded(&inputs.fee_utxo, collateral_id)?,
-            );
+            // When collateral and fee share an outpoint, input 2 already covers
+            // both — skip adding a separate fee input entry.
+            if wallet_utxo.outpoint != inputs.fee_utxo.outpoint {
+                inp_txout_sec.insert(
+                    3,
+                    txout_secrets_from_unblinded(&inputs.fee_utxo, collateral_id)?,
+                );
+            }
         }
         (
             MarketState::Unresolved,
@@ -397,10 +401,12 @@ pub(crate) fn blind_issuance_pset(
                 3,
                 txout_secrets_from_unblinded(new_wallet_utxo, collateral_id)?,
             );
-            inp_txout_sec.insert(
-                4,
-                txout_secrets_from_unblinded(&inputs.fee_utxo, collateral_id)?,
-            );
+            if new_wallet_utxo.outpoint != inputs.fee_utxo.outpoint {
+                inp_txout_sec.insert(
+                    4,
+                    txout_secrets_from_unblinded(&inputs.fee_utxo, collateral_id)?,
+                );
+            }
         }
         _ => return Err(Error::InvalidState),
     }
