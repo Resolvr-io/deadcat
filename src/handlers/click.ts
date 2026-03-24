@@ -18,6 +18,12 @@ import {
   redeemTokens,
   resolveMarket,
 } from "../services/markets.ts";
+import {
+  buildPoolParamsJson,
+  createLmsrPool,
+  generateLmsrTable,
+  listLmsrPools,
+} from "../services/pools.ts";
 import { DEFAULT_TX_OPTIONS } from "../services/tx.ts";
 import {
   fetchWalletStatus,
@@ -2019,7 +2025,91 @@ export async function handleClick(
   }
 
   if (action === "create-pool") {
-    showToast("Pool creation coming soon", "info");
+    const cosignerPubkey = state.nostrPubkey;
+    if (!cosignerPubkey) {
+      showToast("Wallet identity not initialized", "error");
+      return;
+    }
+    const market = getSelectedMarket();
+    const liquidity = Number(
+      (document.getElementById("pool-liquidity") as HTMLInputElement)?.value,
+    );
+    const feeBps = Number(
+      (document.getElementById("pool-fee-bps") as HTMLInputElement)?.value,
+    );
+    const reservesYes = Number(
+      (document.getElementById("pool-reserves-yes") as HTMLInputElement)?.value,
+    );
+    const reservesNo = Number(
+      (document.getElementById("pool-reserves-no") as HTMLInputElement)?.value,
+    );
+    const reservesLbtc = Number(
+      (document.getElementById("pool-reserves-lbtc") as HTMLInputElement)
+        ?.value,
+    );
+    if (
+      [liquidity, feeBps, reservesYes, reservesNo, reservesLbtc].some(
+        (v) => !Number.isFinite(v) || v <= 0,
+      )
+    ) {
+      showToast("All pool fields must be positive numbers", "error");
+      return;
+    }
+
+    const tableDepth = 10;
+    const qStepLots = 1;
+    const sBias = 512;
+    const sMaxIndex = (1 << tableDepth) - 1;
+    const halfPayoutSats = market.cptSats;
+    const initialSIndex = 512;
+
+    (async () => {
+      try {
+        showToast("Creating pool...", "info");
+        const tableValues = await generateLmsrTable(
+          liquidity,
+          tableDepth,
+          qStepLots,
+          sBias,
+          halfPayoutSats,
+        );
+        const poolParamsJson = await buildPoolParamsJson({
+          yesAssetId: market.yesAssetId,
+          noAssetId: market.noAssetId,
+          collateralAssetId: market.collateralAssetId,
+          tableDepth,
+          qStepLots,
+          sBias,
+          sMaxIndex,
+          halfPayoutSats,
+          feeBps,
+          minRYes: 1,
+          minRNo: 1,
+          minRCollateral: 1,
+          cosignerPubkey,
+          tableValues,
+        });
+        const marketParamsJson = marketToContractParamsJson(market);
+        const result = await createLmsrPool(
+          marketParamsJson,
+          poolParamsJson,
+          initialSIndex,
+          reservesYes,
+          reservesNo,
+          reservesLbtc,
+          tableValues,
+        );
+        showToast(
+          `Pool created! txid: ${result.txid.slice(0, 16)}... pool: ${result.pool_id.slice(0, 16)}...`,
+          "success",
+        );
+        state.poolCreateOpen = false;
+        state.myPools = await listLmsrPools();
+        render();
+      } catch (err) {
+        showToast(`Pool creation failed: ${err}`, "error");
+      }
+    })();
     return;
   }
 

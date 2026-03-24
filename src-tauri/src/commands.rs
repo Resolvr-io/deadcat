@@ -2326,6 +2326,60 @@ pub fn generate_lmsr_table(
 }
 
 #[derive(Deserialize)]
+pub struct BuildPoolParamsRequest {
+    pub yes_asset_id: String,
+    pub no_asset_id: String,
+    pub collateral_asset_id: String,
+    pub table_depth: u32,
+    pub q_step_lots: u64,
+    pub s_bias: u64,
+    pub s_max_index: u64,
+    pub half_payout_sats: u64,
+    pub fee_bps: u64,
+    pub min_r_yes: u64,
+    pub min_r_no: u64,
+    pub min_r_collateral: u64,
+    pub cosigner_pubkey: String,
+    pub table_values: Vec<u64>,
+}
+
+fn decode_hex32(label: &str, hex_str: &str) -> Result<[u8; 32], String> {
+    let bytes = hex::decode(hex_str).map_err(|e| format!("invalid {label} hex: {e}"))?;
+    <[u8; 32]>::try_from(bytes.as_slice())
+        .map_err(|_| format!("{label}: expected 32 bytes, got {}", bytes.len()))
+}
+
+/// Build a serialized `LmsrPoolParams` JSON from simple inputs + table values.
+///
+/// Computes `lmsr_table_root` from the provided table values so the frontend
+/// doesn't need to know about Merkle hashing.
+#[tauri::command]
+pub fn build_pool_params_json(request: BuildPoolParamsRequest) -> Result<String, String> {
+    let table_root = deadcat_sdk::lmsr_table_root(&request.table_values)
+        .map_err(|e| format!("table root: {e}"))?;
+    let params = deadcat_sdk::LmsrPoolParams {
+        yes_asset_id: decode_hex32("yes_asset_id", &request.yes_asset_id)?,
+        no_asset_id: decode_hex32("no_asset_id", &request.no_asset_id)?,
+        collateral_asset_id: decode_hex32("collateral_asset_id", &request.collateral_asset_id)?,
+        lmsr_table_root: table_root,
+        table_depth: request.table_depth,
+        q_step_lots: request.q_step_lots,
+        s_bias: request.s_bias,
+        s_max_index: request.s_max_index,
+        half_payout_sats: request.half_payout_sats,
+        fee_bps: request.fee_bps,
+        min_r_yes: request.min_r_yes,
+        min_r_no: request.min_r_no,
+        min_r_collateral: request.min_r_collateral,
+        cosigner_pubkey: decode_hex32("cosigner_pubkey", &request.cosigner_pubkey)?,
+    };
+    params
+        .validate()
+        .map_err(|e| format!("invalid pool params: {e}"))?;
+    serde_json::to_string(&params).map_err(|e| format!("serialize pool params: {e}"))
+}
+
+#[derive(Deserialize)]
 pub struct CreateLmsrPoolRequest {
     pub market_params_json: String,
     pub pool_params_json: String,

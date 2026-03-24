@@ -1252,6 +1252,7 @@ pub fn run() {
             commands::list_own_orders,
             // LMSR Pools
             commands::generate_lmsr_table,
+            commands::build_pool_params_json,
             commands::create_lmsr_pool,
             commands::scan_lmsr_pool,
             commands::adjust_lmsr_pool,

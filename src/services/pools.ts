@@ -24,6 +24,42 @@ export async function generateLmsrTable(
   });
 }
 
+export async function buildPoolParamsJson(params: {
+  yesAssetId: string;
+  noAssetId: string;
+  collateralAssetId: string;
+  tableDepth: number;
+  qStepLots: number;
+  sBias: number;
+  sMaxIndex: number;
+  halfPayoutSats: number;
+  feeBps: number;
+  minRYes: number;
+  minRNo: number;
+  minRCollateral: number;
+  cosignerPubkey: string;
+  tableValues: number[];
+}): Promise<string> {
+  return invoke<string>("build_pool_params_json", {
+    request: {
+      yes_asset_id: params.yesAssetId,
+      no_asset_id: params.noAssetId,
+      collateral_asset_id: params.collateralAssetId,
+      table_depth: params.tableDepth,
+      q_step_lots: params.qStepLots,
+      s_bias: params.sBias,
+      s_max_index: params.sMaxIndex,
+      half_payout_sats: params.halfPayoutSats,
+      fee_bps: params.feeBps,
+      min_r_yes: params.minRYes,
+      min_r_no: params.minRNo,
+      min_r_collateral: params.minRCollateral,
+      cosigner_pubkey: params.cosignerPubkey,
+      table_values: params.tableValues,
+    },
+  });
+}
+
 export async function createLmsrPool(
   marketParamsJson: string,
   poolParamsJson: string,
