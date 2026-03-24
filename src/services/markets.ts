@@ -298,6 +298,6 @@ export function mergeOrdersIntoMarket(
 ): void {
   const market = markets.find((m) => m.marketId === marketId);
   if (market) {
-    market.limitOrders = orders;
+    market.limitOrders = orders.filter((o) => o.market_id === marketId);
   }
 }
