@@ -39,6 +39,16 @@ pub struct DiscoveredMarket {
     /// Live NO probability in basis points (0–10000) from pool reserves, if available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_price_bps: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dormant_txid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unresolved_txid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_yes_txid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_no_txid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expired_txid: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +207,11 @@ pub(crate) fn parse_announcement_event_with_ingest(
             nostr_event_json: serde_json::to_string(event).ok(),
             yes_price_bps: None,
             no_price_bps: None,
+            dormant_txid: None,
+            unresolved_txid: None,
+            resolved_yes_txid: None,
+            resolved_no_txid: None,
+            expired_txid: None,
         },
         ingest: PredictionMarketCandidateIngestInput {
             params: *params,

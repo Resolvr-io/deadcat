@@ -12,6 +12,7 @@ export function renderWalletTransactionRows(params: {
   creationTxToMarket: Map<string, string>;
   orderTxLabel: Map<string, { label: string; marketId: string | null }>;
   poolCreationTx: Map<string, string>;
+  covenantTxLabel: Map<string, { label: string; marketId: string }>;
   pawIcon: string;
   walletData: WalletData | null;
 }): string {
@@ -19,6 +20,7 @@ export function renderWalletTransactionRows(params: {
     creationTxToMarket,
     orderTxLabel,
     poolCreationTx,
+    covenantTxLabel,
     pawIcon,
     walletData,
   } = params;
@@ -29,20 +31,21 @@ export function renderWalletTransactionRows(params: {
       const isCreation = !!marketId;
       const poolMarketId = poolCreationTx.get(tx.txid);
       const isPoolCreation = !!poolMarketId;
-      const isIssuance = tx.txType === "issuance" || tx.txType === "reissuance";
+      const covenantInfo = covenantTxLabel.get(tx.txid);
+      const isCovenant = !!covenantInfo;
       const orderInfo = orderTxLabel.get(tx.txid);
       const isLimitOrder = !!orderInfo;
       const sign = tx.balanceChange >= 0 ? "+" : "";
       const color = isLimitOrder
         ? "text-amber-300"
-        : isPoolCreation || isCreation || isIssuance
+        : isCovenant || isPoolCreation || isCreation
           ? "text-violet-300"
           : tx.balanceChange >= 0
             ? "text-emerald-300"
             : "text-red-300";
       const icon = isLimitOrder
         ? "&#9830;"
-        : isPoolCreation || isCreation || isIssuance
+        : isCovenant || isPoolCreation || isCreation
           ? "&#9670;"
           : tx.balanceChange >= 0
             ? "&#8595;"
@@ -63,6 +66,13 @@ export function renderWalletTransactionRows(params: {
             badgeContent +
             "</span>";
         }
+      } else if (isCovenant) {
+        label =
+          '<button data-open-market="' +
+          escapeAttr(covenantInfo.marketId) +
+          '" class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 hover:bg-violet-500/30 transition cursor-pointer">' +
+          escapeHtml(covenantInfo.label) +
+          "</button>";
       } else if (isPoolCreation) {
         label =
           '<button data-open-market="' +
@@ -73,9 +83,6 @@ export function renderWalletTransactionRows(params: {
           '<button data-open-market="' +
           escapeAttr(marketId) +
           '" class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 hover:bg-violet-500/30 transition cursor-pointer">Market Creation</button>';
-      } else if (isIssuance) {
-        label =
-          '<span class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">Issuance</span>';
       }
       const date = tx.timestamp
         ? new Date(tx.timestamp * 1000).toLocaleString()

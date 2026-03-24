@@ -136,6 +136,11 @@ export type DiscoveredMarket = {
   nostr_event_json?: string | null;
   yes_price_bps?: number | null;
   no_price_bps?: number | null;
+  dormant_txid?: string | null;
+  unresolved_txid?: string | null;
+  resolved_yes_txid?: string | null;
+  resolved_no_txid?: string | null;
+  expired_txid?: string | null;
 };
 
 export type DiscoveredOrder = {
@@ -273,6 +278,11 @@ export type Market = {
   change24h: number;
   volumeBtc: number;
   liquidityBtc: number;
+  dormantTxid: string | null;
+  unresolvedTxid: string | null;
+  resolvedYesTxid: string | null;
+  resolvedNoTxid: string | null;
+  expiredTxid: string | null;
 };
 
 export type PathAvailability = {

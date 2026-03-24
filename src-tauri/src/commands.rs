@@ -2044,6 +2044,11 @@ fn market_info_to_discovered(
         nostr_event_json: info.nostr_event_json.clone(),
         yes_price_bps,
         no_price_bps,
+        dormant_txid: info.dormant_txid.clone(),
+        unresolved_txid: info.unresolved_txid.clone(),
+        resolved_yes_txid: info.resolved_yes_txid.clone(),
+        resolved_no_txid: info.resolved_no_txid.clone(),
+        expired_txid: info.expired_txid.clone(),
     }
 }
 

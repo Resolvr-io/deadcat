@@ -202,6 +202,11 @@ pub fn market_info_from_rows(
         nevent: candidate.nevent.clone(),
         nostr_event_id: candidate.nostr_event_id.clone(),
         nostr_event_json: candidate.nostr_event_json.clone(),
+        dormant_txid: market.dormant_txid.clone(),
+        unresolved_txid: market.unresolved_txid.clone(),
+        resolved_yes_txid: market.resolved_yes_txid.clone(),
+        resolved_no_txid: market.resolved_no_txid.clone(),
+        expired_txid: market.expired_txid.clone(),
     })
 }
 

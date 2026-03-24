@@ -536,6 +536,11 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             nostr_event_json: None,
             yes_price_bps: None,
             no_price_bps: None,
+            dormant_txid: None,
+            unresolved_txid: None,
+            resolved_yes_txid: None,
+            resolved_no_txid: None,
+            expired_txid: None,
         };
 
         let parsed = ParsedDiscoveredMarketAnnouncement {

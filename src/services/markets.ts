@@ -61,6 +61,11 @@ export function discoveredToMarket(d: DiscoveredMarket): Market {
     change24h: 0,
     volumeBtc: 0,
     liquidityBtc: 0,
+    dormantTxid: d.dormant_txid ?? null,
+    unresolvedTxid: d.unresolved_txid ?? null,
+    resolvedYesTxid: d.resolved_yes_txid ?? null,
+    resolvedNoTxid: d.resolved_no_txid ?? null,
+    expiredTxid: d.expired_txid ?? null,
   };
 }
 

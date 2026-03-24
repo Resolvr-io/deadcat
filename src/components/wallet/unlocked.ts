@@ -33,6 +33,23 @@ export function renderWalletUnlocked(params: {
       .map((m) => [m.creationTxid as string, m.id]),
   );
 
+  // Map covenant transition txids to labels for wallet transaction display.
+  const covenantTxLabel = new Map<
+    string,
+    { label: string; marketId: string }
+  >();
+  for (const m of markets) {
+    const entries: Array<[string | null, string]> = [
+      [m.unresolvedTxid, "Issuance"],
+      [m.resolvedYesTxid, "Resolved YES"],
+      [m.resolvedNoTxid, "Resolved NO"],
+      [m.expiredTxid, "Expired"],
+    ];
+    for (const [txid, label] of entries) {
+      if (txid) covenantTxLabel.set(txid, { label, marketId: m.id });
+    }
+  }
+
   // Build txid->label map from own limit orders for transaction labeling
   const orderTxLabel = new Map<
     string,
@@ -93,6 +110,7 @@ export function renderWalletUnlocked(params: {
     creationTxToMarket,
     orderTxLabel,
     poolCreationTx,
+    covenantTxLabel,
     pawIcon: PAW_ICON,
     walletData: wd ?? null,
   });
