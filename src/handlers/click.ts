@@ -1889,31 +1889,38 @@ export async function handleClick(
       `Attesting ${outcomeLabel} for "${market.question.slice(0, 40)}"...`,
       "info",
     );
+    const anchor = requireMarketAnchor(market, "resolve market");
+    if (!anchor) return;
     state.attestationLoading = true;
     render();
     (async () => {
       try {
-        const result = await invoke<AttestationResult>("oracle_attest", {
+        // Step 1: Sign and publish attestation to Nostr.
+        const attestation = await invoke<AttestationResult>("oracle_attest", {
           marketIdHex: market.marketId,
           outcomeYes,
         });
-        // Save attestation for on-chain execution
-        state.lastAttestationSig = result.signature_hex;
-        state.lastAttestationOutcome = outcomeYes;
-        state.lastAttestationMarketId = market.marketId;
-        market.resolveTx = {
-          txid: result.nostr_event_id,
-          outcome: outcomeYes ? "yes" : "no",
-          sigVerified: true,
-          height: market.currentHeight,
-          signatureHash: `${result.signature_hex.slice(0, 16)}...`,
-        };
+        showToast("Attestation published. Executing on-chain...", "info");
+
+        // Step 2: Immediately execute on-chain resolution.
+        const result = await resolveMarket(
+          market,
+          anchor,
+          outcomeYes,
+          attestation.signature_hex,
+          DEFAULT_TX_OPTIONS,
+        );
+        market.state = result.outcome_yes ? 2 : 3;
+        state.lastAttestationSig = null;
+        state.lastAttestationOutcome = null;
+        state.lastAttestationMarketId = null;
         showToast(
-          `Attestation published to Nostr! Now execute on-chain to finalize.`,
+          `Market resolved ${outcomeLabel}! txid: ${result.txid.slice(0, 16)}...${formatFeeToastSuffix(result.fee.amountSat)}`,
           "success",
         );
+        await refreshWallet(render);
       } catch (error) {
-        showToast(`Failed to attest: ${error}`, "error");
+        showToast(`Resolution failed: ${error}`, "error");
       } finally {
         state.attestationLoading = false;
         render();

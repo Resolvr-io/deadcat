@@ -967,25 +967,11 @@ export function renderDetail(): string {
               ? `
           <section class="rounded-[21px] border border-amber-700/60 bg-amber-950/20 p-[21px]">
             <p class="mb-2 text-sm font-semibold text-amber-200">You are the oracle for this market</p>
-            <p class="mb-3 text-xs text-slate-400">Publish an attestation to Nostr, then execute on-chain to finalize the outcome.</p>
+            <p class="mb-3 text-xs text-slate-400">Publish an attestation and execute the on-chain resolution in one step.</p>
             <div class="flex items-center gap-2">
               <button data-action="oracle-attest-yes" ${state.attestationLoading ? "disabled" : ""} class="rounded-lg ${state.attestationLoading ? "bg-slate-600 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 text-sm font-semibold">${state.attestationLoading ? "Attesting..." : "Resolve YES"}</button>
               <button data-action="oracle-attest-no" ${state.attestationLoading ? "disabled" : ""} class="rounded-lg ${state.attestationLoading ? "bg-slate-600 text-slate-400" : "bg-rose-400 text-slate-950"} px-4 py-2 text-sm font-semibold">${state.attestationLoading ? "Attesting..." : "Resolve NO"}</button>
             </div>
-          </section>`
-              : ""
-          }
-
-          ${
-            state.marketMakerMode &&
-            state.lastAttestationSig &&
-            state.lastAttestationMarketId === market.marketId &&
-            market.state === 1
-              ? `
-          <section class="rounded-[21px] border border-emerald-700/60 bg-emerald-950/20 p-[21px]">
-            <p class="mb-2 text-sm font-semibold text-emerald-200">Attestation published — execute on-chain resolution</p>
-            <p class="mb-2 text-xs text-slate-300">Outcome: ${state.lastAttestationOutcome ? "YES" : "NO"} | Sig: ${state.lastAttestationSig.slice(0, 24)}...</p>
-            <button data-action="execute-resolution" ${state.resolutionExecuting ? "disabled" : ""} class="w-full rounded-lg ${state.resolutionExecuting ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 text-sm font-semibold">${state.resolutionExecuting ? "Executing..." : "Execute Resolution On-Chain"}</button>
           </section>`
               : ""
           }
