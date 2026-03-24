@@ -1,4 +1,4 @@
-import { EXECUTION_FEE_RATE, state, WIN_FEE_RATE } from "../state.ts";
+import { state } from "../state.ts";
 import type { Market } from "../types.ts";
 import { hexToNpub } from "../utils/crypto.ts";
 import {
@@ -527,23 +527,7 @@ export function renderActionTicket(market: Market): string {
     fc,
   );
   const noDisplaySats = fc - yesDisplaySats;
-  const estimatedExecutionFeeSats = Math.round(
-    preview.notionalSats * EXECUTION_FEE_RATE,
-  );
   const estimatedGrossPayoutSats = Math.floor(preview.requestedContracts * fc);
-  const estimatedProfitSats = Math.max(
-    0,
-    estimatedGrossPayoutSats - preview.notionalSats,
-  );
-  const estimatedWinFeeSats =
-    state.tradeIntent === "open"
-      ? Math.round(estimatedProfitSats * WIN_FEE_RATE)
-      : 0;
-  const estimatedFeesSats = estimatedExecutionFeeSats + estimatedWinFeeSats;
-  const estimatedNetIfCorrectSats = Math.max(
-    0,
-    estimatedGrossPayoutSats - estimatedFeesSats,
-  );
   const routeLegsHtml = quote
     ? quote.legs
         .map((leg, idx) => {
@@ -638,11 +622,10 @@ export function renderActionTicket(market: Market): string {
         ${
           state.tradeIntent === "open"
             ? `<div class="flex items-center justify-between py-1"><span>You pay</span><span>${formatSats(preview.notionalSats)}</span></div>
-        <div class="flex items-center justify-between py-1"><span>If filled & correct</span><span>${formatSats(estimatedNetIfCorrectSats)}</span></div>`
-            : `<div class="flex items-center justify-between py-1"><span>You receive (if filled)</span><span>${formatSats(Math.max(0, preview.notionalSats - estimatedExecutionFeeSats))}</span></div>
+        <div class="flex items-center justify-between py-1"><span>If filled & correct</span><span>${formatSats(estimatedGrossPayoutSats)}</span></div>`
+            : `<div class="flex items-center justify-between py-1"><span>You receive (if filled)</span><span>${formatSats(preview.notionalSats)}</span></div>
         <div class="flex items-center justify-between py-1"><span>Position remaining (if filled)</span><span>${Math.max(0, selectedPositionContracts - preview.requestedContracts).toFixed(2)} contracts</span></div>`
         }
-        <div class="flex items-center justify-between py-1"><span>Estimated fees</span><span>${formatSats(estimatedFeesSats)}</span></div>
         <div class="mt-1 flex items-center justify-between py-1 text-xs text-slate-500"><span>Price</span><span>${executionPriceSats} sats · Yes + No = ${fc}</span></div>
       </div>
       ${

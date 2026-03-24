@@ -359,12 +359,7 @@ export type TradePreview = {
   executionPriceSats: number;
   notionalSats: number;
   executedSats: number;
-  executionFeeSats: number;
-  winFeeSats: number;
   grossPayoutSats: number;
-  netIfCorrectSats: number;
-  maxProfitSats: number;
-  netAfterFeesSats: number;
   slippagePct: number;
   positionContracts: number;
 };

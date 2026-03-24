@@ -46,9 +46,6 @@ export const app = document.querySelector<HTMLDivElement>(
 ) as HTMLDivElement;
 export const DEV_MODE = import.meta.env.DEV;
 
-export const EXECUTION_FEE_RATE = 0.01;
-export const WIN_FEE_RATE = 0.02;
-
 export const categories: NavCategory[] = [
   "Trending",
   "Politics",

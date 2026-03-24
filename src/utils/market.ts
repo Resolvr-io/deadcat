@@ -1,4 +1,4 @@
-import { EXECUTION_FEE_RATE, markets, state, WIN_FEE_RATE } from "../state.ts";
+import { markets, state } from "../state.ts";
 import type {
   CovenantState,
   DiscoveredOrder,
@@ -365,19 +365,7 @@ export function getTradePreview(market: Market): TradePreview {
       ? Math.max(1, Math.floor(state.tradeSizeSats))
       : Math.max(0, Math.round(requestedContracts * referencePriceSats));
   const executedSats = Math.max(0, fill.totalSats);
-  const executionFeeSats = Math.round(executedSats * EXECUTION_FEE_RATE);
   const grossPayoutSats = Math.floor(fill.filledContracts * fc);
-  const grossProfitSats = Math.max(0, grossPayoutSats - executedSats);
-  const winFeeSats =
-    state.tradeIntent === "open"
-      ? Math.round(grossProfitSats * WIN_FEE_RATE)
-      : 0;
-  const netIfCorrectSats = Math.max(
-    0,
-    grossPayoutSats - executionFeeSats - winFeeSats,
-  );
-  const maxProfitSats = Math.max(0, netIfCorrectSats - executedSats);
-  const netAfterFeesSats = Math.max(0, executedSats - executionFeeSats);
   const slippagePct =
     fill.bestPriceSats > 0
       ? Math.max(
@@ -399,12 +387,7 @@ export function getTradePreview(market: Market): TradePreview {
     executionPriceSats,
     notionalSats,
     executedSats,
-    executionFeeSats,
-    winFeeSats,
     grossPayoutSats,
-    netIfCorrectSats,
-    maxProfitSats,
-    netAfterFeesSats,
     slippagePct,
     positionContracts,
   };
