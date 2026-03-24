@@ -2578,6 +2578,9 @@ export async function handleClick(
             `Trade executed! txid: ${result.txid.slice(0, 16)}...${formatFeeToastSuffix(result.fee.amountSat)}`,
             "success",
           );
+          if (result.pool_used) {
+            state.myPools = await listLmsrPools();
+          }
           await refreshWallet(render);
         } catch (error) {
           state.tradeError = String(error);
