@@ -2615,10 +2615,12 @@ export async function handleClick(
       (async () => {
         try {
           const result = await issueTokens(market, pairs);
+          market.state = result.new_state as Market["state"];
           showToast(
             `Tokens issued! txid: ${result.txid.slice(0, 16)}...${formatFeeToastSuffix(result.fee.amountSat)}`,
             "success",
           );
+          await refreshWallet(render);
         } catch (error) {
           showToast(`Issuance failed: ${error}`, "error");
         }
