@@ -106,10 +106,21 @@ export function renderWalletUnlocked(params: {
       .map((p) => [p.creation_txid, p.market_id]),
   );
 
+  // Map LMSR pool trade transitions to labels for wallet transaction display.
+  const poolTradeTx = new Map<string, string>();
+  for (const [marketId, entries] of state.priceHistory) {
+    for (const entry of entries) {
+      if (entry.transition_txid) {
+        poolTradeTx.set(entry.transition_txid, marketId);
+      }
+    }
+  }
+
   const txRows = renderWalletTransactionRows({
     creationTxToMarket,
     orderTxLabel,
     poolCreationTx,
+    poolTradeTx,
     covenantTxLabel,
     pawIcon: PAW_ICON,
     walletData: wd ?? null,

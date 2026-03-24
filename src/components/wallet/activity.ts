@@ -12,6 +12,7 @@ export function renderWalletTransactionRows(params: {
   creationTxToMarket: Map<string, string>;
   orderTxLabel: Map<string, { label: string; marketId: string | null }>;
   poolCreationTx: Map<string, string>;
+  poolTradeTx: Map<string, string>;
   covenantTxLabel: Map<string, { label: string; marketId: string }>;
   pawIcon: string;
   walletData: WalletData | null;
@@ -20,6 +21,7 @@ export function renderWalletTransactionRows(params: {
     creationTxToMarket,
     orderTxLabel,
     poolCreationTx,
+    poolTradeTx,
     covenantTxLabel,
     pawIcon,
     walletData,
@@ -31,21 +33,25 @@ export function renderWalletTransactionRows(params: {
       const isCreation = !!marketId;
       const poolMarketId = poolCreationTx.get(tx.txid);
       const isPoolCreation = !!poolMarketId;
+      const poolTradeMarketId = poolTradeTx.get(tx.txid);
+      const isPoolTrade = !!poolTradeMarketId;
       const covenantInfo = covenantTxLabel.get(tx.txid);
       const isCovenant = !!covenantInfo;
       const orderInfo = orderTxLabel.get(tx.txid);
       const isLimitOrder = !!orderInfo;
       const sign = tx.balanceChange >= 0 ? "+" : "";
+      const isLabeled =
+        isCovenant || isPoolCreation || isPoolTrade || isCreation;
       const color = isLimitOrder
         ? "text-amber-300"
-        : isCovenant || isPoolCreation || isCreation
+        : isLabeled
           ? "text-violet-300"
           : tx.balanceChange >= 0
             ? "text-emerald-300"
             : "text-red-300";
       const icon = isLimitOrder
         ? "&#9830;"
-        : isCovenant || isPoolCreation || isCreation
+        : isLabeled
           ? "&#9670;"
           : tx.balanceChange >= 0
             ? "&#8595;"
@@ -78,6 +84,11 @@ export function renderWalletTransactionRows(params: {
           '<button data-open-market="' +
           escapeAttr(poolMarketId) +
           '" class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 hover:bg-violet-500/30 transition cursor-pointer">Pool Creation</button>';
+      } else if (isPoolTrade) {
+        label =
+          '<button data-open-market="' +
+          escapeAttr(poolTradeMarketId) +
+          '" class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 hover:bg-violet-500/30 transition cursor-pointer">Pool Trade</button>';
       } else if (isCreation) {
         label =
           '<button data-open-market="' +
