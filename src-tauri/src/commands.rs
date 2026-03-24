@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use deadcat_store::MarketFilter;
+use deadcat_store::{LmsrPoolFilter, MarketFilter};
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
@@ -1933,6 +1934,31 @@ pub async fn get_wallet_utxos(
 // Market store commands
 // =========================================================================
 
+/// Compute live YES/NO spot prices for a pool from stored state.
+///
+/// Returns `None` if the pool is missing table values or params fail to
+/// deserialize — never panics or breaks the market listing.
+fn pool_spot_prices(pool: &deadcat_store::LmsrPoolInfo) -> Option<(u16, u16)> {
+    let params: deadcat_sdk::LmsrPoolParams = serde_json::from_str(&pool.params_json)
+        .map_err(|e| log::warn!("pool {}: bad params_json: {e}", pool.pool_id))
+        .ok()?;
+    let table_values = pool.lmsr_table_values.as_ref().or_else(|| {
+        log::warn!(
+            "pool {}: missing table values, cannot compute spot price",
+            pool.pool_id
+        );
+        None
+    })?;
+    let manifest = deadcat_sdk::LmsrTableManifest::new(params.table_depth, table_values.clone())
+        .map_err(|e| log::warn!("pool {}: bad table manifest: {e}", pool.pool_id))
+        .ok()?;
+    let yes_bps =
+        deadcat_sdk::fee_free_yes_spot_price_bps(&manifest, &params, pool.current_s_index)
+            .map_err(|e| log::warn!("pool {}: spot price error: {e}", pool.pool_id))
+            .ok()?;
+    Some((yes_bps, 10_000u16.saturating_sub(yes_bps)))
+}
+
 #[tauri::command]
 pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
     let store_arc = {
@@ -1953,9 +1979,32 @@ pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, St
         .list_markets(&MarketFilter::default())
         .map_err(|e| format!("list markets: {e}"))?;
 
+    // Build market_id → pool lookup for spot price computation.
+    let pools = store
+        .list_lmsr_pools(&LmsrPoolFilter::default())
+        .unwrap_or_default();
+    let mut pool_by_market: HashMap<&str, &deadcat_store::LmsrPoolInfo> =
+        HashMap::with_capacity(pools.len());
+    for pool in &pools {
+        pool_by_market
+            .entry(&pool.market_id)
+            .and_modify(|existing| {
+                if pool.updated_at > existing.updated_at {
+                    *existing = pool;
+                }
+            })
+            .or_insert(pool);
+    }
+
     let mut result = Vec::with_capacity(infos.len());
     for info in &infos {
-        result.push(market_info_to_discovered(info, None, None));
+        let market_id_hex = hex::encode(info.market_id.as_bytes());
+        let (yes_bps, no_bps) = pool_by_market
+            .get(market_id_hex.as_str())
+            .and_then(|pool| pool_spot_prices(pool))
+            .map(|(y, n)| (Some(y), Some(n)))
+            .unwrap_or((None, None));
+        result.push(market_info_to_discovered(info, yes_bps, no_bps));
     }
     Ok(result)
 }
