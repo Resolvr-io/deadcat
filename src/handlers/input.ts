@@ -190,4 +190,12 @@ export function handleInput(e: Event, render: () => void): void {
     state.createResolutionSource = target.value;
     return;
   }
+
+  if (target.id === "create-cpt-sats") {
+    const parsed = Math.floor(Number(target.value));
+    if (Number.isFinite(parsed) && parsed > 0) {
+      state.createCptSats = parsed;
+    }
+    return;
+  }
 }

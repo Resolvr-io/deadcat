@@ -2466,7 +2466,7 @@ export async function handleClick(
             category: state.createCategory,
             resolution_source: source,
             settlement_deadline_unix: deadlineUnix,
-            collateral_per_token: 5000,
+            collateral_per_token: state.createCptSats,
             tx_options: DEFAULT_TX_OPTIONS,
           });
           markets.push(discoveredToMarket(result.market));
@@ -2474,6 +2474,7 @@ export async function handleClick(
           state.createQuestion = "";
           state.createDescription = "";
           state.createResolutionSource = "";
+          state.createCptSats = 5000;
           state.createSettlementInput = defaultSettlementInput();
           showToast(
             `Market created! txid: ${result.market.anchor?.creation_txid ?? "unknown"}${formatFeeToastSuffix(result.fee.amountSat)}`,

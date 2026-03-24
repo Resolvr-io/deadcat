@@ -140,6 +140,7 @@ export const state: {
   createCategory: MarketCategory;
   createCategoryOpen: boolean;
   createResolutionSource: string;
+  createCptSats: number;
   createSettlementInput: string;
   createSettlementPickerOpen: boolean;
   createSettlementPickerDropdown: string;
@@ -287,6 +288,7 @@ export const state: {
   createCategory: "Bitcoin",
   createCategoryOpen: false,
   createResolutionSource: "",
+  createCptSats: 5000,
   createSettlementInput: defaultSettlementInput(),
   createSettlementPickerOpen: false,
   createSettlementPickerDropdown: "",
