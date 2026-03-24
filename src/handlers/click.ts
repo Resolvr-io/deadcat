@@ -1541,17 +1541,22 @@ export async function handleClick(
   }
 
   if (action === "generate-liquid-address") {
+    state.receiveCreating = true;
+    state.receiveError = "";
+    render();
     (async () => {
       try {
         const addr = await invoke<{ address: string }>("get_wallet_address", {
           index: state.receiveLiquidAddressIndex,
         });
         state.receiveLiquidAddress = addr.address;
-        await generateQr(addr.address);
         state.receiveLiquidAddressIndex += 1;
+        render();
+        await generateQr(addr.address);
       } catch (e) {
         state.receiveError = String(e);
       }
+      state.receiveCreating = false;
       render();
     })();
     return;
