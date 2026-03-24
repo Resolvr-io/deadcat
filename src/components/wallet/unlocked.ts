@@ -83,9 +83,16 @@ export function renderWalletUnlocked(params: {
     }
   }
 
+  const poolCreationTx = new Map(
+    state.myPools
+      .filter((p) => p.creation_txid)
+      .map((p) => [p.creation_txid, p.market_id]),
+  );
+
   const txRows = renderWalletTransactionRows({
     creationTxToMarket,
     orderTxLabel,
+    poolCreationTx,
     pawIcon: PAW_ICON,
     walletData: wd ?? null,
   });

@@ -11,29 +11,38 @@ import { escapeAttr, escapeHtml } from "../../utils/html.ts";
 export function renderWalletTransactionRows(params: {
   creationTxToMarket: Map<string, string>;
   orderTxLabel: Map<string, { label: string; marketId: string | null }>;
+  poolCreationTx: Map<string, string>;
   pawIcon: string;
   walletData: WalletData | null;
 }): string {
-  const { creationTxToMarket, orderTxLabel, pawIcon, walletData } = params;
+  const {
+    creationTxToMarket,
+    orderTxLabel,
+    poolCreationTx,
+    pawIcon,
+    walletData,
+  } = params;
 
   return (walletData?.transactions ?? [])
     .map((tx) => {
       const marketId = creationTxToMarket.get(tx.txid);
       const isCreation = !!marketId;
+      const poolMarketId = poolCreationTx.get(tx.txid);
+      const isPoolCreation = !!poolMarketId;
       const isIssuance = tx.txType === "issuance" || tx.txType === "reissuance";
       const orderInfo = orderTxLabel.get(tx.txid);
       const isLimitOrder = !!orderInfo;
       const sign = tx.balanceChange >= 0 ? "+" : "";
       const color = isLimitOrder
         ? "text-amber-300"
-        : isCreation || isIssuance
+        : isPoolCreation || isCreation || isIssuance
           ? "text-violet-300"
           : tx.balanceChange >= 0
             ? "text-emerald-300"
             : "text-red-300";
       const icon = isLimitOrder
         ? "&#9830;"
-        : isCreation || isIssuance
+        : isPoolCreation || isCreation || isIssuance
           ? "&#9670;"
           : tx.balanceChange >= 0
             ? "&#8595;"
@@ -54,6 +63,11 @@ export function renderWalletTransactionRows(params: {
             badgeContent +
             "</span>";
         }
+      } else if (isPoolCreation) {
+        label =
+          '<button data-open-market="' +
+          escapeAttr(poolMarketId) +
+          '" class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 hover:bg-violet-500/30 transition cursor-pointer">Pool Creation</button>';
       } else if (isCreation) {
         label =
           '<button data-open-market="' +
