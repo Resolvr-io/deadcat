@@ -159,12 +159,13 @@ export function chartSkeleton(
     return out;
   };
 
-  const fallbackYes = market.yesPrice ?? 0.5;
   const history = state.priceHistory.get(market.marketId);
-  const seriesData =
-    history && history.length > 0
-      ? buildChartFromHistory(market, history)
-      : buildChartSeriesData(market);
+  const hasHistory = history != null && history.length > 0;
+  const hasPrice = market.yesPrice != null || hasHistory;
+  const fallbackYes = market.yesPrice ?? 0.5;
+  const seriesData = hasHistory
+    ? buildChartFromHistory(market, history)
+    : buildChartSeriesData(market);
   const displayedYes = lastDefinedChartProbability(seriesData, fallbackYes);
   const { pointCount, scaleBlocks, startBlockHeight, xLabels, yesSeries } =
     seriesData;
@@ -342,10 +343,10 @@ export function chartSkeleton(
   const readoutYesLabelY = readoutYesTop + readoutTokenOffsetY;
   const readoutNoPctY = readoutNoLabelY + readoutLineGap + readoutPctFont;
   const readoutYesPctY = readoutYesLabelY + readoutLineGap + readoutPctFont;
-  const readoutNoPct = hoverActive ? hoverNoPct : noPct;
-  const readoutYesPct = hoverActive ? hoverYesPct : yesPct;
-  const legendNoPct = hoverActive ? hoverNoPct : noPct;
-  const legendYesPct = hoverActive ? hoverYesPct : yesPct;
+  const readoutNoPct = hasPrice ? (hoverActive ? hoverNoPct : noPct) : null;
+  const readoutYesPct = hasPrice ? (hoverActive ? hoverYesPct : yesPct) : null;
+  const legendNoPct = hasPrice ? (hoverActive ? hoverNoPct : noPct) : null;
+  const legendYesPct = hasPrice ? (hoverActive ? hoverYesPct : yesPct) : null;
   const hoverTimeX = Math.max(plotLeft + 18, Math.min(plotRight - 18, hoverX));
   const hoverTimeText = `Block ${hoverBlockHeight.toLocaleString()}`;
   const hoverTimeFontSize = isHomeChart ? 7.8 : 8.4;
@@ -374,8 +375,8 @@ export function chartSkeleton(
     <div style="font-variant-numeric: tabular-nums;">
       <div class="relative ${isHomeChart ? "h-[17.5rem]" : "h-[19.5rem]"} rounded-xl border border-slate-800 bg-slate-950/60 p-3">
       <div class="mb-2 flex items-center gap-4 text-[14px] font-medium text-slate-300">
-        <span class="inline-flex items-center gap-1 text-slate-200">${legendIcon("#5eead4")}Yes ${legendYesPct}%</span>
-        <span class="inline-flex items-center gap-1 text-slate-200">${legendIcon("#fb7185")}No ${legendNoPct}%</span>
+        <span class="inline-flex items-center gap-1 text-slate-200">${legendIcon("#5eead4")}Yes ${legendYesPct != null ? `${legendYesPct}%` : "\u2014"}</span>
+        <span class="inline-flex items-center gap-1 text-slate-200">${legendIcon("#fb7185")}No ${legendNoPct != null ? `${legendNoPct}%` : "\u2014"}</span>
         <span class="text-slate-500">Yes + No = ${fullContractSats(market)} sats</span>
         ${
           market.isLive
@@ -418,10 +419,14 @@ export function chartSkeleton(
           <text x="${hoverTimeTextX}" y="${hoverTimeTextY}" fill="#dbe7f6" font-size="${hoverTimeFontSize}" font-weight="430" text-anchor="middle" style="paint-order:stroke;stroke:#020617;stroke-width:${hoverTimeStrokeWidth};stroke-opacity:0.45;">${hoverTimeText}</text>`
               : ""
           }
-          <text x="${readoutX}" y="${readoutNoLabelY}" fill="#fda4af" font-size="${readoutLabelFont}" font-weight="520" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">NO</text>
+          ${
+            readoutNoPct != null
+              ? `<text x="${readoutX}" y="${readoutNoLabelY}" fill="#fda4af" font-size="${readoutLabelFont}" font-weight="520" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">NO</text>
           <text x="${readoutX}" y="${readoutNoPctY}" fill="#f98fa2" font-size="${readoutPctFont}" font-weight="560" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">${readoutNoPct}%</text>
           <text x="${readoutX}" y="${readoutYesLabelY}" fill="#99f6e4" font-size="${readoutLabelFont}" font-weight="520" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">YES</text>
-          <text x="${readoutX}" y="${readoutYesPctY}" fill="#84f4cb" font-size="${readoutPctFont}" font-weight="560" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">${readoutYesPct}%</text>
+          <text x="${readoutX}" y="${readoutYesPctY}" fill="#84f4cb" font-size="${readoutPctFont}" font-weight="560" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">${readoutYesPct}%</text>`
+              : `<text x="${readoutX}" y="${(readoutNoPctY + readoutYesPctY) / 2}" fill="#64748b" font-size="${readoutLabelFont}" font-weight="480" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">No price data</text>`
+          }
         </svg>
       </div>
       <div
