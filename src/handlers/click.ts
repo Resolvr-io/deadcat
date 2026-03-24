@@ -24,6 +24,7 @@ import {
   createLmsrPool,
   generateLmsrTable,
   listLmsrPools,
+  scanLmsrPool,
 } from "../services/pools.ts";
 import { DEFAULT_TX_OPTIONS } from "../services/tx.ts";
 import {
@@ -2109,6 +2110,23 @@ export async function handleClick(
         render();
       } catch (err) {
         showToast(`Pool creation failed: ${err}`, "error");
+      }
+    })();
+    return;
+  }
+
+  if (action === "scan-pool") {
+    const poolId = target?.dataset?.poolId;
+    if (!poolId) return;
+    (async () => {
+      try {
+        showToast("Scanning pool...", "info");
+        await scanLmsrPool(poolId);
+        state.myPools = await listLmsrPools();
+        showToast("Pool state refreshed", "success");
+        render();
+      } catch (err) {
+        showToast(`Scan failed: ${err}`, "error");
       }
     })();
     return;

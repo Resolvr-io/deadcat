@@ -765,16 +765,37 @@ export function renderActionTicket(market: Market): string {
           if (marketPools.length === 0)
             return '<p class="text-xs text-slate-500">No active pools for this market.</p>';
           return marketPools
-            .map(
-              (
-                p,
-              ) => `<div class="flex items-center justify-between border-b border-slate-800 py-2 text-xs">
-            <span class="mono text-slate-300">${p.pool_id.slice(0, 10)}...</span>
-            <span class="text-slate-400">Y:${p.reserve_yes} N:${p.reserve_no} L:${p.reserve_collateral}</span>
-            <span class="text-slate-500">s:${p.current_s_index}</span>
-            <button data-action="close-pool" data-pool-id="${p.pool_id}" class="rounded border border-rose-800 px-2 py-0.5 text-rose-400 transition hover:bg-rose-900/30">Close</button>
-          </div>`,
-            )
+            .map((p) => {
+              const poolParams = (() => {
+                try {
+                  return JSON.parse(p.params_json) as {
+                    fee_bps?: number;
+                    half_payout_sats?: number;
+                  };
+                } catch {
+                  return null;
+                }
+              })();
+              const feeLine =
+                poolParams?.fee_bps != null ? `${poolParams.fee_bps} bps` : "";
+              const payoutLine =
+                poolParams?.half_payout_sats != null
+                  ? `U/2=${poolParams.half_payout_sats}`
+                  : "";
+              const paramsLabel = [feeLine, payoutLine]
+                .filter(Boolean)
+                .join(" · ");
+              return `<div class="border-b border-slate-800 py-2 text-xs">
+            <div class="flex items-center justify-between">
+              <span class="mono text-slate-300">${p.pool_id.slice(0, 10)}...</span>
+              <span class="text-slate-400">Y:${p.reserve_yes} N:${p.reserve_no} L:${p.reserve_collateral} · s:${p.current_s_index}</span>
+              <span class="flex gap-1">
+                <button data-action="scan-pool" data-pool-id="${p.pool_id}" class="rounded border border-slate-700 px-2 py-0.5 text-slate-400 transition hover:bg-slate-800" title="Refresh pool state">&#x21bb;</button>
+                <button data-action="close-pool" data-pool-id="${p.pool_id}" class="rounded border border-rose-800 px-2 py-0.5 text-rose-400 transition hover:bg-rose-900/30">Close</button>
+              </span>
+            </div>${paramsLabel ? `<div class="mt-0.5 text-slate-500">${paramsLabel}</div>` : ""}
+          </div>`;
+            })
             .join("");
         })()}
         ${
