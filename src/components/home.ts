@@ -9,6 +9,7 @@ import {
 } from "../utils/format.ts";
 import { escapeAttr, escapeHtml } from "../utils/html.ts";
 import {
+  fullContractSats,
   getFilteredMarkets,
   getTrendingMarkets,
   isExpired,
@@ -98,8 +99,8 @@ export function renderHome(): string {
                   <div class="rounded-lg bg-slate-900/60 p-2">Volume<br/><span class="text-slate-200">${formatVolumeBtc(featured.volumeBtc)}</span></div>
                 </div>
                 <div class="space-y-3 text-lg text-slate-200">
-                  <div class="flex items-center justify-between"><span>Yes contract</span><button data-open-market="${escapeAttr(featured.id)}" data-open-side="yes" data-open-intent="buy" class="rounded-full border border-emerald-600 px-4 py-1 text-emerald-300 transition hover:bg-emerald-500/10">${featured.yesPrice != null ? formatProbabilityWithPercent(featured.yesPrice) : "\u2014"}</button></div>
-                  <div class="flex items-center justify-between"><span>No contract</span><button data-open-market="${escapeAttr(featured.id)}" data-open-side="no" data-open-intent="buy" class="rounded-full border border-rose-600 px-4 py-1 text-rose-300 transition hover:bg-rose-500/10">${featuredNo != null ? formatProbabilityWithPercent(featuredNo) : "\u2014"}</button></div>
+                  <div class="flex items-center justify-between"><span>Yes contract</span><button data-open-market="${escapeAttr(featured.id)}" data-open-side="yes" data-open-intent="buy" class="rounded-full border border-emerald-600 px-4 py-1 text-emerald-300 transition hover:bg-emerald-500/10">${featured.yesPrice != null ? formatProbabilityWithPercent(featured.yesPrice, fullContractSats(featured)) : "\u2014"}</button></div>
+                  <div class="flex items-center justify-between"><span>No contract</span><button data-open-market="${escapeAttr(featured.id)}" data-open-side="no" data-open-intent="buy" class="rounded-full border border-rose-600 px-4 py-1 text-rose-300 transition hover:bg-rose-500/10">${featuredNo != null ? formatProbabilityWithPercent(featuredNo, fullContractSats(featured)) : "\u2014"}</button></div>
                 </div>
                 <p class="mt-3 text-[15px] text-slate-400">${escapeHtml(featured.description)}</p>
                 <button data-open-market="${escapeAttr(featured.id)}" class="mt-5 rounded-xl bg-emerald-300 px-5 py-2.5 text-base font-medium text-slate-950">Open contract</button>
@@ -123,8 +124,8 @@ export function renderHome(): string {
                       <p class="mb-2 text-xs text-slate-500">${escapeHtml(market.category)} ${market.isLive ? "· LIVE" : ""}</p>
                       <p class="mb-3 max-h-14 overflow-hidden text-base font-normal text-slate-200">${escapeHtml(market.question)}</p>
                       <div class="flex items-center justify-between text-xs sm:text-sm">
-                        <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span>
-                        <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no) : "\u2014"}</span>
+                        <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice, fullContractSats(market)) : "\u2014"}</span>
+                        <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no, fullContractSats(market)) : "\u2014"}</span>
                         ${trendIndicator(market.change24h)}
                       </div>
                     </button>
@@ -211,8 +212,8 @@ export function renderMyMarkets(): string {
         </div>
         <p class="mb-3 text-base font-normal text-slate-200">${escapeHtml(market.question)}</p>
         <div class="flex items-center justify-between text-sm">
-          <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span>
-          <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no) : "\u2014"}</span>
+          <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice, fullContractSats(market)) : "\u2014"}</span>
+          <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no, fullContractSats(market)) : "\u2014"}</span>
         </div>
       </button>
     `;
@@ -322,8 +323,8 @@ export function renderCategoryPage(): string {
                     </div>
                     <p class="mb-3 text-base font-normal text-slate-200">${escapeHtml(market.question)}</p>
                     <div class="flex items-center justify-between text-sm">
-                      <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span>
-                      <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no) : "\u2014"}</span>
+                      <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice, fullContractSats(market)) : "\u2014"}</span>
+                      <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no, fullContractSats(market)) : "\u2014"}</span>
                       ${trendIndicator(market.change24h)}
                     </div>
                     <p class="mt-2 text-xs text-slate-500">Volume ${formatVolumeBtc(market.volumeBtc)} · ${escapeHtml(market.description)}</p>

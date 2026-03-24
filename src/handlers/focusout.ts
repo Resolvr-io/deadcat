@@ -26,7 +26,7 @@ export function handleFocusout(e: FocusEvent, render: () => void): void {
   }
 
   if (target.id === "limit-price") {
-    commitLimitPriceDraft();
+    commitLimitPriceDraft(getSelectedMarket());
     const nextFocus = e.relatedTarget as HTMLElement | null;
     if (nextFocus?.closest("[data-action='step-limit-price']")) {
       return;

@@ -162,7 +162,7 @@ function openMarket(
   state.tradeContractsDraft = state.tradeContracts.toFixed(2);
   state.chartHoverMarketId = null;
   state.chartHoverX = null;
-  setLimitPriceSats(getBasePriceSats(market, nextSide));
+  setLimitPriceSats(market, getBasePriceSats(market, nextSide));
   render();
 
   // Fetch limit orders for the selected market in the background

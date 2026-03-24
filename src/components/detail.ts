@@ -1,9 +1,4 @@
-import {
-  EXECUTION_FEE_RATE,
-  SATS_PER_FULL_CONTRACT,
-  state,
-  WIN_FEE_RATE,
-} from "../state.ts";
+import { EXECUTION_FEE_RATE, state, WIN_FEE_RATE } from "../state.ts";
 import type { Market } from "../types.ts";
 import { hexToNpub } from "../utils/crypto.ts";
 import {
@@ -14,6 +9,7 @@ import {
 } from "../utils/format.ts";
 import {
   clampContractPriceSats,
+  fullContractSats,
   getEstimatedSettlementDate,
   getFullOrderbook,
   getPathAvailability,
@@ -379,7 +375,7 @@ export function chartSkeleton(
       <div class="mb-2 flex items-center gap-4 text-[14px] font-medium text-slate-300">
         <span class="inline-flex items-center gap-1 text-slate-200">${legendIcon("#5eead4")}Yes ${legendYesPct}%</span>
         <span class="inline-flex items-center gap-1 text-slate-200">${legendIcon("#fb7185")}No ${legendNoPct}%</span>
-        <span class="text-slate-500">Yes + No = ${SATS_PER_FULL_CONTRACT} sats</span>
+        <span class="text-slate-500">Yes + No = ${fullContractSats(market)} sats</span>
         ${
           market.isLive
             ? '<span class="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-400"><span class="liveIndicatorDot"></span>Live · Round 1</span>'
@@ -525,16 +521,16 @@ export function renderActionTicket(market: Market): string {
       ? market.cptSats
       : 0;
   const redeemCollateral = state.tokensInput * redeemRate;
+  const fc = fullContractSats(market);
   const yesDisplaySats = clampContractPriceSats(
-    Math.round((market.yesPrice ?? 0.5) * SATS_PER_FULL_CONTRACT),
+    Math.round((market.yesPrice ?? 0.5) * fc),
+    fc,
   );
-  const noDisplaySats = SATS_PER_FULL_CONTRACT - yesDisplaySats;
+  const noDisplaySats = fc - yesDisplaySats;
   const estimatedExecutionFeeSats = Math.round(
     preview.notionalSats * EXECUTION_FEE_RATE,
   );
-  const estimatedGrossPayoutSats = Math.floor(
-    preview.requestedContracts * SATS_PER_FULL_CONTRACT,
-  );
+  const estimatedGrossPayoutSats = Math.floor(preview.requestedContracts * fc);
   const estimatedProfitSats = Math.max(
     0,
     estimatedGrossPayoutSats - preview.notionalSats,
@@ -625,7 +621,7 @@ export function renderActionTicket(market: Market): string {
           ? `
       <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
         <div class="flex items-center justify-between py-1"><span>Order type</span><span>Limit</span></div>
-        <div class="flex items-center justify-between py-1"><span>Price</span><span>${Math.round(state.limitPrice * SATS_PER_FULL_CONTRACT)} sats</span></div>
+        <div class="flex items-center justify-between py-1"><span>Price</span><span>${Math.round(state.limitPrice * fc)} sats</span></div>
         <div class="flex items-center justify-between py-1"><span>Amount</span><span>${currentDirection === "buy" ? formatSats(Math.max(1, Math.floor(state.tradeSizeSats))) : `${Math.max(1, Math.floor(state.tradeContracts))} contracts`}</span></div>
         <div class="mt-1 flex items-center justify-between py-1 text-xs text-slate-500"><span>Side</span><span>${state.selectedSide.toUpperCase()} · ${currentDirection}</span></div>
       </div>
@@ -647,7 +643,7 @@ export function renderActionTicket(market: Market): string {
         <div class="flex items-center justify-between py-1"><span>Position remaining (if filled)</span><span>${Math.max(0, selectedPositionContracts - preview.requestedContracts).toFixed(2)} contracts</span></div>`
         }
         <div class="flex items-center justify-between py-1"><span>Estimated fees</span><span>${formatSats(estimatedFeesSats)}</span></div>
-        <div class="mt-1 flex items-center justify-between py-1 text-xs text-slate-500"><span>Price</span><span>${executionPriceSats} sats · Yes + No = ${SATS_PER_FULL_CONTRACT}</span></div>
+        <div class="mt-1 flex items-center justify-between py-1 text-xs text-slate-500"><span>Price</span><span>${executionPriceSats} sats · Yes + No = ${fc}</span></div>
       </div>
       ${
         state.tradeQuoteLoading
@@ -901,6 +897,7 @@ export function renderDetail(): string {
   const paths = getPathAvailability(market);
   const expired = isExpired(market);
   const estimatedSettlementDate = getEstimatedSettlementDate(market);
+  const fc = fullContractSats(market);
   const collateralPoolSats = market.collateralUtxos.reduce(
     (sum, utxo) => sum + utxo.amountSats,
     0,
@@ -932,8 +929,8 @@ export function renderDetail(): string {
             <p class="mb-3 text-base text-slate-400">${market.description}</p>
 
             <div class="mb-4 grid gap-3 sm:grid-cols-3">
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Yes price<br/><span class="text-lg font-medium text-emerald-400">${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span></div>
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">No price<br/><span class="text-lg font-medium text-rose-400">${noPrice != null ? formatProbabilityWithPercent(noPrice) : "\u2014"}</span></div>
+              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Yes price<br/><span class="text-lg font-medium text-emerald-400">${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice, fc) : "\u2014"}</span></div>
+              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">No price<br/><span class="text-lg font-medium text-rose-400">${noPrice != null ? formatProbabilityWithPercent(noPrice, fc) : "\u2014"}</span></div>
               <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Settlement deadline<br/><span class="text-slate-100">Est. by ${formatSettlementDateTime(estimatedSettlementDate)}</span></div>
             </div>
 

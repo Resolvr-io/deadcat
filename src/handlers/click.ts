@@ -30,7 +30,6 @@ import {
   createWalletData,
   defaultSettlementInput,
   markets,
-  SATS_PER_FULL_CONTRACT,
   setMarkets,
   state,
 } from "../state.ts";
@@ -70,6 +69,7 @@ import { formatSats, formatSatsInput } from "../utils/format.ts";
 import {
   clampContractPriceSats,
   commitTradeContractsDraft,
+  fullContractSats,
   getBasePriceSats,
   getPathAvailability,
   getPositionContracts,
@@ -2033,7 +2033,7 @@ export async function handleClick(
     state.selectedSide = closeSide;
     state.tradeContracts = Math.max(0.01, Math.min(available, available / 2));
     state.tradeContractsDraft = state.tradeContracts.toFixed(2);
-    setLimitPriceSats(getBasePriceSats(market, closeSide));
+    setLimitPriceSats(market, getBasePriceSats(market, closeSide));
     clearTradeQuoteSnapshot();
     render();
     return;
@@ -2085,7 +2085,7 @@ export async function handleClick(
   if (side) {
     state.selectedSide = side;
     const market = getSelectedMarket();
-    setLimitPriceSats(getBasePriceSats(market, side));
+    setLimitPriceSats(market, getBasePriceSats(market, side));
     enforceSizeModeForIntent();
     clearTradeQuoteSnapshot();
     render();
@@ -2105,7 +2105,7 @@ export async function handleClick(
       const market = getSelectedMarket();
       const positions = getPositionContracts(market);
       const available = pickedSide === "yes" ? positions.yes : positions.no;
-      setLimitPriceSats(getBasePriceSats(market, pickedSide));
+      setLimitPriceSats(market, getBasePriceSats(market, pickedSide));
       if (intent === "close") {
         state.sizeMode = "contracts";
         state.tradeContracts = Math.max(
@@ -2198,12 +2198,15 @@ export async function handleClick(
     Number.isFinite(limitPriceDelta) &&
     limitPriceDelta !== 0
   ) {
+    const market = getSelectedMarket();
+    const fc = fullContractSats(market);
     const currentSats = clampContractPriceSats(
       state.limitPriceDraft.length > 0
         ? Number(state.limitPriceDraft)
-        : state.limitPrice * SATS_PER_FULL_CONTRACT,
+        : state.limitPrice * fc,
+      fc,
     );
-    setLimitPriceSats(currentSats + Math.sign(limitPriceDelta));
+    setLimitPriceSats(market, currentSats + Math.sign(limitPriceDelta));
     clearTradeQuoteSnapshot();
     render();
     return;
@@ -2358,7 +2361,9 @@ export async function handleClick(
       if (state.orderType === "limit") {
         const side = state.selectedSide;
         const direction = currentTradeDirection();
-        const priceSats = Math.round(state.limitPrice * SATS_PER_FULL_CONTRACT);
+        const priceSats = Math.round(
+          state.limitPrice * fullContractSats(market),
+        );
         const amount = currentExactInput();
 
         if (amount <= 0) {

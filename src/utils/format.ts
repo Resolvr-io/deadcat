@@ -1,12 +1,15 @@
-import { fxRates, SATS_PER_FULL_CONTRACT, state } from "../state.ts";
+import { fxRates, state } from "../state.ts";
 import type { BaseCurrency } from "../types.ts";
 
-export { SATS_PER_FULL_CONTRACT };
-
-export const formatProbabilitySats = (price: number): string =>
-  `${Math.round(price * SATS_PER_FULL_CONTRACT)} sats`;
-export const formatProbabilityWithPercent = (price: number): string =>
-  `${Math.round(price * 100)}% (${formatProbabilitySats(price)})`;
+export const formatProbabilitySats = (
+  price: number,
+  fullContract: number,
+): string => `${Math.round(price * fullContract)} sats`;
+export const formatProbabilityWithPercent = (
+  price: number,
+  fullContract: number,
+): string =>
+  `${Math.round(price * 100)}% (${formatProbabilitySats(price, fullContract)})`;
 export const formatPercent = (value: number): string =>
   `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
 export const formatSats = (value: number): string =>

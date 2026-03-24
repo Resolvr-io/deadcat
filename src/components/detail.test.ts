@@ -44,7 +44,7 @@ function mockMarket(): Market {
     oraclePubkey: "11".repeat(32),
     expiryHeight: 999999,
     currentHeight: 1,
-    cptSats: 100,
+    cptSats: 5000,
     collateralAssetId: "22".repeat(32),
     yesAssetId: "33".repeat(32),
     noAssetId: "44".repeat(32),

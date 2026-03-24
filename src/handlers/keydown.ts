@@ -1,9 +1,10 @@
-import { SATS_PER_FULL_CONTRACT, state } from "../state.ts";
+import { state } from "../state.ts";
 import {
   clampContractPriceSats,
   commitLimitPriceDraft,
   commitTradeContractsDraft,
   commitTradeSizeSatsDraft,
+  fullContractSats,
   getSelectedMarket,
   resetLimitSellWarningState,
   setLimitPriceSats,
@@ -81,13 +82,16 @@ export function handleKeydown(
   if (target.id === "limit-price") {
     if (e.key === "ArrowUp" || e.key === "ArrowDown") {
       e.preventDefault();
+      const market = getSelectedMarket();
+      const fc = fullContractSats(market);
       const delta = e.key === "ArrowUp" ? 1 : -1;
       const currentSats = clampContractPriceSats(
         state.limitPriceDraft.length > 0
           ? Number(state.limitPriceDraft)
-          : state.limitPrice * SATS_PER_FULL_CONTRACT,
+          : state.limitPrice * fc,
+        fc,
       );
-      setLimitPriceSats(currentSats + delta);
+      setLimitPriceSats(market, currentSats + delta);
       resetLimitSellWarningState();
       state.tradeQuoteModalOpen = false;
       state.tradeQuoteLoading = false;
@@ -99,7 +103,7 @@ export function handleKeydown(
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      commitLimitPriceDraft();
+      commitLimitPriceDraft(getSelectedMarket());
       render();
       return;
     }

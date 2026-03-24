@@ -1,6 +1,7 @@
-import { SATS_PER_FULL_CONTRACT, state } from "../state.ts";
+import { state } from "../state.ts";
 import type { Market } from "../types.ts";
 import { escapeAttr } from "../utils/html.ts";
+import { fullContractSats } from "../utils/market.ts";
 import {
   buildChartFromHistory,
   buildChartSeriesData,
@@ -356,7 +357,7 @@ export function chartSkeleton(
       <div class="mb-2 flex items-center gap-4 text-[14px] font-medium text-slate-300">
         <span class="inline-flex items-center gap-1 text-slate-200">${legendIcon("#5eead4")}Yes ${legendYesPct}%</span>
         <span class="inline-flex items-center gap-1 text-slate-200">${legendIcon("#fb7185")}No ${legendNoPct}%</span>
-        <span class="text-slate-500">Yes + No = ${SATS_PER_FULL_CONTRACT} sats</span>
+        <span class="text-slate-500">Yes + No = ${fullContractSats(market)} sats</span>
         ${
           market.isLive
             ? '<span class="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-400"><span class="liveIndicatorDot"></span>Live · Round 1</span>'
