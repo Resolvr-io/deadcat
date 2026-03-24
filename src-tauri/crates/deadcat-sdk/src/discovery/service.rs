@@ -618,8 +618,18 @@ pub(crate) fn persist_market_to_store<S: DiscoveryStore>(
 ) {
     let Some(store) = store else { return };
     let seen_at_unix = Timestamp::now().as_u64();
-    if let Ok(mut s) = store.lock() {
-        let _ = s.ingest_prediction_market_candidate(&parsed.ingest, seen_at_unix);
+    match store.lock() {
+        Ok(mut s) => {
+            if let Err(e) = s.ingest_prediction_market_candidate(&parsed.ingest, seen_at_unix) {
+                log::error!(
+                    "persist_market_to_store: ingest failed for market {}: {e}",
+                    parsed.market.market_id
+                );
+            }
+        }
+        Err(e) => {
+            log::error!("persist_market_to_store: store lock failed: {e}");
+        }
     }
 }
 
