@@ -128,6 +128,17 @@ pub enum Error {
 
     #[error("no liquidity available for this trade")]
     NoLiquidity,
+
+    #[error("fee estimation failed: {0}")]
+    FeeEstimation(String),
+
+    #[error("fee resolution failed: {0}")]
+    FeeResolution(String),
+
+    #[error(
+        "prepared transaction fee mismatch: expected {expected_sat} sats, got {actual_sat} sats"
+    )]
+    ExactFeeMismatch { expected_sat: u64, actual_sat: u64 },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

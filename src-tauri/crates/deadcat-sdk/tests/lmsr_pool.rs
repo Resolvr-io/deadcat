@@ -8,8 +8,8 @@ use deadcat_sdk::taproot::NUMS_KEY_BYTES;
 use deadcat_sdk::testing::TestStore;
 use deadcat_sdk::{
     CreateLmsrPoolRequest, DeadcatNode, DiscoveryConfig, Error, LiquiditySource, LmsrPoolId,
-    LmsrPoolParams, Network, NodeError, PoolReserves, PredictionMarketParams, TradeAmount,
-    TradeDirection, TradeSide,
+    LmsrPoolParams, MinerFeePolicy, Network, NodeError, PoolReserves, PredictionMarketParams,
+    TradeAmount, TradeDirection, TradeSide, TxOptions,
 };
 use lwk_test_util::{TEST_MNEMONIC, TestEnv, TestEnvBuilder, regtest_policy_asset};
 use nostr_relay_builder::prelude::MockRelay;
@@ -18,6 +18,12 @@ use tempfile::TempDir;
 
 fn asset_bytes(asset: AssetId) -> [u8; 32] {
     asset.into_inner().to_byte_array()
+}
+
+fn exact_fee_tx_options(amount_sat: u64) -> TxOptions {
+    TxOptions {
+        fee_policy: MinerFeePolicy::ExactAmountSat { amount_sat },
+    }
 }
 
 async fn mine_and_sync(node: &DeadcatNode<TestStore>, env: &TestEnv, blocks: u32) {
@@ -145,6 +151,7 @@ impl Fixture {
 async fn bootstrap_pool(
     fixture: &Fixture,
 ) -> (CreateLmsrPoolRequest, deadcat_sdk::CreateLmsrPoolResult) {
+    let fee_amount = 500;
     let yes_asset_id = fixture.env.elementsd_issueasset(1_000_000);
     let no_asset_id = fixture.env.elementsd_issueasset(1_000_000);
     fixture.env.elementsd_generate(1);
@@ -194,12 +201,16 @@ async fn bootstrap_pool(
             r_lbtc: 300_000,
         },
         table_values: table_values.clone(),
-        fee_amount: 500,
     };
 
+    let prepared = fixture
+        .node
+        .prepare_create_lmsr_pool(request.clone(), exact_fee_tx_options(fee_amount))
+        .await
+        .expect("prepare lmsr pool");
     let created = fixture
         .node
-        .create_lmsr_pool(request.clone())
+        .broadcast_prepared_create_lmsr_pool(prepared)
         .await
         .expect("create lmsr pool");
     mine_and_sync(&fixture.node, &fixture.env, 1).await;
@@ -262,7 +273,7 @@ async fn create_scan_lmsr_pool_and_route_trade_regtest() {
     }
     assert_eq!(
         creation_tx.output[3].value,
-        ConfValue::Explicit(request.fee_amount)
+        ConfValue::Explicit(created.fee.amount_sat)
     );
     assert!(
         creation_tx
@@ -327,9 +338,14 @@ async fn create_scan_lmsr_pool_and_route_trade_regtest() {
         "quote must include LMSR liquidity"
     );
 
+    let prepared = fixture
+        .node
+        .prepare_trade(quote, exact_fee_tx_options(500))
+        .await
+        .expect("prepare routed trade");
     let result = fixture
         .node
-        .execute_trade(quote, 500, &market_id)
+        .broadcast_prepared_trade(prepared)
         .await
         .expect("execute routed trade");
     assert!(result.pool_used, "execution should spend the LMSR pool");
@@ -491,6 +507,7 @@ async fn bootstrap_admin_pool(
     deadcat_sdk::CreateLmsrPoolResult,
 ) {
     let pool_index: u32 = 0;
+    let fee_amount = 500;
     let admin_pubkey = fixture
         .node
         .pool_admin_pubkey(pool_index)
@@ -546,12 +563,16 @@ async fn bootstrap_admin_pool(
             r_lbtc: 100_000,
         },
         table_values: table_values.clone(),
-        fee_amount: 500,
     };
 
+    let prepared = fixture
+        .node
+        .prepare_create_lmsr_pool(request.clone(), exact_fee_tx_options(fee_amount))
+        .await
+        .expect("prepare admin-cosigned lmsr pool");
     let created = fixture
         .node
-        .create_lmsr_pool(request.clone())
+        .broadcast_prepared_create_lmsr_pool(prepared)
         .await
         .expect("create admin-cosigned lmsr pool");
     mine_and_sync(&fixture.node, &fixture.env, 1).await;
@@ -581,12 +602,16 @@ async fn adjust_lmsr_pool_increases_reserves_regtest() {
         r_lbtc: snapshot.reserves.r_lbtc + 10_000,
     };
     adjust_req.table_values = request.table_values.clone();
-    adjust_req.fee_amount = 500;
     adjust_req.pool_index = pool_index;
 
+    let prepared = fixture
+        .node
+        .prepare_adjust_lmsr_pool(adjust_req.clone(), exact_fee_tx_options(500))
+        .await
+        .expect("prepare lmsr pool adjust");
     let result = fixture
         .node
-        .adjust_lmsr_pool(adjust_req.clone())
+        .broadcast_prepared_adjust_lmsr_pool(prepared)
         .await
         .expect("adjust lmsr pool");
 
@@ -680,10 +705,19 @@ async fn adjust_lmsr_pool_decreases_reserves_returns_change_regtest() {
         r_lbtc: request.initial_reserves.r_lbtc - 10_000,
     };
     adjust_req.table_values = request.table_values.clone();
-    adjust_req.fee_amount = 500;
     adjust_req.pool_index = pool_index;
 
-    let result = match fixture.node.adjust_lmsr_pool(adjust_req.clone()).await {
+    let prepared = fixture
+        .node
+        .prepare_adjust_lmsr_pool(adjust_req.clone(), exact_fee_tx_options(500))
+        .await
+        .expect("prepare lmsr pool decrease");
+
+    let result = match fixture
+        .node
+        .broadcast_prepared_adjust_lmsr_pool(prepared)
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             // Use RPC to get detailed rejection reason

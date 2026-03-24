@@ -5,6 +5,7 @@ use crate::lmsr_pool::params::LmsrPoolParams;
 use crate::maker_order::params::MakerOrderParams;
 use crate::pool::PoolReserves;
 use crate::pset::UnblindedUtxo;
+use crate::tx::{PreparedTransaction, ResolvedMinerFee};
 
 // ── Public trade request types ──────────────────────────────────────────
 
@@ -43,8 +44,8 @@ pub enum TradeAmount {
 ///
 /// All display fields are `pub` for inspection. The execution plan is
 /// `pub(crate)` — callers cannot construct a `TradeQuote` directly;
-/// it can only be obtained from [`crate::node::DeadcatNode::quote_trade`] and consumed
-/// by [`crate::node::DeadcatNode::execute_trade`].
+/// it can only be obtained from [`crate::node::DeadcatNode::quote_trade`]
+/// and consumed by [`crate::node::DeadcatNode::prepare_trade`].
 #[derive(Debug, Clone)]
 pub struct TradeQuote {
     pub side: TradeSide,
@@ -187,4 +188,16 @@ pub struct TradeResult {
     pub num_orders_filled: usize,
     pub pool_used: bool,
     pub new_reserves: Option<PoolReserves>,
+    pub fee: ResolvedMinerFee,
+}
+
+/// Prepared routed trade transaction ready for broadcast.
+#[derive(Debug, Clone)]
+pub struct PreparedTrade {
+    pub total_input: u64,
+    pub total_output: u64,
+    pub num_orders_filled: usize,
+    pub pool_used: bool,
+    pub new_reserves: Option<PoolReserves>,
+    pub prepared_tx: PreparedTransaction,
 }

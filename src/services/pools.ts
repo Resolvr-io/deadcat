@@ -4,7 +4,9 @@ import type {
   LmsrPoolInfo,
   PriceHistoryEntry,
   ScanLmsrPoolResponse,
+  TxOptions,
 } from "../types.ts";
+import { DEFAULT_TX_OPTIONS } from "./tx.ts";
 
 export async function generateLmsrTable(
   liquidityParam: number,
@@ -30,7 +32,7 @@ export async function createLmsrPool(
   initialReservesNo: number,
   initialReservesLbtc: number,
   tableValues: number[],
-  feeAmount?: number,
+  txOptions: TxOptions = DEFAULT_TX_OPTIONS,
 ): Promise<CreateLmsrPoolResponse> {
   return invoke<CreateLmsrPoolResponse>("create_lmsr_pool", {
     request: {
@@ -41,7 +43,7 @@ export async function createLmsrPool(
       initial_reserves_no: initialReservesNo,
       initial_reserves_lbtc: initialReservesLbtc,
       table_values: tableValues,
-      fee_amount: feeAmount,
+      tx_options: txOptions,
     },
   });
 }

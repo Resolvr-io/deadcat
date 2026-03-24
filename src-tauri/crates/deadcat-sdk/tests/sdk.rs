@@ -1,12 +1,15 @@
 use deadcat_sdk::PredictionMarketParams;
-use deadcat_sdk::{DeadcatSdk, MarketState, OrderDirection, PredictionMarketAnchor};
+use deadcat_sdk::{
+    DeadcatSdk, MarketState, MinerFeePolicy, OrderDirection, PredictionMarketAnchor,
+    ResolvedMinerFee, TxOptions,
+};
 use lwk_signer::SwSigner;
 use lwk_test_util::{
     TEST_MNEMONIC, TestEnv, TestEnvBuilder, generate_mnemonic, regtest_policy_asset,
 };
 use lwk_wollet::blocking::BlockchainBackend;
-use lwk_wollet::elements::Txid;
 use lwk_wollet::elements::secp256k1_zkp::{Keypair, Message, Secp256k1, XOnlyPublicKey};
+use lwk_wollet::elements::{Transaction, Txid};
 use lwk_wollet::{ElectrumClient, ElectrumUrl, Wollet};
 use tempfile::TempDir;
 
@@ -102,6 +105,56 @@ fn test_oracle_pubkey() -> [u8; 32] {
 
 fn anchor_txid(anchor: &PredictionMarketAnchor) -> Txid {
     anchor.creation_txid.parse().unwrap()
+}
+
+fn sample_rate_tx_options() -> TxOptions {
+    TxOptions {
+        fee_policy: MinerFeePolicy::RateSatPerVb { sat_per_vb: 1.0 },
+    }
+}
+
+fn default_confirmation_target_tx_options() -> TxOptions {
+    TxOptions {
+        fee_policy: MinerFeePolicy::ConfirmationTargetBlocks { blocks: 6 },
+    }
+}
+
+fn exact_fee_tx_options(amount_sat: u64) -> TxOptions {
+    TxOptions {
+        fee_policy: MinerFeePolicy::ExactAmountSat { amount_sat },
+    }
+}
+
+fn actual_fee_amount(tx: &Transaction) -> u64 {
+    tx.output
+        .iter()
+        .filter(|output| output.script_pubkey.is_empty())
+        .map(|output| output.value.explicit().unwrap_or(0))
+        .sum()
+}
+
+fn assert_effective_fee_metadata(tx: &Transaction, fee: &ResolvedMinerFee) {
+    assert_eq!(fee.amount_sat, actual_fee_amount(tx));
+    let expected_rate = fee.amount_sat as f32 / tx.discount_vsize().max(1) as f32;
+    assert!(
+        (fee.rate_sat_per_vb - expected_rate).abs() < 1e-6,
+        "expected effective rate {expected_rate}, got {}",
+        fee.rate_sat_per_vb
+    );
+}
+
+fn assert_aggregated_fee_metadata(txs: &[Transaction], fee: &ResolvedMinerFee) {
+    let expected_amount_sat: u64 = txs.iter().map(actual_fee_amount).sum();
+    let expected_discount_vsize: u64 = txs.iter().map(|tx| tx.discount_vsize() as u64).sum();
+    let expected_rate = expected_amount_sat as f32 / expected_discount_vsize.max(1) as f32;
+
+    assert_eq!(fee.amount_sat, expected_amount_sat);
+    assert_eq!(fee.discount_vsize, expected_discount_vsize);
+    assert!(
+        (fee.rate_sat_per_vb - expected_rate).abs() < 1e-6,
+        "expected aggregated rate {expected_rate}, got {}",
+        fee.rate_sat_per_vb
+    );
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -205,7 +258,11 @@ fn test_send_lbtc() {
     let recv_addr = recipient.address(None).unwrap();
     let (txid, fee) = fixture
         .sdk
-        .send_lbtc(&recv_addr.address().to_string(), 50_000, None)
+        .send_lbtc(
+            &recv_addr.address().to_string(),
+            50_000,
+            sample_rate_tx_options(),
+        )
         .unwrap();
 
     assert!(fee > 0);
@@ -219,6 +276,77 @@ fn test_send_lbtc() {
     // Check the tx appears in sender's transaction list.
     let txs = fixture.sdk.transactions().unwrap();
     assert!(txs.iter().any(|t| t.txid == txid));
+}
+
+#[test]
+fn test_prepare_send_lbtc_reports_effective_fee_metadata() {
+    let mut fixture = TestFixture::new();
+
+    fixture.fund_and_sync(2, 100_000);
+
+    let (recipient_mnemonic, _) = DeadcatSdk::generate_mnemonic(false).unwrap();
+    let temp_dir2 = tempfile::tempdir().unwrap();
+    let recipient = DeadcatSdk::new(
+        &recipient_mnemonic,
+        deadcat_sdk::Network::LiquidRegtest,
+        fixture.sdk.electrum_url(),
+        temp_dir2.path(),
+    )
+    .unwrap();
+
+    let recv_addr = recipient.address(None).unwrap();
+    let prepared = fixture
+        .sdk
+        .prepare_send_lbtc(
+            &recv_addr.address().to_string(),
+            50_000,
+            sample_rate_tx_options(),
+        )
+        .unwrap();
+
+    assert_effective_fee_metadata(&prepared.prepared_tx.tx, &prepared.prepared_tx.fee);
+}
+
+#[test]
+fn test_send_lbtc_executes_with_default_confirmation_target_fee_policy() {
+    let mut fixture = TestFixture::new();
+
+    fixture.fund_and_sync(2, 100_000);
+
+    let (recipient_mnemonic, _) = DeadcatSdk::generate_mnemonic(false).unwrap();
+    let temp_dir2 = tempfile::tempdir().unwrap();
+    let mut recipient = DeadcatSdk::new(
+        &recipient_mnemonic,
+        deadcat_sdk::Network::LiquidRegtest,
+        fixture.sdk.electrum_url(),
+        temp_dir2.path(),
+    )
+    .unwrap();
+
+    let recv_addr = recipient.address(None).unwrap();
+    let tx_options = default_confirmation_target_tx_options();
+    let prepared = fixture
+        .sdk
+        .prepare_send_lbtc(&recv_addr.address().to_string(), 50_000, tx_options.clone())
+        .unwrap();
+
+    assert_eq!(prepared.prepared_tx.fee.policy, tx_options.fee_policy);
+    assert!(prepared.prepared_tx.fee.amount_sat > 0);
+    assert_effective_fee_metadata(&prepared.prepared_tx.tx, &prepared.prepared_tx.fee);
+
+    let (txid, fee_sat) = fixture.sdk.broadcast_prepared_send_lbtc(&prepared).unwrap();
+    assert_eq!(txid, prepared.prepared_tx.txid);
+    assert_eq!(fee_sat, prepared.prepared_tx.fee.amount_sat);
+
+    let tx = fixture.sdk.fetch_transaction(&txid).unwrap();
+    assert_effective_fee_metadata(&tx, &prepared.prepared_tx.fee);
+
+    fixture.mine_and_sync(1);
+    recipient.sync().unwrap();
+
+    let lbtc = regtest_policy_asset();
+    let recipient_balance = *recipient.balance().unwrap().get(&lbtc).unwrap_or(&0);
+    assert_eq!(recipient_balance, 50_000);
 }
 
 #[test]
@@ -239,9 +367,11 @@ fn test_send_lbtc_insufficient_funds() {
     .unwrap();
     let recv_addr = recipient.address(None).unwrap();
 
-    let result = fixture
-        .sdk
-        .send_lbtc(&recv_addr.address().to_string(), 1_000_000, None);
+    let result = fixture.sdk.send_lbtc(
+        &recv_addr.address().to_string(),
+        1_000_000,
+        sample_rate_tx_options(),
+    );
     assert!(result.is_err());
 }
 
@@ -308,16 +438,22 @@ fn test_create_contract_onchain() {
     // Fund with several UTXOs.
     fixture.fund_and_sync(5, 100_000);
 
-    let (anchor, params) = fixture
+    let prepared = fixture
         .sdk
-        .create_contract_onchain(
+        .prepare_contract_creation(
             test_oracle_pubkey(),
             10_000,  // collateral_per_token
             500_000, // expiry_time (block height)
             1_000,   // min_utxo_value
-            500,     // fee_amount
+            exact_fee_tx_options(500),
         )
         .unwrap();
+    let creation = fixture
+        .sdk
+        .broadcast_prepared_contract_creation(&prepared)
+        .unwrap();
+    let anchor = creation.anchor;
+    let params = creation.params;
     let txid = anchor_txid(&anchor);
 
     fixture.mine_and_sync(1);
@@ -368,10 +504,13 @@ fn test_create_contract_insufficient_utxos() {
     // Only fund 1 UTXO — creation needs at least 2.
     fixture.fund_and_sync(1, 100_000);
 
-    let result =
-        fixture
-            .sdk
-            .create_contract_onchain(test_oracle_pubkey(), 10_000, 500_000, 1_000, 500);
+    let result = fixture.sdk.prepare_contract_creation(
+        test_oracle_pubkey(),
+        10_000,
+        500_000,
+        1_000,
+        exact_fee_tx_options(500),
+    );
     assert!(result.is_err());
 }
 
@@ -382,24 +521,31 @@ fn test_initial_issuance_from_dormant() {
     // Fund generously for creation + issuance.
     fixture.fund_and_sync(10, 500_000);
 
-    let (creation_txid, params) = fixture
+    let prepared = fixture
         .sdk
-        .create_contract_onchain(
+        .prepare_contract_creation(
             test_oracle_pubkey(),
             10_000,  // collateral_per_token
             500_000, // expiry_time
             1_000,   // min_utxo_value
-            500,     // fee_amount
+            exact_fee_tx_options(500),
         )
         .unwrap();
+    let creation = fixture
+        .sdk
+        .broadcast_prepared_contract_creation(&prepared)
+        .unwrap();
+    let creation_txid = creation.anchor;
+    let params = creation.params;
 
     fixture.mine_and_sync(1);
 
     // Issue 5 pairs (5 YES + 5 NO tokens).
-    let issuance = fixture
+    let prepared = fixture
         .sdk
-        .issue_tokens(&params, &creation_txid, 5, 500)
+        .prepare_issue_tokens(&params, &creation_txid, 5, exact_fee_tx_options(500))
         .unwrap();
+    let issuance = fixture.sdk.broadcast_prepared_issuance(&prepared).unwrap();
 
     assert_eq!(issuance.previous_state, MarketState::Dormant);
     assert_eq!(issuance.new_state, MarketState::Unresolved);
@@ -417,34 +563,164 @@ fn test_initial_issuance_from_dormant() {
 }
 
 #[test]
+fn test_prepare_issue_tokens_reports_effective_fee_metadata() {
+    let mut fixture = TestFixture::new();
+
+    fixture.fund_and_sync(10, 500_000);
+
+    let prepared = fixture
+        .sdk
+        .prepare_contract_creation(
+            test_oracle_pubkey(),
+            10_000,
+            500_000,
+            1_000,
+            exact_fee_tx_options(500),
+        )
+        .unwrap();
+    let creation = fixture
+        .sdk
+        .broadcast_prepared_contract_creation(&prepared)
+        .unwrap();
+    let creation_txid = creation.anchor;
+    let params = creation.params;
+
+    fixture.mine_and_sync(1);
+
+    let prepared = fixture
+        .sdk
+        .prepare_issue_tokens(&params, &creation_txid, 5, sample_rate_tx_options())
+        .unwrap();
+
+    assert_effective_fee_metadata(&prepared.prepared_tx.tx, &prepared.prepared_tx.fee);
+}
+
+#[test]
+fn test_market_lifecycle_executes_with_default_confirmation_target_fee_policy() {
+    let mut fixture = TestFixture::new();
+
+    fixture.fund_and_sync(10, 500_000);
+
+    let tx_options = default_confirmation_target_tx_options();
+    let prepared_creation = fixture
+        .sdk
+        .prepare_contract_creation(
+            test_oracle_pubkey(),
+            10_000,
+            500_000,
+            1_000,
+            tx_options.clone(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        prepared_creation.prepared_tx.fee.policy,
+        tx_options.fee_policy
+    );
+    assert!(prepared_creation.prepared_tx.fee.amount_sat > 0);
+    assert_effective_fee_metadata(
+        &prepared_creation.prepared_tx.tx,
+        &prepared_creation.prepared_tx.fee,
+    );
+
+    let expected_creation_fee = prepared_creation.prepared_tx.fee.clone();
+    let creation = fixture
+        .sdk
+        .broadcast_prepared_contract_creation(&prepared_creation)
+        .unwrap();
+    let creation_anchor = creation.anchor;
+    let params = creation.params;
+    assert_eq!(creation.fee, expected_creation_fee);
+    assert_eq!(
+        anchor_txid(&creation_anchor),
+        anchor_txid(&prepared_creation.anchor)
+    );
+
+    let creation_tx = fixture
+        .sdk
+        .fetch_transaction(&anchor_txid(&creation_anchor))
+        .unwrap();
+    assert_effective_fee_metadata(&creation_tx, &expected_creation_fee);
+
+    fixture.mine_and_sync(1);
+
+    let prepared_issue = fixture
+        .sdk
+        .prepare_issue_tokens(&params, &creation_anchor, 5, tx_options.clone())
+        .unwrap();
+
+    assert_eq!(prepared_issue.prepared_tx.fee.policy, tx_options.fee_policy);
+    assert!(prepared_issue.prepared_tx.fee.amount_sat > 0);
+    assert_effective_fee_metadata(
+        &prepared_issue.prepared_tx.tx,
+        &prepared_issue.prepared_tx.fee,
+    );
+
+    let issuance = fixture
+        .sdk
+        .broadcast_prepared_issuance(&prepared_issue)
+        .unwrap();
+    assert_eq!(issuance.previous_state, MarketState::Dormant);
+    assert_eq!(issuance.new_state, MarketState::Unresolved);
+    assert_eq!(issuance.pairs_issued, 5);
+    assert_eq!(issuance.fee.policy, tx_options.fee_policy);
+    assert!(issuance.fee.amount_sat > 0);
+
+    let issuance_tx = fixture.sdk.fetch_transaction(&issuance.txid).unwrap();
+    assert_effective_fee_metadata(&issuance_tx, &issuance.fee);
+
+    fixture.mine_and_sync(1);
+
+    let balance = fixture.sdk.balance().unwrap();
+    let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
+    let no_asset = lwk_wollet::elements::AssetId::from_slice(&params.no_token_asset).unwrap();
+    assert_eq!(*balance.get(&yes_asset).unwrap_or(&0), 5);
+    assert_eq!(*balance.get(&no_asset).unwrap_or(&0), 5);
+}
+
+#[test]
 fn test_subsequent_issuance_from_unresolved() {
     let mut fixture = TestFixture::new();
 
     // Fund generously.
     fixture.fund_and_sync(15, 500_000);
 
-    let (creation_txid, params) = fixture
+    let prepared = fixture
         .sdk
-        .create_contract_onchain(test_oracle_pubkey(), 10_000, 500_000, 1_000, 500)
+        .prepare_contract_creation(
+            test_oracle_pubkey(),
+            10_000,
+            500_000,
+            1_000,
+            exact_fee_tx_options(500),
+        )
         .unwrap();
+    let creation = fixture
+        .sdk
+        .broadcast_prepared_contract_creation(&prepared)
+        .unwrap();
+    let creation_txid = creation.anchor;
+    let params = creation.params;
 
     fixture.mine_and_sync(1);
 
     // First issuance: Dormant → Unresolved.
-    let issuance1 = fixture
+    let prepared = fixture
         .sdk
-        .issue_tokens(&params, &creation_txid, 3, 500)
+        .prepare_issue_tokens(&params, &creation_txid, 3, exact_fee_tx_options(500))
         .unwrap();
+    let issuance1 = fixture.sdk.broadcast_prepared_issuance(&prepared).unwrap();
     assert_eq!(issuance1.previous_state, MarketState::Dormant);
     assert_eq!(issuance1.new_state, MarketState::Unresolved);
 
     fixture.mine_and_sync(1);
 
     // Second issuance: Unresolved → Unresolved.
-    let issuance2 = fixture
+    let prepared = fixture
         .sdk
-        .issue_tokens(&params, &creation_txid, 2, 500)
+        .prepare_issue_tokens(&params, &creation_txid, 2, exact_fee_tx_options(500))
         .unwrap();
+    let issuance2 = fixture.sdk.broadcast_prepared_issuance(&prepared).unwrap();
     assert_eq!(issuance2.previous_state, MarketState::Unresolved);
     assert_eq!(issuance2.new_state, MarketState::Unresolved);
     assert_eq!(issuance2.pairs_issued, 2);
@@ -476,7 +752,9 @@ fn test_send_lbtc_invalid_address() {
     let mut fixture = TestFixture::new();
     fixture.fund_and_sync(2, 100_000);
 
-    let result = fixture.sdk.send_lbtc("not-a-valid-address", 10_000, None);
+    let result = fixture
+        .sdk
+        .send_lbtc("not-a-valid-address", 10_000, sample_rate_tx_options());
     assert!(result.is_err());
 }
 
@@ -510,17 +788,30 @@ fn create_and_issue(
     expiry_time: u32,
     pairs: u64,
 ) -> (PredictionMarketAnchor, PredictionMarketParams) {
-    let (creation_txid, params) = fixture
+    let prepared = fixture
         .sdk
-        .create_contract_onchain(oracle_pubkey, cpt, expiry_time, 1_000, 500)
+        .prepare_contract_creation(
+            oracle_pubkey,
+            cpt,
+            expiry_time,
+            1_000,
+            exact_fee_tx_options(500),
+        )
         .unwrap();
+    let creation = fixture
+        .sdk
+        .broadcast_prepared_contract_creation(&prepared)
+        .unwrap();
+    let creation_txid = creation.anchor;
+    let params = creation.params;
 
     fixture.mine_and_sync(1);
 
-    let _issuance = fixture
+    let prepared = fixture
         .sdk
-        .issue_tokens(&params, &creation_txid, pairs, 500)
+        .prepare_issue_tokens(&params, &creation_txid, pairs, exact_fee_tx_options(500))
         .unwrap();
+    let _issuance = fixture.sdk.broadcast_prepared_issuance(&prepared).unwrap();
 
     fixture.mine_and_sync(1);
 
@@ -546,9 +837,13 @@ fn test_full_cancellation_and_reissuance() {
     assert_eq!(*balance.get(&no_asset).unwrap_or(&0), 5);
 
     // Full cancel: burn all 5 pairs → Unresolved → Dormant
+    let prepared = fixture
+        .sdk
+        .prepare_cancel_tokens(&params, &creation_txid, 5, exact_fee_tx_options(500))
+        .unwrap();
     let cancel = fixture
         .sdk
-        .cancel_tokens(&params, &creation_txid, 5, 500)
+        .broadcast_prepared_cancellation(&prepared)
         .unwrap();
 
     assert_eq!(cancel.previous_state, MarketState::Unresolved);
@@ -564,10 +859,11 @@ fn test_full_cancellation_and_reissuance() {
     assert_eq!(*balance.get(&no_asset).unwrap_or(&0), 0);
 
     // Re-issue 3 pairs: Dormant → Unresolved
-    let reissue = fixture
+    let prepared = fixture
         .sdk
-        .issue_tokens(&params, &creation_txid, 3, 500)
+        .prepare_issue_tokens(&params, &creation_txid, 3, exact_fee_tx_options(500))
         .unwrap();
+    let reissue = fixture.sdk.broadcast_prepared_issuance(&prepared).unwrap();
 
     assert_eq!(reissue.previous_state, MarketState::Dormant);
     assert_eq!(reissue.new_state, MarketState::Unresolved);
@@ -593,9 +889,13 @@ fn test_partial_cancellation() {
     let no_asset = lwk_wollet::elements::AssetId::from_slice(&params.no_token_asset).unwrap();
 
     // Cancel 3 of 10 pairs
+    let prepared = fixture
+        .sdk
+        .prepare_cancel_tokens(&params, &creation_txid, 3, exact_fee_tx_options(500))
+        .unwrap();
     let cancel = fixture
         .sdk
-        .cancel_tokens(&params, &creation_txid, 3, 500)
+        .broadcast_prepared_cancellation(&prepared)
         .unwrap();
 
     assert_eq!(cancel.previous_state, MarketState::Unresolved);
@@ -621,9 +921,13 @@ fn test_full_cancellation_with_exact_fee_utxo() {
 
     fixture.fund_and_sync(1, 700);
 
+    let prepared = fixture
+        .sdk
+        .prepare_cancel_tokens(&params, &creation_txid, 5, exact_fee_tx_options(700))
+        .unwrap();
     let cancel = fixture
         .sdk
-        .cancel_tokens(&params, &creation_txid, 5, 700)
+        .broadcast_prepared_cancellation(&prepared)
         .unwrap();
 
     assert_eq!(cancel.previous_state, MarketState::Unresolved);
@@ -644,9 +948,13 @@ fn test_partial_cancellation_with_exact_fee_utxo() {
 
     fixture.fund_and_sync(1, 700);
 
+    let prepared = fixture
+        .sdk
+        .prepare_cancel_tokens(&params, &creation_txid, 3, exact_fee_tx_options(700))
+        .unwrap();
     let cancel = fixture
         .sdk
-        .cancel_tokens(&params, &creation_txid, 3, 700)
+        .broadcast_prepared_cancellation(&prepared)
         .unwrap();
 
     assert_eq!(cancel.previous_state, MarketState::Unresolved);
@@ -666,9 +974,19 @@ fn test_oracle_resolve_and_redeem_yes() {
 
     // Oracle resolves YES
     let signature = oracle_sign(&params, true, &keypair);
+    let prepared = fixture
+        .sdk
+        .prepare_resolution(
+            &params,
+            &creation_txid,
+            true,
+            signature,
+            exact_fee_tx_options(500),
+        )
+        .unwrap();
     let resolve = fixture
         .sdk
-        .resolve_market(&params, &creation_txid, true, signature, 500)
+        .broadcast_prepared_resolution(&prepared)
         .unwrap();
 
     assert_eq!(resolve.previous_state, MarketState::Unresolved);
@@ -678,9 +996,13 @@ fn test_oracle_resolve_and_redeem_yes() {
     fixture.mine_and_sync(1);
 
     // Redeem YES tokens
+    let prepared = fixture
+        .sdk
+        .prepare_redeem_tokens(&params, &creation_txid, 5, exact_fee_tx_options(500))
+        .unwrap();
     let redeem = fixture
         .sdk
-        .redeem_tokens(&params, &creation_txid, 5, 500)
+        .broadcast_prepared_redemption(&prepared)
         .unwrap();
 
     assert_eq!(redeem.previous_state, MarketState::ResolvedYes);
@@ -705,17 +1027,31 @@ fn test_post_resolution_redeem_with_exact_fee_utxo() {
     let (creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
 
     let signature = oracle_sign(&params, true, &keypair);
+    let prepared = fixture
+        .sdk
+        .prepare_resolution(
+            &params,
+            &creation_txid,
+            true,
+            signature,
+            exact_fee_tx_options(500),
+        )
+        .unwrap();
     fixture
         .sdk
-        .resolve_market(&params, &creation_txid, true, signature, 500)
+        .broadcast_prepared_resolution(&prepared)
         .unwrap();
 
     fixture.mine_and_sync(1);
     fixture.fund_and_sync(1, 700);
 
+    let prepared = fixture
+        .sdk
+        .prepare_redeem_tokens(&params, &creation_txid, 5, exact_fee_tx_options(700))
+        .unwrap();
     let redeem = fixture
         .sdk
-        .redeem_tokens(&params, &creation_txid, 5, 700)
+        .broadcast_prepared_redemption(&prepared)
         .unwrap();
 
     assert_eq!(redeem.previous_state, MarketState::ResolvedYes);
@@ -737,9 +1073,19 @@ fn test_oracle_resolve_with_exact_fee_utxo() {
     fixture.fund_and_sync(1, 700);
 
     let signature = oracle_sign(&params, true, &keypair);
+    let prepared = fixture
+        .sdk
+        .prepare_resolution(
+            &params,
+            &creation_txid,
+            true,
+            signature,
+            exact_fee_tx_options(700),
+        )
+        .unwrap();
     let resolve = fixture
         .sdk
-        .resolve_market(&params, &creation_txid, true, signature, 700)
+        .broadcast_prepared_resolution(&prepared)
         .unwrap();
 
     assert_eq!(resolve.previous_state, MarketState::Unresolved);
@@ -758,9 +1104,19 @@ fn test_oracle_resolve_and_redeem_no() {
 
     // Oracle resolves NO
     let signature = oracle_sign(&params, false, &keypair);
+    let prepared = fixture
+        .sdk
+        .prepare_resolution(
+            &params,
+            &creation_txid,
+            false,
+            signature,
+            exact_fee_tx_options(500),
+        )
+        .unwrap();
     let resolve = fixture
         .sdk
-        .resolve_market(&params, &creation_txid, false, signature, 500)
+        .broadcast_prepared_resolution(&prepared)
         .unwrap();
 
     assert_eq!(resolve.previous_state, MarketState::Unresolved);
@@ -770,9 +1126,13 @@ fn test_oracle_resolve_and_redeem_no() {
     fixture.mine_and_sync(1);
 
     // Redeem NO tokens
+    let prepared = fixture
+        .sdk
+        .prepare_redeem_tokens(&params, &creation_txid, 5, exact_fee_tx_options(500))
+        .unwrap();
     let redeem = fixture
         .sdk
-        .redeem_tokens(&params, &creation_txid, 5, 500)
+        .broadcast_prepared_redemption(&prepared)
         .unwrap();
 
     assert_eq!(redeem.previous_state, MarketState::ResolvedNo);
@@ -787,7 +1147,151 @@ fn test_oracle_resolve_and_redeem_no() {
 }
 
 #[test]
-fn test_expiry_redemption() {
+fn test_expiry_redemption_with_rate_fee_tx_options_auto_finalize() {
+    let mut fixture = TestFixture::new();
+    fixture.fund_and_sync(20, 500_000);
+
+    let (oracle_pubkey, _keypair) = generate_oracle_keypair();
+    let expiry_height = 200u32;
+
+    let (creation_txid, params) =
+        create_and_issue(&mut fixture, oracle_pubkey, 10_000, expiry_height, 5);
+
+    fixture.mine_and_sync(250);
+
+    let txids_before: std::collections::HashSet<_> = fixture
+        .sdk
+        .transactions()
+        .unwrap()
+        .into_iter()
+        .map(|tx| tx.txid)
+        .collect();
+    let tx_count_before = txids_before.len();
+    let tx_options = sample_rate_tx_options();
+    let redeem = fixture
+        .sdk
+        .redeem_expired_with_tx_options(
+            &params,
+            &creation_txid,
+            params.yes_token_asset,
+            5,
+            tx_options.clone(),
+        )
+        .unwrap();
+
+    assert_eq!(redeem.previous_state, MarketState::Expired);
+    assert_eq!(redeem.tokens_redeemed, 5);
+    assert_eq!(redeem.payout_sats, 50_000);
+    assert_eq!(redeem.fee.policy, tx_options.fee_policy);
+    assert!(redeem.fee.amount_sat > 0);
+
+    let txids_after: std::collections::HashSet<_> = fixture
+        .sdk
+        .transactions()
+        .unwrap()
+        .into_iter()
+        .map(|tx| tx.txid)
+        .collect();
+    let tx_count_after = txids_after.len();
+    assert_eq!(
+        tx_count_after,
+        tx_count_before + 2,
+        "expected expiry redemption to broadcast auto-expire plus redemption"
+    );
+
+    let new_txids: Vec<_> = txids_after.difference(&txids_before).copied().collect();
+    assert_eq!(new_txids.len(), 2, "expected exactly two new transactions");
+    let redemption_tx = fixture.sdk.fetch_transaction(&redeem.txid).unwrap();
+    let expiry_txid = new_txids
+        .into_iter()
+        .find(|txid| *txid != redeem.txid)
+        .expect("expected expiry txid");
+    let expiry_tx = fixture.sdk.fetch_transaction(&expiry_txid).unwrap();
+    assert!(redeem.fee.amount_sat > actual_fee_amount(&redemption_tx));
+    assert!(redeem.fee.amount_sat > actual_fee_amount(&expiry_tx));
+    assert_aggregated_fee_metadata(&[expiry_tx, redemption_tx], &redeem.fee);
+
+    fixture.mine_and_sync(1);
+
+    let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
+    let balance = fixture.sdk.balance().unwrap();
+    assert_eq!(*balance.get(&yes_asset).unwrap_or(&0), 0);
+}
+
+#[test]
+fn test_expiry_redemption_with_default_confirmation_target_auto_finalize() {
+    let mut fixture = TestFixture::new();
+    fixture.fund_and_sync(20, 500_000);
+
+    let (oracle_pubkey, _keypair) = generate_oracle_keypair();
+    let expiry_height = 200u32;
+
+    let (creation_txid, params) =
+        create_and_issue(&mut fixture, oracle_pubkey, 10_000, expiry_height, 5);
+
+    fixture.mine_and_sync(250);
+
+    let txids_before: std::collections::HashSet<_> = fixture
+        .sdk
+        .transactions()
+        .unwrap()
+        .into_iter()
+        .map(|tx| tx.txid)
+        .collect();
+    let tx_count_before = txids_before.len();
+    let tx_options = default_confirmation_target_tx_options();
+    let redeem = fixture
+        .sdk
+        .redeem_expired_with_tx_options(
+            &params,
+            &creation_txid,
+            params.yes_token_asset,
+            5,
+            tx_options.clone(),
+        )
+        .unwrap();
+
+    assert_eq!(redeem.previous_state, MarketState::Expired);
+    assert_eq!(redeem.tokens_redeemed, 5);
+    assert_eq!(redeem.payout_sats, 50_000);
+    assert_eq!(redeem.fee.policy, tx_options.fee_policy);
+    assert!(redeem.fee.amount_sat > 0);
+
+    let txids_after: std::collections::HashSet<_> = fixture
+        .sdk
+        .transactions()
+        .unwrap()
+        .into_iter()
+        .map(|tx| tx.txid)
+        .collect();
+    let tx_count_after = txids_after.len();
+    assert_eq!(
+        tx_count_after,
+        tx_count_before + 2,
+        "expected expiry redemption to broadcast auto-expire plus redemption"
+    );
+
+    let new_txids: Vec<_> = txids_after.difference(&txids_before).copied().collect();
+    assert_eq!(new_txids.len(), 2, "expected exactly two new transactions");
+    let redemption_tx = fixture.sdk.fetch_transaction(&redeem.txid).unwrap();
+    let expiry_txid = new_txids
+        .into_iter()
+        .find(|txid| *txid != redeem.txid)
+        .expect("expected expiry txid");
+    let expiry_tx = fixture.sdk.fetch_transaction(&expiry_txid).unwrap();
+    assert!(redeem.fee.amount_sat > actual_fee_amount(&redemption_tx));
+    assert!(redeem.fee.amount_sat > actual_fee_amount(&expiry_tx));
+    assert_aggregated_fee_metadata(&[expiry_tx, redemption_tx], &redeem.fee);
+
+    fixture.mine_and_sync(1);
+
+    let yes_asset = lwk_wollet::elements::AssetId::from_slice(&params.yes_token_asset).unwrap();
+    let balance = fixture.sdk.balance().unwrap();
+    assert_eq!(*balance.get(&yes_asset).unwrap_or(&0), 0);
+}
+
+#[test]
+fn test_expiry_redemption_with_exact_fee() {
     let mut fixture = TestFixture::new();
     fixture.fund_and_sync(20, 500_000);
 
@@ -804,7 +1308,13 @@ fn test_expiry_redemption() {
     // Redeem YES tokens via expiry path
     let redeem = fixture
         .sdk
-        .redeem_expired(&params, &creation_txid, params.yes_token_asset, 5, 500)
+        .redeem_expired_with_tx_options(
+            &params,
+            &creation_txid,
+            params.yes_token_asset,
+            5,
+            exact_fee_tx_options(500),
+        )
         .unwrap();
 
     assert_eq!(redeem.previous_state, MarketState::Expired);
@@ -836,7 +1346,13 @@ fn test_expiry_redemption_with_exact_fee_auto_finalize() {
 
     let redeem = fixture
         .sdk
-        .redeem_expired(&params, &creation_txid, params.yes_token_asset, 5, 700)
+        .redeem_expired_with_tx_options(
+            &params,
+            &creation_txid,
+            params.yes_token_asset,
+            5,
+            exact_fee_tx_options(700),
+        )
         .unwrap();
 
     assert_eq!(redeem.previous_state, MarketState::Expired);
@@ -852,37 +1368,52 @@ fn test_multiple_subsequent_issuances() {
     fixture.fund_and_sync(25, 500_000);
 
     let (oracle_pubkey, _keypair) = generate_oracle_keypair();
-    let (creation_txid, params) = fixture
+    let prepared = fixture
         .sdk
-        .create_contract_onchain(oracle_pubkey, 10_000, 500_000, 1_000, 500)
+        .prepare_contract_creation(
+            oracle_pubkey,
+            10_000,
+            500_000,
+            1_000,
+            exact_fee_tx_options(500),
+        )
         .unwrap();
+    let creation = fixture
+        .sdk
+        .broadcast_prepared_contract_creation(&prepared)
+        .unwrap();
+    let creation_txid = creation.anchor;
+    let params = creation.params;
 
     fixture.mine_and_sync(1);
 
     // Issue 3 pairs: Dormant → Unresolved
-    let iss1 = fixture
+    let prepared = fixture
         .sdk
-        .issue_tokens(&params, &creation_txid, 3, 500)
+        .prepare_issue_tokens(&params, &creation_txid, 3, exact_fee_tx_options(500))
         .unwrap();
+    let iss1 = fixture.sdk.broadcast_prepared_issuance(&prepared).unwrap();
     assert_eq!(iss1.previous_state, MarketState::Dormant);
     assert_eq!(iss1.new_state, MarketState::Unresolved);
 
     fixture.mine_and_sync(1);
 
     // Issue 2 more: Unresolved → Unresolved
-    let iss2 = fixture
+    let prepared = fixture
         .sdk
-        .issue_tokens(&params, &creation_txid, 2, 500)
+        .prepare_issue_tokens(&params, &creation_txid, 2, exact_fee_tx_options(500))
         .unwrap();
+    let iss2 = fixture.sdk.broadcast_prepared_issuance(&prepared).unwrap();
     assert_eq!(iss2.previous_state, MarketState::Unresolved);
 
     fixture.mine_and_sync(1);
 
     // Issue 5 more: Unresolved → Unresolved
-    let iss3 = fixture
+    let prepared = fixture
         .sdk
-        .issue_tokens(&params, &creation_txid, 5, 500)
+        .prepare_issue_tokens(&params, &creation_txid, 5, exact_fee_tx_options(500))
         .unwrap();
+    let iss3 = fixture.sdk.broadcast_prepared_issuance(&prepared).unwrap();
     assert_eq!(iss3.previous_state, MarketState::Unresolved);
 
     fixture.mine_and_sync(1);
@@ -905,17 +1436,31 @@ fn test_partial_post_resolution_redemption() {
 
     // Oracle resolves YES
     let signature = oracle_sign(&params, true, &keypair);
+    let prepared = fixture
+        .sdk
+        .prepare_resolution(
+            &params,
+            &creation_txid,
+            true,
+            signature,
+            exact_fee_tx_options(500),
+        )
+        .unwrap();
     fixture
         .sdk
-        .resolve_market(&params, &creation_txid, true, signature, 500)
+        .broadcast_prepared_resolution(&prepared)
         .unwrap();
 
     fixture.mine_and_sync(1);
 
     // Redeem only 3 of 5 YES tokens (partial redemption with token change)
+    let prepared = fixture
+        .sdk
+        .prepare_redeem_tokens(&params, &creation_txid, 3, exact_fee_tx_options(500))
+        .unwrap();
     let redeem = fixture
         .sdk
-        .redeem_tokens(&params, &creation_txid, 3, 500)
+        .broadcast_prepared_redemption(&prepared)
         .unwrap();
 
     assert_eq!(redeem.previous_state, MarketState::ResolvedYes);
@@ -940,17 +1485,31 @@ fn test_partial_post_resolution_redemption_with_exact_fee_utxo() {
     let (creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
 
     let signature = oracle_sign(&params, true, &keypair);
+    let prepared = fixture
+        .sdk
+        .prepare_resolution(
+            &params,
+            &creation_txid,
+            true,
+            signature,
+            exact_fee_tx_options(500),
+        )
+        .unwrap();
     fixture
         .sdk
-        .resolve_market(&params, &creation_txid, true, signature, 500)
+        .broadcast_prepared_resolution(&prepared)
         .unwrap();
 
     fixture.mine_and_sync(1);
     fixture.fund_and_sync(1, 700);
 
+    let prepared = fixture
+        .sdk
+        .prepare_redeem_tokens(&params, &creation_txid, 3, exact_fee_tx_options(700))
+        .unwrap();
     let redeem = fixture
         .sdk
-        .redeem_tokens(&params, &creation_txid, 3, 700)
+        .broadcast_prepared_redemption(&prepared)
         .unwrap();
 
     assert_eq!(redeem.previous_state, MarketState::ResolvedYes);
@@ -970,15 +1529,30 @@ fn test_cancel_wrong_state() {
     fixture.fund_and_sync(10, 500_000);
 
     let (oracle_pubkey, _keypair) = generate_oracle_keypair();
-    let (creation_txid, params) = fixture
+    let prepared = fixture
         .sdk
-        .create_contract_onchain(oracle_pubkey, 10_000, 500_000, 1_000, 500)
+        .prepare_contract_creation(
+            oracle_pubkey,
+            10_000,
+            500_000,
+            1_000,
+            exact_fee_tx_options(500),
+        )
         .unwrap();
+    let creation = fixture
+        .sdk
+        .broadcast_prepared_contract_creation(&prepared)
+        .unwrap();
+    let creation_txid = creation.anchor;
+    let params = creation.params;
 
     fixture.mine_and_sync(1);
 
     // Market is Dormant (no issuance) — cancellation should fail
-    let result = fixture.sdk.cancel_tokens(&params, &creation_txid, 1, 500);
+    let result =
+        fixture
+            .sdk
+            .prepare_cancel_tokens(&params, &creation_txid, 1, exact_fee_tx_options(500));
     assert!(result.is_err(), "cancel should fail in Dormant state");
 }
 
@@ -991,7 +1565,10 @@ fn test_redeem_wrong_state() {
     let (creation_txid, params) = create_and_issue(&mut fixture, oracle_pubkey, 10_000, 500_000, 5);
 
     // Market is Unresolved — post-resolution redemption should fail
-    let result = fixture.sdk.redeem_tokens(&params, &creation_txid, 5, 500);
+    let result =
+        fixture
+            .sdk
+            .prepare_redeem_tokens(&params, &creation_txid, 5, exact_fee_tx_options(500));
     assert!(result.is_err(), "redeem should fail in Unresolved state");
 }
 
@@ -1024,9 +1601,9 @@ fn test_create_and_cancel_limit_order() {
     // Create a SellBase limit order: sell 5 YES tokens at price 10 sats/token
     let lbtc_bytes: [u8; 32] = lbtc.into_inner().to_byte_array();
     let order_index = 11u32;
-    let create_result = fixture
+    let prepared = fixture
         .sdk
-        .create_limit_order(
+        .prepare_create_limit_order(
             params.yes_token_asset,
             lbtc_bytes,
             10, // price: 10 sats per YES token
@@ -1035,8 +1612,12 @@ fn test_create_and_cancel_limit_order() {
             1, // min_fill_lots
             1, // min_remainder_lots
             order_index,
-            500, // fee_amount
+            exact_fee_tx_options(500),
         )
+        .unwrap();
+    let create_result = fixture
+        .sdk
+        .broadcast_prepared_create_order(&prepared)
         .unwrap();
 
     assert_eq!(create_result.order_amount, 5);
@@ -1049,14 +1630,18 @@ fn test_create_and_cancel_limit_order() {
     assert_eq!(*balance_after_create.get(&yes_asset).unwrap_or(&0), 5);
 
     // Cancel the order — should refund the 5 YES tokens
-    let cancel_result = fixture
+    let prepared = fixture
         .sdk
-        .cancel_limit_order(
+        .prepare_cancel_limit_order(
             &create_result.order_params,
             create_result.maker_base_pubkey,
             order_index,
-            500, // fee_amount
+            exact_fee_tx_options(500),
         )
+        .unwrap();
+    let cancel_result = fixture
+        .sdk
+        .broadcast_prepared_cancel_order(&prepared)
         .unwrap();
 
     assert_eq!(cancel_result.refunded_amount, 5);
@@ -1081,9 +1666,9 @@ fn test_create_and_full_fill_limit_order() {
 
     // Create a SellBase limit order: sell 5 YES tokens at price 10 sats/token
     let order_index = 12u32;
-    let create_result = fixture
+    let prepared = fixture
         .sdk
-        .create_limit_order(
+        .prepare_create_limit_order(
             params.yes_token_asset,
             lbtc_bytes,
             10, // price
@@ -1092,22 +1677,30 @@ fn test_create_and_full_fill_limit_order() {
             1, // min_fill_lots
             1, // min_remainder_lots
             order_index,
-            500, // fee_amount
+            exact_fee_tx_options(500),
         )
+        .unwrap();
+    let create_result = fixture
+        .sdk
+        .broadcast_prepared_create_order(&prepared)
         .unwrap();
 
     fixture.mine_and_sync(1);
 
     // Fill the entire order (self-fill: same wallet pays L-BTC to get YES tokens back)
-    let fill_result = fixture
+    let prepared = fixture
         .sdk
-        .fill_limit_order(
+        .prepare_fill_limit_order(
             &create_result.order_params,
             create_result.maker_base_pubkey,
             create_result.order_nonce,
-            5,   // lots_to_fill: fill all 5
-            500, // fee_amount
+            5, // lots_to_fill: fill all 5
+            exact_fee_tx_options(500),
         )
+        .unwrap();
+    let fill_result = fixture
+        .sdk
+        .broadcast_prepared_fill_order(&prepared)
         .unwrap();
 
     assert_eq!(fill_result.lots_filled, 5);
@@ -1137,9 +1730,9 @@ fn test_partial_fill_limit_order() {
 
     // Create a SellBase limit order: sell 5 YES tokens at price 10 sats/token
     let order_index = 13u32;
-    let create_result = fixture
+    let prepared = fixture
         .sdk
-        .create_limit_order(
+        .prepare_create_limit_order(
             params.yes_token_asset,
             lbtc_bytes,
             10, // price
@@ -1148,22 +1741,30 @@ fn test_partial_fill_limit_order() {
             1, // min_fill_lots
             1, // min_remainder_lots
             order_index,
-            500, // fee_amount
+            exact_fee_tx_options(500),
         )
+        .unwrap();
+    let create_result = fixture
+        .sdk
+        .broadcast_prepared_create_order(&prepared)
         .unwrap();
 
     fixture.mine_and_sync(1);
 
     // Partial fill: take only 3 of the 5 tokens
-    let fill_result = fixture
+    let prepared = fixture
         .sdk
-        .fill_limit_order(
+        .prepare_fill_limit_order(
             &create_result.order_params,
             create_result.maker_base_pubkey,
             create_result.order_nonce,
-            3,   // lots_to_fill: partial — 3 of 5
-            500, // fee_amount
+            3, // lots_to_fill: partial — 3 of 5
+            exact_fee_tx_options(500),
         )
+        .unwrap();
+    let fill_result = fixture
+        .sdk
+        .broadcast_prepared_fill_order(&prepared)
         .unwrap();
 
     assert_eq!(fill_result.lots_filled, 3);
@@ -1177,14 +1778,18 @@ fn test_partial_fill_limit_order() {
 
     // The remaining 2 YES tokens are still locked in the covenant.
     // Cancel the remainder.
-    let cancel_result = fixture
+    let prepared = fixture
         .sdk
-        .cancel_limit_order(
+        .prepare_cancel_limit_order(
             &create_result.order_params,
             create_result.maker_base_pubkey,
             order_index,
-            500, // fee_amount
+            exact_fee_tx_options(500),
         )
+        .unwrap();
+    let cancel_result = fixture
+        .sdk
+        .broadcast_prepared_cancel_order(&prepared)
         .unwrap();
 
     assert_eq!(cancel_result.refunded_amount, 2);

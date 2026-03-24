@@ -3,6 +3,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { MOCK_MARKETS } from "../mock-markets.ts";
 import {
   cancelLimitOrder,
+  cancelTokens,
+  createContractOnchain,
   createLimitOrder,
   discoveredToMarket,
   executeTrade,
@@ -12,7 +14,11 @@ import {
   marketToContractParamsJson,
   mergeOrdersIntoMarket,
   quoteTrade,
+  redeemExpiredTokens,
+  redeemTokens,
+  resolveMarket,
 } from "../services/markets.ts";
+import { DEFAULT_TX_OPTIONS } from "../services/tx.ts";
 import {
   fetchWalletStatus,
   generateQr,
@@ -37,8 +43,8 @@ import type {
   BoltzLightningReceiveCreated,
   BoltzSubmarineSwapCreated,
   CovenantState,
-  DiscoveredMarket,
   IdentityResponse,
+  LiquidSendResult,
   Market,
   MarketCategory,
   NavCategory,
@@ -116,6 +122,10 @@ function formatTradeAmount(amount: number, unit: "sats" | "contracts"): string {
   }
   const normalized = Math.max(0, amount);
   return `${normalized.toLocaleString(undefined, { maximumFractionDigits: 2 })} contracts`;
+}
+
+function formatFeeToastSuffix(amountSat: number): string {
+  return ` · fee: ${amountSat.toLocaleString()} sats`;
 }
 
 function requireMarketAnchor(
@@ -1614,15 +1624,12 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        const result = await invoke<{ txid: string; feeSat: number }>(
-          "send_lbtc",
-          {
-            address,
-            amountSat,
-            feeRate: null,
-          },
-        );
-        state.sentLiquidResult = { txid: result.txid, feeSat: result.feeSat };
+        const result = await invoke<LiquidSendResult>("send_lbtc", {
+          address,
+          amountSat,
+          txOptions: DEFAULT_TX_OPTIONS,
+        });
+        state.sentLiquidResult = result;
       } catch (e) {
         state.sendError = String(e);
       }
@@ -1921,6 +1928,7 @@ export async function handleClick(
     const anchor = requireMarketAnchor(market, "resolve market");
     if (!anchor) return;
     const outcomeYes = state.lastAttestationOutcome;
+    const oracleSignatureHex = state.lastAttestationSig;
     const confirmed = window.confirm(
       `Execute on-chain resolution for "${market.question}"?\n\nOutcome: ${outcomeYes ? "YES" : "NO"}\nThis submits a Liquid transaction that transitions the covenant state.`,
     );
@@ -1930,23 +1938,19 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        const result = await invoke<{
-          txid: string;
-          previous_state: number;
-          new_state: number;
-          outcome_yes: boolean;
-        }>("resolve_market", {
-          contractParamsJson: marketToContractParamsJson(market),
+        const result = await resolveMarket(
+          market,
           anchor,
           outcomeYes,
-          oracleSignatureHex: state.lastAttestationSig,
-        });
+          oracleSignatureHex,
+          DEFAULT_TX_OPTIONS,
+        );
         market.state = result.outcome_yes ? 2 : 3;
         state.lastAttestationSig = null;
         state.lastAttestationOutcome = null;
         state.lastAttestationMarketId = null;
         showToast(
-          `Resolution executed! txid: ${result.txid.slice(0, 16)}... State: ${result.new_state}`,
+          `Resolution executed! txid: ${result.txid.slice(0, 16)}... State: ${result.new_state}${formatFeeToastSuffix(result.fee.amountSat)}`,
           "success",
         );
         await refreshWallet(render);
@@ -2269,7 +2273,7 @@ export async function handleClick(
       try {
         const result = await cancelLimitOrder(order);
         showToast(
-          `Order cancelled! Refunded ${result.refunded_amount} sats. txid: ${result.txid.slice(0, 16)}...`,
+          `Order cancelled! Refunded ${result.refunded_amount} sats. txid: ${result.txid.slice(0, 16)}...${formatFeeToastSuffix(result.fee.amountSat)}`,
           "success",
         );
         await refreshWallet(render);
@@ -2320,27 +2324,23 @@ export async function handleClick(
       render();
       (async () => {
         try {
-          const result = await invoke<DiscoveredMarket>(
-            "create_contract_onchain",
-            {
-              request: {
-                question,
-                description,
-                category: state.createCategory,
-                resolution_source: source,
-                settlement_deadline_unix: deadlineUnix,
-                collateral_per_token: 5000,
-              },
-            },
-          );
-          markets.push(discoveredToMarket(result));
+          const result = await createContractOnchain({
+            question,
+            description,
+            category: state.createCategory,
+            resolution_source: source,
+            settlement_deadline_unix: deadlineUnix,
+            collateral_per_token: 5000,
+            tx_options: DEFAULT_TX_OPTIONS,
+          });
+          markets.push(discoveredToMarket(result.market));
           state.view = "home";
           state.createQuestion = "";
           state.createDescription = "";
           state.createResolutionSource = "";
           state.createSettlementInput = defaultSettlementInput();
           showToast(
-            `Market created! txid: ${result.anchor?.creation_txid ?? "unknown"}`,
+            `Market created! txid: ${result.market.anchor?.creation_txid ?? "unknown"}${formatFeeToastSuffix(result.fee.amountSat)}`,
             "success",
           );
         } catch (error) {
@@ -2373,7 +2373,7 @@ export async function handleClick(
         createLimitOrder(market, side, direction, priceSats, amount)
           .then(async (result) => {
             showToast(
-              `Limit order placed! txid: ${result.txid.slice(0, 16)}...`,
+              `Limit order placed! txid: ${result.txid.slice(0, 16)}...${formatFeeToastSuffix(result.fee.amountSat)}`,
               "success",
             );
             await refreshWallet(render);
@@ -2447,7 +2447,7 @@ export async function handleClick(
             side,
             direction,
             exactInput,
-            500,
+            DEFAULT_TX_OPTIONS,
             {
               total_input: quote.total_input,
               total_output: quote.total_output,
@@ -2455,7 +2455,7 @@ export async function handleClick(
             },
           );
           showToast(
-            `Trade executed! txid: ${result.txid.slice(0, 16)}...`,
+            `Trade executed! txid: ${result.txid.slice(0, 16)}...${formatFeeToastSuffix(result.fee.amountSat)}`,
             "success",
           );
           await refreshWallet(render);
@@ -2488,7 +2488,7 @@ export async function handleClick(
         try {
           const result = await issueTokens(market, pairs);
           showToast(
-            `Tokens issued! txid: ${result.txid.slice(0, 16)}...`,
+            `Tokens issued! txid: ${result.txid.slice(0, 16)}...${formatFeeToastSuffix(result.fee.amountSat)}`,
             "success",
           );
         } catch (error) {
@@ -2508,19 +2508,14 @@ export async function handleClick(
       );
       (async () => {
         try {
-          const result = await invoke<{
-            txid: string;
-            previous_state: number;
-            new_state: number;
-            pairs_burned: number;
-            is_full_cancellation: boolean;
-          }>("cancel_tokens", {
-            contractParamsJson: marketToContractParamsJson(market),
+          const result = await cancelTokens(
+            market,
             anchor,
             pairs,
-          });
+            DEFAULT_TX_OPTIONS,
+          );
           showToast(
-            `Tokens cancelled! txid: ${result.txid.slice(0, 16)}... (${result.is_full_cancellation ? "full" : "partial"})`,
+            `Tokens cancelled! txid: ${result.txid.slice(0, 16)}... (${result.is_full_cancellation ? "full" : "partial"})${formatFeeToastSuffix(result.fee.amountSat)}`,
             "success",
           );
           await refreshWallet(render);
@@ -2541,18 +2536,14 @@ export async function handleClick(
         showToast(`Redeeming ${tokens} winning token(s)...`, "info");
         (async () => {
           try {
-            const result = await invoke<{
-              txid: string;
-              previous_state: number;
-              tokens_redeemed: number;
-              payout_sats: number;
-            }>("redeem_tokens", {
-              contractParamsJson: marketToContractParamsJson(market),
+            const result = await redeemTokens(
+              market,
               anchor,
               tokens,
-            });
+              DEFAULT_TX_OPTIONS,
+            );
             showToast(
-              `Redeemed! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}`,
+              `Redeemed! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}${formatFeeToastSuffix(result.fee.amountSat)}`,
               "success",
             );
             await refreshWallet(render);
@@ -2573,19 +2564,15 @@ export async function handleClick(
         showToast(`Redeeming ${tokens} expired token(s)...`, "info");
         (async () => {
           try {
-            const result = await invoke<{
-              txid: string;
-              previous_state: number;
-              tokens_redeemed: number;
-              payout_sats: number;
-            }>("redeem_expired", {
-              contractParamsJson: marketToContractParamsJson(market),
+            const result = await redeemExpiredTokens(
+              market,
               anchor,
-              tokenAssetHex: tokenAssetHex,
+              tokenAssetHex,
               tokens,
-            });
+              DEFAULT_TX_OPTIONS,
+            );
             showToast(
-              `Expired tokens redeemed! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}`,
+              `Expired tokens redeemed! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}${formatFeeToastSuffix(result.fee.amountSat)}`,
               "success",
             );
             await refreshWallet(render);

@@ -8,6 +8,7 @@ import type {
   BoltzSubmarineSwapCreated,
   ChartTimescale,
   LimitSellWarning,
+  LiquidSendResult,
   LmsrPoolInfo,
   Market,
   MarketCategory,
@@ -178,7 +179,7 @@ export const state: {
   sendCreating: boolean;
   sendError: string;
   sentLightningSwap: BoltzSubmarineSwapCreated | null;
-  sentLiquidResult: { txid: string; feeSat: number } | null;
+  sentLiquidResult: LiquidSendResult | null;
   sentBitcoinSwap: BoltzChainSwapCreated | null;
   sendBtcPairInfo: BoltzChainSwapPairInfo | null;
   userMenuOpen: boolean;

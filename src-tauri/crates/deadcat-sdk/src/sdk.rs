@@ -18,8 +18,9 @@ use crate::assembly::{pset_to_pruning_transaction, txout_secrets_from_unblinded}
 use crate::chain::{ChainBackend, ElectrumBackend};
 use crate::error::{Error, Result};
 use crate::lmsr_pool::api::{
-    AdjustLmsrPoolRequest, AdjustLmsrPoolResult, CloseLmsrPoolRequest, CloseLmsrPoolResult,
-    CreateLmsrPoolRequest, LmsrPoolLocator, LmsrPoolSnapshot, txid_to_canonical_bytes,
+    AdjustLmsrPoolRequest, AdjustLmsrPoolResult, CreateLmsrPoolRequest, CreateLmsrPoolResult,
+    LmsrPoolLocator, LmsrPoolSnapshot, PreparedAdjustLmsrPool, PreparedCreateLmsrPool,
+    build_pool_announcement_from_snapshot, txid_to_canonical_bytes,
 };
 use crate::lmsr_pool::assembly::attach_lmsr_pool_witnesses;
 use crate::lmsr_pool::chain_walk::{
@@ -65,7 +66,11 @@ use crate::pset::{
     UnblindedUtxo, add_pset_input, add_pset_output, explicit_txout, fee_txout, new_pset,
 };
 use crate::taproot::{NUMS_KEY_BYTES, tagged_hash};
-use crate::trade::types::{LmsrPoolSwapLeg, LmsrPoolUtxos, LmsrPrimaryPath};
+use crate::trade::types::{LmsrPoolSwapLeg, LmsrPoolUtxos, LmsrPrimaryPath, PreparedTrade};
+use crate::tx::{
+    MinerFeePolicy, PreparedTransaction, ResolvedMinerFee, TxOptions,
+    fee_amount_for_discount_vsize, resolved_miner_fee_for_tx, sat_per_vb_to_sat_per_kvb,
+};
 
 use crate::discovery::pool::LMSR_WITNESS_SCHEMA_V2;
 
@@ -111,6 +116,7 @@ pub struct IssuanceResult {
     pub previous_state: MarketState,
     pub new_state: MarketState,
     pub pairs_issued: u64,
+    pub fee: ResolvedMinerFee,
 }
 
 /// Result of a successful token cancellation.
@@ -121,6 +127,7 @@ pub struct CancellationResult {
     pub new_state: MarketState,
     pub pairs_burned: u64,
     pub is_full_cancellation: bool,
+    pub fee: ResolvedMinerFee,
 }
 
 /// Result of a successful oracle resolution.
@@ -130,6 +137,7 @@ pub struct ResolutionResult {
     pub previous_state: MarketState,
     pub new_state: MarketState,
     pub outcome_yes: bool,
+    pub fee: ResolvedMinerFee,
 }
 
 /// Result of a successful token redemption (post-resolution or expiry).
@@ -139,6 +147,15 @@ pub struct RedemptionResult {
     pub previous_state: MarketState,
     pub tokens_redeemed: u64,
     pub payout_sats: u64,
+    pub fee: ResolvedMinerFee,
+}
+
+/// Result of a successful contract creation broadcast.
+#[derive(Debug, Clone)]
+pub struct ContractCreationResult {
+    pub anchor: PredictionMarketAnchor,
+    pub params: PredictionMarketParams,
+    pub fee: ResolvedMinerFee,
 }
 
 /// Result of a successful limit order creation.
@@ -150,6 +167,7 @@ pub struct CreateOrderResult {
     pub order_nonce: [u8; 32],
     pub covenant_address: String,
     pub order_amount: u64,
+    pub fee: ResolvedMinerFee,
 }
 
 /// Result of a successful limit order fill.
@@ -158,6 +176,7 @@ pub struct FillOrderResult {
     pub txid: Txid,
     pub lots_filled: u64,
     pub is_partial: bool,
+    pub fee: ResolvedMinerFee,
 }
 
 /// Result of a successful limit order cancellation.
@@ -165,6 +184,77 @@ pub struct FillOrderResult {
 pub struct CancelOrderResult {
     pub txid: Txid,
     pub refunded_amount: u64,
+    pub fee: ResolvedMinerFee,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedSendLbtc {
+    pub address: String,
+    pub amount_sat: u64,
+    pub prepared_tx: PreparedTransaction,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedContractCreation {
+    pub anchor: PredictionMarketAnchor,
+    pub params: PredictionMarketParams,
+    pub prepared_tx: PreparedTransaction,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedIssuance {
+    pub previous_state: MarketState,
+    pub new_state: MarketState,
+    pub pairs_issued: u64,
+    pub prepared_tx: PreparedTransaction,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedCancellation {
+    pub previous_state: MarketState,
+    pub new_state: MarketState,
+    pub pairs_burned: u64,
+    pub is_full_cancellation: bool,
+    pub prepared_tx: PreparedTransaction,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedResolution {
+    pub previous_state: MarketState,
+    pub new_state: MarketState,
+    pub outcome_yes: bool,
+    pub prepared_tx: PreparedTransaction,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedRedemption {
+    pub previous_state: MarketState,
+    pub tokens_redeemed: u64,
+    pub payout_sats: u64,
+    pub prepared_tx: PreparedTransaction,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedCreateOrder {
+    pub order_params: MakerOrderParams,
+    pub maker_base_pubkey: [u8; 32],
+    pub order_nonce: [u8; 32],
+    pub covenant_address: String,
+    pub order_amount: u64,
+    pub prepared_tx: PreparedTransaction,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedFillOrder {
+    pub lots_filled: u64,
+    pub is_partial: bool,
+    pub prepared_tx: PreparedTransaction,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedCancelOrder {
+    pub refunded_amount: u64,
+    pub prepared_tx: PreparedTransaction,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +286,81 @@ struct LmsrBootstrapPset {
     pset: PartiallySignedTransaction,
     wallet_inputs: Vec<UnblindedUtxo>,
     blind_output_indices: Vec<usize>,
+}
+
+struct PreparedComputation<M> {
+    tx: Transaction,
+    meta: M,
+}
+
+struct SendLbtcMeta {
+    address: String,
+    amount_sat: u64,
+    actual_fee_sat: u64,
+}
+
+struct ContractCreationMeta {
+    anchor: PredictionMarketAnchor,
+    params: PredictionMarketParams,
+}
+
+struct IssuanceMeta {
+    previous_state: MarketState,
+    new_state: MarketState,
+    pairs_issued: u64,
+}
+
+struct CancellationMeta {
+    previous_state: MarketState,
+    new_state: MarketState,
+    pairs_burned: u64,
+    is_full_cancellation: bool,
+}
+
+struct ResolutionMeta {
+    previous_state: MarketState,
+    new_state: MarketState,
+    outcome_yes: bool,
+}
+
+struct RedemptionMeta {
+    previous_state: MarketState,
+    tokens_redeemed: u64,
+    payout_sats: u64,
+}
+
+struct CreateOrderMeta {
+    order_params: MakerOrderParams,
+    maker_base_pubkey: [u8; 32],
+    order_nonce: [u8; 32],
+    covenant_address: String,
+    order_amount: u64,
+}
+
+struct FillOrderMeta {
+    lots_filled: u64,
+    is_partial: bool,
+}
+
+struct CancelOrderMeta {
+    refunded_amount: u64,
+}
+
+struct TradeMeta {
+    total_input: u64,
+    total_output: u64,
+    num_orders_filled: usize,
+    pool_used: bool,
+    new_reserves: Option<PoolReserves>,
+}
+
+struct LmsrCreateMeta {
+    snapshot: LmsrPoolSnapshot,
+    announcement: crate::discovery::pool::PoolAnnouncement,
+}
+
+struct LmsrAdjustMeta {
+    new_snapshot: LmsrPoolSnapshot,
 }
 
 pub struct DeadcatSdk {
@@ -356,12 +521,125 @@ impl DeadcatSdk {
             .map_err(|e| Error::Finalize(e.to_string()))
     }
 
-    pub fn send_lbtc(
+    fn resolve_fee_rate_sat_per_vb(&self, tx_options: &TxOptions) -> Result<Option<f32>> {
+        match tx_options.fee_policy {
+            MinerFeePolicy::ConfirmationTargetBlocks { blocks } => {
+                let rate_sat_per_vb = self.chain.estimate_fee_rate_sat_per_vb(blocks)?;
+                let relay_sat_per_vb = self.chain.relay_fee_rate_sat_per_vb()?;
+                if rate_sat_per_vb < relay_sat_per_vb {
+                    return Err(Error::FeeEstimation(format!(
+                        "estimated fee rate {rate_sat_per_vb} sat/vB is below relay floor {relay_sat_per_vb} sat/vB"
+                    )));
+                }
+                Ok(Some(rate_sat_per_vb))
+            }
+            MinerFeePolicy::RateSatPerVb { sat_per_vb } => {
+                if !sat_per_vb.is_finite() || sat_per_vb <= 0.0 {
+                    return Err(Error::FeeResolution(format!(
+                        "invalid sat/vB rate {sat_per_vb}"
+                    )));
+                }
+                Ok(Some(sat_per_vb))
+            }
+            MinerFeePolicy::ExactAmountSat { .. } => Ok(None),
+        }
+    }
+
+    fn resolved_fee_for_tx(
+        &self,
+        policy: MinerFeePolicy,
+        amount_sat: u64,
+        tx: &Transaction,
+    ) -> Result<ResolvedMinerFee> {
+        resolved_miner_fee_for_tx(policy, amount_sat, tx)
+    }
+
+    fn combine_resolved_fees(
+        &self,
+        policy: MinerFeePolicy,
+        fees: &[ResolvedMinerFee],
+    ) -> Result<ResolvedMinerFee> {
+        let amount_sat = fees.iter().map(|fee| fee.amount_sat).sum();
+        let discount_vsize: u64 = fees.iter().map(|fee| fee.discount_vsize).sum();
+        if discount_vsize == 0 {
+            return Err(Error::FeeResolution(
+                "cannot derive aggregated fee for zero discount_vsize".into(),
+            ));
+        }
+
+        Ok(ResolvedMinerFee {
+            policy,
+            amount_sat,
+            rate_sat_per_vb: amount_sat as f32 / discount_vsize as f32,
+            discount_vsize,
+        })
+    }
+
+    fn prepare_custom_transaction<M, T, F, B>(
+        &mut self,
+        tx_options: TxOptions,
+        mut build: F,
+        map_result: B,
+    ) -> Result<T>
+    where
+        F: FnMut(&mut Self, u64) -> Result<PreparedComputation<M>>,
+        B: FnOnce(PreparedTransaction, M) -> T,
+    {
+        if let MinerFeePolicy::ExactAmountSat { amount_sat } = tx_options.fee_policy.clone() {
+            let computation = build(self, amount_sat)?;
+            let fee =
+                self.resolved_fee_for_tx(tx_options.fee_policy, amount_sat, &computation.tx)?;
+            return Ok(map_result(
+                PreparedTransaction::new(computation.tx, fee),
+                computation.meta,
+            ));
+        }
+
+        let rate_sat_per_vb = self
+            .resolve_fee_rate_sat_per_vb(&tx_options)?
+            .ok_or_else(|| Error::FeeResolution("missing fee rate".into()))?;
+        let mut fee_amount = 1u64;
+
+        const MAX_FEE_CONVERGENCE_PASSES: usize = 8;
+
+        for _ in 0..MAX_FEE_CONVERGENCE_PASSES {
+            let computation = build(self, fee_amount)?;
+            let required_fee = fee_amount_for_discount_vsize(
+                rate_sat_per_vb,
+                computation.tx.discount_vsize() as u64,
+            )?;
+            if required_fee == fee_amount {
+                let fee =
+                    self.resolved_fee_for_tx(tx_options.fee_policy, required_fee, &computation.tx)?;
+                return Ok(map_result(
+                    PreparedTransaction::new(computation.tx, fee),
+                    computation.meta,
+                ));
+            }
+            fee_amount = required_fee;
+        }
+
+        Err(Error::FeeResolution(format!(
+            "failed to converge on a stable fee amount within {MAX_FEE_CONVERGENCE_PASSES} passes"
+        )))
+    }
+
+    fn actual_fee_amount(tx: &Transaction) -> u64 {
+        tx.output
+            .iter()
+            .filter(|o| o.script_pubkey.is_empty())
+            .map(|o| o.value.explicit().unwrap_or(0))
+            .sum()
+    }
+
+    fn build_send_lbtc_transaction(
         &mut self,
         address_str: &str,
         amount_sat: u64,
-        fee_rate: Option<f32>,
-    ) -> Result<(Txid, u64)> {
+        fee_rate_sat_per_kvb: Option<f32>,
+    ) -> Result<PreparedComputation<SendLbtcMeta>> {
+        self.sync()?;
+
         let address: lwk_wollet::elements::Address = address_str
             .parse()
             .map_err(|e| Error::Query(format!("invalid address: {}", e)))?;
@@ -369,21 +647,115 @@ impl DeadcatSdk {
         let pset = TxBuilder::new(self.network.into_lwk())
             .add_lbtc_recipient(&address, amount_sat)
             .map_err(|e| Error::Query(format!("add_lbtc_recipient: {}", e)))?
-            .fee_rate(fee_rate)
+            .fee_rate(fee_rate_sat_per_kvb)
             .finish(&self.wollet)
             .map_err(|e| Error::Query(format!("TxBuilder finish: {}", e)))?;
 
         let tx = self.sign_pset(pset)?;
+        let actual_fee_sat = Self::actual_fee_amount(&tx);
 
-        let fee_sat: u64 = tx
-            .output
-            .iter()
-            .filter(|o| o.script_pubkey.is_empty())
-            .map(|o| o.value.explicit().unwrap_or(0))
-            .sum();
+        Ok(PreparedComputation {
+            tx,
+            meta: SendLbtcMeta {
+                address: address_str.to_string(),
+                amount_sat,
+                actual_fee_sat,
+            },
+        })
+    }
 
-        let txid = self.broadcast_and_sync(&tx)?;
-        Ok((txid, fee_sat))
+    pub fn prepare_send_lbtc(
+        &mut self,
+        address_str: &str,
+        amount_sat: u64,
+        tx_options: TxOptions,
+    ) -> Result<PreparedSendLbtc> {
+        match tx_options.fee_policy.clone() {
+            MinerFeePolicy::ExactAmountSat {
+                amount_sat: exact_fee_sat,
+            } => {
+                let mut fee_rate_sat_per_vb = 1.0f32;
+                let mut last_actual_fee_sat = None;
+
+                for _ in 0..6 {
+                    let fee_rate_sat_per_kvb = sat_per_vb_to_sat_per_kvb(fee_rate_sat_per_vb)?;
+                    let computation = self.build_send_lbtc_transaction(
+                        address_str,
+                        amount_sat,
+                        Some(fee_rate_sat_per_kvb),
+                    )?;
+                    if computation.meta.actual_fee_sat == exact_fee_sat {
+                        let fee = self.resolved_fee_for_tx(
+                            tx_options.fee_policy,
+                            exact_fee_sat,
+                            &computation.tx,
+                        )?;
+                        return Ok(PreparedSendLbtc {
+                            address: computation.meta.address,
+                            amount_sat: computation.meta.amount_sat,
+                            prepared_tx: PreparedTransaction::new(computation.tx, fee),
+                        });
+                    }
+
+                    if last_actual_fee_sat == Some(computation.meta.actual_fee_sat) {
+                        return Err(Error::ExactFeeMismatch {
+                            expected_sat: exact_fee_sat,
+                            actual_sat: computation.meta.actual_fee_sat,
+                        });
+                    }
+
+                    last_actual_fee_sat = Some(computation.meta.actual_fee_sat);
+                    fee_rate_sat_per_vb =
+                        exact_fee_sat as f32 / computation.tx.discount_vsize().max(1) as f32;
+                }
+
+                Err(Error::ExactFeeMismatch {
+                    expected_sat: exact_fee_sat,
+                    actual_sat: last_actual_fee_sat.unwrap_or(0),
+                })
+            }
+            _ => {
+                let rate_sat_per_vb = self
+                    .resolve_fee_rate_sat_per_vb(&tx_options)?
+                    .ok_or_else(|| Error::FeeResolution("missing fee rate".into()))?;
+                let fee_rate_sat_per_kvb = sat_per_vb_to_sat_per_kvb(rate_sat_per_vb)?;
+                let computation = self.build_send_lbtc_transaction(
+                    address_str,
+                    amount_sat,
+                    Some(fee_rate_sat_per_kvb),
+                )?;
+                let fee = self.resolved_fee_for_tx(
+                    tx_options.fee_policy,
+                    computation.meta.actual_fee_sat,
+                    &computation.tx,
+                )?;
+                Ok(PreparedSendLbtc {
+                    address: computation.meta.address,
+                    amount_sat: computation.meta.amount_sat,
+                    prepared_tx: PreparedTransaction::new(computation.tx, fee),
+                })
+            }
+        }
+    }
+
+    pub fn broadcast_prepared_send_lbtc(
+        &mut self,
+        prepared: &PreparedSendLbtc,
+    ) -> Result<(Txid, u64)> {
+        let txid = self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
+        Ok((txid, prepared.prepared_tx.fee.amount_sat))
+    }
+
+    pub fn send_lbtc(
+        &mut self,
+        address_str: &str,
+        amount_sat: u64,
+        tx_options: TxOptions,
+    ) -> Result<(Txid, u64)> {
+        let prepared = self.prepare_send_lbtc(address_str, amount_sat, tx_options)?;
+        let txid = self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
+
+        Ok((txid, prepared.prepared_tx.fee.amount_sat))
     }
 
     pub fn broadcast_and_sync(&mut self, tx: &Transaction) -> Result<Txid> {
@@ -419,10 +791,11 @@ impl DeadcatSdk {
         self.network.into_lwk().policy_asset()
     }
 
-    pub(crate) fn create_lmsr_pool_bootstrap(
+    fn build_lmsr_pool_bootstrap_transaction(
         &mut self,
         request: &CreateLmsrPoolRequest,
-    ) -> Result<LmsrPoolSnapshot> {
+        fee_amount: u64,
+    ) -> Result<PreparedComputation<LmsrCreateMeta>> {
         self.sync()?;
         validate_create_lmsr_pool_request(request)?;
 
@@ -457,7 +830,7 @@ impl DeadcatSdk {
             request
                 .initial_reserves
                 .r_lbtc
-                .checked_add(request.fee_amount)
+                .checked_add(fee_amount)
                 .ok_or(Error::CollateralOverflow)?
         } else {
             request.initial_reserves.r_lbtc
@@ -475,7 +848,7 @@ impl DeadcatSdk {
             select_wallet_utxo_set(
                 &self.utxos()?,
                 policy_asset,
-                request.fee_amount,
+                fee_amount,
                 &exclude,
                 &policy_asset_bytes,
             )?
@@ -500,7 +873,7 @@ impl DeadcatSdk {
             &reserve_no_inputs,
             &reserve_collateral_inputs,
             &fee_inputs,
-            request.fee_amount,
+            fee_amount,
             &change_addr.script_pubkey(),
             &policy_asset.into_inner().to_byte_array(),
         )?;
@@ -515,7 +888,7 @@ impl DeadcatSdk {
         }
 
         let tx = self.sign_pset(built.pset)?;
-        let txid = self.broadcast_and_sync(&tx)?;
+        let txid = tx.txid();
         let creation_txid_bytes = txid_to_canonical_bytes(&txid).map_err(Error::LmsrPool)?;
         let initial_reserve_outpoints = [
             LmsrInitialOutpoint {
@@ -539,7 +912,7 @@ impl DeadcatSdk {
         )
         .map_err(Error::LmsrPool)?;
 
-        Ok(LmsrPoolSnapshot {
+        let snapshot = LmsrPoolSnapshot {
             locator: LmsrPoolLocator {
                 market_id: request.market_params.market_id(),
                 pool_id,
@@ -557,15 +930,62 @@ impl DeadcatSdk {
                 OutPoint::new(txid, 2),
             ],
             last_transition_txid: None,
+        };
+        let announcement =
+            build_pool_announcement_from_snapshot(&snapshot, request.table_values.clone())
+                .map_err(Error::LmsrPool)?;
+        Ok(PreparedComputation {
+            tx,
+            meta: LmsrCreateMeta {
+                snapshot,
+                announcement,
+            },
+        })
+    }
+
+    pub(crate) fn prepare_create_lmsr_pool(
+        &mut self,
+        request: &CreateLmsrPoolRequest,
+        tx_options: TxOptions,
+    ) -> Result<PreparedCreateLmsrPool> {
+        self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| sdk.build_lmsr_pool_bootstrap_transaction(request, fee_amount),
+            |prepared_tx, meta| PreparedCreateLmsrPool {
+                snapshot: meta.snapshot,
+                announcement: meta.announcement,
+                prepared_tx,
+            },
+        )
+    }
+
+    pub(crate) fn broadcast_prepared_create_lmsr_pool(
+        &mut self,
+        prepared: &PreparedCreateLmsrPool,
+    ) -> Result<CreateLmsrPoolResult> {
+        let txid = self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
+        let mut snapshot = prepared.snapshot.clone();
+        snapshot.locator.creation_txid = txid;
+        snapshot.current_reserve_outpoints = [
+            OutPoint::new(txid, 0),
+            OutPoint::new(txid, 1),
+            OutPoint::new(txid, 2),
+        ];
+        Ok(CreateLmsrPoolResult {
+            txid,
+            snapshot,
+            announcement: prepared.announcement.clone(),
+            fee: prepared.prepared_tx.fee.clone(),
         })
     }
 
     // ── LMSR pool admin operations ────────────────────────────────────
 
-    pub(crate) fn adjust_lmsr_pool(
+    fn build_adjust_lmsr_pool_transaction(
         &mut self,
         request: &AdjustLmsrPoolRequest,
-    ) -> Result<AdjustLmsrPoolResult> {
+        fee_amount: u64,
+    ) -> Result<PreparedComputation<LmsrAdjustMeta>> {
         self.sync()?;
 
         // Fetch the actual chain genesis hash for admin signature computation.
@@ -705,19 +1125,19 @@ impl DeadcatSdk {
             .r_lbtc
             .saturating_sub(request.new_reserves.r_lbtc);
         let fee_absorbed_by_collateral_surplus =
-            collateral_is_policy && collateral_decrease >= request.fee_amount;
+            collateral_is_policy && collateral_decrease >= fee_amount;
 
         let collateral_extra_needed =
             if request.new_reserves.r_lbtc > request.current_reserves.r_lbtc {
                 let extra = request.new_reserves.r_lbtc - request.current_reserves.r_lbtc;
                 if collateral_is_policy {
-                    extra + request.fee_amount
+                    extra + fee_amount
                 } else {
                     extra
                 }
             } else if collateral_is_policy && !fee_absorbed_by_collateral_surplus {
                 // Neutral case or decrease too small to absorb fee
-                request.fee_amount - collateral_decrease
+                fee_amount - collateral_decrease
             } else {
                 0
             };
@@ -736,7 +1156,7 @@ impl DeadcatSdk {
         // Fee inputs if collateral != policy asset
         if !collateral_is_policy {
             let fee_inputs =
-                self.collect_wallet_utxos_for_asset(&policy_bytes, request.fee_amount, &exclude)?;
+                self.collect_wallet_utxos_for_asset(&policy_bytes, fee_amount, &exclude)?;
             for u in &fee_inputs {
                 crate::pset::add_pset_input(&mut pset, u);
             }
@@ -746,7 +1166,7 @@ impl DeadcatSdk {
         // Fee output
         crate::pset::add_pset_output(
             &mut pset,
-            crate::pset::explicit_txout(&policy_bytes, request.fee_amount, &Script::new()),
+            crate::pset::explicit_txout(&policy_bytes, fee_amount, &Script::new()),
         );
 
         // Change outputs for surplus tokens returned to wallet.
@@ -776,7 +1196,7 @@ impl DeadcatSdk {
             let surplus = request.current_reserves.r_lbtc - request.new_reserves.r_lbtc;
             // When the fee is absorbed from this explicit surplus, reduce by fee_amount.
             let net_surplus = if fee_absorbed_by_collateral_surplus {
-                surplus - request.fee_amount
+                surplus - fee_amount
             } else {
                 surplus
             };
@@ -820,7 +1240,7 @@ impl DeadcatSdk {
                     .or_insert(0) += collateral_extra_needed;
             }
             if !collateral_is_policy {
-                *wallet_needed_per_asset.entry(policy_bytes).or_insert(0) += request.fee_amount;
+                *wallet_needed_per_asset.entry(policy_bytes).or_insert(0) += fee_amount;
             }
             for (asset, total) in &wallet_totals {
                 let needed = wallet_needed_per_asset.get(asset).copied().unwrap_or(0);
@@ -926,62 +1346,60 @@ impl DeadcatSdk {
         attach_lmsr_pool_witnesses(&mut pset, &leg, 0..3, chain_genesis)?;
 
         let tx = self.sign_pset(pset)?;
-        let txid = self.broadcast_and_sync(&tx)?;
+        let txid = tx.txid();
 
         let mut new_locator = request.locator.clone();
         new_locator.hinted_s_index = s_index;
 
-        Ok(AdjustLmsrPoolResult {
-            txid,
-            new_snapshot: LmsrPoolSnapshot {
-                locator: new_locator,
-                current_s_index: s_index,
-                reserves: request.new_reserves,
-                current_reserve_outpoints: [
-                    OutPoint::new(txid, 0),
-                    OutPoint::new(txid, 1),
-                    OutPoint::new(txid, 2),
-                ],
-                last_transition_txid: Some(txid),
+        Ok(PreparedComputation {
+            tx,
+            meta: LmsrAdjustMeta {
+                new_snapshot: LmsrPoolSnapshot {
+                    locator: new_locator,
+                    current_s_index: s_index,
+                    reserves: request.new_reserves,
+                    current_reserve_outpoints: [
+                        OutPoint::new(txid, 0),
+                        OutPoint::new(txid, 1),
+                        OutPoint::new(txid, 2),
+                    ],
+                    last_transition_txid: Some(txid),
+                },
             },
         })
     }
 
-    pub(crate) fn close_lmsr_pool(
+    pub(crate) fn prepare_adjust_lmsr_pool(
         &mut self,
-        request: &CloseLmsrPoolRequest,
-    ) -> Result<CloseLmsrPoolResult> {
-        let params = request.locator.params;
-        let min_reserves = PoolReserves {
-            r_yes: params.min_r_yes,
-            r_no: params.min_r_no,
-            r_lbtc: params.min_r_collateral,
-        };
-        let adjust_request = AdjustLmsrPoolRequest {
-            locator: request.locator.clone(),
-            current_pool_utxos: request.current_pool_utxos.clone(),
-            current_s_index: request.current_s_index,
-            current_reserves: request.current_reserves,
-            new_reserves: min_reserves,
-            table_values: request.table_values.clone(),
-            fee_amount: request.fee_amount,
-            pool_index: request.pool_index,
-        };
-        let result = self.adjust_lmsr_pool(&adjust_request)?;
-        Ok(CloseLmsrPoolResult {
-            txid: result.txid,
-            reclaimed_yes: request
-                .current_reserves
-                .r_yes
-                .saturating_sub(min_reserves.r_yes),
-            reclaimed_no: request
-                .current_reserves
-                .r_no
-                .saturating_sub(min_reserves.r_no),
-            reclaimed_collateral: request
-                .current_reserves
-                .r_lbtc
-                .saturating_sub(min_reserves.r_lbtc),
+        request: &AdjustLmsrPoolRequest,
+        tx_options: TxOptions,
+    ) -> Result<PreparedAdjustLmsrPool> {
+        self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| sdk.build_adjust_lmsr_pool_transaction(request, fee_amount),
+            |prepared_tx, meta| PreparedAdjustLmsrPool {
+                new_snapshot: meta.new_snapshot,
+                prepared_tx,
+            },
+        )
+    }
+
+    pub(crate) fn broadcast_prepared_adjust_lmsr_pool(
+        &mut self,
+        prepared: &PreparedAdjustLmsrPool,
+    ) -> Result<AdjustLmsrPoolResult> {
+        let txid = self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
+        let mut new_snapshot = prepared.new_snapshot.clone();
+        new_snapshot.current_reserve_outpoints = [
+            OutPoint::new(txid, 0),
+            OutPoint::new(txid, 1),
+            OutPoint::new(txid, 2),
+        ];
+        new_snapshot.last_transition_txid = Some(txid);
+        Ok(AdjustLmsrPoolResult {
+            txid,
+            new_snapshot,
+            fee: prepared.prepared_tx.fee.clone(),
         })
     }
 
@@ -1014,14 +1432,14 @@ impl DeadcatSdk {
 
     // ── On-chain contract creation ───────────────────────────────────────
 
-    pub fn create_contract_onchain(
+    fn build_contract_creation_transaction(
         &mut self,
         oracle_public_key: [u8; 32],
         collateral_per_token: u64,
         expiry_time: u32,
         min_utxo_value: u64,
         fee_amount: u64,
-    ) -> Result<(PredictionMarketAnchor, PredictionMarketParams)> {
+    ) -> Result<PreparedComputation<ContractCreationMeta>> {
         self.sync()?;
 
         let raw_utxos = self.utxos()?;
@@ -1051,7 +1469,6 @@ impl DeadcatSdk {
             .parse()
             .map_err(|e| Error::Query(format!("bad change address: {}", e)))?;
 
-        // Compile contract — types are identical, no bridging needed
         let contract = CompiledPredictionMarket::create(
             oracle_public_key,
             policy_bytes,
@@ -1075,7 +1492,6 @@ impl DeadcatSdk {
             },
         )?;
 
-        // Blind the dormant RT outputs and any wallet change output.
         {
             let outputs = sdk_pset.outputs_mut();
             let blinding_pk = change_addr
@@ -1120,15 +1536,55 @@ impl DeadcatSdk {
         }
 
         let tx = self.sign_pset(sdk_pset)?;
-        let txid = self.broadcast_and_sync(&tx)?;
         let params = *contract.params();
         let master_blinding_key = self
             .signer
             .slip77_master_blinding_key()
             .map_err(|e| Error::Blinding(format!("slip77 key: {e}")))?;
-        let anchor = recover_creation_anchor(&tx, txid, &master_blinding_key, &change_addr)?;
+        let anchor = recover_creation_anchor(&tx, tx.txid(), &master_blinding_key, &change_addr)?;
+        Ok(PreparedComputation {
+            tx,
+            meta: ContractCreationMeta { anchor, params },
+        })
+    }
 
-        Ok((anchor, params))
+    pub fn prepare_contract_creation(
+        &mut self,
+        oracle_public_key: [u8; 32],
+        collateral_per_token: u64,
+        expiry_time: u32,
+        min_utxo_value: u64,
+        tx_options: TxOptions,
+    ) -> Result<PreparedContractCreation> {
+        self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| {
+                sdk.build_contract_creation_transaction(
+                    oracle_public_key,
+                    collateral_per_token,
+                    expiry_time,
+                    min_utxo_value,
+                    fee_amount,
+                )
+            },
+            |prepared_tx, meta| PreparedContractCreation {
+                anchor: meta.anchor,
+                params: meta.params,
+                prepared_tx,
+            },
+        )
+    }
+
+    pub fn broadcast_prepared_contract_creation(
+        &mut self,
+        prepared: &PreparedContractCreation,
+    ) -> Result<ContractCreationResult> {
+        self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
+        Ok(ContractCreationResult {
+            anchor: prepared.anchor.clone(),
+            params: prepared.params,
+            fee: prepared.prepared_tx.fee.clone(),
+        })
     }
 
     // ── Token issuance ──────────────────────────────────────────────────
@@ -1137,13 +1593,13 @@ impl DeadcatSdk {
     ///
     /// Detects whether the market is in Dormant (initial issuance) or Unresolved
     /// (subsequent issuance) state and builds the appropriate transaction.
-    pub fn issue_tokens(
+    fn build_issue_tokens_transaction(
         &mut self,
         params: &PredictionMarketParams,
         anchor: &PredictionMarketAnchor,
         pairs: u64,
         fee_amount: u64,
-    ) -> Result<IssuanceResult> {
+    ) -> Result<PreparedComputation<IssuanceMeta>> {
         let contract = CompiledPredictionMarket::new(*params)?;
 
         // A. Scan market state
@@ -1217,13 +1673,46 @@ impl DeadcatSdk {
         let tx = self.sign_pset(assembled)?;
 
         // J. Broadcast
-        let txid = self.broadcast_and_sync(&tx)?;
+        Ok(PreparedComputation {
+            tx,
+            meta: IssuanceMeta {
+                previous_state: current_state,
+                new_state: MarketState::Unresolved,
+                pairs_issued: pairs,
+            },
+        })
+    }
 
+    pub fn prepare_issue_tokens(
+        &mut self,
+        params: &PredictionMarketParams,
+        anchor: &PredictionMarketAnchor,
+        pairs: u64,
+        tx_options: TxOptions,
+    ) -> Result<PreparedIssuance> {
+        self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| sdk.build_issue_tokens_transaction(params, anchor, pairs, fee_amount),
+            |prepared_tx, meta| PreparedIssuance {
+                previous_state: meta.previous_state,
+                new_state: meta.new_state,
+                pairs_issued: meta.pairs_issued,
+                prepared_tx,
+            },
+        )
+    }
+
+    pub fn broadcast_prepared_issuance(
+        &mut self,
+        prepared: &PreparedIssuance,
+    ) -> Result<IssuanceResult> {
+        let txid = self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
         Ok(IssuanceResult {
             txid,
-            previous_state: current_state,
-            new_state: MarketState::Unresolved,
-            pairs_issued: pairs,
+            previous_state: prepared.previous_state,
+            new_state: prepared.new_state,
+            pairs_issued: prepared.pairs_issued,
+            fee: prepared.prepared_tx.fee.clone(),
         })
     }
 
@@ -1399,13 +1888,13 @@ impl DeadcatSdk {
     ///
     /// If all collateral is burned (full cancellation), the market transitions
     /// back to Dormant. Otherwise it stays Unresolved (partial cancellation).
-    pub fn cancel_tokens(
+    fn build_cancel_tokens_transaction(
         &mut self,
         params: &PredictionMarketParams,
         anchor: &PredictionMarketAnchor,
         pairs_to_burn: u64,
         fee_amount: u64,
-    ) -> Result<CancellationResult> {
+    ) -> Result<PreparedComputation<CancellationMeta>> {
         self.sync()?;
         let contract = CompiledPredictionMarket::new(*params)?;
 
@@ -1469,20 +1958,57 @@ impl DeadcatSdk {
         )?;
 
         let tx = self.sign_pset(assembled)?;
-        let txid = self.broadcast_and_sync(&tx)?;
-
         let new_state = if is_full {
             MarketState::Dormant
         } else {
             MarketState::Unresolved
         };
 
+        Ok(PreparedComputation {
+            tx,
+            meta: CancellationMeta {
+                previous_state: current_state,
+                new_state,
+                pairs_burned: pairs_to_burn,
+                is_full_cancellation: is_full,
+            },
+        })
+    }
+
+    pub fn prepare_cancel_tokens(
+        &mut self,
+        params: &PredictionMarketParams,
+        anchor: &PredictionMarketAnchor,
+        pairs_to_burn: u64,
+        tx_options: TxOptions,
+    ) -> Result<PreparedCancellation> {
+        self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| {
+                sdk.build_cancel_tokens_transaction(params, anchor, pairs_to_burn, fee_amount)
+            },
+            |prepared_tx, meta| PreparedCancellation {
+                previous_state: meta.previous_state,
+                new_state: meta.new_state,
+                pairs_burned: meta.pairs_burned,
+                is_full_cancellation: meta.is_full_cancellation,
+                prepared_tx,
+            },
+        )
+    }
+
+    pub fn broadcast_prepared_cancellation(
+        &mut self,
+        prepared: &PreparedCancellation,
+    ) -> Result<CancellationResult> {
+        let txid = self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
         Ok(CancellationResult {
             txid,
-            previous_state: current_state,
-            new_state,
-            pairs_burned: pairs_to_burn,
-            is_full_cancellation: is_full,
+            previous_state: prepared.previous_state,
+            new_state: prepared.new_state,
+            pairs_burned: prepared.pairs_burned,
+            is_full_cancellation: prepared.is_full_cancellation,
+            fee: prepared.prepared_tx.fee.clone(),
         })
     }
 
@@ -1491,14 +2017,14 @@ impl DeadcatSdk {
     /// Resolve a market with an oracle signature.
     ///
     /// Transitions the market from Unresolved to ResolvedYes or ResolvedNo.
-    pub fn resolve_market(
+    fn build_resolution_transaction(
         &mut self,
         params: &PredictionMarketParams,
         anchor: &PredictionMarketAnchor,
         outcome_yes: bool,
         oracle_signature: [u8; 64],
         fee_amount: u64,
-    ) -> Result<ResolutionResult> {
+    ) -> Result<PreparedComputation<ResolutionMeta>> {
         self.sync()?;
         let contract = CompiledPredictionMarket::new(*params)?;
 
@@ -1547,19 +2073,61 @@ impl DeadcatSdk {
             &no_rt,
         )?;
 
-        let txid = self.broadcast_and_sync(&self.sign_pset(assembled)?)?;
-
         let new_state = if outcome_yes {
             MarketState::ResolvedYes
         } else {
             MarketState::ResolvedNo
         };
 
+        Ok(PreparedComputation {
+            tx: self.sign_pset(assembled)?,
+            meta: ResolutionMeta {
+                previous_state: current_state,
+                new_state,
+                outcome_yes,
+            },
+        })
+    }
+
+    pub fn prepare_resolution(
+        &mut self,
+        params: &PredictionMarketParams,
+        anchor: &PredictionMarketAnchor,
+        outcome_yes: bool,
+        oracle_signature: [u8; 64],
+        tx_options: TxOptions,
+    ) -> Result<PreparedResolution> {
+        self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| {
+                sdk.build_resolution_transaction(
+                    params,
+                    anchor,
+                    outcome_yes,
+                    oracle_signature,
+                    fee_amount,
+                )
+            },
+            |prepared_tx, meta| PreparedResolution {
+                previous_state: meta.previous_state,
+                new_state: meta.new_state,
+                outcome_yes: meta.outcome_yes,
+                prepared_tx,
+            },
+        )
+    }
+
+    pub fn broadcast_prepared_resolution(
+        &mut self,
+        prepared: &PreparedResolution,
+    ) -> Result<ResolutionResult> {
+        let txid = self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
         Ok(ResolutionResult {
             txid,
-            previous_state: current_state,
-            new_state,
-            outcome_yes,
+            previous_state: prepared.previous_state,
+            new_state: prepared.new_state,
+            outcome_yes: prepared.outcome_yes,
+            fee: prepared.prepared_tx.fee.clone(),
         })
     }
 
@@ -1568,13 +2136,13 @@ impl DeadcatSdk {
     /// Redeem winning tokens after oracle resolution.
     ///
     /// Burns winning tokens and reclaims 2x collateral_per_token per token.
-    pub fn redeem_tokens(
+    fn build_redeem_tokens_transaction(
         &mut self,
         params: &PredictionMarketParams,
         anchor: &PredictionMarketAnchor,
         tokens_to_burn: u64,
         fee_amount: u64,
-    ) -> Result<RedemptionResult> {
+    ) -> Result<PreparedComputation<RedemptionMeta>> {
         self.sync()?;
         let contract = CompiledPredictionMarket::new(*params)?;
 
@@ -1621,25 +2189,60 @@ impl DeadcatSdk {
             assemble_post_resolution_redemption(&contract, &redemption_params, blinding_pk)?;
 
         let tx = self.sign_pset(assembled)?;
-        let txid = self.broadcast_and_sync(&tx)?;
+        Ok(PreparedComputation {
+            tx,
+            meta: RedemptionMeta {
+                previous_state: current_state,
+                tokens_redeemed: tokens_to_burn,
+                payout_sats: payout,
+            },
+        })
+    }
 
+    pub fn prepare_redeem_tokens(
+        &mut self,
+        params: &PredictionMarketParams,
+        anchor: &PredictionMarketAnchor,
+        tokens_to_burn: u64,
+        tx_options: TxOptions,
+    ) -> Result<PreparedRedemption> {
+        self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| {
+                sdk.build_redeem_tokens_transaction(params, anchor, tokens_to_burn, fee_amount)
+            },
+            |prepared_tx, meta| PreparedRedemption {
+                previous_state: meta.previous_state,
+                tokens_redeemed: meta.tokens_redeemed,
+                payout_sats: meta.payout_sats,
+                prepared_tx,
+            },
+        )
+    }
+
+    pub fn broadcast_prepared_redemption(
+        &mut self,
+        prepared: &PreparedRedemption,
+    ) -> Result<RedemptionResult> {
+        let txid = self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
         Ok(RedemptionResult {
             txid,
-            previous_state: current_state,
-            tokens_redeemed: tokens_to_burn,
-            payout_sats: payout,
+            previous_state: prepared.previous_state,
+            tokens_redeemed: prepared.tokens_redeemed,
+            payout_sats: prepared.payout_sats,
+            fee: prepared.prepared_tx.fee.clone(),
         })
     }
 
     // ── Expiry redemption ────────────────────────────────────────────────
 
     /// Permissionlessly finalize an unresolved market into the explicit Expired state.
-    fn expire_market(
+    fn build_expire_market_transaction(
         &mut self,
         params: &PredictionMarketParams,
         anchor: &PredictionMarketAnchor,
         fee_amount: u64,
-    ) -> Result<Txid> {
+    ) -> Result<PreparedComputation<()>> {
         self.sync()?;
         let contract = CompiledPredictionMarket::new(*params)?;
 
@@ -1686,85 +2289,131 @@ impl DeadcatSdk {
             &no_rt,
         )?;
 
-        self.broadcast_and_sync(&self.sign_pset(assembled)?)
+        Ok(PreparedComputation {
+            tx: self.sign_pset(assembled)?,
+            meta: (),
+        })
     }
 
-    /// Redeem tokens after market expiry (no oracle resolution).
-    ///
-    /// Burns tokens and reclaims 1x collateral_per_token per token. If the market
-    /// is still Unresolved, this auto-finalizes Unresolved -> Expired first.
-    pub fn redeem_expired(
+    fn prepare_expire_market(
+        &mut self,
+        params: &PredictionMarketParams,
+        anchor: &PredictionMarketAnchor,
+        tx_options: TxOptions,
+    ) -> Result<PreparedTransaction> {
+        self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| sdk.build_expire_market_transaction(params, anchor, fee_amount),
+            |prepared_tx, _| prepared_tx,
+        )
+    }
+
+    fn build_redeem_expired_transaction(
         &mut self,
         params: &PredictionMarketParams,
         anchor: &PredictionMarketAnchor,
         token_asset: [u8; 32],
         tokens_to_burn: u64,
         fee_amount: u64,
-    ) -> Result<RedemptionResult> {
+    ) -> Result<PreparedComputation<RedemptionMeta>> {
         self.sync()?;
         let contract = CompiledPredictionMarket::new(*params)?;
 
-        let (mut current_state, mut covenant_utxos) = self.scan_market_state(&contract, anchor)?;
-        let mut finalize_txid: Option<Txid> = None;
-
-        if current_state == MarketState::Unresolved {
-            let txid = self.expire_market(params, anchor, fee_amount)?;
-            finalize_txid = Some(txid);
-            self.sync()?;
-            let (rescanned_state, rescanned_utxos) = self.scan_market_state(&contract, anchor)?;
-            current_state = rescanned_state;
-            covenant_utxos = rescanned_utxos;
-        }
-
+        let (current_state, covenant_utxos) = self.scan_market_state(&contract, anchor)?;
         if current_state != MarketState::Expired {
             return Err(Error::NotRedeemable(current_state));
         }
 
-        let redemption = (|| -> Result<RedemptionResult> {
-            let collateral = Self::find_collateral_utxo(&covenant_utxos, params)?;
+        let collateral = Self::find_collateral_utxo(&covenant_utxos, params)?;
 
-            let cpt = params.collateral_per_token;
-            let payout = tokens_to_burn
-                .checked_mul(cpt)
-                .ok_or(Error::CollateralOverflow)?;
+        let cpt = params.collateral_per_token;
+        let payout = tokens_to_burn
+            .checked_mul(cpt)
+            .ok_or(Error::CollateralOverflow)?;
 
-            let token_utxos = self.find_single_token_utxos(&token_asset, tokens_to_burn)?;
+        let token_utxos = self.find_single_token_utxos(&token_asset, tokens_to_burn)?;
 
-            let (fee_unblinded, change_addr) = self.select_fee_utxo(fee_amount)?;
-            let change_spk = change_addr.script_pubkey();
+        let (fee_unblinded, change_addr) = self.select_fee_utxo(fee_amount)?;
+        let change_spk = change_addr.script_pubkey();
 
-            let expiry_params = ExpiryRedemptionParams {
-                collateral_utxo: collateral,
-                token_utxos,
-                fee_utxo: fee_unblinded,
-                tokens_burned: tokens_to_burn,
-                burn_token_asset: token_asset,
-                fee_amount,
-                payout_destination: change_spk.clone(),
-                fee_change_destination: Some(change_spk.clone()),
-                token_change_destination: Some(change_spk),
-                lock_time: params.expiry_time,
-            };
+        let expiry_params = ExpiryRedemptionParams {
+            collateral_utxo: collateral,
+            token_utxos,
+            fee_utxo: fee_unblinded,
+            tokens_burned: tokens_to_burn,
+            burn_token_asset: token_asset,
+            fee_amount,
+            payout_destination: change_spk.clone(),
+            fee_change_destination: Some(change_spk.clone()),
+            token_change_destination: Some(change_spk),
+            lock_time: params.expiry_time,
+        };
 
-            let blinding_pk = change_addr
-                .blinding_pubkey
-                .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
+        let blinding_pk = change_addr
+            .blinding_pubkey
+            .ok_or_else(|| Error::Blinding("change address has no blinding key".to_string()))?;
 
-            let assembled = assemble_expiry_redemption(&contract, &expiry_params, blinding_pk)?;
-
-            let tx = self.sign_pset(assembled)?;
-            let txid = self.broadcast_and_sync(&tx)?;
-
-            Ok(RedemptionResult {
-                txid,
+        let assembled = assemble_expiry_redemption(&contract, &expiry_params, blinding_pk)?;
+        Ok(PreparedComputation {
+            tx: self.sign_pset(assembled)?,
+            meta: RedemptionMeta {
                 previous_state: current_state,
                 tokens_redeemed: tokens_to_burn,
                 payout_sats: payout,
-            })
-        })();
+            },
+        })
+    }
+
+    pub fn redeem_expired_with_tx_options(
+        &mut self,
+        params: &PredictionMarketParams,
+        anchor: &PredictionMarketAnchor,
+        token_asset: [u8; 32],
+        tokens_to_burn: u64,
+        tx_options: TxOptions,
+    ) -> Result<RedemptionResult> {
+        self.sync()?;
+        let contract = CompiledPredictionMarket::new(*params)?;
+        let fee_policy = tx_options.fee_policy.clone();
+
+        let (current_state, _) = self.scan_market_state(&contract, anchor)?;
+        let mut finalize_txid: Option<Txid> = None;
+        let mut finalize_fee: Option<ResolvedMinerFee> = None;
+
+        if current_state == MarketState::Unresolved {
+            let prepared = self.prepare_expire_market(params, anchor, tx_options.clone())?;
+            finalize_fee = Some(prepared.fee.clone());
+            finalize_txid = Some(self.broadcast_and_sync(&prepared.tx)?);
+        }
+
+        let redemption = self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| {
+                sdk.build_redeem_expired_transaction(
+                    params,
+                    anchor,
+                    token_asset,
+                    tokens_to_burn,
+                    fee_amount,
+                )
+            },
+            |prepared_tx, meta| PreparedRedemption {
+                previous_state: meta.previous_state,
+                tokens_redeemed: meta.tokens_redeemed,
+                payout_sats: meta.payout_sats,
+                prepared_tx,
+            },
+        );
 
         match redemption {
-            Ok(result) => Ok(result),
+            Ok(prepared) => {
+                let mut result = self.broadcast_prepared_redemption(&prepared)?;
+                if let Some(expiry_fee) = finalize_fee {
+                    result.fee =
+                        self.combine_resolved_fees(fee_policy, &[expiry_fee, result.fee])?;
+                }
+                Ok(result)
+            }
             Err(e) => {
                 if let Some(finalized) = finalize_txid {
                     Err(Error::ExpiryFinalizeThenRedeemFailed {
@@ -2065,7 +2714,7 @@ impl DeadcatSdk {
 
     /// Create a limit order by locking the offered asset in a maker order covenant.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_limit_order(
+    fn build_create_limit_order_transaction_with_nonce(
         &mut self,
         base_asset_id: [u8; 32],
         quote_asset_id: [u8; 32],
@@ -2074,28 +2723,14 @@ impl DeadcatSdk {
         direction: OrderDirection,
         min_fill_lots: u64,
         min_remainder_lots: u64,
-        order_index: u32,
+        maker_base_pubkey: [u8; 32],
+        order_nonce: [u8; 32],
         fee_amount: u64,
-    ) -> Result<CreateOrderResult> {
+    ) -> Result<PreparedComputation<CreateOrderMeta>> {
         self.sync()?;
 
-        // 1. Derive maker keypair
-        let maker_keypair = self.derive_maker_keypair(order_index)?;
-        let (maker_xonly, _parity) = maker_keypair.x_only_public_key();
-        let maker_base_pubkey: [u8; 32] = maker_xonly.serialize();
-
-        // 2. Deterministically derive the order nonce from the maker index and order shape.
-        let nonce_identity = OrderNonceIdentity {
-            base_asset_id,
-            quote_asset_id,
-            price,
-            direction,
-            min_fill_lots,
-            min_remainder_lots,
-        };
-        let order_nonce = self.derive_order_nonce(order_index, &nonce_identity)?;
-
-        // 3. Build MakerOrderParams
+        // Build MakerOrderParams with a stable maker pubkey + nonce so
+        // fee-resolution rebuilds do not mutate the public order identity.
         let (params, _p_order) = MakerOrderParams::new(
             base_asset_id,
             quote_asset_id,
@@ -2114,9 +2749,10 @@ impl DeadcatSdk {
         };
 
         if self.wallet_contains_limit_order_identity(&maker_base_pubkey, &params, offered_asset)? {
-            return Err(Error::MakerOrder(format!(
-                "deterministic maker order identity for order_index {order_index} and order params already exists in wallet history"
-            )));
+            return Err(Error::MakerOrder(
+                "deterministic maker order identity for maker pubkey and order params already exists in wallet history"
+                    .to_string(),
+            ));
         }
 
         // 4. Compile the contract
@@ -2176,33 +2812,104 @@ impl DeadcatSdk {
 
         // 8. Sign and broadcast
         let tx = self.sign_pset(pset)?;
-        let txid = self.broadcast_and_sync(&tx)?;
-
         let covenant_address = contract
             .address(&maker_base_pubkey, self.network.address_params())
             .to_string();
 
-        Ok(CreateOrderResult {
-            txid,
-            order_params: params,
-            maker_base_pubkey,
-            order_nonce,
-            covenant_address,
-            order_amount,
+        Ok(PreparedComputation {
+            tx,
+            meta: CreateOrderMeta {
+                order_params: params,
+                maker_base_pubkey,
+                order_nonce,
+                covenant_address,
+                order_amount,
+            },
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_create_limit_order(
+        &mut self,
+        base_asset_id: [u8; 32],
+        quote_asset_id: [u8; 32],
+        price: u64,
+        order_amount: u64,
+        direction: OrderDirection,
+        min_fill_lots: u64,
+        min_remainder_lots: u64,
+        order_index: u32,
+        tx_options: TxOptions,
+    ) -> Result<PreparedCreateOrder> {
+        let maker_keypair = self.derive_maker_keypair(order_index)?;
+        let (maker_xonly, _parity) = maker_keypair.x_only_public_key();
+        let maker_base_pubkey: [u8; 32] = maker_xonly.serialize();
+        let nonce_identity = OrderNonceIdentity {
+            base_asset_id,
+            quote_asset_id,
+            price,
+            direction,
+            min_fill_lots,
+            min_remainder_lots,
+        };
+        let order_nonce = self.derive_order_nonce(order_index, &nonce_identity)?;
+
+        self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| {
+                sdk.build_create_limit_order_transaction_with_nonce(
+                    base_asset_id,
+                    quote_asset_id,
+                    price,
+                    order_amount,
+                    direction,
+                    min_fill_lots,
+                    min_remainder_lots,
+                    maker_base_pubkey,
+                    order_nonce,
+                    fee_amount,
+                )
+            },
+            |prepared_tx, meta| PreparedCreateOrder {
+                order_params: meta.order_params,
+                maker_base_pubkey: meta.maker_base_pubkey,
+                order_nonce: meta.order_nonce,
+                covenant_address: meta.covenant_address,
+                order_amount: meta.order_amount,
+                prepared_tx,
+            },
+        )
+    }
+
+    pub fn broadcast_prepared_create_order(
+        &mut self,
+        prepared: &PreparedCreateOrder,
+    ) -> Result<CreateOrderResult> {
+        let txid = self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
+        Ok(CreateOrderResult {
+            txid,
+            order_params: prepared.order_params,
+            maker_base_pubkey: prepared.maker_base_pubkey,
+            order_nonce: prepared.order_nonce,
+            covenant_address: prepared.covenant_address.clone(),
+            order_amount: prepared.order_amount,
+            fee: prepared.prepared_tx.fee.clone(),
+        })
+    }
+
+    /// Create a limit order by locking the offered asset in a maker order covenant.
+    #[allow(clippy::too_many_arguments)]
     /// Cancel a limit order by script-path spending the covenant UTXO.
     ///
     /// Uses the Simplicity cancel path (Right branch) with a BIP-340 signature
     /// over SHA256(prev_outpoint) to authorize reclaiming funds.
-    pub fn cancel_limit_order(
+    fn build_cancel_limit_order_transaction(
         &mut self,
         params: &MakerOrderParams,
         maker_base_pubkey: [u8; 32],
         order_index: u32,
         fee_amount: u64,
-    ) -> Result<CancelOrderResult> {
+    ) -> Result<PreparedComputation<CancelOrderMeta>> {
         self.sync()?;
 
         // 1. Derive maker keypair
@@ -2337,24 +3044,59 @@ impl DeadcatSdk {
             .wollet
             .finalize(&mut pset)
             .map_err(|e| Error::Finalize(e.to_string()))?;
+        Ok(PreparedComputation {
+            tx,
+            meta: CancelOrderMeta {
+                refunded_amount: order_value,
+            },
+        })
+    }
 
-        let txid = self.broadcast_and_sync(&tx)?;
+    pub fn prepare_cancel_limit_order(
+        &mut self,
+        params: &MakerOrderParams,
+        maker_base_pubkey: [u8; 32],
+        order_index: u32,
+        tx_options: TxOptions,
+    ) -> Result<PreparedCancelOrder> {
+        self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| {
+                sdk.build_cancel_limit_order_transaction(
+                    params,
+                    maker_base_pubkey,
+                    order_index,
+                    fee_amount,
+                )
+            },
+            |prepared_tx, meta| PreparedCancelOrder {
+                refunded_amount: meta.refunded_amount,
+                prepared_tx,
+            },
+        )
+    }
 
+    pub fn broadcast_prepared_cancel_order(
+        &mut self,
+        prepared: &PreparedCancelOrder,
+    ) -> Result<CancelOrderResult> {
+        let txid = self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
         Ok(CancelOrderResult {
             txid,
-            refunded_amount: order_value,
+            refunded_amount: prepared.refunded_amount,
+            fee: prepared.prepared_tx.fee.clone(),
         })
     }
 
     /// Fill a limit order by spending the covenant UTXO via Simplicity script-path.
-    pub fn fill_limit_order(
+    fn build_fill_limit_order_transaction(
         &mut self,
         params: &MakerOrderParams,
         maker_base_pubkey: [u8; 32],
         order_nonce: [u8; 32],
         lots_to_fill: u64,
         fee_amount: u64,
-    ) -> Result<FillOrderResult> {
+    ) -> Result<PreparedComputation<FillOrderMeta>> {
         self.sync()?;
 
         // 1. Compile the contract
@@ -2581,13 +3323,52 @@ impl DeadcatSdk {
             .wollet
             .finalize(&mut pset)
             .map_err(|e| Error::Finalize(e.to_string()))?;
+        Ok(PreparedComputation {
+            tx,
+            meta: FillOrderMeta {
+                lots_filled: lots_to_fill,
+                is_partial,
+            },
+        })
+    }
 
-        let txid = self.broadcast_and_sync(&tx)?;
+    pub fn prepare_fill_limit_order(
+        &mut self,
+        params: &MakerOrderParams,
+        maker_base_pubkey: [u8; 32],
+        order_nonce: [u8; 32],
+        lots_to_fill: u64,
+        tx_options: TxOptions,
+    ) -> Result<PreparedFillOrder> {
+        self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| {
+                sdk.build_fill_limit_order_transaction(
+                    params,
+                    maker_base_pubkey,
+                    order_nonce,
+                    lots_to_fill,
+                    fee_amount,
+                )
+            },
+            |prepared_tx, meta| PreparedFillOrder {
+                lots_filled: meta.lots_filled,
+                is_partial: meta.is_partial,
+                prepared_tx,
+            },
+        )
+    }
 
+    pub fn broadcast_prepared_fill_order(
+        &mut self,
+        prepared: &PreparedFillOrder,
+    ) -> Result<FillOrderResult> {
+        let txid = self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
         Ok(FillOrderResult {
             txid,
-            lots_filled: lots_to_fill,
-            is_partial,
+            lots_filled: prepared.lots_filled,
+            is_partial: prepared.is_partial,
+            fee: prepared.prepared_tx.fee.clone(),
         })
     }
 
@@ -2597,14 +3378,14 @@ impl DeadcatSdk {
     /// Simplicity witnesses, sign, and broadcast.
     ///
     /// The `plan` must have been produced by the trade router
-    /// ([`trade::router::build_execution_plan`]). The caller (typically
-    /// [`DeadcatNode::execute_trade`](crate::node::DeadcatNode)) is
-    /// responsible for obtaining a quote first.
-    pub(crate) fn execute_trade_plan(
+    /// ([`trade::router::build_execution_plan`]). The caller is responsible
+    /// for obtaining a quote first, then preparing and broadcasting the trade
+    /// with explicit [`TxOptions`].
+    fn build_execute_trade_transaction(
         &mut self,
         plan: &crate::trade::types::ExecutionPlan,
         fee_amount: u64,
-    ) -> Result<crate::trade::types::TradeResult> {
+    ) -> Result<PreparedComputation<TradeMeta>> {
         use crate::trade::pset::{TradePsetParams, build_trade_pset};
 
         self.sync()?;
@@ -2744,15 +3525,50 @@ impl DeadcatSdk {
 
         // 9. Sign wallet inputs and broadcast
         let tx = self.sign_pset(pset)?;
-        let txid = self.broadcast_and_sync(&tx)?;
+        Ok(PreparedComputation {
+            tx,
+            meta: TradeMeta {
+                total_input: plan.total_taker_input,
+                total_output: plan.total_taker_output,
+                num_orders_filled: plan.order_legs.len(),
+                pool_used: plan.lmsr_pool_leg.is_some(),
+                new_reserves: None,
+            },
+        })
+    }
 
+    pub(crate) fn prepare_trade_plan(
+        &mut self,
+        plan: &crate::trade::types::ExecutionPlan,
+        tx_options: TxOptions,
+    ) -> Result<PreparedTrade> {
+        self.prepare_custom_transaction(
+            tx_options,
+            |sdk, fee_amount| sdk.build_execute_trade_transaction(plan, fee_amount),
+            |prepared_tx, meta| PreparedTrade {
+                total_input: meta.total_input,
+                total_output: meta.total_output,
+                num_orders_filled: meta.num_orders_filled,
+                pool_used: meta.pool_used,
+                new_reserves: meta.new_reserves,
+                prepared_tx,
+            },
+        )
+    }
+
+    pub(crate) fn broadcast_prepared_trade(
+        &mut self,
+        prepared: &PreparedTrade,
+    ) -> Result<crate::trade::types::TradeResult> {
+        let txid = self.broadcast_and_sync(&prepared.prepared_tx.tx)?;
         Ok(crate::trade::types::TradeResult {
             txid,
-            total_input: plan.total_taker_input,
-            total_output: plan.total_taker_output,
-            num_orders_filled: plan.order_legs.len(),
-            pool_used: plan.lmsr_pool_leg.is_some(),
-            new_reserves: None,
+            total_input: prepared.total_input,
+            total_output: prepared.total_output,
+            num_orders_filled: prepared.num_orders_filled,
+            pool_used: prepared.pool_used,
+            new_reserves: prepared.new_reserves,
+            fee: prepared.prepared_tx.fee.clone(),
         })
     }
 
@@ -3827,6 +4643,72 @@ mod tests {
             .unwrap()
     }
 
+    fn exact_fee_tx_options(amount_sat: u64) -> TxOptions {
+        TxOptions {
+            fee_policy: MinerFeePolicy::ExactAmountSat { amount_sat },
+        }
+    }
+
+    impl DeadcatSdk {
+        fn create_contract_onchain(
+            &mut self,
+            oracle_public_key: [u8; 32],
+            collateral_per_token: u64,
+            expiry_time: u32,
+            min_utxo_value: u64,
+            fee_amount: u64,
+        ) -> Result<(PredictionMarketAnchor, PredictionMarketParams)> {
+            let prepared = self.prepare_contract_creation(
+                oracle_public_key,
+                collateral_per_token,
+                expiry_time,
+                min_utxo_value,
+                exact_fee_tx_options(fee_amount),
+            )?;
+            let result = self.broadcast_prepared_contract_creation(&prepared)?;
+            Ok((result.anchor, result.params))
+        }
+
+        fn issue_tokens(
+            &mut self,
+            params: &PredictionMarketParams,
+            anchor: &PredictionMarketAnchor,
+            pairs: u64,
+            fee_amount: u64,
+        ) -> Result<IssuanceResult> {
+            let prepared =
+                self.prepare_issue_tokens(params, anchor, pairs, exact_fee_tx_options(fee_amount))?;
+            self.broadcast_prepared_issuance(&prepared)
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn create_limit_order(
+            &mut self,
+            base_asset_id: [u8; 32],
+            quote_asset_id: [u8; 32],
+            price: u64,
+            order_amount: u64,
+            direction: OrderDirection,
+            min_fill_lots: u64,
+            min_remainder_lots: u64,
+            order_index: u32,
+            fee_amount: u64,
+        ) -> Result<CreateOrderResult> {
+            let prepared = self.prepare_create_limit_order(
+                base_asset_id,
+                quote_asset_id,
+                price,
+                order_amount,
+                direction,
+                min_fill_lots,
+                min_remainder_lots,
+                order_index,
+                exact_fee_tx_options(fee_amount),
+            )?;
+            self.broadcast_prepared_create_order(&prepared)
+        }
+    }
+
     fn sample_lmsr_create_request() -> CreateLmsrPoolRequest {
         let yes_asset = [0x11; 32];
         let no_asset = [0x22; 32];
@@ -3868,7 +4750,6 @@ mod tests {
                 r_lbtc: 800,
             },
             table_values,
-            fee_amount: 25,
         }
     }
 
@@ -4074,6 +4955,7 @@ mod tests {
     #[test]
     fn build_lmsr_bootstrap_pset_puts_reserves_first_and_tracks_change_blinding() {
         let request = sample_lmsr_create_request();
+        let fee_amount = 25;
         let contract = CompiledLmsrPool::new(request.pool_params).unwrap();
         let change_script = Script::new();
         let yes_input =
@@ -4100,7 +4982,7 @@ mod tests {
             &[no_input],
             &[collateral_input],
             &[fee_input],
-            request.fee_amount,
+            fee_amount,
             &change_script,
             &request.pool_params.collateral_asset_id,
         )
@@ -4132,6 +5014,7 @@ mod tests {
     #[test]
     fn build_lmsr_bootstrap_pset_allows_fee_from_collateral_inputs_when_assets_match() {
         let request = sample_lmsr_create_request();
+        let fee_amount = 25;
         let contract = CompiledLmsrPool::new(request.pool_params).unwrap();
         let change_script = Script::new();
         let yes_input =
@@ -4139,7 +5022,7 @@ mod tests {
         let no_input = test_explicit_utxo(&request.pool_params.no_asset_id, 600, &change_script, 2);
         let collateral_input = test_explicit_utxo(
             &request.pool_params.collateral_asset_id,
-            request.initial_reserves.r_lbtc + request.fee_amount + 200,
+            request.initial_reserves.r_lbtc + fee_amount + 200,
             &change_script,
             3,
         );
@@ -4152,14 +5035,14 @@ mod tests {
             &[no_input],
             &[collateral_input],
             &[],
-            request.fee_amount,
+            fee_amount,
             &change_script,
             &request.pool_params.collateral_asset_id,
         )
         .unwrap();
 
         let outputs = built.pset.outputs();
-        assert_eq!(outputs[3].amount, Some(request.fee_amount));
+        assert_eq!(outputs[3].amount, Some(fee_amount));
         assert_eq!(
             outputs[3].asset,
             Some(AssetId::from_slice(&request.pool_params.collateral_asset_id).unwrap())
