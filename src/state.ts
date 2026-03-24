@@ -228,6 +228,7 @@ export const state: {
   onboardingBackupScanning: boolean;
   marketCreating: boolean;
   marketsLoading: boolean;
+  attestationLoading: boolean;
   lastAttestationSig: string | null;
   lastAttestationOutcome: boolean | null;
   lastAttestationMarketId: string | null;
@@ -385,6 +386,7 @@ export const state: {
   onboardingBackupFound: false,
   onboardingBackupScanning: false,
   marketsLoading: true,
+  attestationLoading: false,
   lastAttestationSig: null,
   lastAttestationOutcome: null,
   lastAttestationMarketId: null,

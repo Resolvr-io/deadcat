@@ -958,6 +958,24 @@ export function renderDetail(): string {
             ${chartSkeleton(market, "detail")}
           </div>
 
+          ${
+            state.marketMakerMode &&
+            state.nostrPubkey &&
+            state.nostrPubkey === market.oraclePubkey &&
+            market.state === 1 &&
+            !market.resolveTx
+              ? `
+          <section class="rounded-[21px] border border-amber-700/60 bg-amber-950/20 p-[21px]">
+            <p class="mb-2 text-sm font-semibold text-amber-200">You are the oracle for this market</p>
+            <p class="mb-3 text-xs text-slate-400">Publish an attestation to Nostr, then execute on-chain to finalize the outcome.</p>
+            <div class="flex items-center gap-2">
+              <button data-action="oracle-attest-yes" ${state.attestationLoading ? "disabled" : ""} class="rounded-lg ${state.attestationLoading ? "bg-slate-600 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 text-sm font-semibold">${state.attestationLoading ? "Attesting..." : "Resolve YES"}</button>
+              <button data-action="oracle-attest-no" ${state.attestationLoading ? "disabled" : ""} class="rounded-lg ${state.attestationLoading ? "bg-slate-600 text-slate-400" : "bg-rose-400 text-slate-950"} px-4 py-2 text-sm font-semibold">${state.attestationLoading ? "Attesting..." : "Resolve NO"}</button>
+            </div>
+          </section>`
+              : ""
+          }
+
           <section class="rounded-[21px] border border-slate-800 bg-slate-950/55 px-[21px] py-3">
             <div class="flex items-center justify-between gap-4">
               <p class="text-sm text-slate-400"><span class="text-slate-200">Protocol Details</span> — oracle, covenant paths, and collateral mechanics</p>
@@ -985,22 +1003,6 @@ export function renderDetail(): string {
                 <div class="kv-row"><span class="shrink-0">Resolve status</span><span class="${market.resolveTx?.sigVerified ? "text-emerald-300" : "text-slate-400"}">${market.resolveTx ? `Attested ${market.resolveTx.outcome.toUpperCase()} @ ${market.resolveTx.height}` : "Unresolved"}</span></div>
                 ${market.resolveTx ? `<div class="kv-row"><span class="shrink-0">Sig hash</span><button data-action="copy-to-clipboard" data-copy-value="${market.resolveTx.signatureHash}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.resolveTx.signatureHash}">${market.resolveTx.signatureHash.slice(0, 8)}...${market.resolveTx.signatureHash.slice(-8)}</button></div><div class="kv-row"><span class="shrink-0">Resolve tx</span><button data-action="copy-to-clipboard" data-copy-value="${market.resolveTx.txid}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.resolveTx.txid}">${market.resolveTx.txid.slice(0, 8)}...${market.resolveTx.txid.slice(-8)}</button></div>` : ""}
               </div>
-              ${
-                state.marketMakerMode &&
-                state.nostrPubkey &&
-                state.nostrPubkey === market.oraclePubkey &&
-                market.state === 1 &&
-                !market.resolveTx
-                  ? `
-              <div class="mt-3 rounded-lg border border-amber-700/60 bg-amber-950/20 p-3">
-                <p class="mb-2 text-sm font-semibold text-amber-200">You are the oracle for this market</p>
-                <div class="flex items-center gap-2">
-                  <button data-action="oracle-attest-yes" class="rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950">Resolve YES</button>
-                  <button data-action="oracle-attest-no" class="rounded-lg bg-rose-400 px-4 py-2 text-sm font-semibold text-slate-950">Resolve NO</button>
-                </div>
-              </div>`
-                  : ""
-              }
               ${
                 state.marketMakerMode &&
                 state.lastAttestationSig &&

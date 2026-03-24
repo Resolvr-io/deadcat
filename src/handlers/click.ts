@@ -124,14 +124,6 @@ function enforceSizeModeForIntent(): void {
   state.sizeMode = state.tradeIntent === "open" ? "sats" : "contracts";
 }
 
-function formatTradeAmount(amount: number, unit: "sats" | "contracts"): string {
-  if (unit === "sats") {
-    return formatSats(Math.max(0, Math.floor(amount)));
-  }
-  const normalized = Math.max(0, amount);
-  return `${normalized.toLocaleString(undefined, { maximumFractionDigits: 2 })} contracts`;
-}
-
 function formatFeeToastSuffix(amountSat: number): string {
   return ` · fee: ${amountSat.toLocaleString()} sats`;
 }
@@ -1893,11 +1885,12 @@ export async function handleClick(
     const market = getSelectedMarket();
     const outcomeYes = action === "oracle-attest-yes";
     const outcomeLabel = outcomeYes ? "YES" : "NO";
-    const confirmed = window.confirm(
-      `Resolve "${market.question}" as ${outcomeLabel}?\n\nThis publishes a Schnorr signature to Nostr that permanently attests the outcome. This cannot be undone.`,
+    showToast(
+      `Attesting ${outcomeLabel} for "${market.question.slice(0, 40)}"...`,
+      "info",
     );
-    if (!confirmed) return;
-
+    state.attestationLoading = true;
+    render();
     (async () => {
       try {
         const result = await invoke<AttestationResult>("oracle_attest", {
@@ -1919,9 +1912,11 @@ export async function handleClick(
           `Attestation published to Nostr! Now execute on-chain to finalize.`,
           "success",
         );
-        render();
       } catch (error) {
-        window.alert(`Failed to attest: ${error}`);
+        showToast(`Failed to attest: ${error}`, "error");
+      } finally {
+        state.attestationLoading = false;
+        render();
       }
     })();
     return;
@@ -1937,11 +1932,10 @@ export async function handleClick(
     if (!anchor) return;
     const outcomeYes = state.lastAttestationOutcome;
     const oracleSignatureHex = state.lastAttestationSig;
-    const confirmed = window.confirm(
-      `Execute on-chain resolution for "${market.question}"?\n\nOutcome: ${outcomeYes ? "YES" : "NO"}\nThis submits a Liquid transaction that transitions the covenant state.`,
+    showToast(
+      `Executing on-chain resolution (${outcomeYes ? "YES" : "NO"})...`,
+      "info",
     );
-    if (!confirmed) return;
-
     state.resolutionExecuting = true;
     render();
     (async () => {
@@ -2135,10 +2129,6 @@ export async function handleClick(
   if (action === "close-pool") {
     const poolId = target?.dataset?.poolId;
     if (!poolId) return;
-    const confirmed = window.confirm(
-      "Close this pool? Reserves will be reduced to covenant minimums and reclaimed funds returned to your wallet.",
-    );
-    if (!confirmed) return;
     (async () => {
       try {
         showToast("Closing pool...", "info");
@@ -2562,23 +2552,7 @@ export async function handleClick(
           state.tradeQuoteLoading = false;
           render();
 
-          const inputUnit = direction === "buy" ? "sats" : "contracts";
-          const outputUnit = direction === "buy" ? "contracts" : "sats";
-          const legsSummary = quote.legs
-            .map((leg, idx) => {
-              if (leg.source.kind === "lmsr_pool") {
-                return `${idx + 1}. LMSR ${leg.source.pool_id.slice(0, 12)}... in ${formatTradeAmount(leg.input_amount, inputUnit)} out ${formatTradeAmount(leg.output_amount, outputUnit)}`;
-              }
-              return `${idx + 1}. Maker ${leg.source.order_id.slice(0, 12)}... in ${formatTradeAmount(leg.input_amount, inputUnit)} out ${formatTradeAmount(leg.output_amount, outputUnit)}`;
-            })
-            .join("\n");
-          const confirmed = window.confirm(
-            `${direction === "buy" ? "Execute buy" : "Execute sell"} ${side.toUpperCase()} on "${market.question.slice(0, 50)}"?\n\nInput: ${formatTradeAmount(quote.total_input, inputUnit)}\nOutput: ${formatTradeAmount(quote.total_output, outputUnit)}\nEffective price: ${quote.effective_price.toFixed(6)}\nRoute legs:\n${legsSummary || "No route legs"}\n\nProceed?`,
-          );
-          if (!confirmed) {
-            return;
-          }
-
+          showToast(`Executing ${direction} ${side.toUpperCase()}...`, "info");
           state.tradeExecuteLoading = true;
           render();
           const result = await executeTrade(
