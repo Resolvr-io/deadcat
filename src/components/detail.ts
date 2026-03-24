@@ -772,6 +772,7 @@ export function renderActionTicket(market: Market): string {
             <span class="mono text-slate-300">${p.pool_id.slice(0, 10)}...</span>
             <span class="text-slate-400">Y:${p.reserve_yes} N:${p.reserve_no} L:${p.reserve_collateral}</span>
             <span class="text-slate-500">s:${p.current_s_index}</span>
+            <button data-action="close-pool" data-pool-id="${p.pool_id}" class="rounded border border-rose-800 px-2 py-0.5 text-rose-400 transition hover:bg-rose-900/30">Close</button>
           </div>`,
             )
             .join("");

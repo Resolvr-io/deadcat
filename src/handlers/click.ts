@@ -20,6 +20,7 @@ import {
 } from "../services/markets.ts";
 import {
   buildPoolParamsJson,
+  closeLmsrPool,
   createLmsrPool,
   generateLmsrTable,
   listLmsrPools,
@@ -2108,6 +2109,30 @@ export async function handleClick(
         render();
       } catch (err) {
         showToast(`Pool creation failed: ${err}`, "error");
+      }
+    })();
+    return;
+  }
+
+  if (action === "close-pool") {
+    const poolId = target?.dataset?.poolId;
+    if (!poolId) return;
+    const confirmed = window.confirm(
+      "Close this pool? Reserves will be reduced to covenant minimums and reclaimed funds returned to your wallet.",
+    );
+    if (!confirmed) return;
+    (async () => {
+      try {
+        showToast("Closing pool...", "info");
+        const result = await closeLmsrPool(poolId);
+        showToast(
+          `Pool closed! txid: ${result.txid.slice(0, 16)}... Reclaimed: Y:${result.reclaimed_yes} N:${result.reclaimed_no} L:${result.reclaimed_collateral}`,
+          "success",
+        );
+        state.myPools = await listLmsrPools();
+        render();
+      } catch (err) {
+        showToast(`Close pool failed: ${err}`, "error");
       }
     })();
     return;

@@ -2485,13 +2485,31 @@ pub async fn scan_lmsr_pool(
     scan_lmsr_pool_inner(pool_id, app).await
 }
 
+/// Retrieve stored table values for a pool, or error if missing.
+fn get_pool_table_values(
+    store: &mut deadcat_store::DeadcatStore,
+    pool_id: &str,
+) -> Result<Vec<u64>, String> {
+    let pools = store
+        .list_lmsr_pools(&LmsrPoolFilter {
+            pool_id: Some(pool_id.to_string()),
+            ..Default::default()
+        })
+        .map_err(|e| format!("query pool: {e}"))?;
+    let pool = pools
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("unknown pool_id {pool_id}"))?;
+    pool.lmsr_table_values
+        .ok_or_else(|| format!("pool {pool_id}: missing stored table values"))
+}
+
 #[derive(Deserialize)]
 pub struct AdjustLmsrPoolTauriRequest {
     pub pool_id: String,
     pub new_reserves_yes: u64,
     pub new_reserves_no: u64,
     pub new_reserves_lbtc: u64,
-    pub table_values: Vec<u64>,
     pub tx_options: deadcat_sdk::TxOptions,
     pub pool_index: Option<u32>,
 }
@@ -2507,23 +2525,62 @@ pub struct AdjustLmsrPoolResponse {
 }
 
 /// Adjust an LMSR pool's reserves via AdminAdjust transition.
-///
-/// Requires the pool scan to return unblinded UTXOs — not yet wired.
-/// Returns an error until full pool-UTXO passthrough is implemented.
 #[tauri::command]
 pub async fn adjust_lmsr_pool(
-    _request: AdjustLmsrPoolTauriRequest,
-    _app: tauri::AppHandle,
+    request: AdjustLmsrPoolTauriRequest,
+    app: tauri::AppHandle,
 ) -> Result<AdjustLmsrPoolResponse, String> {
-    Err("adjust_lmsr_pool is not yet fully wired — pool UTXO passthrough required".to_string())
+    let table_values = {
+        let store_arc = get_store(&app)?;
+        let mut store = store_arc.lock().map_err(|_| "store lock failed")?;
+        get_pool_table_values(&mut store, &request.pool_id)?
+    };
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let locator = node
+        .resolve_lmsr_pool_locator(&request.pool_id)
+        .map_err(|e| format!("{e}"))?;
+    let (_snapshot, mut adjust_req) = node
+        .scan_for_adjust(locator)
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    adjust_req.new_reserves = deadcat_sdk::PoolReserves {
+        r_yes: request.new_reserves_yes,
+        r_no: request.new_reserves_no,
+        r_lbtc: request.new_reserves_lbtc,
+    };
+    adjust_req.table_values = table_values;
+    adjust_req.pool_index = request.pool_index.unwrap_or(0);
+
+    let prepared = node
+        .prepare_adjust_lmsr_pool(adjust_req, request.tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let result = node
+        .broadcast_prepared_adjust_lmsr_pool(prepared)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
+
+    bump_revision_and_emit(&app).await?;
+
+    Ok(AdjustLmsrPoolResponse {
+        txid: result.txid.to_string(),
+        pool_id: result.new_snapshot.locator.pool_id.to_hex(),
+        current_s_index: result.new_snapshot.current_s_index,
+        reserve_yes: result.new_snapshot.reserves.r_yes,
+        reserve_no: result.new_snapshot.reserves.r_no,
+        reserve_collateral: result.new_snapshot.reserves.r_lbtc,
+    })
 }
 
 #[derive(Deserialize)]
 pub struct CloseLmsrPoolTauriRequest {
     pub pool_id: String,
-    pub table_values: Vec<u64>,
     pub tx_options: deadcat_sdk::TxOptions,
-    pub pool_index: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -2535,15 +2592,74 @@ pub struct CloseLmsrPoolResponse {
 }
 
 /// Close an LMSR pool by adjusting reserves to covenant minimums.
-///
-/// Requires the pool scan to return unblinded UTXOs — not yet wired.
-/// Returns an error until full pool-UTXO passthrough is implemented.
 #[tauri::command]
 pub async fn close_lmsr_pool(
-    _request: CloseLmsrPoolTauriRequest,
-    _app: tauri::AppHandle,
+    request: CloseLmsrPoolTauriRequest,
+    app: tauri::AppHandle,
 ) -> Result<CloseLmsrPoolResponse, String> {
-    Err("close_lmsr_pool is not yet fully wired — pool UTXO passthrough required".to_string())
+    let table_values = {
+        let store_arc = get_store(&app)?;
+        let mut store = store_arc.lock().map_err(|_| "store lock failed")?;
+        get_pool_table_values(&mut store, &request.pool_id)?
+    };
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let locator = node
+        .resolve_lmsr_pool_locator(&request.pool_id)
+        .map_err(|e| format!("{e}"))?;
+    let (_snapshot, mut adjust_req) = node
+        .scan_for_adjust(locator.clone())
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    // Close = adjust reserves to covenant minimums.
+    let params: deadcat_sdk::LmsrPoolParams = serde_json::from_str(&{
+        let store_arc = get_store(&app)?;
+        let mut store = store_arc.lock().map_err(|_| "store lock failed")?;
+        let pools = store
+            .list_lmsr_pools(&LmsrPoolFilter {
+                pool_id: Some(request.pool_id.clone()),
+                ..Default::default()
+            })
+            .map_err(|e| format!("query pool: {e}"))?;
+        pools
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("unknown pool_id {}", request.pool_id))?
+            .params_json
+    })
+    .map_err(|e| format!("invalid pool params: {e}"))?;
+
+    let current_reserves = adjust_req.current_reserves;
+    adjust_req.new_reserves = deadcat_sdk::PoolReserves {
+        r_yes: params.min_r_yes,
+        r_no: params.min_r_no,
+        r_lbtc: params.min_r_collateral,
+    };
+    adjust_req.table_values = table_values;
+
+    let prepared = node
+        .prepare_adjust_lmsr_pool(adjust_req, request.tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let result = node
+        .broadcast_prepared_adjust_lmsr_pool(prepared)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
+
+    bump_revision_and_emit(&app).await?;
+
+    Ok(CloseLmsrPoolResponse {
+        txid: result.txid.to_string(),
+        reclaimed_yes: current_reserves.r_yes.saturating_sub(params.min_r_yes),
+        reclaimed_no: current_reserves.r_no.saturating_sub(params.min_r_no),
+        reclaimed_collateral: current_reserves
+            .r_lbtc
+            .saturating_sub(params.min_r_collateral),
+    })
 }
 
 #[derive(Serialize)]

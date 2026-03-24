@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CloseLmsrPoolResponse,
   CreateLmsrPoolResponse,
   LmsrPoolInfo,
   PriceHistoryEntry,
@@ -81,6 +82,15 @@ export async function createLmsrPool(
       table_values: tableValues,
       tx_options: txOptions,
     },
+  });
+}
+
+export async function closeLmsrPool(
+  poolId: string,
+  txOptions: TxOptions = DEFAULT_TX_OPTIONS,
+): Promise<CloseLmsrPoolResponse> {
+  return invoke<CloseLmsrPoolResponse>("close_lmsr_pool", {
+    request: { pool_id: poolId, tx_options: txOptions },
   });
 }
 
