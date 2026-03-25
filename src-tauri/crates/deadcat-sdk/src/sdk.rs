@@ -460,9 +460,13 @@ impl DeadcatSdk {
     // ── Wallet queries ───────────────────────────────────────────────────
 
     pub fn sync(&mut self) -> Result<()> {
+        let sync_start = std::time::Instant::now();
+        let reused = self.cached_electrum_client.is_some();
+
         // Reuse a cached Electrum client to avoid repeated TCP handshakes.
         // If the connection is stale, drop it and create a fresh one.
         if self.cached_electrum_client.is_none() {
+            let connect_start = std::time::Instant::now();
             let url: ElectrumUrl = self
                 .chain
                 .electrum_url()
@@ -470,13 +474,32 @@ impl DeadcatSdk {
                 .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
             self.cached_electrum_client =
                 Some(ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?);
+            log::info!(
+                "[sync] new ElectrumClient created in {:.1}ms",
+                connect_start.elapsed().as_secs_f64() * 1000.0
+            );
         }
         let client = self.cached_electrum_client.as_mut().unwrap();
+        let scan_start = std::time::Instant::now();
         match lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, client) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                log::info!(
+                    "[sync] full_scan OK in {:.1}ms (client {}), total {:.1}ms",
+                    scan_start.elapsed().as_secs_f64() * 1000.0,
+                    if reused { "reused" } else { "new" },
+                    sync_start.elapsed().as_secs_f64() * 1000.0,
+                );
+                Ok(())
+            }
             Err(_e) => {
+                log::warn!(
+                    "[sync] full_scan failed after {:.1}ms (client {}), reconnecting...",
+                    scan_start.elapsed().as_secs_f64() * 1000.0,
+                    if reused { "reused" } else { "new" },
+                );
                 // Connection may have gone stale — drop and retry once.
                 self.cached_electrum_client = None;
+                let connect_start = std::time::Instant::now();
                 let url: ElectrumUrl = self
                     .chain
                     .electrum_url()
@@ -484,8 +507,18 @@ impl DeadcatSdk {
                     .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
                 let mut fresh =
                     ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?;
+                log::info!(
+                    "[sync] retry: new ElectrumClient in {:.1}ms",
+                    connect_start.elapsed().as_secs_f64() * 1000.0
+                );
+                let retry_start = std::time::Instant::now();
                 lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, &mut fresh)
                     .map_err(|e| Error::Electrum(e.to_string()))?;
+                log::info!(
+                    "[sync] retry full_scan OK in {:.1}ms, total {:.1}ms",
+                    retry_start.elapsed().as_secs_f64() * 1000.0,
+                    sync_start.elapsed().as_secs_f64() * 1000.0,
+                );
                 self.cached_electrum_client = Some(fresh);
                 Ok(())
             }
