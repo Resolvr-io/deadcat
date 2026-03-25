@@ -46,6 +46,39 @@ export const app = document.querySelector<HTMLDivElement>(
 ) as HTMLDivElement;
 export const DEV_MODE = import.meta.env.DEV;
 
+const TX_LABELS_STORAGE_KEY = "deadcat_tx_labels";
+
+export function persistTxLabel(
+  txid: string,
+  label: string,
+  marketId: string,
+): void {
+  state.recentTxLabels.set(txid, { label, marketId });
+  try {
+    const stored = JSON.parse(
+      localStorage.getItem(TX_LABELS_STORAGE_KEY) ?? "{}",
+    );
+    stored[txid] = { label, marketId };
+    localStorage.setItem(TX_LABELS_STORAGE_KEY, JSON.stringify(stored));
+  } catch {
+    // localStorage unavailable — session-only labeling
+  }
+}
+
+export function loadPersistedTxLabels(): void {
+  try {
+    const stored = JSON.parse(
+      localStorage.getItem(TX_LABELS_STORAGE_KEY) ?? "{}",
+    );
+    for (const [txid, entry] of Object.entries(stored)) {
+      const { label, marketId } = entry as { label: string; marketId: string };
+      state.recentTxLabels.set(txid, { label, marketId });
+    }
+  } catch {
+    // localStorage unavailable
+  }
+}
+
 export const categories: NavCategory[] = [
   "Trending",
   "Politics",

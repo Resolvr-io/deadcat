@@ -38,6 +38,7 @@ import {
   createWalletData,
   defaultSettlementInput,
   markets,
+  persistTxLabel,
   setMarkets,
   state,
 } from "../state.ts";
@@ -1912,10 +1913,7 @@ export async function handleClick(
               yesTokens,
               DEFAULT_TX_OPTIONS,
             );
-            state.recentTxLabels.set(result.txid, {
-              label: "Expiry Redemption",
-              marketId: market.id,
-            });
+            persistTxLabel(result.txid, "Expiry Redemption", market.id);
             showToast(
               `Redeemed ${yesTokens} YES! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}${formatFeeToastSuffix(result.fee.amountSat)}`,
               "success",
@@ -1929,10 +1927,7 @@ export async function handleClick(
               noTokens,
               DEFAULT_TX_OPTIONS,
             );
-            state.recentTxLabels.set(result.txid, {
-              label: "Expiry Redemption",
-              marketId: market.id,
-            });
+            persistTxLabel(result.txid, "Expiry Redemption", market.id);
             showToast(
               `Redeemed ${noTokens} NO! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}${formatFeeToastSuffix(result.fee.amountSat)}`,
               "success",
@@ -1945,10 +1940,7 @@ export async function handleClick(
             tokens,
             DEFAULT_TX_OPTIONS,
           );
-          state.recentTxLabels.set(result.txid, {
-            label: "Redemption",
-            marketId: market.id,
-          });
+          persistTxLabel(result.txid, "Redemption", market.id);
           showToast(
             `Redeemed! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}${formatFeeToastSuffix(result.fee.amountSat)}`,
             "success",
@@ -2526,8 +2518,9 @@ export async function handleClick(
         !source ||
         !state.createSettlementInput
       ) {
-        window.alert(
+        showToast(
           "Complete question, settlement rule, source, and settlement deadline before creating.",
+          "error",
         );
         return;
       }
@@ -2536,6 +2529,7 @@ export async function handleClick(
       );
 
       state.marketCreating = true;
+      showOverlayLoader("Creating market on-chain...");
       render();
       (async () => {
         try {
@@ -2563,6 +2557,7 @@ export async function handleClick(
           showToast(`Failed to create market: ${error}`, "error");
         } finally {
           state.marketCreating = false;
+          hideOverlayLoader();
           render();
         }
       })();

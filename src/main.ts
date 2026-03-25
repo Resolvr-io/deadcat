@@ -27,7 +27,7 @@ import {
   refreshWallet,
   syncCurrentHeightFromLwk,
 } from "./services/wallet.ts";
-import { app, markets, state } from "./state.ts";
+import { app, loadPersistedTxLabels, markets, state } from "./state.ts";
 import type {
   IdentityResponse,
   NostrBackupStatus,
@@ -370,6 +370,7 @@ async function initApp(): Promise<void> {
   }
 
   await Promise.all([loadMarkets(), splashReady]);
+  loadPersistedTxLabels();
   state.marketsLoading = false;
   render();
   dismissSplash();

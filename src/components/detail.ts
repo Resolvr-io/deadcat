@@ -1089,7 +1089,15 @@ export function renderDetail(): string {
           }
         </section>
 
-        ${renderActionTicket(market)}
+        ${
+          market.state === 1 || market.state === 0
+            ? renderActionTicket(market)
+            : `
+        <aside class="rounded-[21px] border border-slate-800 bg-slate-900/80 p-[21px]">
+          <p class="panel-subtitle">Market ${market.state === 2 ? "Resolved YES" : market.state === 3 ? "Resolved NO" : "Expired"}</p>
+          <p class="mt-2 text-sm text-slate-400">Trading is closed. ${market.state === 2 || market.state === 3 ? "Holders of winning tokens can redeem above." : "Token holders can redeem via expiry above."}</p>
+        </aside>`
+        }
       </div>
     </div>
   `;
