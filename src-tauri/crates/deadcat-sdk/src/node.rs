@@ -1524,17 +1524,28 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             let electrum_url_for_store = electrum_url.clone();
             match self
                 .with_store_blocking(move |store| {
-                    let t = std::time::Instant::now();
-                    if let Err(e) = store.sync_own_order_state(&electrum_url_for_store) {
-                        log::warn!(
-                            "failed to sync own maker order state from {}: {e}",
-                            electrum_url_for_store
+                    // Only run the expensive chain sync if there are own orders.
+                    let has_own_orders = store
+                        .list_own_maker_pubkeys()
+                        .map(|pks| !pks.is_empty())
+                        .unwrap_or(false);
+                    if has_own_orders {
+                        let t = std::time::Instant::now();
+                        if let Err(e) = store.sync_own_order_state(&electrum_url_for_store) {
+                            log::warn!(
+                                "failed to sync own maker order state from {}: {e}",
+                                electrum_url_for_store
+                            );
+                        }
+                        log::info!(
+                            "[node.sync_wallet] sync_own_order_state: {:.0}ms",
+                            t.elapsed().as_millis()
+                        );
+                    } else {
+                        log::info!(
+                            "[node.sync_wallet] sync_own_order_state: skipped (no own orders)"
                         );
                     }
-                    log::info!(
-                        "[node.sync_wallet] sync_own_order_state: {:.0}ms",
-                        t.elapsed().as_millis()
-                    );
                     match store.list_pending_order_deletions() {
                         Ok(pending) => Ok(pending),
                         Err(e) => {
