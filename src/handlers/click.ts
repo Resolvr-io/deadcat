@@ -1886,6 +1886,71 @@ export async function handleClick(
     return;
   }
 
+  if (action === "redeem-winnings" || action === "redeem-expired") {
+    const market = getSelectedMarket();
+    const tokens = Number(actionEl?.dataset?.tokens ?? "0");
+    if (tokens <= 0) return;
+    const anchor = requireMarketAnchor(market, "redeem tokens");
+    if (!anchor) return;
+    const isExpiry = action === "redeem-expired";
+    showToast(
+      `Redeeming ${tokens} ${isExpiry ? "expired" : "winning"} token(s)...`,
+      "info",
+    );
+    (async () => {
+      try {
+        if (isExpiry) {
+          // Redeem YES tokens first, then NO if any remain.
+          const pos = getPositionContracts(market);
+          const yesTokens = Math.min(tokens, pos.yes);
+          const noTokens = tokens - yesTokens;
+          if (yesTokens > 0) {
+            const result = await redeemExpiredTokens(
+              market,
+              anchor,
+              market.yesAssetId,
+              yesTokens,
+              DEFAULT_TX_OPTIONS,
+            );
+            showToast(
+              `Redeemed ${yesTokens} YES! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}${formatFeeToastSuffix(result.fee.amountSat)}`,
+              "success",
+            );
+          }
+          if (noTokens > 0) {
+            const result = await redeemExpiredTokens(
+              market,
+              anchor,
+              market.noAssetId,
+              noTokens,
+              DEFAULT_TX_OPTIONS,
+            );
+            showToast(
+              `Redeemed ${noTokens} NO! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}${formatFeeToastSuffix(result.fee.amountSat)}`,
+              "success",
+            );
+          }
+        } else {
+          const result = await redeemTokens(
+            market,
+            anchor,
+            tokens,
+            DEFAULT_TX_OPTIONS,
+          );
+          showToast(
+            `Redeemed! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}${formatFeeToastSuffix(result.fee.amountSat)}`,
+            "success",
+          );
+        }
+        await refreshWallet(render);
+        render();
+      } catch (error) {
+        showToast(`Redemption failed: ${error}`, "error");
+      }
+    })();
+    return;
+  }
+
   if (action === "oracle-attest-yes" || action === "oracle-attest-no") {
     const market = getSelectedMarket();
     const outcomeYes = action === "oracle-attest-yes";

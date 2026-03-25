@@ -963,6 +963,40 @@ export function renderDetail(): string {
             ${chartSkeleton(market, "detail")}
           </div>
 
+          ${(() => {
+            const pos = getPositionContracts(market);
+            const isResolved = market.state === 2 || market.state === 3;
+            const canExpRedeem = paths.expiryRedeem;
+            if (!isResolved && !canExpRedeem) return "";
+            const winningSide =
+              market.state === 2 ? "yes" : market.state === 3 ? "no" : null;
+            const winningTokens =
+              winningSide === "yes"
+                ? pos.yes
+                : winningSide === "no"
+                  ? pos.no
+                  : 0;
+            const expiryTokens = canExpRedeem ? pos.yes + pos.no : 0;
+            const redeemableTokens = isResolved ? winningTokens : expiryTokens;
+            if (redeemableTokens <= 0) return "";
+            const payoutPerToken = isResolved
+              ? 2 * market.cptSats
+              : market.cptSats;
+            const estimatedPayout = redeemableTokens * payoutPerToken;
+            const redeemAction = isResolved
+              ? "redeem-winnings"
+              : "redeem-expired";
+            const label = isResolved
+              ? `Redeem ${redeemableTokens} winning ${winningSide?.toUpperCase()} token${redeemableTokens !== 1 ? "s" : ""}`
+              : `Redeem ${redeemableTokens} expired token${redeemableTokens !== 1 ? "s" : ""}`;
+            return `
+          <section class="rounded-[21px] border border-emerald-700/60 bg-emerald-950/20 p-[21px]">
+            <p class="mb-2 text-sm font-semibold text-emerald-200">${isResolved ? `Market resolved ${winningSide?.toUpperCase()}` : "Market expired"} — you have redeemable tokens</p>
+            <p class="mb-3 text-xs text-slate-400">Estimated payout: ${formatSats(estimatedPayout)}</p>
+            <button data-action="${redeemAction}" data-tokens="${redeemableTokens}" class="w-full rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950">${label}</button>
+          </section>`;
+          })()}
+
           ${
             state.marketMakerMode &&
             state.nostrPubkey &&
