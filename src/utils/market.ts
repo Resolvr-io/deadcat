@@ -97,19 +97,6 @@ export function getMarketSeed(market: Market): number {
   return [...market.id].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
 }
 
-/** Aggregate pool reserves per asset ID (display-order hex) for the given market. */
-function poolReservesForMarket(market: Market): { yes: number; no: number } {
-  let yes = 0;
-  let no = 0;
-  for (const pool of state.myPools) {
-    if (pool.market_id === market.marketId) {
-      yes += pool.reserve_yes;
-      no += pool.reserve_no;
-    }
-  }
-  return { yes, no };
-}
-
 export function getPositionContracts(market: Market): {
   yes: number;
   no: number;
@@ -118,10 +105,9 @@ export function getPositionContracts(market: Market): {
   if (!balance) return { yes: 0, no: 0 };
   const yesKey = reverseHex(market.yesAssetId);
   const noKey = reverseHex(market.noAssetId);
-  const poolReserves = poolReservesForMarket(market);
   return {
-    yes: Math.max(0, (balance[yesKey] ?? 0) - poolReserves.yes),
-    no: Math.max(0, (balance[noKey] ?? 0) - poolReserves.no),
+    yes: balance[yesKey] ?? 0,
+    no: balance[noKey] ?? 0,
   };
 }
 
