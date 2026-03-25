@@ -362,11 +362,20 @@ async fn delete_wallet(app: AppHandle) -> Result<AppState, String> {
 
 #[tauri::command]
 async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
+    let cmd_start = std::time::Instant::now();
     // Sync via the node (async — wallet/store sync use spawn_blocking internally)
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
+    log::info!(
+        "[sync_wallet cmd] node lock acquired at {:.0}ms",
+        cmd_start.elapsed().as_millis()
+    );
     let node = guard.as_ref().ok_or("Node not initialized")?;
     node.sync().await.map_err(|e| format!("{e}"))?;
+    log::info!(
+        "[sync_wallet cmd] node.sync done at {:.0}ms",
+        cmd_start.elapsed().as_millis()
+    );
     let electrum_url = node
         .electrum_url()
         .unwrap_or_else(|| node.default_electrum_url().to_string());
@@ -381,8 +390,10 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
     drop(guard);
 
     // Also sync the store against the chain
+    let _promo_start = cmd_start.elapsed().as_millis();
     let app_handle = app.clone();
     tokio::task::spawn_blocking(move || {
+        let t = std::time::Instant::now();
         let manager = app_handle.state::<Mutex<AppStateManager>>();
         let store_arc = {
             let mgr = manager
@@ -480,6 +491,7 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
             }
         }
 
+        log::info!("[sync_wallet cmd] candidate promotion: {:.0}ms", t.elapsed().as_millis());
         let mut mgr = manager
             .lock()
             .map_err(|_| "state lock failed".to_string())?;

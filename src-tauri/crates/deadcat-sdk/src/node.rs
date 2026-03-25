@@ -1507,23 +1507,34 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     /// Sync the wallet with the Electrum backend.
     pub async fn sync_wallet(&self) -> Result<(), NodeError> {
+        let t0 = std::time::Instant::now();
         let electrum_url = self
             .with_sdk(|sdk| {
                 sdk.sync()?;
                 Ok(sdk.electrum_url().to_string())
             })
             .await?;
+        log::info!(
+            "[node.sync_wallet] sdk.sync: {:.0}ms",
+            t0.elapsed().as_millis()
+        );
 
+        let t1 = std::time::Instant::now();
         let pending = if self.store.is_some() {
             let electrum_url_for_store = electrum_url.clone();
             match self
                 .with_store_blocking(move |store| {
+                    let t = std::time::Instant::now();
                     if let Err(e) = store.sync_own_order_state(&electrum_url_for_store) {
                         log::warn!(
                             "failed to sync own maker order state from {}: {e}",
                             electrum_url_for_store
                         );
                     }
+                    log::info!(
+                        "[node.sync_wallet] sync_own_order_state: {:.0}ms",
+                        t.elapsed().as_millis()
+                    );
                     match store.list_pending_order_deletions() {
                         Ok(pending) => Ok(pending),
                         Err(e) => {
@@ -1543,8 +1554,21 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         } else {
             Vec::new()
         };
+        log::info!(
+            "[node.sync_wallet] store sync phase: {:.0}ms",
+            t1.elapsed().as_millis()
+        );
 
+        let t2 = std::time::Instant::now();
         self.publish_pending_order_deletions(pending).await;
+        log::info!(
+            "[node.sync_wallet] pending deletions: {:.0}ms",
+            t2.elapsed().as_millis()
+        );
+        log::info!(
+            "[node.sync_wallet] total: {:.0}ms",
+            t0.elapsed().as_millis()
+        );
         Ok(())
     }
 
@@ -2015,7 +2039,12 @@ impl<S: NodeStore> DeadcatNode<S> {
 
     /// Sync wallet state and backfill irreversible LMSR transition history.
     pub async fn sync(&self) -> Result<(), NodeError> {
+        let sync_all_start = std::time::Instant::now();
         self.sync_wallet().await?;
+        log::info!(
+            "[node.sync] sync_wallet done at {:.0}ms",
+            sync_all_start.elapsed().as_millis()
+        );
 
         let store = self
             .store
@@ -2027,7 +2056,9 @@ impl<S: NodeStore> DeadcatNode<S> {
             guard.list_lmsr_pool_sync_info().map_err(NodeError::Store)?
         };
 
+        log::info!("[node.sync] {} pools to scan", pools.len());
         for pool in pools {
+            let pool_start = std::time::Instant::now();
             let resolved = match self.resolve_and_repair_pool_sync_metadata(pool.clone()) {
                 Ok(resolved) => resolved,
                 Err(err) => {
@@ -2106,8 +2137,17 @@ impl<S: NodeStore> DeadcatNode<S> {
                     .record_lmsr_price_transition(&transition)
                     .map_err(NodeError::Store)?;
             }
+            log::info!(
+                "[node.sync] pool {} scanned in {:.0}ms",
+                pool.pool_id.get(..10).unwrap_or(&pool.pool_id),
+                pool_start.elapsed().as_millis()
+            );
         }
 
+        log::info!(
+            "[node.sync] total: {:.0}ms",
+            sync_all_start.elapsed().as_millis()
+        );
         Ok(())
     }
 
