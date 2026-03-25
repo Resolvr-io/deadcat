@@ -88,7 +88,8 @@ export function renderWalletUnlocked(params: {
     .map(([id, amt]) => {
       const info = assetLabel.get(id);
       return { assetId: id, amount: amt, info };
-    });
+    })
+    .sort((a, b) => a.assetId.localeCompare(b.assetId));
 
   // Collect the user's limit orders across all markets
   const myLimitOrders: Array<{ order: DiscoveredOrder; market: Market }> = [];
