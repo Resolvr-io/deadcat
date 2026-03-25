@@ -368,6 +368,10 @@ pub struct DeadcatSdk {
     wollet: Wollet,
     network: Network,
     chain: ElectrumBackend,
+    /// Cached Electrum client for wallet syncs. Reusing avoids repeated TCP
+    /// handshakes and lets LWK leverage `script_status` caching for faster
+    /// incremental syncs.
+    cached_electrum_client: Option<ElectrumClient>,
     /// Genesis hash for the Simplicity C runtime.
     ///
     /// For Liquid/Testnet, this is the hardcoded constant.
@@ -442,6 +446,7 @@ impl DeadcatSdk {
             wollet,
             network,
             chain: ElectrumBackend::new(electrum_url),
+            cached_electrum_client: None,
             chain_genesis_override: None,
         })
     }
@@ -455,15 +460,36 @@ impl DeadcatSdk {
     // ── Wallet queries ───────────────────────────────────────────────────
 
     pub fn sync(&mut self) -> Result<()> {
-        let url: ElectrumUrl = self
-            .chain
-            .electrum_url()
-            .parse()
-            .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
-        let mut client = ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?;
-        lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, &mut client)
-            .map_err(|e| Error::Electrum(e.to_string()))?;
-        Ok(())
+        // Reuse a cached Electrum client to avoid repeated TCP handshakes.
+        // If the connection is stale, drop it and create a fresh one.
+        if self.cached_electrum_client.is_none() {
+            let url: ElectrumUrl = self
+                .chain
+                .electrum_url()
+                .parse()
+                .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
+            self.cached_electrum_client =
+                Some(ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?);
+        }
+        let client = self.cached_electrum_client.as_mut().unwrap();
+        match lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, client) {
+            Ok(()) => Ok(()),
+            Err(_e) => {
+                // Connection may have gone stale — drop and retry once.
+                self.cached_electrum_client = None;
+                let url: ElectrumUrl = self
+                    .chain
+                    .electrum_url()
+                    .parse()
+                    .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
+                let mut fresh =
+                    ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?;
+                lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, &mut fresh)
+                    .map_err(|e| Error::Electrum(e.to_string()))?;
+                self.cached_electrum_client = Some(fresh);
+                Ok(())
+            }
+        }
     }
 
     /// Get the genesis block hash for Simplicity operations.
