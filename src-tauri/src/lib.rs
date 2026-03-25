@@ -491,7 +491,7 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
             }
         }
 
-        log::info!("[sync_wallet cmd] candidate promotion: {:.0}ms", t.elapsed().as_millis());
+        log::debug!("[sync_wallet cmd] candidate promotion: {:.0}ms", t.elapsed().as_millis());
         let mut mgr = manager
             .lock()
             .map_err(|_| "state lock failed".to_string())?;

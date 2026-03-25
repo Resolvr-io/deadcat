@@ -2067,7 +2067,7 @@ impl<S: NodeStore> DeadcatNode<S> {
             guard.list_lmsr_pool_sync_info().map_err(NodeError::Store)?
         };
 
-        log::info!("[node.sync] {} pools to scan", pools.len());
+        log::debug!("[node.sync] {} pools to scan", pools.len());
         for pool in pools {
             let pool_start = std::time::Instant::now();
 
@@ -2110,7 +2110,7 @@ impl<S: NodeStore> DeadcatNode<S> {
                     .await
                 {
                     Ok(unspent) => {
-                        log::info!("[node.sync] fast-check result: unspent={unspent}");
+                        log::debug!("[node.sync] fast-check result: unspent={unspent}");
                         unspent
                     }
                     Err(e) => {
@@ -2119,7 +2119,7 @@ impl<S: NodeStore> DeadcatNode<S> {
                     }
                 }
             } else {
-                log::info!("[node.sync] no cached outpoint, doing full scan");
+                log::debug!("[node.sync] no cached outpoint, doing full scan");
                 false
             };
 
@@ -2210,17 +2210,21 @@ impl<S: NodeStore> DeadcatNode<S> {
                     .record_lmsr_price_transition(&transition)
                     .map_err(NodeError::Store)?;
             }
-            log::info!(
+            log::debug!(
                 "[node.sync] pool {} scanned in {:.0}ms",
                 pool.pool_id.get(..10).unwrap_or(&pool.pool_id),
                 pool_start.elapsed().as_millis()
             );
         }
 
-        log::info!(
-            "[node.sync] total: {:.0}ms",
-            sync_all_start.elapsed().as_millis()
-        );
+        let total = sync_all_start.elapsed();
+        log::debug!("[node.sync] total: {:.0}ms", total.as_millis());
+        if total.as_secs() > 10 {
+            log::warn!(
+                "[node.sync] slow sync: {:.1}s (consider reducing pool/order count)",
+                total.as_secs_f64()
+            );
+        }
         Ok(())
     }
 
