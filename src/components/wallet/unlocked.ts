@@ -94,13 +94,33 @@ export function renderWalletUnlocked(params: {
       });
   }
 
-  // Token positions: non-policy assets with positive balance
+  // Aggregate pool reserves per asset ID to exclude from user positions.
+  const poolReserveByAsset = new Map<string, number>();
+  for (const pool of state.myPools) {
+    const m = markets.find((mk) => mk.marketId === pool.market_id);
+    if (m) {
+      const yesKey = reverseHex(m.yesAssetId);
+      const noKey = reverseHex(m.noAssetId);
+      poolReserveByAsset.set(
+        yesKey,
+        (poolReserveByAsset.get(yesKey) ?? 0) + pool.reserve_yes,
+      );
+      poolReserveByAsset.set(
+        noKey,
+        (poolReserveByAsset.get(noKey) ?? 0) + pool.reserve_no,
+      );
+    }
+  }
+
+  // Token positions: non-policy assets with positive balance after pool deduction.
   const tokenPositions = Object.entries(wd?.balance ?? {})
-    .filter(([id, amt]) => id !== state.walletPolicyAssetId && amt > 0)
+    .filter(([id]) => id !== state.walletPolicyAssetId)
     .map(([id, amt]) => {
       const info = assetLabel.get(id);
-      return { assetId: id, amount: amt, info };
+      const adjusted = amt - (poolReserveByAsset.get(id) ?? 0);
+      return { assetId: id, amount: adjusted, info };
     })
+    .filter((tp) => tp.amount > 0)
     .sort((a, b) => a.assetId.localeCompare(b.assetId));
 
   // Collect the user's limit orders across all markets
