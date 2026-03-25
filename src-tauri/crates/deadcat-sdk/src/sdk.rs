@@ -525,6 +525,18 @@ impl DeadcatSdk {
         }
     }
 
+    /// Check whether a specific outpoint is still in the UTXO set (unspent).
+    pub fn is_outpoint_unspent(&self, txid: &Txid, vout: u32) -> Result<bool> {
+        let tx = self.fetch_transaction(txid)?;
+        let txout = tx
+            .output
+            .get(vout as usize)
+            .ok_or_else(|| Error::Query("outpoint vout out of range".into()))?;
+        let utxos = self.chain.scan_script_utxos(&txout.script_pubkey)?;
+        let target = OutPoint::new(*txid, vout);
+        Ok(utxos.iter().any(|(op, _)| *op == target))
+    }
+
     /// Get the genesis block hash for Simplicity operations.
     ///
     /// Returns the override if set (required for regtest), otherwise

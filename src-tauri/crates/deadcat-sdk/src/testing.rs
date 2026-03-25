@@ -949,6 +949,7 @@ impl NodeStore for TestStore {
                         .map_err(|e| format!("serialize test lmsr params: {e}"))?,
                     lmsr_table_values: pool.lmsr_table_values.clone(),
                     nostr_event_json: pool.nostr_event_json.clone(),
+                    reserve_yes_outpoint: pool.reserve_outpoints[0].clone(),
                 })
             })
             .collect()

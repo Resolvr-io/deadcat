@@ -917,6 +917,7 @@ impl DeadcatStore {
         Ok(pools
             .into_iter()
             .map(|pool| LmsrPoolSyncInfo {
+                reserve_yes_outpoint: pool.reserve_yes_outpoint.clone(),
                 pool_id: pool.pool_id,
                 market_id: pool.market_id,
                 creation_txid: pool.creation_txid,

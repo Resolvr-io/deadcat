@@ -2070,6 +2070,68 @@ impl<S: NodeStore> DeadcatNode<S> {
         log::info!("[node.sync] {} pools to scan", pools.len());
         for pool in pools {
             let pool_start = std::time::Instant::now();
+
+            // Quick check: if the last known YES reserve outpoint is still
+            // unspent, the pool state hasn't changed — skip the expensive
+            // full chain walk.
+            let last_yes_outpoint = pool.reserve_yes_outpoint.clone();
+            log::info!(
+                "[node.sync] pool {} fast-check outpoint: '{}'",
+                pool.pool_id.get(..10).unwrap_or(&pool.pool_id),
+                last_yes_outpoint
+            );
+            let skip = if !last_yes_outpoint.is_empty() {
+                match self
+                    .with_sdk(move |sdk| {
+                        // Outpoint format is "[elements]txid:vout" — strip the prefix.
+                        let cleaned = last_yes_outpoint
+                            .strip_prefix("[elements]")
+                            .unwrap_or(&last_yes_outpoint);
+                        let parts: Vec<&str> = cleaned.split(':').collect();
+                        if parts.len() != 2 {
+                            log::warn!("[node.sync] bad outpoint format: {}", last_yes_outpoint);
+                            return Ok(false);
+                        }
+                        let txid_hex = parts[0];
+                        let vout: u32 = parts[1].parse().unwrap_or(u32::MAX);
+                        if vout == u32::MAX {
+                            log::warn!("[node.sync] bad vout in outpoint");
+                            return Ok(false);
+                        }
+                        let txid: Txid = match txid_hex.parse() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                log::warn!("[node.sync] bad txid parse: {e}");
+                                return Ok(false);
+                            }
+                        };
+                        sdk.is_outpoint_unspent(&txid, vout)
+                    })
+                    .await
+                {
+                    Ok(unspent) => {
+                        log::info!("[node.sync] fast-check result: unspent={unspent}");
+                        unspent
+                    }
+                    Err(e) => {
+                        log::warn!("[node.sync] fast-check failed: {e}");
+                        false
+                    }
+                }
+            } else {
+                log::info!("[node.sync] no cached outpoint, doing full scan");
+                false
+            };
+
+            if skip {
+                log::info!(
+                    "[node.sync] pool {} unchanged, skipped in {:.0}ms",
+                    pool.pool_id.get(..10).unwrap_or(&pool.pool_id),
+                    pool_start.elapsed().as_millis()
+                );
+                continue;
+            }
+
             let resolved = match self.resolve_and_repair_pool_sync_metadata(pool.clone()) {
                 Ok(resolved) => resolved,
                 Err(err) => {

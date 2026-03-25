@@ -13,6 +13,8 @@ pub struct LmsrPoolSyncInfo {
     pub params_json: String,
     pub lmsr_table_values: Option<Vec<u64>>,
     pub nostr_event_json: Option<String>,
+    /// Last known YES reserve outpoint ("txid:vout") for fast unchanged checks.
+    pub reserve_yes_outpoint: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
