@@ -1912,6 +1912,10 @@ export async function handleClick(
               yesTokens,
               DEFAULT_TX_OPTIONS,
             );
+            state.recentTxLabels.set(result.txid, {
+              label: "Expiry Redemption",
+              marketId: market.id,
+            });
             showToast(
               `Redeemed ${yesTokens} YES! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}${formatFeeToastSuffix(result.fee.amountSat)}`,
               "success",
@@ -1925,6 +1929,10 @@ export async function handleClick(
               noTokens,
               DEFAULT_TX_OPTIONS,
             );
+            state.recentTxLabels.set(result.txid, {
+              label: "Expiry Redemption",
+              marketId: market.id,
+            });
             showToast(
               `Redeemed ${noTokens} NO! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}${formatFeeToastSuffix(result.fee.amountSat)}`,
               "success",
@@ -1937,6 +1945,10 @@ export async function handleClick(
             tokens,
             DEFAULT_TX_OPTIONS,
           );
+          state.recentTxLabels.set(result.txid, {
+            label: "Redemption",
+            marketId: market.id,
+          });
           showToast(
             `Redeemed! txid: ${result.txid.slice(0, 16)}... payout: ${formatSats(result.payout_sats)}${formatFeeToastSuffix(result.fee.amountSat)}`,
             "success",

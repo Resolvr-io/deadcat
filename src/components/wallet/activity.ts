@@ -14,6 +14,7 @@ export function renderWalletTransactionRows(params: {
   poolCreationTx: Map<string, string>;
   poolTradeTx: Map<string, string>;
   covenantTxLabel: Map<string, { label: string; marketId: string }>;
+  recentTxLabels: Map<string, { label: string; marketId: string }>;
   pawIcon: string;
   walletData: WalletData | null;
 }): string {
@@ -23,6 +24,7 @@ export function renderWalletTransactionRows(params: {
     poolCreationTx,
     poolTradeTx,
     covenantTxLabel,
+    recentTxLabels,
     pawIcon,
     walletData,
   } = params;
@@ -31,6 +33,8 @@ export function renderWalletTransactionRows(params: {
     .map((tx) => {
       const marketId = creationTxToMarket.get(tx.txid);
       const isCreation = !!marketId;
+      const recentInfo = recentTxLabels.get(tx.txid);
+      const isRecent = !!recentInfo;
       const poolMarketId = poolCreationTx.get(tx.txid);
       const isPoolCreation = !!poolMarketId;
       const poolTradeMarketId = poolTradeTx.get(tx.txid);
@@ -41,7 +45,7 @@ export function renderWalletTransactionRows(params: {
       const isLimitOrder = !!orderInfo;
       const sign = tx.balanceChange >= 0 ? "+" : "";
       const isLabeled =
-        isCovenant || isPoolCreation || isPoolTrade || isCreation;
+        isRecent || isCovenant || isPoolCreation || isPoolTrade || isCreation;
       const color = isLimitOrder
         ? "text-amber-300"
         : isLabeled
@@ -57,7 +61,14 @@ export function renderWalletTransactionRows(params: {
             ? "&#8595;"
             : "&#8593;";
       let label = "";
-      if (isLimitOrder) {
+      if (isRecent) {
+        label =
+          '<button data-open-market="' +
+          escapeAttr(recentInfo.marketId) +
+          '" class="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 hover:bg-violet-500/30 transition cursor-pointer">' +
+          escapeHtml(recentInfo.label) +
+          "</button>";
+      } else if (isLimitOrder) {
         const badgeContent = escapeHtml(orderInfo.label);
         if (orderInfo.marketId) {
           label =

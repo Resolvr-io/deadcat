@@ -228,6 +228,7 @@ export const state: {
   onboardingBackupScanning: boolean;
   marketCreating: boolean;
   marketsLoading: boolean;
+  recentTxLabels: Map<string, { label: string; marketId: string }>;
   attestationLoading: boolean;
   lastAttestationSig: string | null;
   lastAttestationOutcome: boolean | null;
@@ -386,6 +387,7 @@ export const state: {
   onboardingBackupFound: false,
   onboardingBackupScanning: false,
   marketsLoading: true,
+  recentTxLabels: new Map(),
   attestationLoading: false,
   lastAttestationSig: null,
   lastAttestationOutcome: null,

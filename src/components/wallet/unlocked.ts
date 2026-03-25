@@ -122,6 +122,7 @@ export function renderWalletUnlocked(params: {
     poolCreationTx,
     poolTradeTx,
     covenantTxLabel,
+    recentTxLabels: state.recentTxLabels,
     pawIcon: PAW_ICON,
     walletData: wd ?? null,
   });
