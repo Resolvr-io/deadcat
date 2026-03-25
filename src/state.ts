@@ -87,6 +87,7 @@ export const categories: NavCategory[] = [
   "Bitcoin",
   "Weather",
   "Macro",
+  "Resolved",
   "My Markets",
 ];
 

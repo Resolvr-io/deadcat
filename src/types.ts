@@ -1,13 +1,17 @@
 export type NavCategory =
   | "Trending"
   | "My Markets"
+  | "Resolved"
   | "Politics"
   | "Sports"
   | "Culture"
   | "Bitcoin"
   | "Weather"
   | "Macro";
-export type MarketCategory = Exclude<NavCategory, "Trending" | "My Markets">;
+export type MarketCategory = Exclude<
+  NavCategory,
+  "Trending" | "My Markets" | "Resolved"
+>;
 export type ViewMode = "home" | "detail" | "create" | "wallet";
 export type Side = "yes" | "no";
 export type OrderType = "market" | "limit";

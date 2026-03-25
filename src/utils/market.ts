@@ -70,8 +70,12 @@ export function getSelectedMarket(): Market {
   return getMarketById(state.selectedMarketId);
 }
 
+function isSettled(market: Market): boolean {
+  return market.state === 2 || market.state === 3 || market.state === 4;
+}
+
 export function getTrendingMarkets(): Market[] {
-  return markets.slice(0, 7);
+  return markets.filter((m) => !isSettled(m)).slice(0, 7);
 }
 
 /** Full payout for a winning token: 2 × collateral_per_token. */
@@ -440,12 +444,20 @@ export function getFilteredMarkets(): Market[] {
   const lowered = state.search.trim().toLowerCase();
   return markets
     .filter((market) => {
+      const settled = isSettled(market);
+      // "Resolved" tab: only settled markets.
+      if (state.activeCategory === "Resolved") return settled;
+      // "My Markets": show all regardless of state.
+      if (state.activeCategory === "My Markets") {
+        return (
+          state.nostrPubkey != null && market.oraclePubkey === state.nostrPubkey
+        );
+      }
+      // All other tabs: exclude settled markets.
+      if (settled) return false;
       const categoryMatch =
         state.activeCategory === "Trending" ||
-        (state.activeCategory === "My Markets"
-          ? state.nostrPubkey != null &&
-            market.oraclePubkey === state.nostrPubkey
-          : market.category === state.activeCategory);
+        market.category === state.activeCategory;
       const searchMatch =
         lowered.length === 0 ||
         market.question.toLowerCase().includes(lowered) ||
