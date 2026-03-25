@@ -80,6 +80,18 @@ export function renderWalletUnlocked(params: {
         question: m.question,
         marketId: m.id,
       });
+    if (m.yesReissuanceToken)
+      assetLabel.set(reverseHex(m.yesReissuanceToken), {
+        side: "YES RT",
+        question: m.question,
+        marketId: m.id,
+      });
+    if (m.noReissuanceToken)
+      assetLabel.set(reverseHex(m.noReissuanceToken), {
+        side: "NO RT",
+        question: m.question,
+        marketId: m.id,
+      });
   }
 
   // Token positions: non-policy assets with positive balance
