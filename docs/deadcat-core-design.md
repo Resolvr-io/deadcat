@@ -4,14 +4,14 @@
 
 `deadcat-core` is a pure computation library for interacting with Deadcat prediction market covenants on Liquid/Elements. It enables any wallet or application to create, track, interpret, and transact with prediction markets, LMSR pools, and limit orders — without prescribing how chain data is fetched, how state is persisted, or how keys are managed.
 
-The primary motivating use case: integrating Deadcat functionality into existing wallets like Aqua, which already have their own wallet backend, chain connection, signer, and state management. These wallets need the covenant logic without the opinionated runtime that Deadcat Live uses.
+The primary motivating use case: integrating Deadcat functionality into existing wallets like Aqua, which already have their own wallet backend, chain connection, signer, and state management. These wallets need the covenant logic without an opinionated runtime.
 
 ## Architecture Overview
 
 ### Layer Separation
 
 ```
-deadcat-core     Pure computation. No IO, no wallet, no chain, no Nostr.
+deadcat-core     Pure computation. No IO, no wallet, no chain, no contract discovery.
                  Contains: contract compilation, PSET builders, state machine,
                  LMSR math, transaction interpretation, asset identification.
 
@@ -28,24 +28,25 @@ deadcat-node     Full batteries-included runtime. Wraps SDK with Nostr discovery
 
 ### What Each Layer Owns
 
-| Capability | deadcat-core | deadcat-sdk | deadcat-node |
-|---|---|---|---|
-| Simplicity contract compilation | Yes | | |
-| PSET construction | Yes | | |
-| LMSR math (quotes, spot price, tables) | Yes | | |
-| Contract state machine | Yes | | |
-| Transaction interpretation | Yes | | |
-| Asset identification | Yes | | |
-| Coin selection algorithm | Yes | | |
-| Wallet (UTXO source, signer) | | Yes (LWK) | |
-| Chain backend (scan, broadcast) | | Yes (Electrum) | |
-| Fee estimation | | Yes | |
-| UTXO selection + preparation | | Yes | |
-| Nostr discovery | | | Yes |
-| State persistence (SQLite) | | | Yes |
-| Background sync | | | Yes |
-| Boltz swap integration | | | Yes |
-| Price history tracking | | | Yes |
+| Capability                             | deadcat-core | deadcat-sdk    | deadcat-node |
+| -------------------------------------- | ------------ | -------------- | ------------ |
+| Simplicity contract compilation        | Yes          |                |              |
+| PSET construction                      | Yes          |                |              |
+| LMSR math (quotes, spot price, tables) | Yes          |                |              |
+| Contract state machine                 | Yes          |                |              |
+| Transaction interpretation             | Yes          |                |              |
+| Asset identification                   | Yes          |                |              |
+| Coin selection utility (pure function) | Yes          |                |              |
+| Wallet (UTXO source, signer)           |              | Yes (LWK)      |              |
+| Chain backend (scan, broadcast)        |              | Yes (Electrum) |              |
+| Fee estimation                         |              | Yes            |              |
+| UTXO selection + preparation           |              | Yes            |              |
+| Nostr discovery                        |              |                | Yes          |
+| State persistence (SQLite)             |              |                | Yes          |
+| Contract history (optional trait)       | Yes          |                |              |
+| Background sync                        |              |                | Yes          |
+| Boltz swap integration                 |              |                | Yes          |
+| SQLite history impl                    |              |                | Yes          |
 
 ## Core Design: UTXO-Following State Machine
 
@@ -170,6 +171,7 @@ pub trait ContractStore {
     fn all_watched_outpoints(&self) -> Result<Vec<OutPoint>>;
     fn track_contract(&mut self, contract: Contract) -> Result<String>;
     fn rollback_to_height(&mut self, height: u32) -> Result<()>;
+    fn prune_finalized(&mut self, current_height: u32, finality_depth: u32) -> Result<()>;
 }
 ```
 
@@ -266,11 +268,11 @@ This enables precise wallet transaction labeling. Instead of tracking txids in f
 
 A key design principle: the contract layer and wallet layer have complementary, non-overlapping views of the same transaction.
 
-| Output type | Tracked by | Example |
-|---|---|---|
-| Covenant state | Contract engine | Market collateral, pool reserves |
-| Wallet balance | Wallet (LWK/GDK) | L-BTC change, received tokens |
-| Fee | Neither explicitly | Implicit from tx structure |
+| Output type    | Tracked by         | Example                          |
+| -------------- | ------------------ | -------------------------------- |
+| Covenant state | Contract engine    | Market collateral, pool reserves |
+| Wallet balance | Wallet (LWK/GDK)   | L-BTC change, received tokens    |
+| Fee            | Neither explicitly | Implicit from tx structure       |
 
 The contract engine doesn't track wallet outputs. The wallet doesn't track covenant outputs. They correlate on txid when labeling is needed.
 
@@ -289,7 +291,7 @@ pub fn build_initial_issuance_pset(
 ) -> Result<PartiallySignedTransaction>;
 ```
 
-The caller (SDK or wallet) is responsible for selecting UTXOs, constructing the params, and signing the resulting PSET. Core provides a standalone coin selection algorithm to help:
+The caller (SDK or wallet) is responsible for selecting UTXOs, constructing the params, and signing the resulting PSET. Core provides a standalone coin selection utility function to help — it takes a UTXO list from the caller's wallet and returns a selected subset, but does not own or access any wallet state:
 
 ```rust
 pub fn select_utxos(
@@ -326,6 +328,20 @@ fn rollback_to_height(&mut self, height: u32) -> Result<()>;
 ```
 
 The caller detects the reorg (their chain backend tells them), calls rollback, then feeds the new chain data.
+
+### Finality-Based Pruning
+
+On Liquid, transactions are considered absolutely irreversible after 2 confirmations. Processing log entries for finalized transactions can never be needed for reorg recovery and can be safely pruned:
+
+```rust
+/// Prune processing log entries for transactions deeper than
+/// `finality_depth` confirmations. These can never be reorged.
+fn prune_finalized(&mut self, current_height: u32, finality_depth: u32) -> Result<()>;
+```
+
+The caller periodically calls `prune_finalized` with the current chain tip and the network's finality depth (2 for Liquid). This keeps the processing log bounded without sacrificing correctness.
+
+**Important**: Pruning the processing log (for reorg rollback) is independent from retaining transition history (for price charts, audit trails). The `ContractHistory` trait stores historical transitions permanently — `prune_finalized` only removes the rollback metadata that's no longer needed.
 
 ## LMSR Math
 
@@ -396,36 +412,43 @@ aqua_chain.broadcast(signed)?;
 ## Design Decisions Log
 
 ### UTXO-following vs Transaction Classification
+
 **Chosen**: UTXO-following state machine.
 **Rejected**: Transaction classifier (enum of known tx types).
 **Why**: A single transaction can affect multiple contracts (e.g., a trade that routes through a pool AND fills limit orders). A flat classification enum can't represent this. More importantly, the UTXO model handles unknown transaction shapes — if a future version combines operations in ways current PSET builders don't produce, the state machine still works because each contract independently follows its own outpoints.
 
 ### Core Owns No IO
+
 **Chosen**: Core is pure computation; caller provides chain data.
 **Rejected**: Core takes a chain backend trait and fetches data internally.
 **Why**: Different consumers have fundamentally different IO capabilities. LWK uses Electrum. GDK uses its own backend. Esplora-based wallets use HTTP. Core shouldn't prescribe the IO layer. The caller converts their chain data into core's input format (`ChainTransaction`, `ObservedSpend`) and feeds it.
 
 ### No Global Sync Tip
+
 **Chosen**: Each contract tracks independently; caller determines sync status.
 **Rejected**: Core maintains a global sync tip that gates processing.
 **Why**: A global tip creates unnecessary coordination. When a new contract is ingested, existing synced contracts would be blocked until the new one catches up. Without a global tip, synced contracts continue processing tip transactions while new contracts catch up independently.
 
 ### Store Trait with Optional History
+
 **Chosen**: Required `ContractStore` trait + optional `ContractHistory` trait.
 **Rejected**: Single trait with history methods that return empty vecs.
 **Why**: Separating the traits makes the contract clearer. A minimal consumer (Aqua) only implements `ContractStore`. A full consumer (Deadcat Live) implements both. Core's processing pipeline never calls history methods — they're purely for consumer-facing features like price charts.
 
 ### Persistence Owned by Caller, Not Core
+
 **Chosen**: Core defines traits; caller implements persistence.
 **Rejected**: Core owns a database or storage engine.
 **Why**: Aqua already has its own database. Deadcat Live uses SQLite. A CLI tool might use flat files. Core shouldn't prescribe storage. The trait approach lets each consumer integrate deadcat state into their existing persistence layer.
 
 ### Interpretation as Read-Only Replay
+
 **Chosen**: `interpret_transaction` uses same logic as `process_transaction` but read-only.
 **Rejected**: Separate classification system for interpretation.
 **Why**: The same witness decoding and output matching logic serves both purposes. Having two systems would mean two places to update when covenant logic changes. The only difference is mutability — processing writes new state, interpretation just reads.
 
 ### Advance Logic Uses Witness Decoding
+
 **Chosen**: Decode Simplicity witness data to determine transition type.
 **Rejected**: Pattern-match transaction structure (input/output counts, script matching).
 **Why**: Witness decoding is deterministic and precise. The Simplicity witness encodes exactly what happened (old state, new state, trade parameters). Pattern matching is fragile — it requires recognizing every valid transaction layout and breaks on novel combinations. Witness decoding works for any valid covenant spend regardless of the surrounding transaction structure.
