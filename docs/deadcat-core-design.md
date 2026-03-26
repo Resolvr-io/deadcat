@@ -636,6 +636,18 @@ aqua_chain.broadcast(signed)?;
 **Rejected**: Assume fixed output indices based on known PSET layouts.
 **Why**: Multi-contract transactions (routed trades, combined operations) have variable output indices. LMSR pool reserve inputs can be interleaved with order inputs at arbitrary positions. Script pubkey matching works regardless of output ordering and handles reissuance token outputs (which have `Asset::Null, Value::Null` but valid script pubkeys) correctly.
 
+### Interpretation Reflects Current Knowledge
+
+**Chosen**: `interpret_transaction` returns results based on currently-ingested contracts. Unknown contracts are silently absent from results. Results grow as more contracts are ingested.
+**Rejected**: Returning "unknown contract detected" markers or requiring all contracts to be ingested before interpretation works.
+**Why**: Core can't know what it doesn't know. A transaction might touch contracts from markets the caller hasn't discovered yet. Returning empty for unknown contracts is honest and composable — the caller re-interprets after ingesting new contracts. Markers would require heuristic detection of "looks like a covenant" which is fragile. The caller's mental model is simple: "interpretation results may improve over time as I discover more contracts."
+
+### Consensus-Validity Assumption
+
+**Chosen**: Core assumes all transactions passed to `process_transaction` and `interpret_transaction` are consensus-valid (confirmed on-chain or mempool-accepted). Core does not re-verify transactions.
+**Rejected**: Core validates Simplicity witnesses, confidential proofs, and reissuance token derivation internally.
+**Why**: The caller's chain backend only provides consensus-valid data. Liquid consensus has already verified everything — Simplicity covenant witnesses satisfy the script, confidential range proofs are valid, reissuance tokens match their issuance entropy. Re-verifying would duplicate work the network already did. This assumption is what allows core to identify reissuance token outputs (which have `Asset::Null, Value::Null` on-chain) purely by script pubkey matching, and to classify blinded outputs as "not covenant" without needing to unblind them.
+
 ### No Thread Safety Constraints on Store Trait
 
 **Chosen**: `ContractStore` has no `Send`/`Sync` bounds. Thread safety is determined by the implementor's choice.
