@@ -464,9 +464,8 @@ impl DeadcatSdk {
                 .electrum_url()
                 .parse()
                 .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
-            self.electrum_client = Some(
-                ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?,
-            );
+            self.electrum_client =
+                Some(ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?);
         }
         let client = self.electrum_client.as_mut().unwrap();
         lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, client)

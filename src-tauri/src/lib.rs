@@ -27,8 +27,9 @@ const APP_STATE_UPDATED_EVENT: &str = "app_state_updated";
 /// async node methods, especially before acquiring `AppStateManager`'s
 /// std Mutex, to avoid holding both locks simultaneously.
 pub struct NodeState {
-    pub node:
-        tokio::sync::Mutex<Option<std::sync::Arc<deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>>>>,
+    pub node: tokio::sync::Mutex<
+        Option<std::sync::Arc<deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>>>,
+    >,
 }
 
 impl Default for NodeState {
@@ -425,7 +426,8 @@ fn sync_store_candidates(
 
     if let Ok(mut store) = store_arc.lock() {
         for (id, height, block_hash) in confirmed {
-            if let Err(e) = store.promote_prediction_market_candidate(id, now_unix, height, block_hash)
+            if let Err(e) =
+                store.promote_prediction_market_candidate(id, now_unix, height, block_hash)
             {
                 log::warn!("failed to promote prediction market candidate {id}: {e}");
             }
