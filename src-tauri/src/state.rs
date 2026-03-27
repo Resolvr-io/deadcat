@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use crate::payments::boltz::BoltzService;
 use crate::wallet::persister::MnemonicPersister;
 use crate::wallet::types::WalletStatus;
 use crate::Network;
@@ -107,6 +108,8 @@ pub struct AppStateManager {
     revision: u64,
     /// Timestamp of last user activity (for auto-lock).
     last_activity: Instant,
+    /// Cached Boltz API client, created once per network selection.
+    boltz_service: Option<Arc<BoltzService>>,
 }
 
 impl AppStateManager {
@@ -121,6 +124,7 @@ impl AppStateManager {
             local_state,
             revision: 0,
             last_activity: Instant::now(),
+            boltz_service: None,
         }
     }
 
@@ -153,6 +157,7 @@ impl AppStateManager {
     fn init_with_network(&mut self, network: Network) {
         self.network = Some(network);
         self.persister = Some(MnemonicPersister::new(&self.app_data_dir, network.as_str()));
+        self.boltz_service = Some(Arc::new(BoltzService::new(network, None)));
 
         // Open the store at <app_data_dir>/<network>/deadcat.db
         let store_dir = self.app_data_dir.join(network.as_str());
@@ -216,6 +221,10 @@ impl AppStateManager {
 
     pub fn store(&self) -> Option<&Arc<std::sync::Mutex<deadcat_store::DeadcatStore>>> {
         self.store.as_ref()
+    }
+
+    pub fn boltz_service(&self) -> Option<Arc<BoltzService>> {
+        self.boltz_service.clone()
     }
 
     /// Mark the wallet as unlocked/locked (synced from the NodeState).
@@ -300,6 +309,32 @@ impl AppStateManager {
 
     pub fn payment_swaps(&self) -> &[PaymentSwap] {
         &self.local_state.payment_swaps
+    }
+
+    /// Remove swaps still in "swap.created" status that were created more than
+    /// 24 hours ago — these were never completed and just clutter the UI.
+    pub fn purge_stale_swaps(&mut self) {
+        let cutoff = chrono::Utc::now() - chrono::Duration::hours(24);
+        let before = self.local_state.payment_swaps.len();
+        self.local_state.payment_swaps.retain(|s| {
+            if s.status != "swap.created" {
+                return true;
+            }
+            match chrono::DateTime::parse_from_rfc3339(&s.created_at) {
+                Ok(created) => created > cutoff,
+                Err(_) => true, // keep if unparseable
+            }
+        });
+        if self.local_state.payment_swaps.len() < before {
+            self.save_local_state();
+            self.bump_revision();
+        }
+    }
+
+    pub fn clear_payment_swaps(&mut self) {
+        self.local_state.payment_swaps.clear();
+        self.save_local_state();
+        self.bump_revision();
     }
 
     pub fn upsert_payment_swap(&mut self, swap: PaymentSwap) {
