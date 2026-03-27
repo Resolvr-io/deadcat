@@ -216,7 +216,7 @@ export function renderTopShell(): string {
               ${
                 state.nostrNpub
                   ? `<div class="rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2">
-                <p class="text-[11px] text-amber-300/90">Back up your nsec in a safe place — if lost, you cannot resolve markets you created.</p>
+                <p class="text-[11px] text-amber-300/90">Back up your nsec. You need it to resolve markets you create.</p>
               </div>`
                   : ""
               }

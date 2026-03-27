@@ -38,6 +38,7 @@ export function createWalletData(): WalletData {
     backedUp: false,
     showBackup: false,
     backupPassword: "",
+    backupCopied: false,
   };
 }
 
@@ -169,7 +170,7 @@ export const state: {
   receiveError: string;
   receiveLightningSwap: BoltzLightningReceiveCreated | null;
   receiveLiquidAddress: string;
-  receiveLiquidAddressIndex: number;
+  receiveLiquidLoading: boolean;
   receiveBitcoinSwap: BoltzChainSwapCreated | null;
   receiveBtcPairInfo: BoltzChainSwapPairInfo | null;
   sendInvoice: string;
@@ -321,7 +322,7 @@ export const state: {
   receiveError: "",
   receiveLightningSwap: null,
   receiveLiquidAddress: "",
-  receiveLiquidAddressIndex: 0,
+  receiveLiquidLoading: false,
   receiveBitcoinSwap: null,
   receiveBtcPairInfo: null,
   sendInvoice: "",
