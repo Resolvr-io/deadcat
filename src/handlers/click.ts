@@ -68,6 +68,7 @@ import {
 import { showToast } from "../ui/toast.ts";
 import { reverseHex } from "../utils/crypto.ts";
 import { formatSats, formatSatsInput } from "../utils/format.ts";
+import { verifyAddress } from "../services/branta.ts";
 import {
   clampContractPriceSats,
   commitTradeContractsDraft,
@@ -1675,6 +1676,14 @@ export async function handleClick(
           { invoice },
         );
         state.sentLightningSwap = swap;
+        // Verify Boltz lockup address with Branta in the background
+        state.brantaBoltzStatus = "checking";
+        state.brantaBoltzPlatform = "";
+        render();
+        const isMainnet = state.walletNetwork === "mainnet";
+        const result = await verifyAddress(swap.lockupAddress, isMainnet);
+        state.brantaBoltzStatus = result.found ? "verified" : "not_found";
+        state.brantaBoltzPlatform = result.platform ?? "";
       } catch (e) {
         state.sendError = String(e);
       }
@@ -1743,6 +1752,14 @@ export async function handleClick(
         state.sentBitcoinSwap = swap;
         const addr = swap.claimLockupAddress;
         await generateQr(swap.bip21 || addr);
+        // Verify the Liquid lockup address with Branta in the background
+        state.brantaBoltzStatus = "checking";
+        state.brantaBoltzPlatform = "";
+        render();
+        const isMainnet = state.walletNetwork === "mainnet";
+        const result = await verifyAddress(swap.lockupAddress, isMainnet);
+        state.brantaBoltzStatus = result.found ? "verified" : "not_found";
+        state.brantaBoltzPlatform = result.platform ?? "";
       } catch (e) {
         state.sendError = String(e);
       }

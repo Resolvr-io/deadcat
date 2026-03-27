@@ -27,6 +27,7 @@ import type {
   ViewMode,
   WalletData,
 } from "./types.ts";
+import type { BrantaVerifyStatus } from "./services/branta.ts";
 
 export function createWalletData(): WalletData {
   return {
@@ -183,6 +184,11 @@ export const state: {
   sentLiquidResult: LiquidSendResult | null;
   sentBitcoinSwap: BoltzChainSwapCreated | null;
   sendBtcPairInfo: BoltzChainSwapPairInfo | null;
+  // Branta address verification
+  brantaLiquidStatus: BrantaVerifyStatus;
+  brantaLiquidPlatform: string;
+  brantaBoltzStatus: BrantaVerifyStatus;
+  brantaBoltzPlatform: string;
   userMenuOpen: boolean;
   searchOpen: boolean;
   walletUnit: "sats" | "btc";
@@ -335,6 +341,10 @@ export const state: {
   sentLiquidResult: null,
   sentBitcoinSwap: null,
   sendBtcPairInfo: null,
+  brantaLiquidStatus: "idle",
+  brantaLiquidPlatform: "",
+  brantaBoltzStatus: "idle",
+  brantaBoltzPlatform: "",
   userMenuOpen: false,
   searchOpen: false,
   walletUnit: "sats",

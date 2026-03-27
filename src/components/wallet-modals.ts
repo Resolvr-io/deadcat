@@ -3,6 +3,25 @@ import { state } from "../state.ts";
 import type { RelayBackupResult } from "../types.ts";
 import { hexToNpub } from "../utils/crypto.ts";
 import { escapeAttr, escapeHtml } from "../utils/html.ts";
+import type { BrantaVerifyStatus } from "../services/branta.ts";
+
+function renderBrantaBadge(status: BrantaVerifyStatus, platform: string): string {
+  if (status === "idle") return "";
+  if (status === "checking") {
+    return '<span class="inline-flex items-center gap-1 rounded-full border border-slate-600 bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">Checking Branta\u2026</span>';
+  }
+  if (status === "verified") {
+    const label = platform ? escapeHtml(platform) : "Branta";
+    return (
+      '<span class="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-900/30 px-2 py-0.5 text-[10px] font-medium text-emerald-400">' +
+      '<svg class="h-3 w-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>' +
+      "Verified\u00a0\u00b7\u00a0" + label +
+      "</span>"
+    );
+  }
+  // not_found — neutral, informational only
+  return '<span class="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[10px] text-slate-500">Not in Branta registry</span>';
+}
 
 export function renderMnemonicGrid(mnemonic: string): string {
   const words = mnemonic.split(" ");
@@ -351,6 +370,7 @@ export function renderSendModal(): string {
         new Date(s.invoiceExpiresAt).toLocaleString() +
         "</p>" +
         renderCopyable(s.lockupAddress, "Lockup Address", "copy-modal-value") +
+        renderBrantaBadge(state.brantaBoltzStatus, state.brantaBoltzPlatform) +
         renderCopyable(s.bip21, "BIP21 URI", "copy-modal-value") +
         "</div>";
     } else {
@@ -387,6 +407,7 @@ export function renderSendModal(): string {
         '<input id="send-liquid-address" value="' +
         escapeAttr(state.sendLiquidAddress) +
         '" placeholder="Liquid address" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
+        renderBrantaBadge(state.brantaLiquidStatus, state.brantaLiquidPlatform) +
         '<input id="send-liquid-amount" type="number" min="1" value="' +
         escapeAttr(state.sendLiquidAmount) +
         '" placeholder="Amount (sats)" class="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2" />' +
@@ -422,6 +443,7 @@ export function renderSendModal(): string {
           "Liquid Lockup Address",
           "copy-modal-value",
         ) +
+        renderBrantaBadge(state.brantaBoltzStatus, state.brantaBoltzPlatform) +
         (s.bip21
           ? renderCopyable(s.bip21, "BIP21 URI", "copy-modal-value")
           : "") +

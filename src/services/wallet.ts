@@ -187,6 +187,10 @@ export function resetSendState(): void {
   state.sentLiquidResult = null;
   state.sentBitcoinSwap = null;
   state.modalQr = "";
+  state.brantaLiquidStatus = "idle";
+  state.brantaLiquidPlatform = "";
+  state.brantaBoltzStatus = "idle";
+  state.brantaBoltzPlatform = "";
 }
 
 export function resetWalletSessionState(): void {
