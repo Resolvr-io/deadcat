@@ -1568,10 +1568,8 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Get a wallet address. For `index: None`, prefers the lock-free cached
     /// snapshot so it never blocks on an in-progress Electrum sync.
     pub async fn address(&self, index: Option<u32>) -> Result<AddressResult, NodeError> {
-        if index.is_none() {
-            if let Ok(addr) = self.cached_address() {
-                return Ok(addr);
-            }
+        if index.is_none() && let Ok(addr) = self.cached_address() {
+            return Ok(addr);
         }
         let sdk = self.sdk.clone();
         tokio::task::spawn_blocking(move || {
