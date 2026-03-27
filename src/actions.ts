@@ -8,6 +8,7 @@ export const ONBOARDING_ACTION_LIST = [
   "onboarding-reveal-nsec",
   "onboarding-copy-nsec",
   "onboarding-nostr-continue",
+  "onboarding-back-to-nostr",
   "onboarding-set-wallet-mode",
   "onboarding-create-wallet",
   "onboarding-copy-mnemonic",
