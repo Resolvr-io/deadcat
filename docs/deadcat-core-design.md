@@ -73,33 +73,94 @@ impl<S: ContractStore> ContractEngine<S> {
     // Construction
     pub fn new(store: S) -> Self;
 
-    // Contract management
-    pub fn track_contract(&mut self, contract: Contract) -> Result<String>;
-    pub fn watched_outpoints(&self) -> Result<Vec<OutPoint>>;
-    pub fn scripts_for_contract(&self, contract_id: &str) -> Result<Vec<Script>>;
+    // Contract ingestion
+    pub fn ingest_contract(
+        &mut self,
+        params: ContractParams,
+        anchor: ContractAnchor,
+        creation_tx: &ChainTransaction,
+    ) -> Result<String, CoreError<S::Error>>;
+
+    // Contract queries (reads — &self)
+    pub fn watched_outpoints(&self) -> Result<Vec<OutPoint>, CoreError<S::Error>>;
+    pub fn all_covenant_scripts(&self, contract_id: &str) -> Result<Vec<Script>, CoreError<S::Error>>;
 
     // Transaction processing (writes — &mut self)
-    pub fn process_transaction(&mut self, tx: &ChainTransaction) -> Result<Vec<TransitionResult>>;
-    pub fn rollback_to_height(&mut self, height: u32) -> Result<()>;
-    pub fn prune_finalized(&mut self, current_height: u32, finality_depth: u32) -> Result<()>;
+    pub fn process_transaction(&mut self, tx: &ChainTransaction) -> Result<Vec<TransitionResult>, CoreError<S::Error>>;
+    pub fn rollback_to_height(&mut self, height: u32) -> Result<(), CoreError<S::Error>>;
+    pub fn prune_finalized(&mut self, current_height: u32, finality_depth: u32) -> Result<(), CoreError<S::Error>>;
 
     // Transaction interpretation (reads — &self)
     pub fn interpret_transaction(&self, tx: &Transaction) -> Vec<TransitionResult>;
     pub fn identify_asset(&self, asset_id: &AssetId) -> Option<AssetInfo>;
 }
+
+// History methods — only available when the store implements ContractHistory
+impl<S: ContractStore + ContractHistory> ContractEngine<S> {
+    pub fn market_history(
+        &self,
+        contract_id: &str,
+        since_height: Option<u32>,
+        limit: Option<usize>,
+    ) -> Result<Vec<TypedStateUpdate<MarketTransition>>, CoreError<S::Error>>;
+
+    pub fn pool_history(
+        &self,
+        contract_id: &str,
+        since_height: Option<u32>,
+        limit: Option<usize>,
+    ) -> Result<Vec<TypedStateUpdate<PoolTransition>>, CoreError<S::Error>>;
+
+    pub fn order_history(
+        &self,
+        contract_id: &str,
+        since_height: Option<u32>,
+        limit: Option<usize>,
+    ) -> Result<Vec<TypedStateUpdate<OrderTransition>>, CoreError<S::Error>>;
+}
 ```
 
 Write methods take `&mut self`. Read methods take `&self`. Rust's borrow rules enforce at compile time that only one writer OR multiple readers can access the engine at any given time — analogous to `RwLock` semantics without runtime overhead. This means store implementors only need to worry about atomic application of state updates, not concurrent access or out-of-order writes.
 
+### Contract ID Generation
+
+Contract IDs are deterministically derived by the engine from the contract's parameters. The same contract always produces the same ID regardless of who ingests it. `ingest_contract` returns the computed ID so the caller can reference it.
+
+**Why deterministic**: If two different wallets ingest the same market, they get the same ID. This enables cross-wallet coordination and deduplication without requiring callers to know the hashing scheme.
+
+### ingest_contract
+
+`ingest_contract` is the entry point for tracking a new contract. It takes the contract's parameters, anchor data (blinding factors, etc.), and the on-chain creation transaction:
+
+```rust
+pub fn ingest_contract(
+    &mut self,
+    params: ContractParams,
+    anchor: ContractAnchor,
+    creation_tx: &ChainTransaction,
+) -> Result<String, CoreError<S::Error>> {
+    let compiled = self.compile(&params)?;
+    let initial_scripts = compiled.scripts_for_initial_state();
+    let outpoints = match_creation_outputs(&creation_tx.tx, &initial_scripts)?;
+    let contract_id = self.derive_id(&params);
+    self.store.track_contract(contract_id.clone(), compiled, outpoints)?;
+    Ok(contract_id)
+}
+```
+
+**Why creation-specific logic**: `ingest_contract` scans the creation transaction's **outputs** for covenant scripts, because the creation tx produces outpoints from nothing — there are no prior outpoints to track. This is fundamentally different from `process_transaction`, which scans a transaction's **inputs** for tracked outpoints (the UTXO-following model). The two share downstream components (script derivation, store persistence) but their entry logic diverges because creation and state-transition are genuinely different operations.
+
+**Caller responsibility**: The caller must ensure the creation transaction has already been confirmed on-chain before passing it to `ingest_contract`. Core does not verify chain inclusion — it verifies that the transaction's outputs match the expected covenant scripts derived from the provided parameters.
+
 ### process_transaction
 
-`process_transaction` is the core write method. It computes transitions, durably persists them, then returns the results:
+`process_transaction` is the core write method. It accepts only **confirmed** (on-chain) transactions. It computes transitions, durably persists them, then returns the results:
 
 ```rust
 pub fn process_transaction(
     &mut self,
     tx: &ChainTransaction,
-) -> Result<Vec<TransitionResult>> {
+) -> Result<Vec<TransitionResult>, CoreError<S::Error>> {
     let results = self.compute_transitions(tx)?;
     if results.is_empty() {
         return Ok(results);  // idempotent: nothing affected
@@ -125,17 +186,51 @@ pub fn process_transaction(
 pub fn interpret_transaction(&self, tx: &Transaction) -> Vec<TransitionResult>;
 ```
 
+**Works for confirmed and unconfirmed transactions**: Unlike `process_transaction` (confirmed only), `interpret_transaction` accepts any transaction — confirmed or unconfirmed. It works as long as the transaction spends outpoints the engine currently tracks in its durable state. This enables "pending transaction" UX: a wallet can interpret an unconfirmed mempool transaction to display "Pending issuance" or "Pending trade" before the transaction confirms.
+
+**Known limitation — chained unconfirmed transactions**: If two unconfirmed transactions form a chain (tx2 spends an output created by tx1), only tx1 is interpretable. Tx2 spends outpoints that the engine hasn't durably recorded (tx1 was never processed), so the engine doesn't recognize them. Once both confirm and are fed to `process_transaction`, both are processed normally. This is rare in practice — Liquid has ~1-minute blocks, and chained unconfirmed covenant transactions require dependent operations within that window.
+
 **Point-in-time query**: The results reflect what the engine currently knows. If a transaction spends UTXOs from a contract the engine hasn't ingested yet, those contracts are simply absent from the results. After ingesting the contract and catching it up, calling `interpret_transaction` on the same transaction returns additional results.
 
 **Partial knowledge grows over time**: A trade transaction that spends a known limit order and an unknown pool would initially return only the order fill. After the pool is ingested, the same call would also return the pool swap. The caller should be prepared to re-interpret transactions as new contracts are ingested.
 
 **Shared return type**: Both `process_transaction` and `interpret_transaction` return `Vec<TransitionResult>`. This is intentional — one type, one mental model. The caller doesn't need to think about which method to use for a given situation. Processing mutates and returns. Interpretation reads and returns.
 
+### all_covenant_scripts
+
+Returns all possible covenant script pubkeys for a tracked contract, across **all** covenant phases and slot types. This is the full set of scripts the contract could ever produce, derived deterministically from the contract's parameters.
+
+**Primary use case**: Catch-up scanning. After ingesting a contract, the caller uses these scripts to scan the chain for historical transactions that touched the contract since creation.
+
+**Not for steady-state monitoring**: To watch for new spends of a contract's current UTXOs, use `watched_outpoints()` instead — it returns the specific outpoints the engine is currently tracking, which is more precise than the full script set.
+
+### History Methods
+
+The three typed history methods (`market_history`, `pool_history`, `order_history`) are only available when the store implements `ContractHistory`. They delegate to the store's unified `transition_history` method internally, then unwrap the `TransitionDetails` enum to return typed results:
+
+```rust
+// Engine calls store's unified method, then unwraps per-contract type
+pub fn market_history(&self, contract_id: &str, ...) -> Result<Vec<TypedStateUpdate<MarketTransition>>, ...> {
+    let raw = self.store.transition_history(contract_id, since_height, limit)?;
+    raw.into_iter().map(|u| {
+        let TransitionDetails::Market(details) = u.details else {
+            debug_assert!(false, "store returned non-market transition for market contract");
+            // filter out mismatched entries
+        };
+        TypedStateUpdate { contract_id: u.contract_id, txid: u.txid, /* ... */ details }
+    }).collect()
+}
+```
+
+**Why typed convenience methods**: The caller always knows the contract type when querying history. The unified `StateUpdate` with `TransitionDetails` enum forces an unnecessary match on a variant the caller already knows. The typed methods eliminate this ergonomic cost. The store trait stays simple (one `transition_history` method); the engine does the trivial unwrapping.
+
+**Invariant**: All transitions for a given `contract_id` always have the same `TransitionDetails` variant (a market contract only produces `Market` transitions). A mismatch indicates a bug in the store implementation — the engine asserts in debug and filters in release.
+
 ## Core Types
 
 ### ChainTransaction
 
-The input to `process_transaction`. Core assumes this represents a consensus-valid transaction (confirmed on-chain or accepted into mempool). Core does not validate transactions — it interprets them. This is a safe assumption because the caller gets transactions from their chain backend, which only provides consensus-valid data.
+The input to `process_transaction` and `ingest_contract`. Represents a **confirmed** on-chain transaction. Core does not validate consensus — it interprets. This is a safe assumption because the caller gets transactions from their chain backend, which only provides consensus-valid data.
 
 ```rust
 pub struct ChainTransaction {
@@ -145,9 +240,23 @@ pub struct ChainTransaction {
 }
 ```
 
+**Confirmed only**: `process_transaction` and `ingest_contract` require confirmed transactions with valid block height and tx index. For unconfirmed/mempool transactions, use `interpret_transaction` which takes a raw `elements::Transaction` without chain position metadata.
+
+### ContractParams
+
+The input to `ingest_contract`. The parameters that define a contract, from which core derives script pubkeys, compiles Simplicity contracts, and generates the contract ID.
+
+```rust
+pub enum ContractParams {
+    PredictionMarket(PredictionMarketParams),
+    LmsrPool(LmsrPoolParams),
+    MakerOrder(MakerOrderParams),
+}
+```
+
 ### Contract
 
-The three covenant types core tracks:
+The three covenant types core tracks internally. This is an **internal type** managed by the engine and store — callers do not construct `Contract` values directly. Instead, they provide `ContractParams` + `ContractAnchor` + creation transaction to `ingest_contract`, and the engine derives the initial contract state.
 
 ```rust
 pub enum Contract {
@@ -155,23 +264,109 @@ pub enum Contract {
         params: PredictionMarketParams,
         anchor: PredictionMarketAnchor,
         state: MarketState,
-        outpoints: Vec<(SlotType, OutPoint)>,
     },
     LmsrPool {
         params: LmsrPoolParams,
-        s_index: u64,
-        reserves: PoolReserves,
-        outpoints: [OutPoint; 3],  // yes, no, collateral
+        state: LmsrPoolState,
     },
     MakerOrder {
         params: MakerOrderParams,
-        outpoint: OutPoint,
-        status: OrderStatus,
+        state: OrderState,
     },
 }
 ```
 
-Each variant knows its own outpoints and how to advance. The advance logic uses the Simplicity witness and covenant script structure to deterministically identify the transition and new state.
+Each variant's mutable state (outpoints, reserves, fill amounts) lives inside the state enum, not alongside it. This prevents stale field values when a contract reaches a terminal state. See [Contract State Enums](#contract-state-enums) below.
+
+### Contract State Enums
+
+Each contract type has a state enum that represents its current tip state — the latest snapshot, not a history log. This is stored durably via `ContractStore` (required) and updated each time `process_transaction` advances the contract. The tip state carries enough information for basic wallet UX without requiring `ContractHistory`.
+
+#### MarketState
+
+```rust
+pub enum MarketState {
+    Active {
+        phase: CovenantPhase,
+        outpoints: Vec<(SlotType, OutPoint)>,
+    },
+    Settled {
+        final_txid: Txid,
+        settlement: SettlementKind,
+    },
+}
+
+pub enum CovenantPhase {
+    Dormant,
+    Unresolved,
+    ResolvedYes,
+    ResolvedNo,
+    Expired,
+}
+
+pub enum SettlementKind {
+    Redeemed { outcome_yes: bool },
+    ExpiryRedeemed,
+    Cancelled,
+}
+```
+
+`CovenantPhase` represents the on-chain Simplicity covenant state. `MarketState` is broader — it includes both the on-chain phases (within `Active`) and the terminal state (`Settled`) where no covenant UTXOs remain.
+
+`SettlementKind` carries the outcome so a wallet can answer "did this market resolve YES or NO?" without requiring transition history. This is essential for basic UX: showing "Your YES tokens are redeemable" vs "Your YES tokens are worthless."
+
+#### LmsrPoolState
+
+```rust
+pub enum ReserveSlot { Yes, No, Collateral }
+
+pub enum LmsrPoolState {
+    Active {
+        outpoints: BTreeMap<ReserveSlot, OutPoint>,
+        s_index: u64,
+        reserves: PoolReserves,
+    },
+    Closed {
+        final_txid: Txid,
+        reclaimed: PoolReserves,
+    },
+}
+```
+
+Active pools track their outpoints as a map from reserve slot to outpoint. This is flexible enough to handle the current covenant (always 3 outpoints) and future covenant versions where individual reserves can be fully consumed (fewer than 3 active outpoints).
+
+`Closed` carries `reclaimed` reserves so the wallet can display "You closed this pool and reclaimed X YES, Y NO, Z L-BTC" without requiring transition history.
+
+#### OrderState
+
+```rust
+pub enum OrderState {
+    Active {
+        outpoint: OutPoint,
+        total_filled: u64,
+    },
+    Consumed {
+        final_txid: Txid,
+    },
+    Cancelled {
+        cancel_txid: Txid,
+        total_filled: u64,
+    },
+}
+```
+
+`total_filled` on `Active` enables "5,000 of 10,000 sats filled" display while the order is still live. `Consumed` means fully filled — `total_filled` equals the original offered amount by definition, so it's not stored. `Cancelled` with `total_filled` enables "partially filled then cancelled" display (if `total_filled == 0`, it was a clean cancellation).
+
+### ContractMatch
+
+Returned by `ContractStore::find_by_outpoints`. Used internally by the engine to identify which tracked contracts are affected by a transaction and which specific outpoints matched. Callers of the engine never see this type — it exists at the engine-store boundary only.
+
+```rust
+pub struct ContractMatch {
+    pub contract_id: String,
+    pub matched_outpoints: Vec<OutPoint>,
+}
+```
 
 ### TransitionResult
 
@@ -209,6 +404,24 @@ pub struct StateUpdate {
 
 **Why two types**: `TransitionResult` is the caller-facing view (full data, including ephemeral computed fields). `StateUpdate` is the storage-facing view (only what needs to be persisted). The engine converts between them internally. This prevents store implementors from accidentally persisting wallet-specific data (output roles, classifications) alongside contract state, while ensuring callers always get the full picture.
 
+### TypedStateUpdate
+
+Generic wrapper used by the engine's typed history methods. Same fields as `StateUpdate` but with the `TransitionDetails` enum unwrapped to the concrete transition type:
+
+```rust
+pub struct TypedStateUpdate<D> {
+    pub contract_id: String,
+    pub txid: Txid,
+    pub block_height: u32,
+    pub tx_index: u32,
+    pub old_outpoints: Vec<OutPoint>,
+    pub new_outpoints: Vec<OutPoint>,
+    pub details: D,
+}
+```
+
+Used as `TypedStateUpdate<MarketTransition>`, `TypedStateUpdate<PoolTransition>`, `TypedStateUpdate<OrderTransition>` by the history methods.
+
 ### TransitionDetails
 
 Nested by contract type. Each variant carries the decoded details of what happened:
@@ -244,17 +457,31 @@ pub enum OrderTransition {
 
 ### ExternalOutput
 
-Non-covenant outputs in a transaction, with their roles identified:
+Non-covenant outputs in a transaction. Split into two variants based on whether core can read the output's asset and value:
 
 ```rust
-pub struct ExternalOutput {
-    pub index: u32,
-    pub script_pubkey: Script,
-    pub asset: Option<AssetId>,  // None if blinded
-    pub value: Option<u64>,      // None if blinded
-    pub role: OutputRole,
+pub enum ExternalOutput {
+    Explicit {
+        index: u32,
+        script_pubkey: Script,
+        asset: AssetId,
+        value: u64,
+        role: OutputRole,
+    },
+    Confidential {
+        index: u32,
+        script_pubkey: Script,
+    },
 }
+```
 
+**Why an enum, not a struct with `Option` fields**: When core can identify an output (explicit), the asset, value, and role are always known together. When core can't (confidential/blinded), none of them are known. A flat struct with `asset: Option<AssetId>, value: Option<u64>` would allow impossible states like "asset known but value unknown." The enum makes the invariant unrepresentable.
+
+`Explicit` / `Confidential` are the standard Elements terms for unblinded / blinded outputs. An explicit output that core can see but can't classify gets `role: OutputRole::Unknown` — "I know the asset and value, but I don't know this output's purpose in the transaction."
+
+For `Confidential` outputs, the wallet uses its own blinding keys to determine asset and value. Core provides the output index and script pubkey so the wallet can correlate.
+
+```rust
 pub enum OutputRole {
     IssuedTokens { side: Side, amount: u64 },
     RedemptionPayout { amount: u64 },
@@ -278,13 +505,29 @@ pub enum AssetInfo {
 }
 ```
 
+### CoreError
+
+The error type for all engine operations. Generic over the store's error type, which piggybacks on the engine's existing `S: ContractStore` generic — no additional type parameter burden for consumers.
+
+```rust
+pub enum CoreError<E: std::error::Error> {
+    Store(E),
+    InvalidCreationTx { reason: String },
+    ContractNotFound { contract_id: String },
+    ContractAlreadyTracked { contract_id: String },
+    DataIntegrity { detail: String },
+}
+```
+
+**Why generic over the store error**: The engine is already generic over `S: ContractStore`, so `CoreError<S::Error>` adds no new generic parameters. Store error types are preserved — consumers can match on `CoreError::Store(e)` and handle their specific store error without downcasting. Store implementors define their own error type independently via an associated type on the trait.
+
 ## Core Design: UTXO-Following State Machine
 
 ### Fundamental Loop
 
 The core of `deadcat-core` is a state machine that tracks covenant UTXOs:
 
-1. **Track**: Maintain a set of known contracts and their current UTXOs
+1. **Ingest**: Register a contract and its creation transaction (core derives initial outpoints)
 2. **Spend**: When a transaction spends any tracked UTXO, process it
 3. **Advance**: Determine the contract's new state from the transaction's outputs and witness data
 4. **Repeat**: The new UTXOs become the tracked set
@@ -300,12 +543,21 @@ The Simplicity covenant enforces that outputs follow a known pattern. If input U
 
 This also handles unknown transaction combinations gracefully. If a future version combines an issuance with a pool adjustment in one transaction (something no current PSET builder produces), the UTXO-following model still works — each contract independently follows its own outpoints through the transaction. The classifier model would fail because it wouldn't recognize the combined shape.
 
+### Why Input-Based, Not Output-Based
+
+The UTXO-following model detects transitions by finding tracked outpoints in a transaction's **inputs** (spends), not by scanning **outputs** for matching scripts. Input-based tracking is more precise:
+
+- **Input-based**: "My tracked UTXO X was spent in this tx. My contract transitioned." Precise and unambiguous — an outpoint is either in the inputs or not.
+- **Output-based**: "This tx has an output matching a script I track. Something happened." Requires scanning all scripts × all states × all contracts. Can produce false positives if someone sends coins to a covenant address without going through the covenant spend path.
+
+Contract creation is the one case with no prior outpoints, which is why `ingest_contract` has its own output-scanning logic (see [ingest_contract](#ingest_contract)). All subsequent state transitions use input-based tracking via `process_transaction`.
+
 ### Processing a Transaction
 
 When `process_transaction` is called:
 
 1. Collect all input outpoints from the transaction
-2. Check which tracked contracts own any of those outpoints
+2. Check which tracked contracts own any of those outpoints (via `ContractMatch`)
 3. For each affected contract, decode the Simplicity witness to determine the transition type
 4. Find the contract's new outputs by matching script pubkeys against expected covenant scripts (derived from params + new state)
 5. Compute external output roles for non-covenant outputs
@@ -320,7 +572,7 @@ Core identifies which outputs belong to which contract by matching `script_pubke
 
 - **Explicit covenant outputs** (collateral, reserves): script pubkey is the covenant address derived from contract params + state. Asset and value are readable.
 - **Reissuance token outputs**: `Asset::Null` and `Value::Null` on-chain, but `script_pubkey` is set to the covenant address for the target slot. Core matches by script pubkey alone.
-- **Blinded wallet outputs** (change, payouts): script pubkey is readable but asset/value may be confidential. Core identifies these as "not covenant" and reports them as `ExternalOutput` with `asset: None, value: None` when blinded.
+- **Confidential wallet outputs** (change, payouts): script pubkey is readable but asset/value are confidential. Core identifies these as "not covenant" and reports them as `ExternalOutput::Confidential` with the output index and script pubkey.
 
 Core relies on the caller providing consensus-valid transactions. Since Liquid consensus has already verified reissuance token validity, confidential proofs, and Simplicity covenant witnesses, core does not need to re-verify — it only interprets.
 
@@ -344,10 +596,11 @@ This is deterministic — no ambiguity about what each output represents.
 
 Core doesn't know or care about the discovery layer (Nostr, manual import, QR code, etc.). To start tracking a contract, the caller provides:
 
-- Contract parameters (from which core derives initial script pubkeys)
-- The creation anchor (creation txid, initial output indices)
+- Contract parameters (from which core derives script pubkeys and the contract ID)
+- The contract anchor (blinding factors and other creation-time data)
+- The confirmed creation transaction
 
-Core compiles the Simplicity contract from the parameters, derives the initial covenant address(es), and begins tracking the outpoints.
+Core compiles the Simplicity contract from the parameters, verifies the creation transaction contains the expected covenant scripts, derives the initial outpoints, and begins tracking.
 
 The caller is then responsible for scanning the chain from the creation point forward and feeding any relevant transactions to `process_transaction`. Core has no chain access — it processes whatever it's given.
 
@@ -355,9 +608,10 @@ The caller is then responsible for scanning the chain from the creation point fo
 
 When a contract is ingested that was created in the past, it needs to be "caught up" to the chain tip. Core doesn't manage this — it's the caller's responsibility:
 
-1. Ingest the contract (core starts tracking initial outpoints)
-2. Scan the chain for transactions touching the contract's scripts since creation
-3. Feed those transactions to `process_transaction` in order
+1. Call `ingest_contract` with params, anchor, and creation transaction (core derives initial outpoints)
+2. Call `all_covenant_scripts` to get the full set of scripts for chain scanning
+3. Scan the chain for transactions matching those scripts since creation height
+4. Feed those transactions to `process_transaction` in order
 
 Core doesn't distinguish between "catch-up" and "tip" transactions. It processes whatever it receives. Existing fully-synced contracts can continue processing new tip transactions while a newly-ingested contract catches up — each contract tracks its own outpoints independently.
 
@@ -371,16 +625,18 @@ Core defines traits for state persistence. The implementor controls what to stor
 
 ```rust
 pub trait ContractStore {
+    type Error: std::error::Error;
+
     // Reads — &self
-    fn find_by_outpoints(&self, outpoints: &[OutPoint]) -> Result<Vec<ContractRef>>;
-    fn current_state(&self, contract_id: &str) -> Result<Option<Contract>>;
-    fn all_watched_outpoints(&self) -> Result<Vec<OutPoint>>;
+    fn find_by_outpoints(&self, outpoints: &[OutPoint]) -> Result<Vec<ContractMatch>, Self::Error>;
+    fn current_state(&self, contract_id: &str) -> Result<Option<Contract>, Self::Error>;
+    fn all_watched_outpoints(&self) -> Result<Vec<OutPoint>, Self::Error>;
 
     // Writes — &mut self
-    fn apply_transitions(&mut self, transitions: &[StateUpdate]) -> Result<()>;
-    fn track_contract(&mut self, contract: Contract) -> Result<String>;
-    fn rollback_to_height(&mut self, height: u32) -> Result<()>;
-    fn prune_finalized(&mut self, current_height: u32, finality_depth: u32) -> Result<()>;
+    fn apply_transitions(&mut self, transitions: &[StateUpdate]) -> Result<(), Self::Error>;
+    fn track_contract(&mut self, contract_id: String, contract: Contract) -> Result<(), Self::Error>;
+    fn rollback_to_height(&mut self, height: u32) -> Result<(), Self::Error>;
+    fn prune_finalized(&mut self, current_height: u32, finality_depth: u32) -> Result<(), Self::Error>;
 }
 ```
 
@@ -388,30 +644,46 @@ Every consumer must implement this. Read methods take `&self`, write methods tak
 
 `apply_transitions` must be durable when it returns — the engine depends on this for crash safety.
 
+**Atomicity requirements**: Contract-level atomicity is a hard requirement — a single contract's state update (old outpoints → new outpoints + state change) must be all-or-nothing. A half-updated contract is corrupted state. Transaction-level atomicity (all contracts updated together for a multi-contract transaction) is recommended but not strictly required for correctness. A "jagged" state where one contract has processed a transaction but another hasn't is indistinguishable from staggered ingestion — which is already a normal condition when contracts are discovered at different times. The system self-heals: re-processing the transaction advances the remaining contracts while already-processed contracts are a no-op (idempotency). Transaction-level atomicity is recommended because it's typically not much extra burden on top of the already-required contract-level atomicity (e.g., a single SQLite transaction) and avoids the jagged-view window.
+
 ### Optional: ContractHistory
 
 ```rust
 pub trait ContractHistory {
+    type Error: std::error::Error;
+
     fn transition_history(
         &self,
         contract_id: &str,
         since_height: Option<u32>,
         limit: Option<usize>,
-    ) -> Result<Vec<StateUpdate>>;
+    ) -> Result<Vec<StateUpdate>, Self::Error>;
 }
 ```
 
 Only implement if the consumer wants price charts, audit trails, etc. Core never depends on history for processing — it only needs current state. History returns `StateUpdate` (the persisted form), not `TransitionResult` (which includes ephemeral computed fields). To get full output classification for a historical transaction, the caller can call `interpret_transaction`.
 
+The engine exposes history through typed convenience methods (`market_history`, `pool_history`, `order_history`) that are only available when the store implements `ContractHistory`. The store trait itself has a single unified `transition_history` method — the typed unwrapping happens in the engine. See [History Methods](#history-methods).
+
 ### Implementor Controls Retention
 
 The engine always passes full `StateUpdate` details to `apply_transitions`. The implementor decides what to keep:
 
-- **Minimal (e.g., Aqua)**: Update current outpoints, discard old state. `transition_history` returns empty.
-- **Full (e.g., Deadcat Live)**: Update current state AND append to history table. Supports price charts and audit trails.
+- **Minimal (e.g., Aqua)**: Update current outpoints, discard old state. Doesn't implement `ContractHistory`.
+- **Full (e.g., Deadcat Live)**: Update current state AND append to history table. Implements `ContractHistory`. Supports price charts and audit trails.
 - **Selective**: Keep LMSR pool history (for price charts) but discard order fill history (not needed).
 
 This is an implementation detail — core doesn't need per-contract configuration flags.
+
+### Tip State Principle
+
+The current contract state (stored via `ContractStore`) carries enough information for basic wallet UX without requiring `ContractHistory`. A minimal consumer that only implements `ContractStore` can still answer:
+
+- "Did this market resolve YES or NO?" → `MarketState::Settled { settlement: SettlementKind::Redeemed { outcome_yes } }`
+- "How much of my order has been filled?" → `OrderState::Active { total_filled }` or `OrderState::Cancelled { total_filled }`
+- "What reserves did I reclaim when I closed my pool?" → `LmsrPoolState::Closed { reclaimed }`
+
+Transition history is for richer features: price charts, fill-by-fill order breakdowns, full audit trails.
 
 ## Separation of Concerns: Wallet vs Contract Layer
 
@@ -425,7 +697,7 @@ A key design principle: the contract layer and wallet layer have complementary, 
 
 The contract engine doesn't track wallet outputs. The wallet doesn't track covenant outputs. They correlate on txid when labeling is needed.
 
-The `TransitionResult.external_outputs` bridges the gap — core identifies which outputs are NOT contract state, and labels their roles where possible, so the wallet can display "Received 10 YES tokens from issuance" without understanding covenant mechanics. For blinded external outputs, core provides the output index and script pubkey; the wallet uses its own blinding keys to determine asset and value.
+The `TransitionResult.external_outputs` bridges the gap — core identifies which outputs are NOT contract state, and labels their roles where possible, so the wallet can display "Received 10 YES tokens from issuance" without understanding covenant mechanics. For confidential external outputs, core provides the output index and script pubkey; the wallet uses its own blinding keys to determine asset and value.
 
 ## PSET Construction
 
@@ -472,16 +744,26 @@ Core maintains a processing log: for each processed transaction, the contract ID
 1. Find all transitions from blocks above N
 2. Reverse them: restore old outpoints, remove new outpoints
 3. Delete the processing records
-4. Return the now-current outpoints (so the caller can re-scan)
 
-The caller detects the reorg (their chain backend tells them), calls `rollback_to_height`, then feeds the new chain data.
+The caller detects the reorg (their chain backend tells them), calls `rollback_to_height`, then re-scans and feeds the new chain data.
+
+**Typical usage**: After rolling back, the caller calls `watched_outpoints()` to get the now-current outpoints for re-scanning:
+
+```rust
+engine.rollback_to_height(reorg_height)?;
+let outpoints = engine.watched_outpoints()?;
+let new_txs = chain.scan_from(reorg_height, &outpoints);
+for tx in new_txs {
+    engine.process_transaction(&tx)?;
+}
+```
 
 ### Finality-Based Pruning
 
 On Liquid, transactions are considered absolutely irreversible after 2 confirmations. Processing log entries for finalized transactions can never be needed for reorg recovery and can be safely pruned:
 
 ```rust
-fn prune_finalized(&mut self, current_height: u32, finality_depth: u32) -> Result<()>;
+fn prune_finalized(&mut self, current_height: u32, finality_depth: u32) -> Result<(), CoreError<S::Error>>;
 ```
 
 The caller periodically calls `prune_finalized` with the current chain tip and the network's finality depth (2 for Liquid). This keeps the processing log bounded without sacrificing correctness.
@@ -490,9 +772,24 @@ The caller periodically calls `prune_finalized` with the current chain tip and t
 
 ## Thread Safety
 
-Write methods (`process_transaction`, `track_contract`, `rollback_to_height`, `prune_finalized`) take `&mut self`. Read methods (`interpret_transaction`, `identify_asset`, `watched_outpoints`) take `&self`.
+Write methods (`process_transaction`, `ingest_contract`, `rollback_to_height`, `prune_finalized`) take `&mut self`. Read methods (`interpret_transaction`, `identify_asset`, `watched_outpoints`, `all_covenant_scripts`) take `&self`.
 
-Rust's borrow rules provide compile-time `RwLock` semantics: multiple concurrent readers OR one exclusive writer, enforced without runtime overhead. For single-threaded consumers this is invisible. For multi-threaded consumers who wrap the engine in `RwLock<ContractEngine>`, they get the expected semantics automatically.
+Rust's borrow rules provide compile-time `RwLock` semantics: multiple concurrent readers OR one exclusive writer, enforced without runtime overhead. For single-threaded consumers this is invisible. For multi-threaded consumers who need concurrent access, wrap the engine in `RwLock<ContractEngine<S>>`:
+
+```rust
+let engine = Arc::new(RwLock::new(ContractEngine::new(store)));
+
+// Writer thread
+let engine_w = engine.clone();
+std::thread::spawn(move || {
+    for tx in new_transactions {
+        engine_w.write().unwrap().process_transaction(&tx).unwrap();
+    }
+});
+
+// Reader thread (can run concurrently with other readers)
+let interpretations = engine.read().unwrap().interpret_transaction(&some_tx);
+```
 
 Core does not add `Send` or `Sync` bounds on the `ContractStore` trait. If a store implementation is `Send`, `ContractEngine<S>` is automatically `Send`. This lets single-threaded consumers use non-thread-safe stores without penalty, while multi-threaded consumers choose thread-safe implementations.
 
@@ -511,50 +808,64 @@ These have zero dependencies beyond basic math — no wallet, chain, or state.
 ## Example Integration: Aqua Wallet
 
 ```rust
-use deadcat_core::{ContractEngine, Contract, ChainTransaction};
+use deadcat_core::{ContractEngine, ContractParams, ChainTransaction};
 
 // 1. Initialize engine with a store implementation.
 //    The store is exclusively owned by the engine from this point.
 let mut engine = ContractEngine::new(aqua_deadcat_store);
 
 // 2. Ingest a market (discovered via Nostr, import, etc.)
-let contract_id = engine.track_contract(Contract::PredictionMarket {
-    params, anchor, state: MarketState::Dormant, outpoints: initial_outpoints,
-})?;
+//    Core verifies the creation tx, derives initial outpoints, and returns the contract ID.
+let contract_id = engine.ingest_contract(
+    ContractParams::PredictionMarket(params),
+    anchor,
+    &creation_tx,
+)?;
 
-// 3. Catch up: scan chain for this contract's history
-let scripts = engine.scripts_for_contract(&contract_id)?;
-let historical_txs = aqua_chain.scan_history(&scripts, creation_height);
+// 3. Catch up: scan chain for this contract's history since creation.
+//    all_covenant_scripts returns scripts for ALL possible states.
+let scripts = engine.all_covenant_scripts(&contract_id)?;
+let historical_txs = aqua_chain.scan_history(&scripts, creation_tx.block_height);
 for tx in historical_txs {
-    // process_transaction is idempotent and persists before returning
     engine.process_transaction(&tx)?;
 }
 
-// 4. Steady state: process new transactions as they arrive
-aqua_chain.on_new_transaction(|tx| {
+// 4. Steady state: process new confirmed transactions as they arrive
+for tx in aqua_chain.poll_new_transactions() {
     engine.process_transaction(&tx)?;
-});
+}
 
-// 5. Label wallet history (read-only, can be called anytime)
+// 5. Pending UX: interpret unconfirmed mempool transactions (read-only)
+if let Some(mempool_tx) = aqua_chain.get_mempool_tx(txid) {
+    let interpretations = engine.interpret_transaction(&mempool_tx);
+    for interp in &interpretations {
+        render_pending_label(&interp.details);
+    }
+}
+
+// 6. Label wallet history (read-only, can be called anytime)
 for wallet_tx in wallet_history {
     let interpretations = engine.interpret_transaction(&wallet_tx);
     for interp in &interpretations {
         for output in &interp.external_outputs {
-            if output.index == my_utxo_index {
-                render_label(&output.role);
+            match output {
+                ExternalOutput::Explicit { index, role, .. } if *index == my_utxo_index => {
+                    render_label(role);
+                }
+                _ => {}
             }
         }
     }
 }
 
-// 6. Identify assets in wallet balance
+// 7. Identify assets in wallet balance
 for (asset_id, amount) in wallet_balance {
     if let Some(info) = engine.identify_asset(&asset_id) {
         render_token_position(&info, amount);
     }
 }
 
-// 7. Build a transaction (core provides PSET, Aqua signs)
+// 8. Build a transaction (core provides PSET, Aqua signs)
 let utxos = aqua_wallet.list_utxos();
 let selected = deadcat_core::select_utxos(&utxos, &asset, amount, &[])?;
 let pset = deadcat_core::build_initial_issuance_pset(&contract, &params)?;
@@ -569,6 +880,12 @@ aqua_chain.broadcast(signed)?;
 **Chosen**: UTXO-following state machine.
 **Rejected**: Transaction classifier (enum of known tx types).
 **Why**: A single transaction can affect multiple contracts (e.g., a trade that routes through a pool AND fills limit orders). A flat classification enum can't represent this. More importantly, the UTXO model handles unknown transaction shapes — if a future version combines operations in ways current PSET builders don't produce, the state machine still works because each contract independently follows its own outpoints.
+
+### Input-Based Over Output-Based Tracking
+
+**Chosen**: Detect transitions by finding tracked outpoints in transaction inputs (spends).
+**Rejected**: Detect transitions by scanning transaction outputs for matching scripts.
+**Why**: Input-based tracking is precise — a tracked outpoint is either spent or not. Output-based scanning requires checking against all scripts × all states × all contracts, and can false-positive when someone sends coins to a covenant address without going through the covenant spend path. Contract creation is the one exception (no prior outpoints), handled by `ingest_contract`'s output-scanning logic.
 
 ### Core Owns No IO
 
@@ -588,6 +905,18 @@ aqua_chain.broadcast(signed)?;
 **Rejected**: Engine borrows the store, or engine and caller share access.
 **Why**: If the caller could mutate the store directly, they could advance contract outpoints or modify state without the engine's knowledge, breaking internal invariants. Exclusive ownership ensures the engine is the single source of truth. Reads go through the engine's `&self` methods; writes go through `&mut self` methods.
 
+### Deterministic Contract IDs
+
+**Chosen**: Contract IDs are deterministically derived by the engine from contract parameters.
+**Rejected**: Caller-assigned IDs or store-generated IDs.
+**Why**: The same contract always produces the same ID regardless of who ingests it. Two different wallets ingesting the same market get the same ID, enabling cross-wallet coordination without requiring callers to know the hashing scheme.
+
+### Creation-Specific Ingestion Logic
+
+**Chosen**: `ingest_contract` has its own output-scanning logic, separate from `process_transaction`.
+**Rejected**: Unified method that handles both creation and state transitions.
+**Why**: Contract creation and state transition are fundamentally different operations. Creation scans transaction **outputs** to find initial covenant UTXOs (there are no prior outpoints to track). State transitions scan transaction **inputs** to find spent tracked outpoints. A unified method would need to handle both paths, muddying the clean UTXO-following model. Separating them keeps each method focused on its actual semantics.
+
 ### Unified TransitionResult for Processing and Interpretation
 
 **Chosen**: Both `process_transaction` and `interpret_transaction` return `Vec<TransitionResult>`, which includes state update data (outpoints, details) AND computed output classification (contract outputs, external outputs with roles).
@@ -596,9 +925,15 @@ aqua_chain.broadcast(signed)?;
 
 ### Store Trait with Optional History
 
-**Chosen**: Required `ContractStore` trait + optional `ContractHistory` trait.
+**Chosen**: Required `ContractStore` trait + optional `ContractHistory` trait. Engine exposes typed history methods only when the store implements `ContractHistory`.
 **Rejected**: Single trait with history methods that return empty vecs.
-**Why**: Separating the traits makes the contract clearer. A minimal consumer (Aqua) only implements `ContractStore`. A full consumer (Deadcat Live) implements both. Core's processing pipeline never calls history methods — they're purely for consumer-facing features like price charts.
+**Why**: Separating the traits makes the contract clearer. A minimal consumer (Aqua) only implements `ContractStore`. A full consumer (Deadcat Live) implements both. Core's processing pipeline never calls history methods — they're purely for consumer-facing features like price charts. The typed convenience methods on the engine (`market_history`, `pool_history`, `order_history`) avoid forcing callers to match on a `TransitionDetails` enum they already know the answer to.
+
+### Typed History Convenience Methods
+
+**Chosen**: Engine exposes per-contract-type history methods that delegate to the store's unified `transition_history` and unwrap the result.
+**Rejected**: Three separate history methods on the store trait.
+**Why**: The store writes unified `StateUpdate` values (a single transaction can affect multiple contract types). Splitting the read path at the store level would create a mismatch: writes are unified, reads are split. Instead, the store keeps one method, and the engine (which knows each contract's type) does the trivial unwrapping. This keeps the store trait simple while giving consumers typed results.
 
 ### Persistence Owned by Caller, Not Core
 
@@ -612,6 +947,12 @@ aqua_chain.broadcast(signed)?;
 **Rejected**: Two-step pattern where the engine returns results and the caller manually triggers persistence.
 **Why**: Since the engine exclusively owns the store, there's no reason for the caller to inspect results before deciding to persist — the transitions are deterministic from the transaction. Splitting compute and persist would create a window where a crash could leave the engine's in-memory state ahead of the store. The single-call pattern eliminates this by design.
 
+### Contract-Level Atomicity Required, Transaction-Level Recommended
+
+**Chosen**: Store must apply each contract's state update atomically. Applying all contracts from a multi-contract transaction atomically is recommended but not required.
+**Rejected**: Requiring strict transaction-level atomicity.
+**Why**: Contract-level atomicity is non-negotiable — a half-updated contract (outpoints changed but state not, or vice versa) is corrupted state. Transaction-level atomicity (all contracts in one tx updated together) is a "nice to have" for view consistency but not a correctness requirement. A "jagged" state where one contract has processed a tx but another hasn't is indistinguishable from staggered ingestion — which is already a normal condition when contracts are discovered at different times. Re-processing the transaction advances the remaining contracts (idempotency), and already-processed contracts are a no-op. Transaction-level atomicity is recommended because it's typically minimal extra burden (e.g., a single database transaction) and avoids the temporary jagged-view window.
+
 ### Idempotent Transaction Processing
 
 **Chosen**: `process_transaction` is idempotent — calling it twice with the same transaction is a no-op.
@@ -620,7 +961,7 @@ aqua_chain.broadcast(signed)?;
 
 ### Interpretation as Read-Only Replay
 
-**Chosen**: `interpret_transaction` uses same logic as `process_transaction` but read-only.
+**Chosen**: `interpret_transaction` uses same logic as `process_transaction` but read-only. Works for both confirmed and unconfirmed transactions.
 **Rejected**: Separate classification system for interpretation.
 **Why**: The same witness decoding and output matching logic serves both purposes. Having two systems would mean two places to update when covenant logic changes. The only difference is mutability — processing writes new state, interpretation just reads.
 
@@ -644,9 +985,27 @@ aqua_chain.broadcast(signed)?;
 
 ### Consensus-Validity Assumption
 
-**Chosen**: Core assumes all transactions passed to `process_transaction` and `interpret_transaction` are consensus-valid (confirmed on-chain or mempool-accepted). Core does not re-verify transactions.
+**Chosen**: Core assumes all transactions passed to it are consensus-valid. `process_transaction` and `ingest_contract` require confirmed transactions. `interpret_transaction` accepts unconfirmed transactions but still assumes consensus validity (mempool-accepted).
 **Rejected**: Core validates Simplicity witnesses, confidential proofs, and reissuance token derivation internally.
-**Why**: The caller's chain backend only provides consensus-valid data. Liquid consensus has already verified everything — Simplicity covenant witnesses satisfy the script, confidential range proofs are valid, reissuance tokens match their issuance entropy. Re-verifying would duplicate work the network already did. This assumption is what allows core to identify reissuance token outputs (which have `Asset::Null, Value::Null` on-chain) purely by script pubkey matching, and to classify blinded outputs as "not covenant" without needing to unblind them.
+**Why**: The caller's chain backend only provides consensus-valid data. Liquid consensus has already verified everything — Simplicity covenant witnesses satisfy the script, confidential range proofs are valid, reissuance tokens match their issuance entropy. Re-verifying would duplicate work the network already did. This assumption is what allows core to identify reissuance token outputs (which have `Asset::Null, Value::Null` on-chain) purely by script pubkey matching, and to classify confidential outputs as "not covenant" without needing to unblind them.
+
+### Explicit/Confidential Output Split
+
+**Chosen**: `ExternalOutput` is an enum with `Explicit` (asset, value, and role known) and `Confidential` (only index and script pubkey known) variants.
+**Rejected**: Flat struct with `Option<AssetId>` and `Option<u64>` fields.
+**Why**: When core can read an output, asset, value, and role are always known together. When it can't (confidential), none are known. The flat struct allows impossible states ("asset known but value unknown"). The enum makes the invariant unrepresentable. The variant names use standard Elements terminology.
+
+### Self-Sufficient Tip State
+
+**Chosen**: Each contract's current state (stored via `ContractStore`) carries enough information for basic wallet UX without requiring `ContractHistory`.
+**Rejected**: Minimal tip state that requires history for common queries like "what was the market outcome?"
+**Why**: `ContractHistory` is optional — minimal consumers (Aqua) may not implement it. The tip state must answer basic wallet questions independently: market outcome (YES/NO/cancelled/expired), order fill progress, pool reclaimed reserves. Richer features (price charts, fill-by-fill breakdowns, audit trails) belong in transition history.
+
+### Generic Error Type Over Boxed Errors
+
+**Chosen**: `CoreError<E>` is generic over the store's error type via an associated type on the trait.
+**Rejected**: `CoreError` with `Store(Box<dyn Error>)` that erases the store error type.
+**Why**: The engine is already generic over `S: ContractStore`, so `CoreError<S::Error>` adds no new generic parameter burden. Store error types are preserved — consumers can match on `CoreError::Store(e)` and handle their specific store error without downcasting. Store implementors define their own error type independently.
 
 ### No Thread Safety Constraints on Store Trait
 
