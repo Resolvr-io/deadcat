@@ -174,6 +174,8 @@ export function resetReceiveState(): void {
   state.receiveLightningSwap = null;
   state.receiveBitcoinSwap = null;
   state.modalQr = "";
+  state.brantaReceiveStatus = "idle";
+  state.brantaReceivePlatform = "";
 }
 
 export function resetSendState(): void {

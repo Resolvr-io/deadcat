@@ -182,6 +182,14 @@ function requestLiquidReceiveAddress(
       if (liquidReceiveQrVisible()) {
         await generateQr(addr.address);
       }
+      // Verify own address with Branta in the background
+      state.brantaReceiveStatus = "checking";
+      const isMainnet = state.walletNetwork === "mainnet";
+      verifyAddress(addr.address, isMainnet).then((result) => {
+        state.brantaReceiveStatus = result.found ? "verified" : "not_found";
+        state.brantaReceivePlatform = result.platform ?? "";
+        render();
+      });
     } catch (e) {
       if (!silent || liquidReceiveQrVisible()) {
         state.receiveError = String(e);
@@ -1610,11 +1618,23 @@ export async function handleClick(
         );
         state.receiveLightningSwap = swap;
         await generateQr(swap.invoice);
+        state.brantaReceiveStatus = "checking";
       } catch (e) {
         state.receiveError = String(e);
       }
       state.receiveCreating = false;
       render();
+      // Verify Boltz lockup address with Branta in the background
+      if (state.receiveLightningSwap) {
+        const isMainnet = state.walletNetwork === "mainnet";
+        const result = await verifyAddress(
+          state.receiveLightningSwap.lockupAddress,
+          isMainnet,
+        );
+        state.brantaReceiveStatus = result.found ? "verified" : "not_found";
+        state.brantaReceivePlatform = result.platform ?? "";
+        render();
+      }
     })();
     return;
   }
@@ -1650,11 +1670,23 @@ export async function handleClick(
         state.receiveBitcoinSwap = swap;
         const addr = swap.lockupAddress;
         await generateQr(swap.bip21 || addr);
+        state.brantaReceiveStatus = "checking";
       } catch (e) {
         state.receiveError = String(e);
       }
       state.receiveCreating = false;
       render();
+      // Verify Boltz lockup address with Branta in the background
+      if (state.receiveBitcoinSwap) {
+        const isMainnet = state.walletNetwork === "mainnet";
+        const result = await verifyAddress(
+          state.receiveBitcoinSwap.lockupAddress,
+          isMainnet,
+        );
+        state.brantaReceiveStatus = result.found ? "verified" : "not_found";
+        state.brantaReceivePlatform = result.platform ?? "";
+        render();
+      }
     })();
     return;
   }

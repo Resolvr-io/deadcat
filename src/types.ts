@@ -44,6 +44,7 @@ export type BoltzLightningReceiveCreated = {
   flow: string;
   invoiceAmountSat: number;
   expectedOnchainAmountSat: number;
+  lockupAddress: string;
   invoice: string;
   invoiceExpiresAt: string;
   invoiceExpirySeconds: number;

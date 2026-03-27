@@ -222,6 +222,10 @@ export function renderReceiveModal(): string {
             '" alt="QR" class="w-56 h-56 rounded-lg" /></div>'
           : "") +
         renderCopyable(s.invoice, "BOLT11 Invoice", "copy-modal-value") +
+        renderBrantaBadge(
+          state.brantaReceiveStatus,
+          state.brantaReceivePlatform,
+        ) +
         "</div>";
     } else {
       content =
@@ -260,6 +264,10 @@ export function renderReceiveModal(): string {
           state.receiveLiquidAddress,
           "Liquid Address",
           "copy-modal-value",
+        ) +
+        renderBrantaBadge(
+          state.brantaReceiveStatus,
+          state.brantaReceivePlatform,
         ) +
         "</div>";
     } else {
@@ -305,6 +313,10 @@ export function renderReceiveModal(): string {
         (s.bip21
           ? renderCopyable(s.bip21, "BIP21 URI", "copy-modal-value")
           : "") +
+        renderBrantaBadge(
+          state.brantaReceiveStatus,
+          state.brantaReceivePlatform,
+        ) +
         "</div>";
     } else {
       const pair = state.receiveBtcPairInfo;

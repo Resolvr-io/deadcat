@@ -184,11 +184,14 @@ export const state: {
   sentLiquidResult: LiquidSendResult | null;
   sentBitcoinSwap: BoltzChainSwapCreated | null;
   sendBtcPairInfo: BoltzChainSwapPairInfo | null;
-  // Branta address verification
+  // Branta address verification (send)
   brantaLiquidStatus: BrantaVerifyStatus;
   brantaLiquidPlatform: string;
   brantaBoltzStatus: BrantaVerifyStatus;
   brantaBoltzPlatform: string;
+  // Branta address verification (receive/deposit)
+  brantaReceiveStatus: BrantaVerifyStatus;
+  brantaReceivePlatform: string;
   userMenuOpen: boolean;
   searchOpen: boolean;
   walletUnit: "sats" | "btc";
@@ -345,6 +348,8 @@ export const state: {
   brantaLiquidPlatform: "",
   brantaBoltzStatus: "idle",
   brantaBoltzPlatform: "",
+  brantaReceiveStatus: "idle",
+  brantaReceivePlatform: "",
   userMenuOpen: false,
   searchOpen: false,
   walletUnit: "sats",
