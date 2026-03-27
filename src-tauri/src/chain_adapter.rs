@@ -13,20 +13,20 @@ pub enum ChainAdapterError {
 }
 
 /// Adapter that implements `deadcat_store::ChainSource` using the `electrum-client` crate.
+/// The Electrum connection is created once and reused across all method calls.
 pub struct ElectrumChainAdapter {
-    electrum_url: String,
+    client: electrum_client::Client,
 }
 
 impl ElectrumChainAdapter {
-    pub fn new(electrum_url: &str) -> Self {
-        Self {
-            electrum_url: electrum_url.to_string(),
-        }
+    pub fn new(electrum_url: &str) -> Result<Self, ChainAdapterError> {
+        let client = electrum_client::Client::new(electrum_url)
+            .map_err(|e| ChainAdapterError::Electrum(e.to_string()))?;
+        Ok(Self { client })
     }
 
-    fn client(&self) -> Result<electrum_client::Client, ChainAdapterError> {
-        electrum_client::Client::new(&self.electrum_url)
-            .map_err(|e| ChainAdapterError::Electrum(e.to_string()))
+    fn client(&self) -> Result<&electrum_client::Client, ChainAdapterError> {
+        Ok(&self.client)
     }
 
     fn script_hash_hex(script_pubkey: &[u8]) -> String {

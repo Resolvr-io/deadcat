@@ -135,6 +135,21 @@ pub fn build_backup_query_filter(pubkey: &PublicKey) -> Filter {
         .identifier(WALLET_BACKUP_D_TAG)
 }
 
+fn event_has_tag_value(event: &Event, key: &str, expected: &str) -> bool {
+    event.tags.iter().any(|tag| {
+        let values = tag.as_slice();
+        values.len() >= 2 && values[0] == key && values[1] == expected
+    })
+}
+
+/// Whether an event looks like a live NIP-44 wallet backup event.
+pub fn is_wallet_backup_candidate(event: &Event) -> bool {
+    !event.content.trim().is_empty()
+        && !event_has_tag_value(event, "deleted", "true")
+        && event_has_tag_value(event, "encrypted", "true")
+        && event_has_tag_value(event, "encryption", "nip44")
+}
+
 /// Encrypt a plaintext string to self using NIP-44.
 pub fn nip44_encrypt_to_self(keys: &Keys, plaintext: &str) -> Result<String, String> {
     use nostr_sdk::nostr::nips::nip44;
