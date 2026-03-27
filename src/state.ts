@@ -1,3 +1,4 @@
+import type { BrantaVerifyStatus } from "./services/branta.ts";
 import type {
   ActionTab,
   AppNetwork,
@@ -27,7 +28,6 @@ import type {
   ViewMode,
   WalletData,
 } from "./types.ts";
-import type { BrantaVerifyStatus } from "./services/branta.ts";
 
 export function createWalletData(): WalletData {
   return {

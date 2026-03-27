@@ -6,8 +6,9 @@ export type BrantaVerifyStatus = "idle" | "checking" | "verified" | "not_found";
 export type BrantaVerifyResult = {
   found: boolean;
   platform?: string;
-  description?: string;
 };
+
+const BRANTA_TIMEOUT_MS = 5000;
 
 export async function verifyAddress(
   address: string,
@@ -15,22 +16,23 @@ export async function verifyAddress(
 ): Promise<BrantaVerifyResult> {
   const baseUrl = isMainnet ? BRANTA_PRODUCTION_URL : BRANTA_STAGING_URL;
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), BRANTA_TIMEOUT_MS);
     const resp = await fetch(
       `${baseUrl}/v2/payments/${encodeURIComponent(address)}`,
-      { headers: { Accept: "application/json" } },
+      { headers: { Accept: "application/json" }, signal: controller.signal },
     );
+    clearTimeout(timer);
     if (!resp.ok) return { found: false };
     const payments = (await resp.json()) as Array<{
       destinations?: unknown[];
       platform?: string;
-      description?: string;
     }>;
-    if (!Array.isArray(payments) || payments.length === 0) return { found: false };
-    const first = payments[0];
+    if (!Array.isArray(payments) || payments.length === 0)
+      return { found: false };
     return {
       found: true,
-      platform: first.platform,
-      description: first.description,
+      platform: payments[0].platform,
     };
   } catch {
     return { found: false };

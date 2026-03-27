@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { MOCK_MARKETS } from "../mock-markets.ts";
+import { verifyAddress } from "../services/branta.ts";
 import {
   cancelLimitOrder,
   cancelTokens,
@@ -68,7 +69,6 @@ import {
 import { showToast } from "../ui/toast.ts";
 import { reverseHex } from "../utils/crypto.ts";
 import { formatSats, formatSatsInput } from "../utils/format.ts";
-import { verifyAddress } from "../services/branta.ts";
 import {
   clampContractPriceSats,
   commitTradeContractsDraft,
@@ -1676,19 +1676,24 @@ export async function handleClick(
           { invoice },
         );
         state.sentLightningSwap = swap;
-        // Verify Boltz lockup address with Branta in the background
         state.brantaBoltzStatus = "checking";
         state.brantaBoltzPlatform = "";
-        render();
-        const isMainnet = state.walletNetwork === "mainnet";
-        const result = await verifyAddress(swap.lockupAddress, isMainnet);
-        state.brantaBoltzStatus = result.found ? "verified" : "not_found";
-        state.brantaBoltzPlatform = result.platform ?? "";
       } catch (e) {
         state.sendError = String(e);
       }
       state.sendCreating = false;
       render();
+      // Verify Boltz lockup address with Branta in the background
+      if (state.sentLightningSwap) {
+        const isMainnet = state.walletNetwork === "mainnet";
+        const result = await verifyAddress(
+          state.sentLightningSwap.lockupAddress,
+          isMainnet,
+        );
+        state.brantaBoltzStatus = result.found ? "verified" : "not_found";
+        state.brantaBoltzPlatform = result.platform ?? "";
+        render();
+      }
     })();
     return;
   }
@@ -1752,19 +1757,24 @@ export async function handleClick(
         state.sentBitcoinSwap = swap;
         const addr = swap.claimLockupAddress;
         await generateQr(swap.bip21 || addr);
-        // Verify the Liquid lockup address with Branta in the background
         state.brantaBoltzStatus = "checking";
         state.brantaBoltzPlatform = "";
-        render();
-        const isMainnet = state.walletNetwork === "mainnet";
-        const result = await verifyAddress(swap.lockupAddress, isMainnet);
-        state.brantaBoltzStatus = result.found ? "verified" : "not_found";
-        state.brantaBoltzPlatform = result.platform ?? "";
       } catch (e) {
         state.sendError = String(e);
       }
       state.sendCreating = false;
       render();
+      // Verify Boltz lockup address with Branta in the background
+      if (state.sentBitcoinSwap) {
+        const isMainnet = state.walletNetwork === "mainnet";
+        const result = await verifyAddress(
+          state.sentBitcoinSwap.lockupAddress,
+          isMainnet,
+        );
+        state.brantaBoltzStatus = result.found ? "verified" : "not_found";
+        state.brantaBoltzPlatform = result.platform ?? "";
+        render();
+      }
     })();
     return;
   }

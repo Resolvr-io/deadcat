@@ -1,23 +1,26 @@
-import { state } from "../state.ts";
 import { debounce, verifyAddress } from "../services/branta.ts";
+import { state } from "../state.ts";
 
 // Debounced Branta check for Liquid send address (500 ms after last keystroke)
-const checkBrantaLiquidAddress = debounce((address: string, render: () => void) => {
-  if (!address.trim()) {
-    state.brantaLiquidStatus = "idle";
-    state.brantaLiquidPlatform = "";
+const checkBrantaLiquidAddress = debounce(
+  (address: string, render: () => void) => {
+    if (!address.trim()) {
+      state.brantaLiquidStatus = "idle";
+      state.brantaLiquidPlatform = "";
+      render();
+      return;
+    }
+    state.brantaLiquidStatus = "checking";
     render();
-    return;
-  }
-  state.brantaLiquidStatus = "checking";
-  render();
-  const isMainnet = state.walletNetwork === "mainnet";
-  verifyAddress(address.trim(), isMainnet).then((result) => {
-    state.brantaLiquidStatus = result.found ? "verified" : "not_found";
-    state.brantaLiquidPlatform = result.platform ?? "";
-    render();
-  });
-}, 500);
+    const isMainnet = state.walletNetwork === "mainnet";
+    verifyAddress(address.trim(), isMainnet).then((result) => {
+      state.brantaLiquidStatus = result.found ? "verified" : "not_found";
+      state.brantaLiquidPlatform = result.platform ?? "";
+      render();
+    });
+  },
+  500,
+);
 
 export function handleInput(e: Event, render: () => void): void {
   const target = e.target as HTMLInputElement;
