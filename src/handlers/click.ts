@@ -162,6 +162,16 @@ function requestLiquidReceiveAddress(
     if (liquidReceiveQrVisible() && !state.modalQr) {
       void generateQr(state.receiveLiquidAddress).then(() => render());
     }
+    // Verify cached address with Branta if not already checked
+    if (state.brantaReceiveStatus === "idle") {
+      state.brantaReceiveStatus = "checking";
+      const isMainnet = state.walletNetwork === "mainnet";
+      verifyAddress(state.receiveLiquidAddress, isMainnet).then((result) => {
+        state.brantaReceiveStatus = result.found ? "verified" : "not_found";
+        state.brantaReceivePlatform = result.platform ?? "";
+        render();
+      });
+    }
     return;
   }
 
