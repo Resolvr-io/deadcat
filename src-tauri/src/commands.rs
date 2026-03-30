@@ -695,19 +695,25 @@ pub async fn fetch_nostr_profile(
 
 #[tauri::command]
 pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
-    // Fetch from Nostr (persists to store as side-effect)
-    {
-        let node = {
-            let node_state = app.state::<NodeState>();
-            let guard = node_state.node.lock().await;
-            guard.as_ref().cloned().ok_or("Node not initialized")?
-        };
-        if let Err(e) = node.fetch_markets().await {
-            log::warn!("Nostr fetch failed (serving from store): {e}");
-        }
+    // Return cached store data immediately so the UI is responsive.
+    let result = list_contracts(app.clone());
+
+    // Fetch fresh data from Nostr relays in the background.
+    // New markets will appear on next render/sync cycle.
+    let node = {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        guard.as_ref().cloned()
+    };
+    if let Some(node) = node {
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = node.fetch_markets().await {
+                log::warn!("Background Nostr fetch failed: {e}");
+            }
+        });
     }
-    // Return from store — single source of truth
-    list_contracts(app)
+
+    result
 }
 
 #[tauri::command]
