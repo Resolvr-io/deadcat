@@ -14,11 +14,13 @@ The primary motivating use case: integrating Deadcat functionality into existing
 deadcat-core     Pure computation. No IO, no wallet, no chain, no contract discovery.
                  Contains: contract compilation, PSET builders, state machine,
                  LMSR math, transaction interpretation, asset identification.
+                 Fully encapsulates Simplicity — consumers never see compiled
+                 contracts, CMRs, taproot trees, or witness encoding.
 
 deadcat-sdk      Opinionated wallet integration. Wraps core with a specific
                  wallet backend (LWK), chain backend (Electrum), and signer.
-                 Provides the "prepare" pattern: sync wallet -> select UTXOs ->
-                 call core PSET builder -> sign -> return prepared tx.
+                 Provides the "prepare" pattern: sync wallet -> provide UTXOs
+                 + fee rate to core engine -> sign returned PSET -> broadcast.
                  Imports deadcat-core.
 
 deadcat-node     Full batteries-included runtime. Wraps SDK with Nostr discovery,
@@ -30,19 +32,19 @@ deadcat-node     Full batteries-included runtime. Wraps SDK with Nostr discovery
 
 | Capability                             | deadcat-core   | deadcat-sdk    | deadcat-node       |
 | -------------------------------------- | -------------- | -------------- | ------------------ |
-| Simplicity contract compilation        | Yes            |                |                    |
-| PSET construction                      | Yes            |                |                    |
+| Simplicity contract compilation        | Yes (internal) |                |                    |
+| PSET construction (incl. coin select.) | Yes            |                |                    |
 | LMSR math (quotes, spot price, tables) | Yes            |                |                    |
 | Contract state machine                 | Yes            |                |                    |
 | Transaction interpretation             | Yes            |                |                    |
 | Asset identification                   | Yes            |                |                    |
-| Coin selection utility (pure function) | Yes            |                |                    |
+| Trade routing + quoting               | Yes            |                |                    |
+| Fee computation (from fee rate)        | Yes            |                |                    |
 | ContractStore trait (required)         | Yes (defines)  |                | Yes (SQLite impl)  |
 | ContractHistory trait (optional)       | Yes (defines)  |                | Yes (SQLite impl)  |
 | Wallet (UTXO source, signer)          |                | Yes (LWK)      |                    |
 | Chain backend (scan, broadcast)        |                | Yes (Electrum) |                    |
-| Fee estimation                         |                | Yes            |                    |
-| UTXO selection + preparation           |                | Yes            |                    |
+| Fee rate estimation                    |                | Yes            |                    |
 | Nostr discovery                        |                |                | Yes                |
 | Background sync                        |                |                | Yes                |
 | Boltz swap integration                 |                |                | Yes                |
@@ -56,13 +58,14 @@ Note: `deadcat-core` defines the `ContractStore` and `ContractHistory` traits. `
 ```rust
 pub struct ContractEngine<S: ContractStore> {
     store: S,
-    // Internal caches: compiled contracts, asset lookup tables, etc.
+    network: Network,
+    // Internal: lazy-compiled contract cache (populated on first access per contract)
 }
 ```
 
 ### Exclusive Store Ownership
 
-The engine takes exclusive ownership of the store. The caller creates a `ContractStore` implementation, hands it to `ContractEngine::new()`, and never touches it again. All reads and writes go through the engine's API.
+The engine takes exclusive ownership of the store. The caller creates a `ContractStore` implementation, hands it to `ContractEngine::new()` along with the target network (testnet/mainnet), and never touches the store again. All reads and writes go through the engine's API. The network is a construction-time constant used for Simplicity compilation and address derivation.
 
 **Why**: If the caller could mutate the store directly, they could advance a contract's outpoints without the engine knowing, or modify state in ways that break the engine's internal invariants. Exclusive ownership ensures the engine is always the single source of truth for contract state.
 
@@ -71,7 +74,7 @@ The engine takes exclusive ownership of the store. The caller creates a `Contrac
 ```rust
 impl<S: ContractStore> ContractEngine<S> {
     // Construction
-    pub fn new(store: S) -> Self;
+    pub fn new(store: S, network: Network) -> Self;
 
     // Contract ingestion
     pub fn ingest_contract(
@@ -86,56 +89,96 @@ impl<S: ContractStore> ContractEngine<S> {
     pub fn all_covenant_scripts(&self, contract_id: &str) -> Result<Vec<Script>, CoreError<S::Error>>;
 
     // Per-type listing (reads — &self)
-    pub fn list_markets(&self, filter: StateFilter, page: Pagination) -> Result<Page<(String, PredictionMarketParams, MarketState)>, CoreError<S::Error>>;
-    pub fn list_pools(&self, filter: StateFilter, page: Pagination) -> Result<Page<(String, LmsrPoolParams, LmsrPoolState)>, CoreError<S::Error>>;
-    pub fn list_orders(&self, filter: StateFilter, page: Pagination) -> Result<Page<(String, MakerOrderParams, OrderState)>, CoreError<S::Error>>;
+    pub fn list_markets(&self, filter: StateFilter, page: Pagination) -> Result<Page<MarketEntry>, CoreError<S::Error>>;
+    pub fn list_pools(&self, filter: StateFilter, page: Pagination) -> Result<Page<PoolEntry>, CoreError<S::Error>>;
+    pub fn list_orders(&self, filter: StateFilter, page: Pagination) -> Result<Page<OrderEntry>, CoreError<S::Error>>;
 
     // Relationship queries (reads — &self)
-    pub fn pools_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<(String, LmsrPoolParams, LmsrPoolState)>, CoreError<S::Error>>;
-    pub fn orders_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<(String, MakerOrderParams, OrderState)>, CoreError<S::Error>>;
+    pub fn pools_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<PoolEntry>, CoreError<S::Error>>;
+    pub fn orders_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<OrderEntry>, CoreError<S::Error>>;
 
     // Transaction processing (writes — &mut self)
     pub fn process_transaction(&mut self, tx: &ChainTransaction) -> Result<Vec<ConfirmedTransition>, CoreError<S::Error>>;
     pub fn rollback_to_height(&mut self, height: u32) -> Result<(), CoreError<S::Error>>;
     pub fn prune_finalized(&mut self, current_height: u32, finality_depth: u32) -> Result<(), CoreError<S::Error>>;
 
+    // Trade quoting (reads — &self)
+    pub fn quote_trade(
+        &self,
+        market_id: &str,
+        spec: TradeSpec,
+    ) -> Result<TradeQuote, CoreError<S::Error>>;
+
+    // PSET builders (reads — &self)
+    // All builders take a &WalletFunding for coin selection, fee computation, and change.
+    // Creation builders take concrete param types (compile on the fly).
+    // Post-ingestion builders take contract_id (use cached compiled contract).
+
+    // Prediction market builders
+    pub fn build_creation_pset(&self, params: &PredictionMarketParams, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    pub fn build_issuance_pset(&self, contract_id: &str, pairs: u64, yes_dest: &Script, no_dest: &Script, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    pub fn build_cancellation_pset(&self, contract_id: &str, pairs_to_burn: Option<u64>, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    pub fn build_oracle_resolve_pset(&self, contract_id: &str, oracle_attestation: &schnorr::Signature, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    pub fn build_expire_transition_pset(&self, contract_id: &str, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    pub fn build_redemption_pset(&self, contract_id: &str, side: Side, tokens_to_redeem: u64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    // LMSR pool builders
+    pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, initial_reserves: &PoolReserves, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    pub fn build_lmsr_adjust_pset(&self, contract_id: &str, target_reserves: &PoolReserves, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    // Maker order builders
+    pub fn build_create_order_pset(&self, params: &MakerOrderParams, offered_amount: u64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    pub fn build_fill_order_pset(&self, contract_id: &str, fill_amount: u64, receive_script: &Script, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    pub fn build_cancel_order_pset(&self, contract_id: &str, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    // Trade builder (uses TradeQuote from quote_trade)
+    pub fn build_trade_pset(&self, quote: &TradeQuote, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+
     // Transaction interpretation (reads — &self)
     pub fn interpret_transaction(&self, tx: &Transaction) -> Vec<Transition>;
     pub fn identify_asset(&self, asset_id: &AssetId) -> Option<AssetInfo>;
 }
+
+// Standalone pure functions (no engine needed)
+pub fn contract_id(params: &ContractParams) -> String;
 
 // History methods — only available when the store implements ContractHistory
 impl<S: ContractHistory> ContractEngine<S> {
     pub fn market_history(
         &self,
         contract_id: &str,
-        since_height: Option<u32>,
-        limit: Option<usize>,
+        after: Option<ChainPosition>,
+        limit: u32,
     ) -> Result<Vec<TypedStateUpdate<MarketTransition>>, CoreError<S::Error>>;
 
     pub fn pool_history(
         &self,
         contract_id: &str,
-        since_height: Option<u32>,
-        limit: Option<usize>,
+        after: Option<ChainPosition>,
+        limit: u32,
     ) -> Result<Vec<TypedStateUpdate<PoolTransition>>, CoreError<S::Error>>;
 
     pub fn order_history(
         &self,
         contract_id: &str,
-        since_height: Option<u32>,
-        limit: Option<usize>,
+        after: Option<ChainPosition>,
+        limit: u32,
     ) -> Result<Vec<TypedStateUpdate<OrderTransition>>, CoreError<S::Error>>;
 }
 ```
 
-Write methods take `&mut self`. Read methods take `&self`. Rust's borrow rules enforce at compile time that only one writer OR multiple readers can access the engine at any given time — analogous to `RwLock` semantics without runtime overhead. This means store implementors only need to worry about atomic application of state updates, not concurrent access or out-of-order writes.
+Write methods take `&mut self`. Read methods (including all PSET builders) take `&self`. Rust's borrow rules enforce at compile time that only one writer OR multiple readers can access the engine at any given time — analogous to `RwLock` semantics without runtime overhead. This means store implementors only need to worry about atomic application of state updates, not concurrent access or out-of-order writes.
+
+**PSET builders are engine methods**: All PSET builders live on the engine because they need access to compiled contracts (lazily cached in memory). Simplicity contract compilation, CMR derivation, taproot tree construction, and script pubkey generation are all internal to the engine — consumers never interact with these concepts. Consumers provide contract params (plain data) and a `WalletFunding` struct, and receive PSETs back. See [PSET Construction](#pset-construction) for details.
+
+**Creation builders** (`build_creation_pset`, `build_lmsr_bootstrap_pset`, `build_create_order_pset`) take the concrete param type (`&PredictionMarketParams`, `&LmsrPoolParams`, `&MakerOrderParams`) instead of a `contract_id` because the contract hasn't been ingested yet. The engine compiles the Simplicity contract on the fly at PSET build time. For all post-ingestion builders, the engine uses its internal cache (populated lazily on first access after `ingest_contract`), so compilation latency is paid at most once per contract per engine lifetime.
+
+**No per-builder args structs**: PSET builders take operation-specific arguments as direct parameters alongside a shared `WalletFunding` struct (available UTXOs, fee rate, change script). This avoids a zoo of single-use parameter types — the function signature IS the documentation. See [WalletFunding](#walletfunding) and [PSET Construction](#pset-construction).
+
+**Merged builders**: `build_issuance_pset` handles both initial (Dormant → Unresolved) and subsequent (Unresolved → Unresolved) issuance — the engine determines which from the contract's current state. `build_redemption_pset` handles both post-resolution and post-expiry redemption — the engine determines which from the current covenant phase. The `side` parameter on `build_redemption_pset` specifies which token to burn: for resolved markets, the engine validates it matches the winning side; for expired markets, either side is valid.
 
 Note: The history `impl` block uses `S: ContractHistory` rather than `S: ContractStore + ContractHistory` because `ContractHistory` is a supertrait of `ContractStore` — the `ContractStore` bound is implied. See [ContractHistory](#optional-contracthistory).
 
 ### Contract ID Generation
 
-Contract IDs are deterministically derived by the engine from the contract's parameters. The same contract always produces the same ID regardless of who ingests it. `ingest_contract` returns the computed ID so the caller can reference it.
+Contract IDs are deterministically derived from the contract's parameters. The same contract always produces the same ID regardless of who ingests it. `ingest_contract` returns the computed ID so the caller can reference it. The standalone `contract_id()` function provides the same derivation without requiring an engine — useful for deduplication during discovery (e.g., computing IDs from Nostr announcements to skip already-tracked contracts before fetching creation transactions).
 
 **Why deterministic**: If two different wallets ingest the same market, they get the same ID. This enables cross-wallet coordination and deduplication without requiring callers to know the hashing scheme.
 
@@ -155,7 +198,12 @@ pub fn ingest_contract(
     let outpoints = match_creation_outputs(&creation_tx.tx, &initial_scripts)?;
     let initial_state = derive_initial_state(&outpoints);
     let contract = Contract::from_params_and_state(params, initial_state);
-    self.store.track_contract(contract_id.clone(), contract)?;
+    let derived = DerivedContractData {
+        asset_ids: compiled.derive_asset_ids(),
+        covenant_scripts: compiled.all_scripts(),
+    };
+    self.store.track_contract(contract_id.clone(), contract, derived)?;
+    self.compiled_cache.insert(contract_id.clone(), compiled);
     Ok(contract_id)
 }
 ```
@@ -165,6 +213,16 @@ pub fn ingest_contract(
 **Why creation-specific logic**: `ingest_contract` scans the creation transaction's **outputs** for covenant scripts, because the creation tx produces outpoints from nothing — there are no prior outpoints to track. This is fundamentally different from `process_transaction`, which scans a transaction's **inputs** for tracked outpoints (the UTXO-following model). The two share downstream components (script derivation, store persistence) but their entry logic diverges because creation and state-transition are genuinely different operations.
 
 **Caller responsibility**: The caller must ensure the creation transaction has already been confirmed on-chain before passing it to `ingest_contract`. Core does not verify chain inclusion — it verifies that the transaction's outputs match the expected covenant scripts derived from the provided parameters.
+
+**Not idempotent**: Unlike `process_transaction`, `ingest_contract` is NOT idempotent. Re-ingesting an already-tracked contract returns `CoreError::ContractAlreadyTracked { contract_id }`. This is intentional — double-ingestion typically indicates a caller bug. Callers who want idempotent behavior (e.g., crash recovery, multi-source discovery) can extract the contract ID from the error:
+
+```rust
+let contract_id = match engine.ingest_contract(params, &creation_tx) {
+    Ok(id) => id,
+    Err(CoreError::ContractAlreadyTracked { contract_id }) => contract_id,
+    Err(e) => return Err(e),
+};
+```
 
 ### process_transaction
 
@@ -180,15 +238,14 @@ pub fn process_transaction(
         return Ok(vec![]);  // idempotent: nothing affected
     }
     let updates: Vec<StateUpdate> = transitions.iter().map(to_state_update).collect();
-    self.store.apply_transitions(&updates)?;  // durable write FIRST
-    self.update_in_memory_state(&transitions);  // then update caches
+    self.store.apply_transitions(&updates)?;  // durable write
     Ok(transitions)
 }
 ```
 
 **Idempotent**: If the same transaction is processed twice (e.g., after crash recovery), the second call is a no-op — the spent outpoints are no longer tracked, so no contracts are affected.
 
-**Durable before returning**: The store write completes before the method returns. A crash between "computed" and "persisted" cannot leave the engine in an inconsistent state. The in-memory cache is updated only after the store confirms the write.
+**Durable before returning**: The store write completes before the method returns. A crash between "computed" and "persisted" cannot leave the engine in an inconsistent state.
 
 **Why the engine applies transitions internally (not the caller)**: Processing and persistence are a single atomic operation. If the caller had to manually apply transitions, a crash between "engine returned results" and "caller applied them" would leave the engine's in-memory state ahead of the store. The engine owns the store, so it owns the write.
 
@@ -230,27 +287,27 @@ Returns all possible covenant script pubkeys for a tracked contract, across **al
 
 ### Per-Type Listing Methods
 
-The typed listing methods (`list_markets`, `list_pools`, `list_orders`) delegate to the store's per-type methods internally, then unwrap the `Contract` enum to return typed results. All accept `StateFilter` and `Pagination` parameters.
+The typed listing methods (`list_markets`, `list_pools`, `list_orders`) delegate to the store's per-type methods, which return typed results directly. All accept `StateFilter` and `Pagination` parameters.
 
 ```rust
 pub fn list_markets(
     &self,
     filter: StateFilter,
     page: Pagination,
-) -> Result<Page<(String, PredictionMarketParams, MarketState)>, CoreError<S::Error>>;
+) -> Result<Page<MarketEntry>, CoreError<S::Error>>;
 ```
 
-The store returns `Page<(String, Contract)>` (the generic enum). The engine unwraps each `Contract` variant to extract the typed params and state. This keeps the store trait consistent while giving callers typed results.
+The store's listing methods return typed results (e.g., `Page<MarketEntry>` rather than `Page<(String, Contract)>`). `MarketEntry` is a type alias for `ContractEntry<PredictionMarketParams, MarketState>` — see [ContractEntry](#contractentry). This enforces the type invariant at compile time — a `list_markets` implementation cannot accidentally return a pool or order. If the store's own data is corrupted (a "market" row deserializes to a different type), the error surfaces at the store layer via `Self::Error`, where data corruption errors belong.
 
 **Pagination**: All listing methods use cursor-based pagination. See [Pagination Types](#pagination-types).
 
-**State filtering**: `StateFilter::ActiveOnly` returns contracts with active outpoints. `StateFilter::TerminalOnly` returns settled/closed/consumed/cancelled contracts. `StateFilter::All` returns both. At Polymarket scale (thousands of markets), filtering at the store level avoids paging through thousands of irrelevant terminal contracts.
+**State filtering**: `StateFilter::ActiveOnly` returns contracts with active outpoints. `StateFilter::TerminalOnly` returns contracts in terminal states (settled markets, consumed/cancelled orders). `StateFilter::All` returns both. At Polymarket scale (thousands of markets), filtering at the store level avoids paging through thousands of irrelevant terminal contracts. Note: LMSR pools currently have no terminal state (see [LmsrPoolState](#lmsrpoolstate)), so `TerminalOnly` returns no pools.
 
 ### Relationship Queries
 
 ```rust
-pub fn pools_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<(String, LmsrPoolParams, LmsrPoolState)>, CoreError<S::Error>>;
-pub fn orders_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<(String, MakerOrderParams, OrderState)>, CoreError<S::Error>>;
+pub fn pools_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<PoolEntry>, CoreError<S::Error>>;
+pub fn orders_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<OrderEntry>, CoreError<S::Error>>;
 ```
 
 Return pools or orders associated with a specific market. The relationship is encoded in pool/order params (they reference the market's token asset IDs). The store maintains a secondary index on market_id for efficient lookups.
@@ -263,8 +320,8 @@ The three typed history methods (`market_history`, `pool_history`, `order_histor
 
 ```rust
 // Engine calls store's unified method, then unwraps per-contract type
-pub fn market_history(&self, contract_id: &str, ...) -> Result<Vec<TypedStateUpdate<MarketTransition>>, ...> {
-    let raw = self.store.transition_history(contract_id, since_height, limit)?;
+pub fn market_history(&self, contract_id: &str, after: Option<ChainPosition>, limit: u32) -> Result<Vec<TypedStateUpdate<MarketTransition>>, ...> {
+    let raw = self.store.transition_history(contract_id, after, limit)?;
     raw.into_iter().map(|u| {
         let TransitionDetails::Market(details) = u.details else {
             debug_assert!(false, "store returned non-market transition for market contract");
@@ -274,6 +331,8 @@ pub fn market_history(&self, contract_id: &str, ...) -> Result<Vec<TypedStateUpd
     }).collect()
 }
 ```
+
+**Ordering**: History is returned in ascending chain order (oldest first). This aligns with the primary use cases: price chart construction, audit trails, and catch-up from a checkpoint. The `after` parameter provides a precise cursor using `ChainPosition` (block height + tx index), which handles multiple transitions within the same block correctly. The caller paginates by passing the `position` from the last returned item as `after` in the next call.
 
 **Why typed convenience methods**: The caller always knows the contract type when querying history. The unified `StateUpdate` with `TransitionDetails` enum forces an unnecessary match on a variant the caller already knows. The typed methods eliminate this ergonomic cost. The store trait stays simple (one `transition_history` method); the engine does the trivial unwrapping.
 
@@ -356,7 +415,7 @@ Each contract type has a state enum that represents its current tip state — th
 pub enum MarketState {
     Active {
         phase: CovenantPhase,
-        outpoints: Vec<(SlotType, OutPoint)>,
+        outpoints: BTreeMap<SlotType, OutPoint>,
     },
     Settled {
         final_txid: Txid,
@@ -425,16 +484,12 @@ pub enum LmsrPoolState {
         s_index: u64,
         reserves: PoolReserves,
     },
-    Closed {
-        final_txid: Txid,
-        reclaimed: PoolReserves,
-    },
 }
 ```
 
 Active pools track their outpoints as a map from reserve slot to outpoint. This is flexible enough to handle the current covenant (always 3 outpoints) and future covenant versions where individual reserves can be fully consumed (fewer than 3 active outpoints).
 
-`Closed` carries `reclaimed` reserves so the wallet can display "You closed this pool and reclaimed X YES, Y NO, Z L-BTC" without requiring transition history.
+**Note**: The current LMSR pool covenant has no close/reclaim path — the admin adjustment path always produces new covenant outputs. Pools currently have no terminal state. **ACTION ITEM**: The LMSR Simplicity covenant needs a close/reclaim path that fully consumes the pool's UTXOs. Once designed, add a `Closed` variant to `LmsrPoolState` and a corresponding `Closed` variant to `PoolTransition`.
 
 #### OrderState
 
@@ -481,9 +536,9 @@ pub enum StateFilter {
 }
 ```
 
-**Cursor opacity**: The store encodes whatever it needs into the cursor string (e.g., last seen contract_id, ordering position). The caller passes cursors back without interpreting them. If a caller passes a cursor from one method to a different method, the store should return an error.
+**Cursor opacity and validation**: The store encodes whatever it needs into the cursor string (e.g., last seen contract_id, ordering position, method identity, filter). The caller passes cursors back without interpreting them. The store validates cursors on use: if a caller passes a cursor from one method to a different method, or reuses a cursor with different parameters (e.g., a cursor from `list_markets(ActiveOnly, ...)` used with `list_markets(TerminalOnly, ...)`), the store should return an error. Cursors encode a position within a specific filtered result set — changing the filter invalidates the position.
 
-**Count-only queries**: Pass `limit: 0` to get just the `total` count without loading any items. No separate count methods needed.
+**Count-only queries**: Pass `limit: 0` to get just the `total` count without loading any items. No separate count methods needed. The response is `Page { items: vec![], next_cursor: None, total }` — `next_cursor` is `None` because no items were returned and there is no position to continue from. To fetch the first page after a count-only query, call again with `after: None` and a non-zero limit.
 
 **`total` is always included**: Every paginated response includes the total count of matching items across all pages. This enables "showing 1-20 of 1,234 markets" UI without separate count calls. Implementors can cache counts if the overhead of `COUNT(*)` becomes significant.
 
@@ -493,7 +548,159 @@ pub enum StateFilter {
 pub enum Side { Yes, No }
 ```
 
-Used in `OutputRole` to identify which outcome token an output represents.
+Used throughout to identify which outcome token is referenced — in `OutputRole`, `TradeSpec`, `AssetInfo`, etc.
+
+### FeeRate
+
+```rust
+pub struct FeeRate(u64); // internal: sats per kvB
+
+impl FeeRate {
+    pub fn from_sat_per_kvb(rate: u64) -> Self;
+    pub fn from_sat_per_vb(rate: u64) -> Self; // multiplies by 1000
+    pub fn as_sat_per_kvb(&self) -> u64;
+}
+```
+
+A newtype for fee rates with named constructors to eliminate unit ambiguity. The internal representation is sats per kvB (the Elements/Liquid convention). PSET builders accept `FeeRate` and compute the exact fee internally based on the actual transaction weight. The caller obtains the fee rate from their chain backend.
+
+### Network
+
+```rust
+pub enum Network {
+    Liquid,
+    LiquidTestnet,
+    ElementsRegtest,
+}
+```
+
+Target network for Simplicity compilation and address derivation. Passed to `ContractEngine::new` and used internally — consumers interact with it only at construction time.
+
+### WalletFunding
+
+```rust
+pub struct WalletFunding<'a> {
+    pub available_utxos: &'a [UnblindedUtxo],
+    pub fee_rate: FeeRate,
+    pub return_script: &'a Script,
+}
+```
+
+The wallet's contribution to a transaction. Shared across all PSET builders — the caller constructs one and passes it to any builder. `available_utxos` is the candidate UTXO pool (passing all wallet UTXOs is the expected usage — the builder selects the minimum needed). `fee_rate` is obtained from the chain backend. `return_script` receives all non-covenant, non-fee outputs: L-BTC change, collateral refunds, redemption payouts, trade proceeds, etc. Named `return_script` rather than `change_script` because it handles more than just change — it's the destination for all funds returning to the wallet. The builder consolidates outputs to the same script and asset for efficiency — see [Output Consolidation](#output-consolidation).
+
+### ContractEntry
+
+```rust
+pub struct ContractEntry<P, S> {
+    pub contract_id: String,
+    pub params: P,
+    pub state: S,
+}
+
+pub type MarketEntry = ContractEntry<PredictionMarketParams, MarketState>;
+pub type PoolEntry = ContractEntry<LmsrPoolParams, LmsrPoolState>;
+pub type OrderEntry = ContractEntry<MakerOrderParams, OrderState>;
+```
+
+Generic entry type used by all listing and relationship query methods. The type aliases provide ergonomic names (`Page<MarketEntry>` vs `Page<ContractEntry<PredictionMarketParams, MarketState>>`).
+
+### DerivedContractData
+
+```rust
+pub struct DerivedContractData {
+    pub asset_ids: Vec<(AssetId, AssetInfo)>,
+    pub covenant_scripts: Vec<Script>,
+}
+```
+
+Pre-computed data passed to the store during `track_contract` so the store can build indexes without knowing about Simplicity. `asset_ids` maps each asset (YES/NO tokens, YES/NO reissuance tokens) to its `AssetInfo`. `covenant_scripts` is the full set of scripts for all possible covenant states. Only prediction markets produce asset IDs; pools and orders have empty `asset_ids`.
+
+### Oracle Attestation
+
+The oracle resolve builder takes a `secp256k1::schnorr::Signature` — a BIP-340 Schnorr signature from the oracle. The oracle signs `SHA256(market_id || outcome_byte)` where `outcome_byte` is `0x01` for YES or `0x00` for NO. The engine extracts the outcome by trial verification against both possible messages using the oracle's public key (from market params). `secp256k1` is a public dependency of `deadcat-core`.
+
+### IssuanceKind and RedemptionKind
+
+```rust
+pub enum IssuanceKind {
+    Initial,     // Dormant → Unresolved (first issuance, transitions covenant phase)
+    Subsequent,  // Unresolved → Unresolved (additional issuance, same phase)
+}
+
+pub enum RedemptionKind {
+    PostResolution,  // Resolved → Settled (winning tokens redeemed at full value)
+    Expiry,          // Expired → Settled (any tokens redeemed at half value)
+}
+```
+
+Used as discriminants in `MarketTransition::Issued` and `MarketTransition::Redeemed`. Most wallet integrators will handle all variants identically — the distinction exists primarily for detailed transaction display or debugging tools.
+
+### Trade Types
+
+```rust
+pub enum TradeDirection { Buy, Sell }
+
+// TODO: add ExactOutput(u64) variant when routing math supports it
+pub enum TradeAmount {
+    /// Taker specifies the exact amount they send.
+    /// Buy: exact collateral to spend. Sell: exact tokens to sell.
+    ExactInput(u64),
+}
+
+pub struct TradeSpec {
+    pub side: Side,
+    pub direction: TradeDirection,
+    pub amount: TradeAmount,
+}
+```
+
+`TradeSpec` is the input to `quote_trade`. The three axes are orthogonal — any combination of side, direction, and amount mode is valid.
+
+### TradeQuote and Related Types
+
+```rust
+pub struct TradeQuote {
+    // Public — for display to the user:
+    pub side: Side,
+    pub direction: TradeDirection,
+    pub requested_amount: u64,
+    pub filled_amount: u64,
+    pub total_input: u64,
+    pub total_output: u64,
+    pub effective_price: f64,
+    pub legs: Vec<RouteLeg>,
+
+    // Crate-internal — consumed by build_trade_pset:
+    pub(crate) route: TradeRoute,
+}
+
+pub struct RouteLeg {
+    pub source: LiquiditySource,
+    pub input_amount: u64,
+    pub output_amount: u64,
+}
+
+pub enum LiquiditySource {
+    LmsrPool {
+        pool_id: String,
+        old_s_index: u64,
+        new_s_index: u64,
+    },
+    LimitOrder {
+        order_id: String,
+        price: u64,
+        lots: u64,
+    },
+}
+```
+
+`TradeQuote` represents the best available fill. If `filled_amount < requested_amount`, the fill is partial — the wallet decides whether to proceed or warn the user. `quote_trade` returns `Err(CoreError::NoLiquidity)` only when zero liquidity is available (no pools, no orders); any positive fill returns `Ok`.
+
+The `pub(crate)` field `route` makes `TradeQuote` non-constructable by external consumers — they can only receive one from the engine and pass it to `build_trade_pset`. See [Trade PSET Builder](#trade-pset-builder).
+
+`TradeRoute` is a crate-internal type capturing the route plan (contract IDs, leg amounts, outpoint snapshots) needed by `build_trade_pset`. External consumers cannot inspect or construct it.
+
+`RouteLeg` breaks down how the trade is routed across liquidity sources. `LiquiditySource::LmsrPool` includes s-index movement for "pool moved from 50 to 55" display. `LiquiditySource::LimitOrder` includes the matched price and lot count.
 
 ### ContractMatch
 
@@ -517,7 +724,6 @@ pub struct Transition {
     pub old_outpoints: Vec<OutPoint>,
     pub new_outpoints: Vec<OutPoint>,
     pub details: TransitionDetails,
-    pub contract_outputs: Vec<u32>,          // which output indices are covenant state
     pub external_outputs: Vec<ExternalOutput>, // non-covenant outputs with roles
 }
 
@@ -533,7 +739,7 @@ pub struct ConfirmedTransition {
 
 ### StateUpdate
 
-The stripped-down form passed to the store internally by the engine. Does not include the computed output classification fields (`contract_outputs`, `external_outputs`) since those are derived from the transaction at query time and do not need to be persisted:
+The stripped-down form passed to the store internally by the engine. Does not include the computed output classification (`external_outputs`) since those are derived from the transaction at query time and do not need to be persisted:
 
 ```rust
 pub struct StateUpdate {
@@ -576,18 +782,20 @@ pub enum TransitionDetails {
     Order(OrderTransition),
 }
 
+pub enum IssuanceKind { Initial, Subsequent }
+pub enum RedemptionKind { PostResolution, Expiry }
+
 pub enum MarketTransition {
-    Issued { pairs: u64, collateral_locked: u64, initial: bool },
+    Issued { kind: IssuanceKind, pairs: u64, collateral_locked: u64 },
     Resolved { outcome_yes: bool },
-    Redeemed { tokens_burned: u64, payout_sats: u64 },
+    Redeemed { kind: RedemptionKind, side: Side, tokens_burned: u64, payout_sats: u64 },
     Cancelled { pairs_burned: u64, collateral_returned: u64 },
     Expired,
 }
 
 pub enum PoolTransition {
-    Swapped { old_s_index: u64, new_s_index: u64, new_reserves: PoolReserves },
+    Swapped { old_s_index: u64, new_s_index: u64, old_reserves: PoolReserves, new_reserves: PoolReserves },
     Adjusted { old_reserves: PoolReserves, new_reserves: PoolReserves },
-    Closed { reclaimed: PoolReserves },
 }
 
 pub enum OrderTransition {
@@ -595,6 +803,8 @@ pub enum OrderTransition {
     Cancelled,
 }
 ```
+
+`PoolTransition::Swapped` corresponds to the LMSR covenant's swap path — someone traded through the pool, moving the s-index. `PoolTransition::Adjusted` corresponds to the admin path — the pool operator (with cosigner signature) adjusted liquidity without changing the s-index. The covenant enforces that YES and NO token deltas are equal on the admin path; collateral can change independently.
 
 **Why nested by contract type**: When processing a market transition, the caller wants to match on market-specific variants without wading through pool and order cases. A flat enum mixing all contract types would force exhaustive matching across unrelated variants.
 
@@ -627,15 +837,30 @@ For `Confidential` outputs, the wallet uses its own blinding keys to determine a
 ```rust
 pub enum OutputRole {
     IssuedTokens { side: Side },
-    RedemptionPayout,
-    TradeReceive { side: Side },
-    Change,
+    CollateralReturn,
+    TradeReceive,
+    MakerReceive,
+    OrderReturn,
+    Burn,
     Fee,
     Unknown,
 }
 ```
 
-`OutputRole` is purely semantic — it labels what the output represents in the transaction, not its asset or value. The asset and value are already available on `ExternalOutput::Explicit`, so the role does not duplicate them. `side: Side` is kept on `IssuedTokens` and `TradeReceive` because it adds genuinely new information that would otherwise require an asset lookup to determine.
+`OutputRole` is purely semantic — it labels what the output represents in the transaction, not its asset or value. The asset and value are already available on `ExternalOutput::Explicit`, so the role does not duplicate them. `side: Side` is kept on `IssuedTokens` because it adds genuinely new information that would otherwise require an asset lookup.
+
+| Role | Meaning | Appears in |
+| ---- | ------- | ---------- |
+| `IssuedTokens { side }` | Newly minted YES or NO tokens | Issuance |
+| `CollateralReturn` | Collateral released from covenant to user | Redemption, cancellation |
+| `TradeReceive` | Tokens or L-BTC received by the taker | Trade, fill order |
+| `MakerReceive` | Payment sent to the maker | Fill order, trade |
+| `OrderReturn` | Order's locked asset returned to maker | Cancel order |
+| `Burn` | Tokens or RTs destroyed (OP_RETURN) | Cancellation, redemption, resolve, expire |
+| `Fee` | Transaction fee | All |
+| `Unknown` | Core can see asset/value but can't classify | Any (wallet labels via key ownership) |
+
+**Output consolidation**: PSET builders consolidate outputs that share the same script and asset into a single output for efficiency and privacy (see [Output Consolidation](#output-consolidation)). A `CollateralReturn` output may therefore include fee change. When exact amounts matter, use `TransitionDetails` — it is authoritative for semantic amounts (payout, tokens burned, collateral locked, etc.). `OutputRole` identifies *which* output serves a purpose; `TransitionDetails` provides *the precise numbers*.
 
 ### AssetInfo
 
@@ -658,26 +883,18 @@ The error type for all engine operations. Generic over the store's error type, w
 pub enum CoreError<E: std::error::Error> {
     Store(E),
     InvalidCreationTx { reason: String },
+    InvalidParams { detail: String },
     ContractNotFound { contract_id: String },
     ContractAlreadyTracked { contract_id: String },
-    DataIntegrity { detail: String },
+    InsufficientFunds { available: u64, required: u64 },
+    NoLiquidity { market_id: String },
+    Unsupported { detail: String },
 }
 ```
+
+`InvalidParams` covers caller-provided inputs that violate covenant constraints (e.g., issuance amount exceeds limits, invalid collateral asset). `InsufficientFunds` is returned by PSET builders when the caller's available UTXOs don't cover the required amount plus fee — the `available` and `required` fields enable wallet UX like "you have 5,000 sats but need 10,000." Internal construction errors (e.g., Pedersen commitment math failure) indicate bugs in core and panic rather than returning an error — every `CoreError` variant represents a condition the caller can meaningfully respond to.
 
 **Why generic over the store error**: The engine is already generic over `S: ContractStore`, so `CoreError<S::Error>` adds no new generic parameters. Store error types are preserved — consumers can match on `CoreError::Store(e)` and handle their specific store error without downcasting. Store implementors define their own error type independently via an associated type on the trait.
-
-### InsufficientFunds
-
-Error type for the standalone `select_utxos` function:
-
-```rust
-pub struct InsufficientFunds {
-    pub available: u64,
-    pub required: u64,
-}
-```
-
-The only failure mode for coin selection is insufficient funds. A dedicated struct (rather than an enum) reflects that there is exactly one failure case. The `available` and `required` fields enable wallet UX like "you have 5,000 sats but need 10,000."
 
 ## Core Design: UTXO-Following State Machine
 
@@ -778,8 +995,6 @@ Whether a contract is "caught up" is determined by the caller, not core. The cal
 
 Core defines traits for state persistence. The implementor controls what to store and how. All methods are required (no default implementations) — the store trait is designed for Polymarket-scale operation where every query needs efficient indexing. If an implementor wants to take shortcuts (e.g., implement `list_markets` by scanning all contracts and filtering), the performance cost is visible in their own code, not hidden behind a default.
 
-**Future optimization**: If profiling shows that the one-method-on-store + typed-convenience-on-engine pattern for listing becomes a bottleneck, the store trait could be extended with per-type methods that allow the store to optimize queries at the storage level. The current design keeps the trait surface minimal while the engine handles typed unwrapping.
-
 ### Required: ContractStore
 
 ```rust
@@ -793,17 +1008,21 @@ pub trait ContractStore {
     fn find_by_outpoints(&self, outpoints: &[OutPoint]) -> Result<Vec<ContractMatch>, Self::Error>;
     fn watched_outpoints(&self, page: Pagination) -> Result<Page<OutPoint>, Self::Error>;
 
-    // Per-type listing — &self
-    fn list_markets(&self, filter: StateFilter, page: Pagination) -> Result<Page<(String, Contract)>, Self::Error>;
-    fn list_pools(&self, filter: StateFilter, page: Pagination) -> Result<Page<(String, Contract)>, Self::Error>;
-    fn list_orders(&self, filter: StateFilter, page: Pagination) -> Result<Page<(String, Contract)>, Self::Error>;
+    // Index lookups — &self (populated at ingestion via DerivedContractData)
+    fn find_by_asset_id(&self, asset_id: &AssetId) -> Result<Option<AssetInfo>, Self::Error>;
+    fn covenant_scripts(&self, contract_id: &str) -> Result<Vec<Script>, Self::Error>;
 
-    // Relationship queries — &self
-    fn pools_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<(String, Contract)>, Self::Error>;
-    fn orders_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<(String, Contract)>, Self::Error>;
+    // Per-type listing — &self (typed results, not Contract enum)
+    fn list_markets(&self, filter: StateFilter, page: Pagination) -> Result<Page<MarketEntry>, Self::Error>;
+    fn list_pools(&self, filter: StateFilter, page: Pagination) -> Result<Page<PoolEntry>, Self::Error>;
+    fn list_orders(&self, filter: StateFilter, page: Pagination) -> Result<Page<OrderEntry>, Self::Error>;
+
+    // Relationship queries — &self (typed results)
+    fn pools_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<PoolEntry>, Self::Error>;
+    fn orders_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<OrderEntry>, Self::Error>;
 
     // Writes — &mut self
-    fn track_contract(&mut self, contract_id: String, contract: Contract) -> Result<(), Self::Error>;
+    fn track_contract(&mut self, contract_id: String, contract: Contract, derived: DerivedContractData) -> Result<(), Self::Error>;
     fn apply_transitions(&mut self, transitions: &[StateUpdate]) -> Result<(), Self::Error>;
     fn rollback_to_height(&mut self, height: u32) -> Result<(), Self::Error>;
     fn prune_finalized(&mut self, current_height: u32, finality_depth: u32) -> Result<(), Self::Error>;
@@ -816,6 +1035,10 @@ Every consumer must implement this. Read methods take `&self`, write methods tak
 
 `find_by_outpoints` is the hot-path method called on every `process_transaction`. It is not paginated because its input is bounded by the transaction's input count (constrained by Liquid's transaction size limits).
 
+`find_by_asset_id` and `covenant_scripts` are index lookups populated at ingestion time. The engine passes `DerivedContractData` (asset IDs + scripts) to `track_contract`, and the store indexes this data for fast lookups. `find_by_asset_id` backs the engine's `identify_asset` method. `covenant_scripts` backs the engine's `all_covenant_scripts` method. Neither requires Simplicity knowledge — the engine pre-computes the data and hands it over.
+
+**Processing log**: The store must persist enough rollback metadata during `apply_transitions` for `rollback_to_height` to reverse transitions. At minimum: the contract ID, old outpoints, new outpoints, and block height for each processed transition. `prune_finalized` removes this metadata for transitions below the finality threshold. This processing log is separate from `ContractHistory`'s transition history — it exists for rollback, not for user-facing queries. `rollback_to_height` must also clean up derived data (asset ID index, covenant scripts) for contracts removed during rollback.
+
 **Atomicity requirements**: Contract-level atomicity is a hard requirement — a single contract's state update (old outpoints -> new outpoints + state change) must be all-or-nothing. A half-updated contract is corrupted state. Transaction-level atomicity (all contracts updated together for a multi-contract transaction) is recommended but not strictly required for correctness. A "jagged" state where one contract has processed a transaction but another hasn't is indistinguishable from staggered ingestion — which is already a normal condition when contracts are discovered at different times. The system self-heals: re-processing the transaction advances the remaining contracts while already-processed contracts are a no-op (idempotency). Transaction-level atomicity is recommended because it's typically not much extra burden on top of the already-required contract-level atomicity (e.g., a single SQLite transaction) and avoids the jagged-view window.
 
 ### Optional: ContractHistory
@@ -825,8 +1048,8 @@ pub trait ContractHistory: ContractStore {
     fn transition_history(
         &self,
         contract_id: &str,
-        since_height: Option<u32>,
-        limit: Option<usize>,
+        after: Option<ChainPosition>,
+        limit: u32,
     ) -> Result<Vec<StateUpdate>, Self::Error>;
 }
 ```
@@ -853,7 +1076,7 @@ The current contract state (stored via `ContractStore`) carries enough informati
 
 - "Did this market resolve YES or NO?" -> `MarketState::Settled { settlement: SettlementKind::Redeemed { outcome_yes } }`
 - "How much of my order has been filled?" -> `OrderState::Active { total_filled }` or `OrderState::Cancelled { total_filled }`
-- "What reserves did I reclaim when I closed my pool?" -> `LmsrPoolState::Closed { reclaimed }`
+- "What are my pool's current reserves?" -> `LmsrPoolState::Active { reserves }`
 
 Transition history is for richer features: price charts, fill-by-fill order breakdowns, full audit trails.
 
@@ -873,41 +1096,144 @@ The `Transition.external_outputs` bridges the gap — core identifies which outp
 
 ## PSET Construction
 
-Core provides pure PSET builder functions. These take explicit inputs (UTXOs, params, amounts) and return unsigned PSETs. No wallet access, no chain queries.
+All PSET builders are engine methods. They return unsigned PSETs — no wallet access, no chain queries, no signing. The caller provides operation-specific arguments and a `WalletFunding` struct. The engine handles Simplicity contract compilation, script derivation, taproot tree construction, coin selection, and fee computation internally. The caller signs the resulting PSET and broadcasts.
 
-The existing PSET builders already follow this pattern:
+**Simplicity is fully encapsulated**: Consumers never see compiled contracts (`CompiledPredictionMarket`, `CompiledLmsrPool`, `CompiledMakerOrder`), Commitment Merkle Roots (CMRs), taproot trees, or witness encoding. These are internal to the engine. Consumers provide contract params (plain data: oracle keys, asset IDs, prices, expiry times) and receive PSETs back. The word "Simplicity" need not appear in consumer code.
+
+### Coin Selection and Fee Computation
+
+PSET builders perform coin selection internally. The caller provides `available_utxos` via `WalletFunding` — their full candidate pool (or a pre-filtered subset if they want to exclude specific UTXOs). The builder selects the minimum needed. Passing all wallet UTXOs is the expected usage.
+
+Fee computation is also internal. The caller provides `fee_rate: FeeRate` via `WalletFunding` (obtained from their chain backend). The builder constructs the transaction, measures its weight, and computes `fee = rate * weight`. This eliminates the chicken-and-egg problem of needing to know the transaction size to estimate the fee.
+
+If the available UTXOs don't cover the required amount plus fee, the builder returns `CoreError::InsufficientFunds { available, required }`.
+
+### UnblindedUtxo
+
+PSET builders accept `UnblindedUtxo` (via `WalletFunding`) — a UTXO with unblinded (revealed) asset, value, and blinding factors. This is an existing type from the codebase carrying: outpoint, script pubkey, explicit asset ID, explicit value, asset blinding factor, and value blinding factor. The caller obtains these from their wallet's UTXO set.
+
+### Output Consolidation
+
+PSET builders consolidate outputs that share the same destination script and asset into a single output. For example, a redemption payout (L-BTC collateral returned) and fee change (excess L-BTC from the fee input) both go to `funding.return_script` — the builder merges them into one output. This reduces transaction size (~4.3 KB per confidential output on Liquid), lowers fees, reduces UTXO bloat in the wallet, and improves privacy (fewer outputs = less structural fingerprinting).
+
+Because consolidated outputs may include fee change alongside their primary purpose, `OutputRole` identifies *which* output serves a purpose, but `TransitionDetails` is authoritative for *exact semantic amounts* (payout, tokens burned, collateral locked, etc.). The wallet should always use `TransitionDetails` for display amounts.
+
+### No Per-Builder Args Structs
+
+PSET builders take operation-specific arguments as direct function parameters alongside the shared `WalletFunding` struct. This avoids a proliferation of single-use parameter types — the function signature IS the documentation. Every builder needs wallet funding (every Liquid transaction requires an explicit fee). The `WalletFunding` struct carries the three common fields; operation-specific arguments are direct parameters. See [WalletFunding](#walletfunding).
+
+### Prediction Market Builders
+
+| Builder | Transaction | Covenant Transition |
+| ------- | ----------- | ------------------- |
+| `build_creation_pset` | Market creation (defines YES/NO assets, creates RT outputs) | — (creates initial state) |
+| `build_issuance_pset` | Token issuance (initial or subsequent) | Dormant → Unresolved, or Unresolved → Unresolved |
+| `build_cancellation_pset` | Cancel market (burn tokens, return collateral) | Unresolved → Unresolved (partial) or → Dormant (full) |
+| `build_oracle_resolve_pset` | Oracle resolution | Unresolved → ResolvedYes/ResolvedNo |
+| `build_expire_transition_pset` | Expire market | Unresolved → Expired |
+| `build_redemption_pset` | Redeem tokens (post-resolution or post-expiry) | Resolved/Expired → Settled |
+
+Creation takes concrete param type `&PredictionMarketParams` (compiles on the fly). All others take `contract_id` (uses cached compiled contract). `build_issuance_pset` handles both initial and subsequent issuance — the engine determines which from the contract's current state. `build_redemption_pset` handles both post-resolution and post-expiry redemption — the engine determines which from the current covenant phase. The `side` parameter specifies which token to burn; for resolved markets, the engine validates it matches the winning side.
 
 ```rust
-pub fn build_initial_issuance_pset(
-    contract: &CompiledPredictionMarket,
-    params: &InitialIssuanceParams,  // contains explicit UnblindedUtxo inputs
-) -> Result<PartiallySignedTransaction>;
+// Creation — takes concrete params, compiles on the fly
+pub fn build_creation_pset(&self, params: &PredictionMarketParams, funding: &WalletFunding)
+    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+
+// Post-ingestion — takes contract_id, uses cached compiled contract
+pub fn build_issuance_pset(&self, contract_id: &str, pairs: u64, yes_dest: &Script, no_dest: &Script, funding: &WalletFunding)
+    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+
+pub fn build_cancellation_pset(&self, contract_id: &str, pairs_to_burn: Option<u64>, funding: &WalletFunding)
+    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+
+// ... same pattern for all post-ingestion builders
 ```
 
-The caller (SDK or wallet) is responsible for selecting UTXOs, constructing the params, and signing the resulting PSET.
+`build_cancellation_pset` takes `pairs_to_burn: Option<u64>` — if `None`, the engine computes the maximum cancellable amount from the available YES and NO tokens in `funding.available_utxos` (minimum of the two token balances).
 
-### Coin Selection Utility
+### LMSR Pool Builders
 
-Core provides a standalone coin selection function. It takes a UTXO list from the caller's wallet and returns a selected subset. It does not own or access any wallet state — it's a pure function:
+| Builder | Transaction | Covenant Path |
+| ------- | ----------- | ------------- |
+| `build_lmsr_bootstrap_pset` | Pool creation (fund initial reserves) | — (creates initial state) |
+| `build_lmsr_adjust_pset` | Admin liquidity adjustment | Admin path (s_index unchanged) |
 
 ```rust
-pub fn select_utxos(
-    available: &[UnblindedUtxo],
-    target_asset: &AssetId,
-    target_amount: u64,
-    exclude: &[OutPoint],
-) -> Result<Vec<UnblindedUtxo>, InsufficientFunds>;
+pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, initial_reserves: &PoolReserves, funding: &WalletFunding)
+    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+
+pub fn build_lmsr_adjust_pset(&self, contract_id: &str, target_reserves: &PoolReserves, funding: &WalletFunding)
+    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 ```
 
-## Simplicity Contracts
+Pool swaps are not built directly — they are part of trade transactions (see [Trade PSET Builder](#trade-pset-builder) below).
 
-Core contains the `.simf` Simplicity contract source code and the compiler integration. Given contract parameters and a network type (testnet/mainnet), core can:
+### Maker Order Builders
 
-- Compile the Simplicity contract
-- Derive script pubkeys for any state
-- Decode witness data from spending transactions
+| Builder | Transaction | State Change |
+| ------- | ----------- | ------------ |
+| `build_create_order_pset` | Create limit order | — (creates initial state) |
+| `build_fill_order_pset` | Fill order | Active → Active or Consumed |
+| `build_cancel_order_pset` | Cancel order | Active → Cancelled |
+
+```rust
+pub fn build_create_order_pset(&self, params: &MakerOrderParams, offered_amount: u64, funding: &WalletFunding)
+    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+
+pub fn build_fill_order_pset(&self, contract_id: &str, fill_amount: u64, receive_script: &Script, funding: &WalletFunding)
+    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+
+pub fn build_cancel_order_pset(&self, contract_id: &str, funding: &WalletFunding)
+    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+```
+
+### Trade PSET Builder
+
+Trade transactions are unique: they route across multiple contracts (LMSR pools and/or maker orders) in a single transaction. This requires cross-contract route optimization — choosing which pools and orders to hit, in what amounts, for best execution. The engine has the state needed for this (pool reserves, order books, LMSR math), so trade PSET construction uses a two-step pattern:
+
+**Step 1: Quote** (engine method, read-only):
+
+```rust
+pub fn quote_trade(
+    &self,
+    market_id: &str,
+    spec: TradeSpec,
+) -> Result<TradeQuote, CoreError<S::Error>>;
+```
+
+The engine computes the optimal route across all available pools and orders for the market, using current state (reserves, s-indices, fill levels) and LMSR math. Returns a `TradeQuote` representing the best available fill. Returns `Err(CoreError::NoLiquidity)` only when zero liquidity is available; any positive fill returns `Ok` (see [TradeQuote](#tradequote-and-related-types) for partial fill handling).
+
+**Step 2: Build** (engine method):
+
+```rust
+pub fn build_trade_pset(
+    &self,
+    quote: &TradeQuote,
+    funding: &WalletFunding,
+) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+```
+
+Takes the accepted quote and the caller's wallet funding. The engine looks up compiled contracts from its cache, selects the needed UTXOs, computes the fee, and builds the PSET. The quote captures a snapshot of all contract state needed at quote time (outpoints, route parameters). If the underlying contracts change between quoting and broadcast (new block processed), the transaction will fail on-chain (spent inputs) and the caller re-quotes. This is standard trading UX — quotes are inherently ephemeral.
+
+See [Trade Types](#trade-types) and [TradeQuote](#tradequote-and-related-types) for full type definitions.
+
+**Why trades use a two-step pattern**: Trade is the only operation requiring cross-contract route optimization from engine state. The two-step pattern enables the standard trading UX of "show quote, user confirms, then build." All other PSET builders are single-step — the caller provides the operation params directly and gets a PSET back. They don't need a quoting step because they operate on a single contract whose state the caller already knows.
+
+## Simplicity Contracts (Internal)
+
+Core contains the `.simf` Simplicity contract source code and the compiler integration. Given contract parameters and a network type (testnet/mainnet), core internally:
+
+- Compiles Simplicity contracts into committed programs with Commitment Merkle Roots (CMRs)
+- Derives taproot script pubkeys for any contract state
+- Generates control blocks for spending witnesses
+- Decodes witness data from spending transactions
 
 This is necessary for both PSET construction (building covenant outputs with correct scripts) and state advancement (matching output scripts to determine new state).
+
+**Compilation caching**: The Simplicity source templates are parsed once (process-wide `OnceLock` cache). Per-contract instantiation (binding parameters to the template) and commitment are cached lazily in memory — compiled on first access per contract per engine lifetime. During `ingest_contract`, the engine compiles the contract, caches the result, and passes pre-computed scripts and asset IDs to the store as `DerivedContractData` for indexing. Post-ingestion operations that need compiled contracts (PSET builders, `process_transaction`) use the in-memory cache, paying zero compilation cost after the first access. Creation builders (which compile on the fly) pay the moderate instantiation + commitment cost, but not the template parsing cost. `ContractEngine::new` is O(1) — it does not iterate existing contracts or compile anything at construction time.
+
+**None of this is exposed in the public API.** Consumers interact with contract params (plain data) and the engine's methods. Compiled contracts, CMRs, taproot tree structures, and witness encoding are implementation details.
 
 ## Reorg Handling
 
@@ -921,6 +1247,8 @@ Core maintains a processing log: for each processed transaction, the contract ID
 Contracts created at height N are kept. Contracts created at height N+1 or above are removed — their creation transactions may no longer exist on the canonical chain after the reorg.
 
 The caller detects the reorg (their chain backend tells them), calls `rollback_to_height`, then re-scans and feeds the new chain data.
+
+**History cleanup**: For stores implementing `ContractHistory`, `rollback_to_height` must also remove any persisted transition history records above the rollback height. These records reference a chain that may no longer exist after the reorg. **Important**: Both state rollback and history cleanup must be atomic — a single database transaction, not two separate operations. A crash between rolling back state and rolling back history would leave the store in an inconsistent state (current state reflects the rollback but history still contains records from the pre-rollback chain). Since the store implements both `ContractStore` (with `rollback_to_height`) and `ContractHistory` (with its history table), it has everything needed to clean up both in a single operation. This is a `ContractStore::rollback_to_height` implementation concern, not a separate method on `ContractHistory`, because atomicity requires both cleanups to happen in one call.
 
 **Known limitation**: `rollback_to_height` removes contracts ingested above the rollback height. The caller must re-discover and re-ingest these contracts if they reappear on the new canonical chain. Since discovery happens over Nostr, contracts can always be re-fetched. This is the correct behavior — a contract whose creation transaction was reorged out is not a valid contract on the current chain.
 
@@ -959,12 +1287,12 @@ The caller periodically calls `prune_finalized` with the current chain tip and t
 
 ## Thread Safety
 
-Write methods (`process_transaction`, `ingest_contract`, `rollback_to_height`, `prune_finalized`) take `&mut self`. Read methods (`interpret_transaction`, `identify_asset`, `watched_outpoints`, `all_covenant_scripts`, `contract`, `list_markets`, `list_pools`, `list_orders`, `pools_for_market`, `orders_for_market`) take `&self`.
+Write methods (`process_transaction`, `ingest_contract`, `rollback_to_height`, `prune_finalized`) take `&mut self`. Read methods (`interpret_transaction`, `identify_asset`, `watched_outpoints`, `all_covenant_scripts`, `contract`, `list_markets`, `list_pools`, `list_orders`, `pools_for_market`, `orders_for_market`, `quote_trade`, and all PSET builders) take `&self`.
 
 Rust's borrow rules provide compile-time `RwLock` semantics: multiple concurrent readers OR one exclusive writer, enforced without runtime overhead. For single-threaded consumers this is invisible. For multi-threaded consumers who need concurrent access, wrap the engine in `RwLock<ContractEngine<S>>`:
 
 ```rust
-let engine = Arc::new(RwLock::new(ContractEngine::new(store)));
+let engine = Arc::new(RwLock::new(ContractEngine::new(store, Network::Liquid)));
 
 // Writer thread
 let engine_w = engine.clone();
@@ -995,22 +1323,23 @@ These have zero dependencies beyond basic math — no wallet, chain, or state.
 ## Example Integration: Aqua Wallet
 
 ```rust
-use deadcat_core::{ContractEngine, ContractParams, ChainTransaction, Pagination, StateFilter};
+use deadcat_core::{ContractEngine, ContractParams, ChainTransaction, FeeRate, WalletFunding, Network, Pagination, StateFilter, Side, TradeSpec, TradeDirection, TradeAmount};
 
-// 1. Initialize engine with a store implementation.
+// 1. Initialize engine with a store implementation and network.
 //    The store is exclusively owned by the engine from this point.
-let mut engine = ContractEngine::new(aqua_deadcat_store);
+//    Construction is O(1) — no iteration, no compilation.
+let mut engine = ContractEngine::new(aqua_deadcat_store, Network::Liquid);
 
 // 2. Ingest a market (discovered via Nostr, import, etc.)
 //    No anchor needed — core derives blinding factors deterministically.
-//    Core verifies the creation tx, derives initial outpoints, and returns the contract ID.
+//    Core compiles the contract, verifies the creation tx, and indexes asset IDs + scripts.
 let contract_id = engine.ingest_contract(
-    ContractParams::PredictionMarket(params),
+    ContractParams::PredictionMarket(market_params),
     &creation_tx,
 )?;
 
 // 3. Catch up: scan chain for this contract's history since creation.
-//    all_covenant_scripts returns scripts for ALL possible states.
+//    all_covenant_scripts delegates to the store's pre-computed script index.
 let scripts = engine.all_covenant_scripts(&contract_id)?;
 let historical_txs = aqua_chain.scan_history(&scripts, creation_tx.position.block_height);
 for tx in historical_txs {
@@ -1048,7 +1377,7 @@ for wallet_tx in wallet_history {
     }
 }
 
-// 7. Identify assets in wallet balance
+// 7. Identify assets in wallet balance (delegates to store's asset index)
 for (asset_id, amount) in wallet_balance {
     if let Some(info) = engine.identify_asset(&asset_id) {
         render_token_position(&info, amount);
@@ -1060,8 +1389,8 @@ let page = engine.list_markets(
     StateFilter::ActiveOnly,
     Pagination { after: None, limit: 20 },
 )?;
-for (id, params, state) in &page.items {
-    render_market_card(id, params, state);
+for entry in &page.items {
+    render_market_card(&entry.contract_id, &entry.params, &entry.state);
 }
 // Next page:
 if let Some(cursor) = page.next_cursor {
@@ -1071,10 +1400,33 @@ if let Some(cursor) = page.next_cursor {
     )?;
 }
 
-// 9. Build a transaction (core provides PSET, Aqua signs)
-let utxos = aqua_wallet.list_utxos();
-let selected = deadcat_core::select_utxos(&utxos, &asset, amount, &[])?;
-let pset = deadcat_core::build_initial_issuance_pset(&contract, &params)?;
+// 9. Deduplicate during discovery (no engine needed)
+let id = deadcat_core::contract_id(&ContractParams::PredictionMarket(new_params));
+if already_tracking(&id) { continue; }
+
+// 10. Trade: two-step quote + build (engine handles routing, coin selection, fee computation)
+let spec = TradeSpec { side: Side::Yes, direction: TradeDirection::Buy, amount: TradeAmount::ExactInput(5000) };
+let quote = engine.quote_trade(&market_id, spec)?;
+// Display to user: "Spend 5,000 sats to buy ~100 YES tokens via Pool A (80) + Order B (20)"
+if user_confirms(&quote) {
+    let funding = WalletFunding {
+        available_utxos: &aqua_wallet.list_utxos(),
+        fee_rate: FeeRate::from_sat_per_vb(aqua_chain.estimate_fee_rate()),
+        return_script: &aqua_wallet.next_return_script(),
+    };
+    let pset = engine.build_trade_pset(&quote, &funding)?;
+    let signed = aqua_signer.sign(pset)?;
+    aqua_chain.broadcast(signed)?;
+}
+
+// 11. Build a single-contract transaction (engine handles compilation, coin selection, fee)
+//     No Simplicity knowledge needed — just provide the contract_id and operation args.
+let funding = WalletFunding {
+    available_utxos: &aqua_wallet.list_utxos(),
+    fee_rate: FeeRate::from_sat_per_vb(aqua_chain.estimate_fee_rate()),
+    return_script: &aqua_wallet.next_return_script(),
+};
+let pset = engine.build_issuance_pset(&contract_id, 100, &token_dest, &token_dest, &funding)?;
 let signed = aqua_signer.sign(pset)?;
 aqua_chain.broadcast(signed)?;
 ```
@@ -1211,7 +1563,7 @@ aqua_chain.broadcast(signed)?;
 
 **Chosen**: Each contract's current state (stored via `ContractStore`) carries enough information for basic wallet UX without requiring `ContractHistory`.
 **Rejected**: Minimal tip state that requires history for common queries like "what was the market outcome?"
-**Why**: `ContractHistory` is optional — minimal consumers (Aqua) may not implement it. The tip state must answer basic wallet questions independently: market outcome (YES/NO/cancelled/expired), order fill progress, pool reclaimed reserves. Richer features (price charts, fill-by-fill breakdowns, audit trails) belong in transition history.
+**Why**: `ContractHistory` is optional — minimal consumers (Aqua) may not implement it. The tip state must answer basic wallet questions independently: market outcome (YES/NO/cancelled/expired), order fill progress, pool current reserves. Richer features (price charts, fill-by-fill breakdowns, audit trails) belong in transition history.
 
 ### Generic Error Type Over Boxed Errors
 
@@ -1248,3 +1600,91 @@ aqua_chain.broadcast(signed)?;
 **Chosen**: Prediction market creation transactions blind reissuance token outputs with deterministic blinding factors derived from public on-chain data. No out-of-band anchor data needed.
 **Rejected**: Random blinding factors for RT outputs, requiring an anchor (blinding factors) to be shared via Nostr.
 **Why**: The Elements protocol requires reissuance token outputs to be blinded (ABF != 0) for reissuance to work. Traditionally, random ABFs are used as an authorization mechanism — only someone who knows the ABF can reissue. With Simplicity covenants, authorization is enforced by the covenant itself, not by ABF secrecy. Using deterministic ABFs derived from public data (defining outpoints via tagged hash) satisfies the protocol requirement while eliminating the need for anchor distribution. This simplifies the `ingest_contract` API (no anchor parameter), the Nostr announcement format, and removes the "lost anchor" failure mode. See [Deterministic RT Blinding](deterministic-rt-blinding.md) for the derivation spec.
+
+### Store Returns Typed Results for Listing Methods
+
+**Chosen**: Store's `list_markets`, `list_pools`, `list_orders`, `pools_for_market`, and `orders_for_market` return typed results (e.g., `Page<MarketEntry>`) rather than the generic `Contract` enum. Results use `ContractEntry<P, S>`, a generic struct with type aliases for ergonomics.
+**Rejected**: Store returns `Page<(String, Contract)>` and the engine unwraps.
+**Why**: The methods are already type-specific — `list_markets` only returns markets. Returning the generic enum would allow the store to accidentally return wrong variants, with the mismatch only caught at runtime. Typed return types enforce the invariant at compile time. If the store's data is corrupted (a market row deserializes to a pool), the error surfaces at the store layer via `Self::Error`, where data corruption belongs.
+
+### Two-Step Trade PSET Pattern
+
+**Chosen**: Trade PSET construction uses a two-step pattern: `engine.quote_trade()` (read-only, returns `TradeQuote`) then `engine.build_trade_pset(quote, funding)`.
+**Rejected**: (a) Single engine method that takes wallet UTXOs directly without showing a quote first. (b) Standalone builder that requires the caller to manually specify the route.
+**Why**: Trade is the only operation requiring cross-contract route optimization — the engine has the pool/order state and LMSR math needed to compute optimal routes. The two-step pattern enables the standard trading UX of "show quote, user confirms, then build." `TradeQuote` uses `pub(crate)` internal fields so external consumers cannot construct one — they can only receive quotes from the engine and pass them to the builder. All other PSET builders are single-step: the caller provides operation params and gets a PSET back immediately, no quoting needed.
+
+### Non-Idempotent Contract Ingestion
+
+**Chosen**: `ingest_contract` returns `CoreError::ContractAlreadyTracked { contract_id }` on duplicate ingestion.
+**Rejected**: Silent no-op (idempotent) like `process_transaction`.
+**Why**: `process_transaction` replays are routine (catch-up, crash recovery), so idempotency is essential. `ingest_contract` duplicates typically indicate a caller bug. The error surfaces it while still enabling crash-safe recovery: the error carries the `contract_id`, so callers who want idempotent behavior can extract the ID from the error variant. A silent no-op could mask real issues and would not provide the contract ID to the caller.
+
+### Public Contract ID Derivation
+
+**Chosen**: Standalone `contract_id(params)` function available without an engine.
+**Rejected**: ID derivation only available through `ingest_contract`.
+**Why**: Callers need contract IDs before ingestion — primarily for deduplication during discovery. When Nostr pushes 50 market announcements, the caller computes IDs to skip already-tracked contracts before fetching creation transactions. Requiring an engine (and a creation transaction) just to get an ID would force unnecessary work.
+
+### Simplicity Fully Encapsulated
+
+**Chosen**: Compiled contracts, CMRs, taproot trees, and witness encoding are internal to the engine. Consumers never see these types. PSET builders are engine methods that use cached compiled contracts.
+**Rejected**: (a) Public compiled contract types with engine getters. (b) Standalone PSET builder functions that take compiled contracts as parameters.
+**Why**: Compiled contracts are a "how" detail, not a "what." Wallet integrators care about building transactions, not about Simplicity compilation. Making PSET builders engine methods eliminates an entire type family from the public API (`CompiledPredictionMarket`, `CompiledLmsrPool`, `CompiledMakerOrder`) and the question of how to obtain them. The engine compiles and caches during `ingest_contract`; post-ingestion builders use the cache (zero compilation cost). Creation builders compile on the fly (moderate cost — template parsing is cached process-wide via `OnceLock`, only instantiation + commitment is per-call). The only trade-off is that PSET builders are no longer independently testable as pure functions — but they can be tested with an engine backed by a test store.
+
+### Internal Coin Selection
+
+**Chosen**: PSET builders perform coin selection internally. The caller provides their available UTXO pool. No public `select_utxos` function.
+**Rejected**: (a) Public `select_utxos` function returning a newtype that builders require. (b) Public `select_utxos` alongside builders that also select internally (redundant).
+**Why**: The builder knows exactly what it needs (from the operation params and/or trade quote). Exposing coin selection as a separate step forces the caller to extract target asset and amount from the params — duplicating knowledge the builder already has and creating a surface for bugs. Internal selection also eliminates a footgun: if the caller accidentally passed their entire UTXO set directly to a builder (bypassing selection), every UTXO would become a transaction input. With internal selection, passing all UTXOs is the expected usage — the builder selects the minimum needed. Pre-filtering the candidate pool remains the caller's mechanism for controlling which UTXOs are eligible.
+
+### FeeRate Newtype Over Raw Integer
+
+**Chosen**: `FeeRate` newtype with named constructors (`from_sat_per_kvb`, `from_sat_per_vb`) instead of a raw `u64`.
+**Rejected**: `fee_amount: u64` (caller pre-computes the fee) or `fee_rate: u64` (ambiguous units).
+**Why**: A raw `u64` for fee rate invites unit confusion (sats/vB vs sats/kvB vs millisats/vB). The newtype with named constructors makes the unit unambiguous at the call site. PSET builders accept `FeeRate` and compute the exact fee internally based on the actual transaction weight, eliminating the chicken-and-egg problem of needing to know the transaction size to estimate the fee. The caller's only responsibility is querying their chain backend for the current fee rate.
+
+### History Pagination via ChainPosition
+
+**Chosen**: History methods use `after: Option<ChainPosition>` + `limit: u32` for pagination. Results are ordered oldest-first (ascending).
+**Rejected**: (a) `since_height: Option<u32>` — not a precise cursor when multiple transitions share the same block height. (b) Opaque `Cursor`-based pagination (used by listing methods) — unnecessary indirection for a naturally-ordered data set.
+**Why**: `ChainPosition` (block height + tx index) is a precise, transparent cursor that handles multiple transitions within the same block correctly. The caller paginates by passing the last returned item's `position` as `after`. Oldest-first ordering aligns with the primary use cases (price chart construction, audit trails, catch-up from a checkpoint). For "recent activity" UX, the caller passes a recent `ChainPosition` as `after` rather than paging from the beginning.
+
+### Merged Issuance and Redemption Builders
+
+**Chosen**: `build_issuance_pset` handles both initial (Dormant → Unresolved) and subsequent (Unresolved → Unresolved) issuance. `build_redemption_pset` handles both post-resolution and post-expiry redemption. The engine determines the correct covenant path from the contract's current state.
+**Rejected**: Separate builders for each state transition (`build_initial_issuance_pset`, `build_subsequent_issuance_pset`, `build_post_resolution_redemption_pset`, `build_expiry_redemption_pset`).
+**Why**: The caller-provided data is identical for both paths within each pair. The distinction is the covenant path, which the engine knows from the contract's current state. Separate builders would force the caller to determine the contract's phase before calling the correct builder — duplicating knowledge the engine already has. Merging reduces the public API from 14 to 12 builders and eliminates a class of "called the wrong builder for the current state" errors.
+
+### WalletFunding Struct Over Per-Builder Args Structs
+
+**Chosen**: PSET builders take operation-specific arguments as direct parameters alongside a shared `WalletFunding` struct. No per-builder args structs.
+**Rejected**: (a) One args struct per builder (12 single-use types). (b) All arguments as direct parameters (7-8 args on some builders).
+**Why**: Every builder needs the same three wallet fields (`available_utxos`, `fee_rate`, `return_script`). Bundling them into `WalletFunding` reduces argument count by 2 across all builders while avoiding the proliferation of single-use structs. The function signature documents each builder's operation-specific parameters directly. The caller constructs one `WalletFunding` and reuses it across multiple builder calls.
+
+### Creation Builders Take Concrete Param Types
+
+**Chosen**: Creation builders take concrete param types (`&PredictionMarketParams`, `&LmsrPoolParams`, `&MakerOrderParams`) instead of the `ContractParams` enum.
+**Rejected**: All creation builders take `&ContractParams`, with runtime validation of the variant.
+**Why**: Passing the wrong variant (e.g., `ContractParams::LmsrPool` to `build_creation_pset`) would only be caught at runtime. Taking concrete types makes wrong-variant errors compile-time errors. `ingest_contract` and `contract_id()` still take `ContractParams` (the enum) since they're genuinely polymorphic.
+
+### Single Return Script for All Non-Covenant Outputs
+
+**Chosen**: `WalletFunding.return_script` is the sole destination for all non-covenant, non-fee outputs: L-BTC change, collateral refunds, redemption payouts, trade proceeds, order refunds, etc. No separate `payout_script` or `refund_script` parameters.
+**Rejected**: Per-builder destination scripts (e.g., `refund_script` for cancellation, `payout_script` for redemption).
+**Why**: In practice, wallets send all funds to the same set of addresses. Separate destination scripts add API surface without changing behavior for the common case. Using a single `return_script` simplifies every builder signature and enables output consolidation (same script + same asset → merge). Named `return_script` rather than `change_script` to reflect its broader purpose. If a future use case requires separate destinations (e.g., institutional custody with per-purpose addresses), this can be added as an optional override without breaking the API.
+
+### Output Consolidation Over Separate Outputs
+
+**Chosen**: PSET builders consolidate outputs that share the same destination script and asset into a single output. `OutputRole` labels the consolidated output with its primary role. `TransitionDetails` is authoritative for exact semantic amounts.
+**Rejected**: Separate outputs for each logical purpose (e.g., separate collateral payout and fee change).
+**Why**: On Liquid, each extra confidential output adds ~4.3 KB to the transaction (range proof + surjection proof). This increases fees both now (larger transaction) and later (extra UTXO to spend). It also increases UTXO bloat and slightly worsens privacy (more outputs = more structural fingerprinting). Consolidation avoids all of this. The trade-off is that `OutputRole` can't distinguish the fee change portion of a consolidated output — but `TransitionDetails` provides exact semantic amounts, so wallets can always display precise numbers.
+
+### Store-Persisted Indexes Over In-Memory Caches
+
+**Chosen**: Asset ID → contract mapping and covenant scripts are persisted in the store (populated at ingestion via `DerivedContractData`). Full compiled contracts are lazily cached in memory.
+**Rejected**: (a) All indexes in memory (requires eager reconstruction at startup). (b) All indexes in store including full compiled contracts (serialization complexity).
+**Why**: Asset ID lookups and covenant script lookups are hot-path operations (called by `identify_asset` and `all_covenant_scripts`). Persisting them in the store ensures O(1) construction of `ContractEngine::new` — no iteration or compilation at startup. Full compiled contracts are more complex to serialize and are only needed for PSET construction and transaction processing, so lazy in-memory caching (compile on first access, memoize) is a better fit. This split amortizes indexing costs to ingestion time while keeping construction instant.
+
+### No Untrack Contract (Future Consideration)
+
+There is currently no `untrack_contract` method. Terminal contracts (settled markets, consumed/cancelled orders) have no active outpoints and do not appear in hot-path lookups (`find_by_outpoints`, `watched_outpoints`). They only appear in paginated listing methods where `StateFilter` can exclude them. If storage growth becomes a concern at scale, an `untrack_contract` method can be added as a non-breaking change.
