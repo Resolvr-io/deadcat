@@ -59,7 +59,6 @@ Note: `deadcat-core` defines the `ContractStore` and `ContractHistory` traits. `
 pub struct ContractEngine<S: ContractStore> {
     store: S,
     network: Network,
-    // Internal: lazy-compiled contract cache (populated on first access per contract)
 }
 ```
 
@@ -81,7 +80,7 @@ impl<S: ContractStore> ContractEngine<S> {
         &mut self,
         params: ContractParams,
         creation_tx: &ChainTransaction,
-    ) -> Result<String, CoreError<S::Error>>;
+    ) -> Result<Cmr, CoreError<S::Error>>;
 
     // Contract queries (reads — &self)
     pub fn contract(&self, contract_id: &str) -> Result<Option<Contract>, CoreError<S::Error>>;
@@ -112,7 +111,7 @@ impl<S: ContractStore> ContractEngine<S> {
     // PSET builders (reads — &self)
     // All builders take a &WalletFunding for coin selection, fee computation, and change.
     // Creation builders take concrete param types (compile on the fly).
-    // Post-ingestion builders take contract_id (use cached compiled contract).
+    // Post-ingestion builders take contract_id (recompile from stored params).
 
     // Prediction market builders
     pub fn build_creation_pset(&self, params: &PredictionMarketParams, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
@@ -123,21 +122,20 @@ impl<S: ContractStore> ContractEngine<S> {
     pub fn build_redemption_pset(&self, contract_id: &str, side: Side, tokens_to_redeem: u64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     // LMSR pool builders
     pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, initial_reserves: &PoolReserves, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
-    pub fn build_lmsr_adjust_pset(&self, contract_id: &str, target_reserves: &PoolReserves, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
-    // Maker order builders
+    pub fn build_lmsr_adjust_pset(&self, contract_id: &str, pair_delta: i64, collateral_delta: i64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    // Maker order builders (maker lifecycle only — taker fills go through build_trade_pset)
     pub fn build_create_order_pset(&self, params: &MakerOrderParams, offered_amount: u64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
-    pub fn build_fill_order_pset(&self, contract_id: &str, fill_amount: u64, receive_script: &Script, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     pub fn build_cancel_order_pset(&self, contract_id: &str, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
-    // Trade builder (uses TradeQuote from quote_trade)
+    // Trade builder (uses TradeQuote from quote_trade — handles all taker operations including order fills)
     pub fn build_trade_pset(&self, quote: &TradeQuote, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 
     // Transaction interpretation (reads — &self)
-    pub fn interpret_transaction(&self, tx: &Transaction) -> Vec<Transition>;
-    pub fn identify_asset(&self, asset_id: &AssetId) -> Option<AssetInfo>;
+    pub fn interpret_transaction(&self, tx: &Transaction) -> Result<Vec<Transition>, CoreError<S::Error>>;
+    pub fn identify_asset(&self, asset_id: &AssetId) -> Result<Option<AssetInfo>, CoreError<S::Error>>;
 }
 
-// Standalone pure functions (no engine needed)
-pub fn contract_id(params: &ContractParams) -> String;
+// Standalone pure functions (no engine needed — requires Simplicity compilation)
+pub fn contract_id(params: &ContractParams, network: Network) -> Cmr;
 
 // History methods — only available when the store implements ContractHistory
 impl<S: ContractHistory> ContractEngine<S> {
@@ -166,21 +164,23 @@ impl<S: ContractHistory> ContractEngine<S> {
 
 Write methods take `&mut self`. Read methods (including all PSET builders) take `&self`. Rust's borrow rules enforce at compile time that only one writer OR multiple readers can access the engine at any given time — analogous to `RwLock` semantics without runtime overhead. This means store implementors only need to worry about atomic application of state updates, not concurrent access or out-of-order writes.
 
-**PSET builders are engine methods**: All PSET builders live on the engine because they need access to compiled contracts (lazily cached in memory). Simplicity contract compilation, CMR derivation, taproot tree construction, and script pubkey generation are all internal to the engine — consumers never interact with these concepts. Consumers provide contract params (plain data) and a `WalletFunding` struct, and receive PSETs back. See [PSET Construction](#pset-construction) for details.
+**PSET builders are engine methods**: All PSET builders live on the engine because they need Simplicity compilation for witness encoding (see [Simplicity Contracts](#simplicity-contracts-internal)). Simplicity contract compilation, CMR derivation, taproot tree construction, and script pubkey generation are all internal to the engine — consumers never interact with these concepts. Consumers provide contract params (plain data) and a `WalletFunding` struct, and receive PSETs back. See [PSET Construction](#pset-construction) for details.
 
-**Creation builders** (`build_creation_pset`, `build_lmsr_bootstrap_pset`, `build_create_order_pset`) take the concrete param type (`&PredictionMarketParams`, `&LmsrPoolParams`, `&MakerOrderParams`) instead of a `contract_id` because the contract hasn't been ingested yet. The engine compiles the Simplicity contract on the fly at PSET build time. For all post-ingestion builders, the engine uses its internal cache (populated lazily on first access after `ingest_contract`), so compilation latency is paid at most once per contract per engine lifetime.
+**Creation builders** (`build_creation_pset`, `build_lmsr_bootstrap_pset`, `build_create_order_pset`) take the concrete param type (`&PredictionMarketParams`, `&LmsrPoolParams`, `&MakerOrderParams`) instead of a `contract_id` because the contract hasn't been ingested yet. The engine compiles the Simplicity contract on the fly at PSET build time. Post-ingestion builders also recompile from stored params on each call — see [Simplicity Contracts](#simplicity-contracts-internal) for the compilation cost model and rationale.
 
-**No per-builder args structs**: PSET builders take operation-specific arguments as direct parameters alongside a shared `WalletFunding` struct (available UTXOs, fee rate, change script). This avoids a zoo of single-use parameter types — the function signature IS the documentation. See [WalletFunding](#walletfunding) and [PSET Construction](#pset-construction).
+**No per-builder args structs**: PSET builders take operation-specific arguments as direct parameters alongside a shared `WalletFunding` struct (available UTXOs, fee rate, return script). This avoids a zoo of single-use parameter types — the function signature IS the documentation. See [WalletFunding](#walletfunding) and [PSET Construction](#pset-construction).
 
 **Merged builders**: `build_issuance_pset` handles both initial (Dormant → Unresolved) and subsequent (Unresolved → Unresolved) issuance — the engine determines which from the contract's current state. `build_redemption_pset` handles both post-resolution and post-expiry redemption — the engine determines which from the current covenant phase. The `side` parameter on `build_redemption_pset` specifies which token to burn: for resolved markets, the engine validates it matches the winning side; for expired markets, either side is valid.
+
+**Maker order lifecycle vs taker trades**: The maker side of limit orders is directly exposed (`build_create_order_pset`, `build_cancel_order_pset`). The taker side — filling orders — is handled through the trade system (`quote_trade` + `build_trade_pset`), which routes across pools and orders for best execution. There is intentionally no `build_fill_order_pset` — direct order targeting adds API complexity without improving execution, since the router always finds the best available fill. If explicit order targeting becomes a requested feature, a direct fill builder can be added later as a non-breaking change (new method on the engine, no store or type changes required).
 
 Note: The history `impl` block uses `S: ContractHistory` rather than `S: ContractStore + ContractHistory` because `ContractHistory` is a supertrait of `ContractStore` — the `ContractStore` bound is implied. See [ContractHistory](#optional-contracthistory).
 
 ### Contract ID Generation
 
-Contract IDs are deterministically derived from the contract's parameters. The same contract always produces the same ID regardless of who ingests it. `ingest_contract` returns the computed ID so the caller can reference it. The standalone `contract_id()` function provides the same derivation without requiring an engine — useful for deduplication during discovery (e.g., computing IDs from Nostr announcements to skip already-tracked contracts before fetching creation transactions).
+Contract IDs are the Commitment Merkle Root (CMR) of the compiled Simplicity contract with bound parameters. The CMR is a SHA256-based hash over the full program structure — same params + same covenant source → same CMR, always. `ingest_contract` computes the CMR during compilation and returns it as the contract ID. The standalone `contract_id()` function provides the same derivation without requiring an engine — it compiles the contract and returns the CMR. This requires Simplicity compilation (~10-100ms), so it is not intended as a hot-path deduplication mechanism. For discovery deduplication, Nostr announcements should include the contract ID (CMR) directly, allowing O(1) store lookups without recomputation.
 
-**Why deterministic**: If two different wallets ingest the same market, they get the same ID. This enables cross-wallet coordination and deduplication without requiring callers to know the hashing scheme.
+**Why CMR**: The CMR is the natural, canonical identifier for "this specific program with these specific bound parameters." It is cryptographically tied to the contract's actual behavior, not just its input parameters. If two different wallets ingest the same contract, they get the same CMR. Different covenant versions produce different CMRs — this is correct behavior, since a different covenant program is a different contract even if the parameters are identical. See [Design Decisions Log](#design-decisions-log) for the full rationale and trade-offs.
 
 ### ingest_contract
 
@@ -191,9 +191,9 @@ pub fn ingest_contract(
     &mut self,
     params: ContractParams,
     creation_tx: &ChainTransaction,
-) -> Result<String, CoreError<S::Error>> {
-    let contract_id = self.derive_id(&params);
+) -> Result<Cmr, CoreError<S::Error>> {
     let compiled = self.compile(&params)?;
+    let contract_id = compiled.cmr();
     let initial_scripts = compiled.scripts_for_initial_state();
     let outpoints = match_creation_outputs(&creation_tx.tx, &initial_scripts)?;
     let initial_state = derive_initial_state(&outpoints);
@@ -203,7 +203,6 @@ pub fn ingest_contract(
         covenant_scripts: compiled.all_scripts(),
     };
     self.store.track_contract(contract_id.clone(), contract, derived)?;
-    self.compiled_cache.insert(contract_id.clone(), compiled);
     Ok(contract_id)
 }
 ```
@@ -251,17 +250,17 @@ pub fn process_transaction(
 
 ### interpret_transaction
 
-`interpret_transaction` is the primary read method for wallet integration. It uses the same witness decoding and output matching logic as `process_transaction` but does not modify state:
+`interpret_transaction` is the primary read method for wallet integration. It uses the same script matching and output value logic as `process_transaction` but does not modify state:
 
 ```rust
-pub fn interpret_transaction(&self, tx: &Transaction) -> Vec<Transition>;
+pub fn interpret_transaction(&self, tx: &Transaction) -> Result<Vec<Transition>, CoreError<S::Error>>;
 ```
 
 **Works for confirmed and unconfirmed transactions**: Unlike `process_transaction` (confirmed only), `interpret_transaction` accepts any transaction — confirmed or unconfirmed. It works as long as the transaction spends outpoints the engine currently tracks in its durable state. This enables "pending transaction" UX: a wallet can interpret an unconfirmed mempool transaction to display "Pending issuance" or "Pending trade" before the transaction confirms.
 
 **Known limitation — chained unconfirmed transactions**: If two unconfirmed transactions form a chain (tx2 spends an output created by tx1), only tx1 is interpretable. Tx2 spends outpoints that the engine hasn't durably recorded (tx1 was never processed), so the engine doesn't recognize them. Once both confirm and are fed to `process_transaction`, both are processed normally. This is rare in practice — Liquid has ~1-minute blocks, and chained unconfirmed covenant transactions require dependent operations within that window.
 
-**No chain position metadata**: `interpret_transaction` takes a raw `elements::Transaction` without block height or tx index. Its return type (`Transition`) omits chain position fields. This is in contrast to `process_transaction`, which returns `ConfirmedTransition` wrapping `Transition` with a `ChainPosition`. See [Transition and ConfirmedTransition](#transition-and-confirmedtransition).
+**No chain position metadata**: `interpret_transaction` takes a raw `elements::Transaction` without block height or tx index. Its return type (`Vec<Transition>` inside `Result`) omits chain position fields. This is in contrast to `process_transaction`, which returns `ConfirmedTransition` wrapping `Transition` with a `ChainPosition`. See [Transition and ConfirmedTransition](#transition-and-confirmedtransition).
 
 **Point-in-time query**: The results reflect what the engine currently knows. If a transaction spends UTXOs from a contract the engine hasn't ingested yet, those contracts are simply absent from the results. After ingesting the contract and catching it up, calling `interpret_transaction` on the same transaction returns additional results.
 
@@ -310,7 +309,9 @@ pub fn pools_for_market(&self, market_id: &str, page: Pagination) -> Result<Page
 pub fn orders_for_market(&self, market_id: &str, page: Pagination) -> Result<Page<OrderEntry>, CoreError<S::Error>>;
 ```
 
-Return pools or orders associated with a specific market. The relationship is encoded in pool/order params (they reference the market's token asset IDs). The store maintains a secondary index on market_id for efficient lookups.
+Return pools or orders associated with a specific market. The relationship is encoded in pool/order params (they reference the market's token asset IDs). The store maintains a secondary index on market_id for efficient lookups, built during `track_contract` by resolving the pool/order's token asset IDs via the store's own `find_by_asset_id` index.
+
+**Ingestion ordering constraint**: Pools and orders require their parent market to be ingested first. During `ingest_contract` for a pool or order, the engine validates that the referenced token asset IDs correspond to a known market. If the parent market isn't tracked, the engine returns `CoreError::InvalidParams`. This is a natural constraint — you shouldn't track a pool for a market you don't know about, and discovery naturally produces markets before their pools/orders.
 
 Pools and orders are split into separate methods because they scale differently — a market typically has a handful of pools but potentially thousands of orders at Polymarket scale. Both are paginated.
 
@@ -380,7 +381,7 @@ pub enum ContractParams {
 
 `ContractParams` is purely definitional — it contains only the data needed to derive the contract's identity (contract ID) and addresses (covenant script pubkeys). No creation-time secrets or blinding factors. Given `ContractParams` + network + the Simplicity source code (built into `deadcat-core`), all covenant addresses for all states can be derived deterministically.
 
-`PredictionMarketParams` defines the market's covenant parameters (oracle key, expiry, etc.). `LmsrPoolParams` defines the pool's parameters (token asset IDs referencing the parent market, liquidity parameters). `MakerOrderParams` defines the order's parameters (base/quote asset IDs, price, direction).
+`PredictionMarketParams` defines the market's covenant parameters (oracle key, expiry, etc.). `LmsrPoolParams` defines the pool's parameters (token asset IDs referencing the parent market, liquidity parameters). `MakerOrderParams` defines the order's parameters (base/quote asset IDs, price, direction). These types map 1:1 to Simplicity covenant parameters. The `.simf` contract sources are authoritative for which parameters exist; see `src-tauri/crates/deadcat-sdk/src/{prediction_market,lmsr_pool,maker_order}/params.rs` for current Rust definitions.
 
 ### Contract
 
@@ -489,7 +490,7 @@ pub enum LmsrPoolState {
 
 Active pools track their outpoints as a map from reserve slot to outpoint. This is flexible enough to handle the current covenant (always 3 outpoints) and future covenant versions where individual reserves can be fully consumed (fewer than 3 active outpoints).
 
-**Note**: The current LMSR pool covenant has no close/reclaim path — the admin adjustment path always produces new covenant outputs. Pools currently have no terminal state. **ACTION ITEM**: The LMSR Simplicity covenant needs a close/reclaim path that fully consumes the pool's UTXOs. Once designed, add a `Closed` variant to `LmsrPoolState` and a corresponding `Closed` variant to `PoolTransition`.
+**Note**: The current LMSR pool covenant has no dedicated close/reclaim script path — the admin adjustment path always produces new covenant outputs. However, the admin can close the pool via the taproot key spend path (bypassing covenant script constraints entirely), which fully consumes the pool's UTXOs. Once key-spend-based closure is formalized, add a `Closed` variant to `LmsrPoolState` and a corresponding `Closed` variant to `PoolTransition`.
 
 #### OrderState
 
@@ -688,8 +689,8 @@ pub enum LiquiditySource {
     },
     LimitOrder {
         order_id: String,
-        price: u64,
-        lots: u64,
+        price: u64,   // quote asset smallest units per base lot (matches MakerOrderParams.price)
+        lots: u64,    // number of base lots filled in this leg
     },
 }
 ```
@@ -782,8 +783,7 @@ pub enum TransitionDetails {
     Order(OrderTransition),
 }
 
-pub enum IssuanceKind { Initial, Subsequent }
-pub enum RedemptionKind { PostResolution, Expiry }
+// IssuanceKind and RedemptionKind defined above in Core Types
 
 pub enum MarketTransition {
     Issued { kind: IssuanceKind, pairs: u64, collateral_locked: u64 },
@@ -799,7 +799,7 @@ pub enum PoolTransition {
 }
 
 pub enum OrderTransition {
-    Filled { amount: u64 },
+    Filled { fill_amount: u64 },  // delta for this fill, not cumulative
     Cancelled,
 }
 ```
@@ -880,19 +880,26 @@ pub enum AssetInfo {
 The error type for all engine operations. Generic over the store's error type, which piggybacks on the engine's existing `S: ContractStore` generic — no additional type parameter burden for consumers.
 
 ```rust
+pub struct Shortfall {
+    pub asset_id: AssetId,
+    pub available: u64,
+    pub required: u64,
+}
+
 pub enum CoreError<E: std::error::Error> {
     Store(E),
     InvalidCreationTx { reason: String },
     InvalidParams { detail: String },
+    InvalidContractState { contract_id: String, detail: String },
     ContractNotFound { contract_id: String },
     ContractAlreadyTracked { contract_id: String },
-    InsufficientFunds { available: u64, required: u64 },
+    InsufficientFunds { shortfalls: Vec<Shortfall> },
     NoLiquidity { market_id: String },
     Unsupported { detail: String },
 }
 ```
 
-`InvalidParams` covers caller-provided inputs that violate covenant constraints (e.g., issuance amount exceeds limits, invalid collateral asset). `InsufficientFunds` is returned by PSET builders when the caller's available UTXOs don't cover the required amount plus fee — the `available` and `required` fields enable wallet UX like "you have 5,000 sats but need 10,000." Internal construction errors (e.g., Pedersen commitment math failure) indicate bugs in core and panic rather than returning an error — every `CoreError` variant represents a condition the caller can meaningfully respond to.
+`InvalidParams` covers caller-provided inputs that violate covenant constraints (e.g., issuance amount exceeds limits, invalid collateral asset, pool/order referencing an unknown parent market). `InvalidContractState` is returned by PSET builders when the contract is in the wrong state for the requested operation (e.g., `build_issuance_pset` on a settled market, `build_redemption_pset` on an unresolved market). `InsufficientFunds` is returned by PSET builders when the caller's available UTXOs don't cover the required amounts — the `shortfalls` vec reports all insufficient assets at once (e.g., "need 50 more YES tokens AND 3,000 more sats"), enabling wallet UX that shows all missing resources rather than one at a time. Internal construction errors (e.g., Pedersen commitment math failure) indicate bugs in core and panic rather than returning an error — every `CoreError` variant represents a condition the caller can meaningfully respond to.
 
 **Why generic over the store error**: The engine is already generic over `S: ContractStore`, so `CoreError<S::Error>` adds no new generic parameters. Store error types are preserved — consumers can match on `CoreError::Store(e)` and handle their specific store error without downcasting. Store implementors define their own error type independently via an associated type on the trait.
 
@@ -933,8 +940,8 @@ When `process_transaction` is called:
 
 1. Collect all input outpoints from the transaction
 2. Check which tracked contracts own any of those outpoints (via `ContractMatch`)
-3. For each affected contract, decode the Simplicity witness to determine the transition type
-4. Find the contract's new outputs by matching script pubkeys against expected covenant scripts (derived from params + new state)
+3. For each affected contract, match the transaction's outputs against expected covenant scripts (from the store's persisted script index) to determine the new state
+4. Derive transition details from the current state, new state, and output values
 5. Compute external output roles for non-covenant outputs
 6. Durably persist the state updates
 7. Return the full `ConfirmedTransition`s
@@ -957,15 +964,37 @@ Liquid transactions within a block have a strict serial order. Even if a contrac
 
 Core requires the caller to feed transactions in chain order. As long as this guarantee holds, core processes one transaction at a time sequentially — no concurrent writes, no locking needed. The "atomic write" for a single transaction is simply "write all state updates from this transaction before processing the next one."
 
-### State Advancement via Witness Decoding
+### State Advancement via Script Matching and Output Values
 
-Rather than guessing which outputs belong to a contract by checking scripts alone, core also decodes the Simplicity witness data from the spending transaction's inputs. The witness encodes exactly what transition happened:
+Core determines transitions without decoding Simplicity witness data. Instead, it uses the current contract state, script pubkey matching (against the store's persisted script index), and explicit output values. This is possible because the covenant design encodes state into the script pubkey — different states produce different addresses — so the new state is identifiable from the transaction's outputs alone.
 
-- **LMSR pools**: Witness contains `OLD_S_INDEX`, `NEW_S_INDEX`, and trade parameters
-- **Prediction markets**: The covenant script path identifies the transition type (issuance path, resolution path, redemption path, etc.)
-- **Maker orders**: Witness identifies fill vs cancellation
+#### Prediction Markets
 
-This is deterministic — no ambiguity about what each output represents.
+Each `CovenantPhase` maps to a unique set of slot script pubkeys (see [SlotType and CovenantPhase Mapping](#slottype-and-covenantphase-mapping)). The transition type is determined by which slot scripts the new outputs match:
+
+- **Issuance** (Dormant → Unresolved, or Unresolved → Unresolved): Old outputs match Dormant or Unresolved slots; new outputs match Unresolved slots. `pairs` = new collateral value / `collateral_per_token`. `collateral_locked` = new collateral value - old collateral value (zero for initial issuance from Dormant). `IssuanceKind` is `Initial` if old phase was Dormant, `Subsequent` if Unresolved.
+- **Resolution** (Unresolved → ResolvedYes/ResolvedNo): New output matches either `ResolvedYesCollateral` or `ResolvedNoCollateral` script. Which one determines `outcome_yes`.
+- **Redemption** (Resolved/Expired → Settled): No new covenant outputs. `payout_sats` is derived from the old collateral value. `side` from which token burn outputs are present. `RedemptionKind` is `PostResolution` if old phase was Resolved, `Expiry` if Expired.
+- **Cancellation** (Unresolved → Unresolved or Dormant): New outputs match Unresolved or Dormant slots. `pairs_burned` = (old collateral - new collateral) / `collateral_per_token`. `collateral_returned` = old collateral - new collateral. If new outputs match Dormant slots (all collateral returned), it's a full cancellation back to Dormant.
+- **Expiry** (Unresolved → Expired): New output matches `ExpiredCollateral` script.
+
+#### LMSR Pools
+
+Different `s_index` values produce different covenant addresses (the s_index is a parameter in the script derivation). This means the new s_index is identifiable by matching new output scripts against the store's persisted script index.
+
+- **Swap**: New output scripts match a different s_index than the old outputs. `old_s_index` from stored state. `new_s_index` from which script the new output matched. `old_reserves` from stored state. `new_reserves` from explicit output values (all three reserve outputs are explicit covenant outputs with readable asset and value).
+- **Adjustment**: New output scripts match the same s_index as old outputs (s_index frozen on admin path). `old_reserves` and `new_reserves` from stored state and output values.
+
+The swap-vs-adjustment distinction is unambiguous: same s_index = adjustment, different s_index = swap.
+
+#### Maker Orders
+
+- **Fill** (Active → Active or Consumed): A new covenant output exists with the same script pubkey as the old order. `fill_amount` = old locked value - new locked value. If no new covenant output exists and the maker received payment, the order was fully consumed.
+- **Cancellation** (Active → Cancelled): No new covenant output, and the maker's locked asset was returned to the maker's address (identifiable from `MakerOrderParams.maker_receive_spk_hash`).
+
+#### Why This Works Without Witness Decoding
+
+The key insight is that Simplicity covenants encode state into the script pubkey. Each unique state (phase, s_index, slot type) produces a unique script. This is a deliberate design property — it allows trustless state identification from the chain alone without requiring covenant-specific witness parsing. The witness is needed for *authorization* (proving the spend is valid) and for *constructing* new spends (PSET builders), but not for *observing* what happened after the fact. This separation is what enables the no-cache architecture: `process_transaction` and `interpret_transaction` work entirely from persisted data (scripts, state, output values), while only PSET builders need the full compiled contract for witness encoding.
 
 ## Contract Ingestion
 
@@ -1110,7 +1139,7 @@ If the available UTXOs don't cover the required amount plus fee, the builder ret
 
 ### UnblindedUtxo
 
-PSET builders accept `UnblindedUtxo` (via `WalletFunding`) — a UTXO with unblinded (revealed) asset, value, and blinding factors. This is an existing type from the codebase carrying: outpoint, script pubkey, explicit asset ID, explicit value, asset blinding factor, and value blinding factor. The caller obtains these from their wallet's UTXO set.
+PSET builders accept `UnblindedUtxo` (via `WalletFunding`) — a UTXO with unblinded (revealed) asset, value, and blinding factors. This type is defined in `deadcat-core` and carries: outpoint, script pubkey, explicit asset ID, explicit value, asset blinding factor, and value blinding factor. `deadcat-sdk` imports this type from core (not the other way around — core has no dependency on SDK). The caller obtains these from their wallet's UTXO set.
 
 ### Output Consolidation
 
@@ -1140,7 +1169,7 @@ Creation takes concrete param type `&PredictionMarketParams` (compiles on the fl
 pub fn build_creation_pset(&self, params: &PredictionMarketParams, funding: &WalletFunding)
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 
-// Post-ingestion — takes contract_id, uses cached compiled contract
+// Post-ingestion — takes contract_id, recompiles from stored params
 pub fn build_issuance_pset(&self, contract_id: &str, pairs: u64, yes_dest: &Script, no_dest: &Script, funding: &WalletFunding)
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 
@@ -1163,25 +1192,25 @@ pub fn build_cancellation_pset(&self, contract_id: &str, pairs_to_burn: Option<u
 pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, initial_reserves: &PoolReserves, funding: &WalletFunding)
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 
-pub fn build_lmsr_adjust_pset(&self, contract_id: &str, target_reserves: &PoolReserves, funding: &WalletFunding)
+pub fn build_lmsr_adjust_pset(&self, contract_id: &str, pair_delta: i64, collateral_delta: i64, funding: &WalletFunding)
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 ```
+
+`build_lmsr_adjust_pset` takes `pair_delta` (applied equally to both YES and NO reserves) and `collateral_delta` (applied to collateral independently). This API shape makes the covenant's paired-delta constraint (YES and NO must move equally) unrepresentable as an error — the caller cannot express asymmetric deltas. The engine validates that the resulting reserves meet the covenant's minimum reserve floors (`MIN_R_YES`, `MIN_R_NO`, `MIN_R_COLLATERAL` from pool params) and returns `CoreError::InvalidParams` if violated. The wallet can present an absolute-target UI ("set pool to 1000 YES/NO") by computing the delta from current reserves on their side.
 
 Pool swaps are not built directly — they are part of trade transactions (see [Trade PSET Builder](#trade-pset-builder) below).
 
 ### Maker Order Builders
 
+The maker's lifecycle is directly exposed. The taker side (filling orders) is handled through trade transactions — see [Trade PSET Builder](#trade-pset-builder).
+
 | Builder | Transaction | State Change |
 | ------- | ----------- | ------------ |
 | `build_create_order_pset` | Create limit order | — (creates initial state) |
-| `build_fill_order_pset` | Fill order | Active → Active or Consumed |
 | `build_cancel_order_pset` | Cancel order | Active → Cancelled |
 
 ```rust
 pub fn build_create_order_pset(&self, params: &MakerOrderParams, offered_amount: u64, funding: &WalletFunding)
-    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
-
-pub fn build_fill_order_pset(&self, contract_id: &str, fill_amount: u64, receive_script: &Script, funding: &WalletFunding)
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 
 pub fn build_cancel_order_pset(&self, contract_id: &str, funding: &WalletFunding)
@@ -1231,7 +1260,9 @@ Core contains the `.simf` Simplicity contract source code and the compiler integ
 
 This is necessary for both PSET construction (building covenant outputs with correct scripts) and state advancement (matching output scripts to determine new state).
 
-**Compilation caching**: The Simplicity source templates are parsed once (process-wide `OnceLock` cache). Per-contract instantiation (binding parameters to the template) and commitment are cached lazily in memory — compiled on first access per contract per engine lifetime. During `ingest_contract`, the engine compiles the contract, caches the result, and passes pre-computed scripts and asset IDs to the store as `DerivedContractData` for indexing. Post-ingestion operations that need compiled contracts (PSET builders, `process_transaction`) use the in-memory cache, paying zero compilation cost after the first access. Creation builders (which compile on the fly) pay the moderate instantiation + commitment cost, but not the template parsing cost. `ContractEngine::new` is O(1) — it does not iterate existing contracts or compile anything at construction time.
+**Compilation model**: The Simplicity source templates are parsed once (process-wide `OnceLock` cache). Per-contract instantiation (binding parameters to the template) and commitment are performed on demand — there is no in-memory compiled contract cache. During `ingest_contract`, the engine compiles the contract, passes pre-computed scripts and asset IDs to the store as `DerivedContractData` for indexing, and discards the compiled result. PSET builders recompile from stored params on each call — the cost is moderate (~10-100ms, dominated by instantiation + commitment; template parsing is already cached). `process_transaction` and `interpret_transaction` do not need compiled contracts — they determine transitions from script pubkey matching (using the store's persisted script index) and output values, without witness decoding. `ContractEngine::new` is O(1) — it does not iterate existing contracts or compile anything at construction time.
+
+**Why no compiled contract cache**: The only operation requiring a compiled contract is PSET construction (specifically, witness encoding for spending covenant inputs). The simplicityhl library's `CompiledProgram` type is opaque with no serialization API, so compiled contracts cannot be persisted to disk. An in-memory cache would only save recompilation across multiple PSET builds for the same contract within a single engine lifetime — a rare scenario that doesn't justify the cache's complexity (eviction during rollback, interior mutability for `&self` methods). If simplicityhl adds `CompiledProgram` serialization in the future, persisting compiled contracts at ingestion time would eliminate recompilation entirely — a transparent internal optimization with no API change. See [simplicityhl-compiled-program-serialization.md](simplicityhl-compiled-program-serialization.md) for the upstream request.
 
 **None of this is exposed in the public API.** Consumers interact with contract params (plain data) and the engine's methods. Compiled contracts, CMRs, taproot tree structures, and witness encoding are implementation details.
 
@@ -1333,14 +1364,16 @@ let mut engine = ContractEngine::new(aqua_deadcat_store, Network::Liquid);
 // 2. Ingest a market (discovered via Nostr, import, etc.)
 //    No anchor needed — core derives blinding factors deterministically.
 //    Core compiles the contract, verifies the creation tx, and indexes asset IDs + scripts.
+//    Returns the CMR (contract ID).
 let contract_id = engine.ingest_contract(
     ContractParams::PredictionMarket(market_params),
     &creation_tx,
 )?;
+let contract_id_str = contract_id.to_string(); // hex string for store lookups
 
 // 3. Catch up: scan chain for this contract's history since creation.
 //    all_covenant_scripts delegates to the store's pre-computed script index.
-let scripts = engine.all_covenant_scripts(&contract_id)?;
+let scripts = engine.all_covenant_scripts(&contract_id_str)?;
 let historical_txs = aqua_chain.scan_history(&scripts, creation_tx.position.block_height);
 for tx in historical_txs {
     engine.process_transaction(&tx)?;
@@ -1356,7 +1389,7 @@ for tx in aqua_chain.poll_new_transactions() {
 
 // 5. Pending UX: interpret unconfirmed mempool transactions (read-only)
 if let Some(mempool_tx) = aqua_chain.get_mempool_tx(txid) {
-    let interpretations = engine.interpret_transaction(&mempool_tx);
+    let interpretations = engine.interpret_transaction(&mempool_tx)?;
     for interp in &interpretations {
         render_pending_label(&interp.details);
     }
@@ -1364,7 +1397,7 @@ if let Some(mempool_tx) = aqua_chain.get_mempool_tx(txid) {
 
 // 6. Label wallet history (read-only, can be called anytime)
 for wallet_tx in wallet_history {
-    let interpretations = engine.interpret_transaction(&wallet_tx);
+    let interpretations = engine.interpret_transaction(&wallet_tx)?;
     for interp in &interpretations {
         for output in &interp.external_outputs {
             match output {
@@ -1379,7 +1412,7 @@ for wallet_tx in wallet_history {
 
 // 7. Identify assets in wallet balance (delegates to store's asset index)
 for (asset_id, amount) in wallet_balance {
-    if let Some(info) = engine.identify_asset(&asset_id) {
+    if let Some(info) = engine.identify_asset(&asset_id)? {
         render_token_position(&info, amount);
     }
 }
@@ -1400,9 +1433,10 @@ if let Some(cursor) = page.next_cursor {
     )?;
 }
 
-// 9. Deduplicate during discovery (no engine needed)
-let id = deadcat_core::contract_id(&ContractParams::PredictionMarket(new_params));
-if already_tracking(&id) { continue; }
+// 9. Deduplicate during discovery (use announced CMR from Nostr — no compilation needed)
+let announced_cmr = announcement.contract_id; // CMR included in Nostr announcement
+if already_tracking(&announced_cmr) { continue; }
+// Or, if you need to verify: let computed = deadcat_core::contract_id(&params, Network::Liquid);
 
 // 10. Trade: two-step quote + build (engine handles routing, coin selection, fee computation)
 let spec = TradeSpec { side: Side::Yes, direction: TradeDirection::Buy, amount: TradeAmount::ExactInput(5000) };
@@ -1521,13 +1555,13 @@ aqua_chain.broadcast(signed)?;
 
 **Chosen**: `interpret_transaction` uses same logic as `process_transaction` but read-only. Works for both confirmed and unconfirmed transactions.
 **Rejected**: Separate classification system for interpretation.
-**Why**: The same witness decoding and output matching logic serves both purposes. Having two systems would mean two places to update when covenant logic changes. The only difference is mutability — processing writes new state, interpretation just reads.
+**Why**: The same script matching and output value logic serves both purposes. Having two systems would mean two places to update when covenant logic changes. The only difference is mutability — processing writes new state, interpretation just reads.
 
-### Advance Logic Uses Witness Decoding
+### Advance Logic Uses Script Matching and Output Values
 
-**Chosen**: Decode Simplicity witness data to determine transition type.
-**Rejected**: Pattern-match transaction structure (input/output counts, script matching).
-**Why**: Witness decoding is deterministic and precise. The Simplicity witness encodes exactly what happened (old state, new state, trade parameters). Pattern matching is fragile — it requires recognizing every valid transaction layout and breaks on novel combinations. Witness decoding works for any valid covenant spend regardless of the surrounding transaction structure.
+**Chosen**: Determine transition type from script pubkey matching (against the store's persisted script index) and explicit output values. No Simplicity witness decoding.
+**Rejected**: (a) Pattern-match transaction structure (input/output counts). (b) Decode Simplicity witness data.
+**Why**: Script matching is deterministic and precise — each covenant state produces unique script pubkeys, so matching new outputs against expected scripts unambiguously identifies the new state. Output values provide the numeric transition details (reserves, amounts, fill levels). This approach avoids the need for compiled Simplicity contracts during transaction processing, which is critical for the no-cache architecture — only PSET builders (which need witness *encoding*) require compilation. Witness decoding would require compiled contracts on every `process_transaction` and `interpret_transaction` call, forcing either a cache or repeated recompilation on a hot path.
 
 ### Output Identification via Script Pubkey Matching
 
@@ -1627,9 +1661,9 @@ aqua_chain.broadcast(signed)?;
 
 ### Simplicity Fully Encapsulated
 
-**Chosen**: Compiled contracts, CMRs, taproot trees, and witness encoding are internal to the engine. Consumers never see these types. PSET builders are engine methods that use cached compiled contracts.
+**Chosen**: Compiled contracts, CMRs, taproot trees, and witness encoding are internal to the engine. Consumers never see these types. PSET builders are engine methods that recompile from stored params on each call.
 **Rejected**: (a) Public compiled contract types with engine getters. (b) Standalone PSET builder functions that take compiled contracts as parameters.
-**Why**: Compiled contracts are a "how" detail, not a "what." Wallet integrators care about building transactions, not about Simplicity compilation. Making PSET builders engine methods eliminates an entire type family from the public API (`CompiledPredictionMarket`, `CompiledLmsrPool`, `CompiledMakerOrder`) and the question of how to obtain them. The engine compiles and caches during `ingest_contract`; post-ingestion builders use the cache (zero compilation cost). Creation builders compile on the fly (moderate cost — template parsing is cached process-wide via `OnceLock`, only instantiation + commitment is per-call). The only trade-off is that PSET builders are no longer independently testable as pure functions — but they can be tested with an engine backed by a test store.
+**Why**: Compiled contracts are a "how" detail, not a "what." Wallet integrators care about building transactions, not about Simplicity compilation. Making PSET builders engine methods eliminates an entire type family from the public API (`CompiledPredictionMarket`, `CompiledLmsrPool`, `CompiledMakerOrder`) and the question of how to obtain them. All builders compile on demand — template parsing is cached process-wide via `OnceLock`, only instantiation + commitment is per-call (~10-100ms). The only trade-off is that PSET builders are no longer independently testable as pure functions — but they can be tested with an engine backed by a test store.
 
 ### Internal Coin Selection
 
@@ -1653,7 +1687,7 @@ aqua_chain.broadcast(signed)?;
 
 **Chosen**: `build_issuance_pset` handles both initial (Dormant → Unresolved) and subsequent (Unresolved → Unresolved) issuance. `build_redemption_pset` handles both post-resolution and post-expiry redemption. The engine determines the correct covenant path from the contract's current state.
 **Rejected**: Separate builders for each state transition (`build_initial_issuance_pset`, `build_subsequent_issuance_pset`, `build_post_resolution_redemption_pset`, `build_expiry_redemption_pset`).
-**Why**: The caller-provided data is identical for both paths within each pair. The distinction is the covenant path, which the engine knows from the contract's current state. Separate builders would force the caller to determine the contract's phase before calling the correct builder — duplicating knowledge the engine already has. Merging reduces the public API from 14 to 12 builders and eliminates a class of "called the wrong builder for the current state" errors.
+**Why**: The caller-provided data is identical for both paths within each pair. The distinction is the covenant path, which the engine knows from the contract's current state. Separate builders would force the caller to determine the contract's phase before calling the correct builder — duplicating knowledge the engine already has. Merging reduces the public API surface and eliminates a class of "called the wrong builder for the current state" errors.
 
 ### WalletFunding Struct Over Per-Builder Args Structs
 
@@ -1672,6 +1706,7 @@ aqua_chain.broadcast(signed)?;
 **Chosen**: `WalletFunding.return_script` is the sole destination for all non-covenant, non-fee outputs: L-BTC change, collateral refunds, redemption payouts, trade proceeds, order refunds, etc. No separate `payout_script` or `refund_script` parameters.
 **Rejected**: Per-builder destination scripts (e.g., `refund_script` for cancellation, `payout_script` for redemption).
 **Why**: In practice, wallets send all funds to the same set of addresses. Separate destination scripts add API surface without changing behavior for the common case. Using a single `return_script` simplifies every builder signature and enables output consolidation (same script + same asset → merge). Named `return_script` rather than `change_script` to reflect its broader purpose. If a future use case requires separate destinations (e.g., institutional custody with per-purpose addresses), this can be added as an optional override without breaking the API.
+**Exception**: `build_issuance_pset` takes `yes_dest: &Script` and `no_dest: &Script` for newly minted token delivery. These are justified because the caller is creating two distinct assets that may need separate destinations (e.g., YES tokens to a pool, NO tokens to cold storage). This is fundamentally different from L-BTC fund flows where a single destination suffices.
 
 ### Output Consolidation Over Separate Outputs
 
@@ -1679,11 +1714,36 @@ aqua_chain.broadcast(signed)?;
 **Rejected**: Separate outputs for each logical purpose (e.g., separate collateral payout and fee change).
 **Why**: On Liquid, each extra confidential output adds ~4.3 KB to the transaction (range proof + surjection proof). This increases fees both now (larger transaction) and later (extra UTXO to spend). It also increases UTXO bloat and slightly worsens privacy (more outputs = more structural fingerprinting). Consolidation avoids all of this. The trade-off is that `OutputRole` can't distinguish the fee change portion of a consolidated output — but `TransitionDetails` provides exact semantic amounts, so wallets can always display precise numbers.
 
-### Store-Persisted Indexes Over In-Memory Caches
+### Store-Persisted Indexes, No In-Memory Cache
 
-**Chosen**: Asset ID → contract mapping and covenant scripts are persisted in the store (populated at ingestion via `DerivedContractData`). Full compiled contracts are lazily cached in memory.
-**Rejected**: (a) All indexes in memory (requires eager reconstruction at startup). (b) All indexes in store including full compiled contracts (serialization complexity).
-**Why**: Asset ID lookups and covenant script lookups are hot-path operations (called by `identify_asset` and `all_covenant_scripts`). Persisting them in the store ensures O(1) construction of `ContractEngine::new` — no iteration or compilation at startup. Full compiled contracts are more complex to serialize and are only needed for PSET construction and transaction processing, so lazy in-memory caching (compile on first access, memoize) is a better fit. This split amortizes indexing costs to ingestion time while keeping construction instant.
+**Chosen**: Asset ID → contract mapping and covenant scripts are persisted in the store (populated at ingestion via `DerivedContractData`). Compiled contracts are not cached — they are recompiled on demand for PSET builders only.
+**Rejected**: (a) All indexes in memory (requires eager reconstruction at startup). (b) In-memory compiled contract cache (adds complexity for minimal benefit). (c) Persisted compiled contracts (simplicityhl's `CompiledProgram` has no serialization API).
+**Why**: Asset ID lookups and covenant script lookups are hot-path operations (called by `identify_asset` and `all_covenant_scripts`). Persisting them in the store ensures O(1) construction of `ContractEngine::new` — no iteration or compilation at startup. `process_transaction` and `interpret_transaction` determine transitions from script pubkey matching and output values — no compiled contracts needed. Only PSET builders require compilation (for witness encoding), and their ~10-100ms recompilation cost is acceptable for a user-initiated operation. An in-memory cache would only save recompilation across multiple PSET builds for the same contract within a single engine lifetime — too rare to justify the complexity (eviction during rollback, interior mutability). If simplicityhl adds `CompiledProgram` serialization, persisting at ingestion time would eliminate recompilation entirely.
+
+### CMR as Contract ID
+
+**Chosen**: Contract IDs are the Commitment Merkle Root (CMR) of the compiled Simplicity contract with bound parameters.
+**Rejected**: Simple hash of contract parameters (e.g., `SHA256(yes_token_asset || no_token_asset)`).
+**Why**: The CMR is the natural, canonical identifier — cryptographically tied to the contract's actual program behavior, not just its input parameters. Different covenant versions produce different CMRs, which is correct (a different program is a different contract). The CMR is already computed during ingestion, so no separate hashing scheme is needed.
+**Trade-off**: The standalone `contract_id(params, network)` function requires Simplicity compilation (~10-100ms) rather than a cheap hash. This is acceptable because: (1) hot-path deduplication during discovery uses announced CMRs from Nostr (O(1) store lookup, no computation); (2) `ingest_contract` already compiles; (3) the function is rarely called outside of ingestion and verification.
+
+### Taker Order Fills Via Trade Router
+
+**Chosen**: Order filling (taker side) is handled exclusively through the trade system (`quote_trade` + `build_trade_pset`). No `build_fill_order_pset`.
+**Rejected**: Direct `build_fill_order_pset` builder for explicit single-order fills.
+**Why**: The trade router optimizes across all available pools and orders for best execution. A direct fill builder would allow suboptimal execution and create an inconsistency (pool swaps already go through the trade router — `build_lmsr_swap_pset` doesn't exist). The maker's lifecycle is directly exposed (`build_create_order_pset`, `build_cancel_order_pset`) because those are single-contract operations that don't benefit from routing. If explicit order targeting becomes a requested feature, a direct fill builder can be added as a non-breaking change (new engine method, no store or type changes).
+
+### LMSR Adjust API Uses Deltas
+
+**Chosen**: `build_lmsr_adjust_pset` takes `pair_delta: i64` (applied equally to YES and NO) and `collateral_delta: i64`, not `target_reserves: &PoolReserves`.
+**Rejected**: Absolute target reserves with runtime validation of the paired-delta constraint.
+**Why**: The LMSR covenant enforces that YES and NO reserve deltas are equal on the admin path. By taking a single `pair_delta` parameter, the API makes this constraint unrepresentable as an error — the caller cannot express asymmetric deltas. The only remaining validation is reserve floors (computed targets must meet minimums), which is a meaningful constraint rather than an input formatting error. Wallets can present absolute-target UIs by computing deltas from current reserves on their side.
+
+### Pool/Order Ingestion Requires Parent Market
+
+**Chosen**: `ingest_contract` for pools and orders validates that the referenced token asset IDs correspond to a known market. If the parent market isn't tracked, returns `CoreError::InvalidParams`.
+**Rejected**: (a) Allow orphaned pools/orders with later backfill. (b) Engine pre-computes parent ID and passes it to store.
+**Why**: The store builds its own parent-market index by resolving token asset IDs via `find_by_asset_id` during `track_contract`. This requires the parent market to already be in the asset index. Allowing orphans would require backfill machinery (scan for orphans when a market is ingested) — significant complexity for a case that shouldn't happen. Discovery naturally produces markets before their pools/orders. The simpler option (engine pre-computes parent ID and passes it via `DerivedContractData`) was rejected because it duplicates work the store can already do with its existing asset index.
 
 ### No Untrack Contract (Future Consideration)
 
