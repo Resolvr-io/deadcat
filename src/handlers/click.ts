@@ -1294,10 +1294,15 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        await invoke("unlock_wallet", { password: state.walletPassword });
+        const unlockResult = await invoke<{
+          walletBalance: Record<string, number> | null;
+        }>("unlock_wallet", { password: state.walletPassword });
         state.walletPassword = "";
         await fetchWalletStatus();
         state.walletData = createWalletData();
+        if (unlockResult?.walletBalance) {
+          state.walletData.balance = unlockResult.walletBalance;
+        }
         state.walletLoading = false;
         hideOverlayLoader();
         render();
