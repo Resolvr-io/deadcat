@@ -49,11 +49,12 @@ function marketCard(market: Market, idx: number): string {
         ${yesPct != null ? `<p class="mb-2 text-2xl font-semibold text-slate-100">${yesPct}<span class="text-base text-slate-400">%</span></p>` : ""}
       </button>
       <div class="flex items-center gap-2">
-        ${market.state === 2 || market.state === 3
-          ? `<span class="w-48 rounded-full ${market.state === 2 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"} px-3 py-1 text-center text-sm font-medium">${market.state === 2 ? "Resolved YES" : "Resolved NO"}</span>`
-          : market.state === 4
-            ? `<span class="w-48 rounded-full bg-amber-500/20 px-3 py-1 text-center text-sm font-medium text-amber-300">Expired</span>`
-            : `<button data-open-market="${escapeAttr(market.id)}" data-open-side="yes" data-open-intent="buy" class="w-24 rounded-full bg-emerald-500 px-3 py-1 text-center text-sm font-medium text-white transition hover:bg-emerald-400">${yesPct != null ? "Yes " + yesPct + "%" : "Buy Yes"}</button>
+        ${
+          market.state === 2 || market.state === 3
+            ? `<span class="w-48 rounded-full ${market.state === 2 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"} px-3 py-1 text-center text-sm font-medium">${market.state === 2 ? "Resolved YES" : "Resolved NO"}</span>`
+            : market.state === 4
+              ? `<span class="w-48 rounded-full bg-amber-500/20 px-3 py-1 text-center text-sm font-medium text-amber-300">Expired</span>`
+              : `<button data-open-market="${escapeAttr(market.id)}" data-open-side="yes" data-open-intent="buy" class="w-24 rounded-full bg-emerald-500 px-3 py-1 text-center text-sm font-medium text-white transition hover:bg-emerald-400">${yesPct != null ? "Yes " + yesPct + "%" : "Buy Yes"}</button>
               <button data-open-market="${escapeAttr(market.id)}" data-open-side="no" data-open-intent="buy" class="w-24 rounded-full bg-rose-500 px-3 py-1 text-center text-sm font-medium text-white transition hover:bg-rose-400">${noPct != null ? "No " + noPct + "%" : "Buy No"}</button>`
         }
         <span class="ml-auto text-xs">${trendIndicator(market.change24h)}</span>
@@ -245,8 +246,14 @@ export function renderHome(): string {
               ${trending
                 .slice(0, 3)
                 .map((market, idx) => {
-                  const yesPct = market.yesPrice != null ? Math.round(market.yesPrice * 100) : null;
-                  const noPct = market.yesPrice != null ? Math.round((1 - market.yesPrice) * 100) : null;
+                  const yesPct =
+                    market.yesPrice != null
+                      ? Math.round(market.yesPrice * 100)
+                      : null;
+                  const noPct =
+                    market.yesPrice != null
+                      ? Math.round((1 - market.yesPrice) * 100)
+                      : null;
                   return `
                     <div class="w-full py-3 text-left">
                       <button data-open-market="${escapeAttr(market.id)}" class="w-full text-left">
@@ -275,8 +282,14 @@ export function renderHome(): string {
             <div class="divide-y divide-slate-800">
               ${topMovers
                 .map((market, idx) => {
-                  const yesPct = market.yesPrice != null ? Math.round(market.yesPrice * 100) : null;
-                  const noPct = market.yesPrice != null ? Math.round((1 - market.yesPrice) * 100) : null;
+                  const yesPct =
+                    market.yesPrice != null
+                      ? Math.round(market.yesPrice * 100)
+                      : null;
+                  const noPct =
+                    market.yesPrice != null
+                      ? Math.round((1 - market.yesPrice) * 100)
+                      : null;
                   return `
                     <div class="w-full py-3 text-left">
                       <button data-open-market="${escapeAttr(market.id)}" class="w-full text-left">

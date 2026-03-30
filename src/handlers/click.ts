@@ -1185,7 +1185,8 @@ export async function handleClick(
     state.walletError = "";
     state.walletPassword = "";
     state.settingsOpen = false;
-    state.previousView = state.view !== "wallet" ? state.view : state.previousView;
+    state.previousView =
+      state.view !== "wallet" ? state.view : state.previousView;
     state.view = "wallet";
     render();
     // If already unlocked with cached balance, just do a silent background sync

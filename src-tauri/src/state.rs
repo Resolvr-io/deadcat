@@ -229,7 +229,6 @@ impl AppStateManager {
         self.boltz_service.clone()
     }
 
-
     /// Mark the wallet as unlocked/locked (synced from the NodeState).
     pub fn set_wallet_unlocked(&mut self, unlocked: bool) {
         self.wallet_unlocked = unlocked;
@@ -283,7 +282,10 @@ impl AppStateManager {
 
     /// Build an `AppState` snapshot with a fresh wallet balance.
     /// Persists the balance to disk for subsequent snapshots and app restarts.
-    pub fn snapshot_with_balance(&mut self, wallet_balance: Option<HashMap<String, u64>>) -> AppState {
+    pub fn snapshot_with_balance(
+        &mut self,
+        wallet_balance: Option<HashMap<String, u64>>,
+    ) -> AppState {
         if wallet_balance.is_some() {
             self.local_state.cached_balance = wallet_balance.clone();
             self.save_local_state();
