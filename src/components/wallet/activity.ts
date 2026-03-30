@@ -110,24 +110,23 @@ export function renderWalletTransactionRows(params: {
         ? new Date(tx.timestamp * 1000).toLocaleString()
         : "unconfirmed";
       const shortTxid = `${tx.txid.slice(0, 10)}...${tx.txid.slice(-6)}`;
+      const feeStr = (tx.fee / 1e8).toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+      const confirmations = tx.height != null ? "Block " + tx.height : "Unconfirmed";
       return (
-        '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm select-none">' +
+        '<details class="border-b border-slate-800 text-sm select-none group">' +
+        '<summary class="flex items-center justify-between py-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">' +
         '<div class="flex items-center gap-2">' +
         '<span class="' +
         color +
         '">' +
         icon +
         "</span>" +
-        '<button data-action="open-explorer-tx" data-txid="' +
-        escapeAttr(tx.txid) +
-        '" class="mono text-slate-400 hover:text-slate-200 transition cursor-pointer">' +
-        escapeHtml(shortTxid) +
-        "</button>" +
         label +
         '<span class="text-slate-500">' +
         escapeHtml(date) +
         "</span>" +
         "</div>" +
+        '<div class="flex items-center gap-2">' +
         '<div class="text-right">' +
         (state.walletBalanceHidden
           ? '<span class="inline-flex gap-0.5 text-slate-500">' +
@@ -146,7 +145,38 @@ export function renderWalletTransactionRows(params: {
                 "</div>"
               : "")) +
         "</div>" +
-        "</div>"
+        '<span class="text-slate-600 text-xs transition-transform group-open:rotate-180">&#9660;</span>' +
+        "</div>" +
+        "</summary>" +
+        '<div class="pb-3 pt-1 pl-6 flex flex-col gap-1.5 text-xs">' +
+        '<div class="flex items-center gap-2">' +
+        '<span class="text-slate-500">TXID</span>' +
+        '<button data-action="open-explorer-tx" data-txid="' +
+        escapeAttr(tx.txid) +
+        '" class="mono text-slate-400 hover:text-slate-200 transition cursor-pointer">' +
+        escapeHtml(shortTxid) +
+        "</button>" +
+        "</div>" +
+        '<div class="flex items-center gap-2">' +
+        '<span class="text-slate-500">Fee</span>' +
+        '<span class="mono text-slate-400">' +
+        escapeHtml(feeStr) +
+        " L-BTC</span>" +
+        "</div>" +
+        '<div class="flex items-center gap-2">' +
+        '<span class="text-slate-500">Status</span>' +
+        '<span class="mono text-slate-400">' +
+        escapeHtml(confirmations) +
+        "</span>" +
+        "</div>" +
+        '<div class="flex items-center gap-2">' +
+        '<span class="text-slate-500">Type</span>' +
+        '<span class="mono text-slate-400">' +
+        escapeHtml(tx.txType) +
+        "</span>" +
+        "</div>" +
+        "</div>" +
+        "</details>"
       );
     })
     .join("");
