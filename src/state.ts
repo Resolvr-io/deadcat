@@ -53,6 +53,8 @@ export const SATS_PER_FULL_CONTRACT = 100;
 
 export const categories: NavCategory[] = [
   "Trending",
+  "Ending Soon",
+  "New",
   "Politics",
   "Sports",
   "Culture",

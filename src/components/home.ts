@@ -1,19 +1,22 @@
 import { OPEN_WALLET_ACTION } from "../actions.ts";
 import { chartSkeleton } from "../components/market-chart.ts";
+import { categoryIcon } from "../components/shell.ts";
 import { markets, state } from "../state.ts";
 import type { CovenantState, Market, MarketCategory } from "../types.ts";
 import {
   formatPercent,
   formatProbabilityWithPercent,
+  formatTimeRemaining,
   formatVolumeBtc,
 } from "../utils/format.ts";
 import { escapeAttr, escapeHtml } from "../utils/html.ts";
 import {
+  getEndingSoonMarkets,
   getFilteredMarkets,
+  getNewMarkets,
   getTrendingMarkets,
   isExpired,
   stateBadge,
-  stateLabel,
 } from "../utils/market.ts";
 
 const trendUp =
@@ -28,9 +31,42 @@ function trendIndicator(change: number): string {
   return `<span class="inline-flex items-center gap-1 ${color}">${arrow}${formatPercent(change)}</span>`;
 }
 
+function marketCard(market: Market, idx: number): string {
+  const no = market.yesPrice != null ? 1 - market.yesPrice : null;
+  const yesPct =
+    market.yesPrice != null ? Math.round(market.yesPrice * 100) : null;
+  const noPct = no != null ? Math.round(no * 100) : null;
+  const blocksLeft = market.expiryHeight - market.currentHeight;
+  const timeLeft = blocksLeft > 0 ? formatTimeRemaining(blocksLeft) : "Expired";
+  return `
+    <div class="market-card rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600" style="animation-delay:${idx * 50}ms">
+      <button data-open-market="${escapeAttr(market.id)}" class="w-full text-left">
+        <div class="mb-2 flex items-center justify-between text-xs">
+          <span class="text-slate-500">${escapeHtml(market.category)} ${market.isLive ? '<span class="text-emerald-400">· LIVE</span>' : ""}</span>
+          <span class="text-slate-500">${timeLeft}</span>
+        </div>
+        <p class="mb-2 max-h-12 overflow-hidden text-sm font-normal text-slate-200">${escapeHtml(market.question)}</p>
+        ${yesPct != null ? `<p class="mb-2 text-2xl font-semibold text-slate-100">${yesPct}<span class="text-base text-slate-400">%</span></p>` : ""}
+      </button>
+      <div class="flex items-center gap-2">
+        ${market.state === 2 || market.state === 3
+          ? `<span class="w-48 rounded-full ${market.state === 2 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"} px-3 py-1 text-center text-sm font-medium">${market.state === 2 ? "Resolved YES" : "Resolved NO"}</span>`
+          : market.state === 4
+            ? `<span class="w-48 rounded-full bg-amber-500/20 px-3 py-1 text-center text-sm font-medium text-amber-300">Expired</span>`
+            : `<button data-open-market="${escapeAttr(market.id)}" data-open-side="yes" data-open-intent="buy" class="w-24 rounded-full bg-emerald-500 px-3 py-1 text-center text-sm font-medium text-white transition hover:bg-emerald-400">${yesPct != null ? "Yes " + yesPct + "%" : "Buy Yes"}</button>
+              <button data-open-market="${escapeAttr(market.id)}" data-open-side="no" data-open-intent="buy" class="w-24 rounded-full bg-rose-500 px-3 py-1 text-center text-sm font-medium text-white transition hover:bg-rose-400">${noPct != null ? "No " + noPct + "%" : "Buy No"}</button>`
+        }
+        <span class="ml-auto text-xs">${trendIndicator(market.change24h)}</span>
+      </div>
+      <p class="mt-2 text-xs text-slate-500">${formatVolumeBtc(market.volumeBtc)} vol · ${timeLeft}</p>
+    </div>`;
+}
+
 export function renderHome(): string {
   if (
     state.activeCategory !== "Trending" &&
+    state.activeCategory !== "Ending Soon" &&
+    state.activeCategory !== "New" &&
     state.activeCategory !== "My Markets"
   ) {
     return renderCategoryPage();
@@ -40,10 +76,77 @@ export function renderHome(): string {
     return renderMyMarkets();
   }
 
+  if (state.activeCategory === "Ending Soon") {
+    return renderSortedView("Ending Soon", getEndingSoonMarkets());
+  }
+
+  if (state.activeCategory === "New") {
+    return renderSortedView("New", getNewMarkets());
+  }
+
   if (state.marketsLoading) {
     return `
-      <div class="phi-container py-16 text-center">
-        <p class="text-lg text-slate-400">Discovering markets from Nostr relays...</p>
+      <div class="phi-container py-6 lg:py-8">
+        <div class="grid gap-[21px] xl:grid-cols-[1.618fr_1fr]">
+          <div class="space-y-[21px]">
+            <div class="rounded-[21px] border border-slate-800 bg-slate-950/60 p-[21px] lg:p-[34px] space-y-5">
+              <div class="flex items-start justify-between gap-3">
+                <div class="space-y-3 flex-1">
+                  <div class="h-8 w-3/4 animate-pulse rounded-lg bg-slate-800/60"></div>
+                  <div class="h-5 w-1/2 animate-pulse rounded bg-slate-800/60"></div>
+                </div>
+                <div class="h-11 w-28 animate-pulse rounded-full bg-slate-800/60"></div>
+              </div>
+              <div class="grid gap-[21px] lg:grid-cols-[1fr_1.618fr]">
+                <div class="space-y-3">
+                  <div class="h-4 w-16 animate-pulse rounded bg-slate-800/60"></div>
+                  <div class="grid grid-cols-2 gap-2">
+                    <div class="h-14 animate-pulse rounded-lg bg-slate-900/60"></div>
+                    <div class="h-14 animate-pulse rounded-lg bg-slate-900/60"></div>
+                  </div>
+                  <div class="h-10 w-full animate-pulse rounded-full bg-slate-800/60"></div>
+                  <div class="h-10 w-full animate-pulse rounded-full bg-slate-800/60"></div>
+                  <div class="h-16 w-full animate-pulse rounded bg-slate-800/60"></div>
+                </div>
+                <div class="h-48 animate-pulse rounded-lg bg-slate-900/40"></div>
+              </div>
+            </div>
+            <div>
+              <div class="mb-3 flex items-center justify-between">
+                <div class="h-5 w-28 animate-pulse rounded bg-slate-800/60"></div>
+                <div class="h-4 w-16 animate-pulse rounded bg-slate-800/60"></div>
+              </div>
+              <div class="grid gap-3 md:grid-cols-2">
+                ${Array.from({ length: 4 })
+                  .map(
+                    () => `
+                  <div class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 space-y-3">
+                    <div class="h-3 w-20 animate-pulse rounded bg-slate-800/60"></div>
+                    <div class="h-5 w-full animate-pulse rounded bg-slate-800/60"></div>
+                    <div class="flex justify-between">
+                      <div class="h-7 w-20 animate-pulse rounded-full bg-slate-800/60"></div>
+                      <div class="h-7 w-20 animate-pulse rounded-full bg-slate-800/60"></div>
+                    </div>
+                  </div>`,
+                  )
+                  .join("")}
+              </div>
+            </div>
+          </div>
+          <aside class="grid gap-[13px] sm:grid-cols-2 xl:grid-cols-1">
+            ${Array.from({ length: 2 })
+              .map(
+                () => `
+              <div class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] space-y-4">
+                <div class="h-5 w-24 animate-pulse rounded bg-slate-800/60"></div>
+                <div class="h-4 w-full animate-pulse rounded bg-slate-800/60"></div>
+                <div class="h-4 w-5/6 animate-pulse rounded bg-slate-800/60"></div>
+                <div class="h-4 w-full animate-pulse rounded bg-slate-800/60"></div>
+              </div>`,
+              )
+              .join("")}
+          </aside>
+        </div>
       </div>
     `;
   }
@@ -71,6 +174,15 @@ export function renderHome(): string {
 
   const featured = trending[state.trendingIndex % trending.length];
   const featuredNo = featured.yesPrice != null ? 1 - featured.yesPrice : null;
+  const featuredYesPct =
+    featured.yesPrice != null ? Math.round(featured.yesPrice * 100) : null;
+  const featuredNoPct =
+    featuredNo != null ? Math.round(featuredNo * 100) : null;
+  const featuredBlocksLeft = featured.expiryHeight - featured.currentHeight;
+  const featuredTimeLeft =
+    featuredBlocksLeft > 0
+      ? formatTimeRemaining(featuredBlocksLeft)
+      : "Expired";
   const topMarkets = getFilteredMarkets().slice(0, 6);
   const topMovers = [...markets]
     .sort((a, b) => Math.abs(b.change24h) - Math.abs(a.change24h))
@@ -81,31 +193,36 @@ export function renderHome(): string {
       <div class="grid gap-[21px] xl:grid-cols-[1.618fr_1fr]">
         <section class="space-y-[21px]">
           <div class="rounded-[21px] border border-slate-800 bg-slate-950/60 p-[21px] lg:p-[34px]">
-            <div class="mb-5 flex items-start justify-between gap-3">
-              <h1 class="phi-title text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${escapeHtml(featured.question)}</h1>
+            <div class="mb-4 flex items-center justify-between gap-3">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="text-slate-500">${escapeHtml(featured.category)}</span>
+                ${featured.isLive ? '<span class="rounded-full bg-emerald-500/20 px-2 py-0.5 text-emerald-300">LIVE</span>' : ""}
+                ${stateBadge(featured.state)}
+              </div>
               <div class="flex items-center gap-2">
-                <button data-action="trending-prev" class="h-11 w-11 rounded-full border border-slate-700 text-xl text-slate-200">&#8249;</button>
-                <p class="w-20 text-center text-sm font-normal text-slate-300">${state.trendingIndex + 1} of ${trending.length}</p>
-                <button data-action="trending-next" class="h-11 w-11 rounded-full border border-slate-700 text-xl text-slate-200">&#8250;</button>
+                <button data-action="trending-prev" class="h-9 w-9 rounded-full border border-slate-700 text-lg text-slate-300 hover:bg-slate-800">&#8249;</button>
+                <p class="w-16 text-center text-xs text-slate-400">${state.trendingIndex + 1} of ${trending.length}</p>
+                <button data-action="trending-next" class="h-9 w-9 rounded-full border border-slate-700 text-lg text-slate-300 hover:bg-slate-800">&#8250;</button>
               </div>
             </div>
 
-            <div class="grid gap-[21px] lg:grid-cols-[1fr_1.618fr]">
-              <div>
-                <p class="mb-3 text-sm font-medium ${featured.isLive ? "text-rose-300" : "text-slate-400"}">${featured.isLive ? "Live" : "Scheduled"}</p>
-                <div class="mb-3 grid grid-cols-2 gap-2 text-xs text-slate-400">
-                  <div class="rounded-lg bg-slate-900/60 p-2">State<br/><span class="text-slate-200">${stateLabel(featured.state)}</span></div>
-                  <div class="rounded-lg bg-slate-900/60 p-2">Volume<br/><span class="text-slate-200">${formatVolumeBtc(featured.volumeBtc)}</span></div>
-                </div>
-                <div class="space-y-3 text-lg text-slate-200">
-                  <div class="flex items-center justify-between"><span>Yes contract</span><button data-open-market="${escapeAttr(featured.id)}" data-open-side="yes" data-open-intent="buy" class="rounded-full border border-emerald-600 px-4 py-1 text-emerald-300 transition hover:bg-emerald-500/10">${featured.yesPrice != null ? formatProbabilityWithPercent(featured.yesPrice) : "\u2014"}</button></div>
-                  <div class="flex items-center justify-between"><span>No contract</span><button data-open-market="${escapeAttr(featured.id)}" data-open-side="no" data-open-intent="buy" class="rounded-full border border-rose-600 px-4 py-1 text-rose-300 transition hover:bg-rose-500/10">${featuredNo != null ? formatProbabilityWithPercent(featuredNo) : "\u2014"}</button></div>
-                </div>
-                <p class="mt-3 text-[15px] text-slate-400">${escapeHtml(featured.description)}</p>
-                <button data-open-market="${escapeAttr(featured.id)}" class="mt-5 rounded-xl bg-emerald-300 px-5 py-2.5 text-base font-medium text-slate-950">Open contract</button>
-              </div>
-              <div>${chartSkeleton(featured, "home")}</div>
+            <button data-open-market="${escapeAttr(featured.id)}" class="mb-4 block text-left">
+              <h1 class="phi-title text-2xl font-medium leading-tight text-slate-100 hover:text-white transition lg:text-[34px]">${escapeHtml(featured.question)}</h1>
+            </button>
+
+            <div class="mb-4 flex flex-wrap items-center gap-3">
+              ${
+                featured.state === 2 || featured.state === 3
+                  ? `<span class="w-40 rounded-full ${featured.state === 2 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"} px-4 py-2 text-center text-base font-semibold">${featured.state === 2 ? "Resolved YES" : "Resolved NO"}</span>`
+                  : featured.state === 4
+                    ? `<span class="w-40 rounded-full bg-amber-500/20 px-4 py-2 text-center text-base font-semibold text-amber-300">Expired</span>`
+                    : `<button data-open-market="${escapeAttr(featured.id)}" data-open-side="yes" data-open-intent="buy" class="w-32 rounded-full bg-emerald-500 px-4 py-2 text-center text-base font-semibold text-white transition hover:bg-emerald-400">${featuredYesPct != null ? "Yes " + featuredYesPct + "%" : "Buy Yes"}</button>
+              <button data-open-market="${escapeAttr(featured.id)}" data-open-side="no" data-open-intent="buy" class="w-32 rounded-full bg-rose-500 px-4 py-2 text-center text-base font-semibold text-white transition hover:bg-rose-400">${featuredNoPct != null ? "No " + featuredNoPct + "%" : "Buy No"}</button>`
+              }
+              <span class="text-xs text-slate-500">${formatVolumeBtc(featured.volumeBtc)} vol · ${featuredTimeLeft} · ${trendIndicator(featured.change24h)}</span>
             </div>
+            <p class="mb-4 text-sm text-slate-400 line-clamp-2">${escapeHtml(featured.description)}</p>
+            <div>${chartSkeleton(featured, "home")}</div>
           </div>
 
           <section>
@@ -115,21 +232,7 @@ export function renderHome(): string {
             </div>
             <div class="grid gap-3 md:grid-cols-2">
               ${topMarkets
-                .map((market) => {
-                  const no =
-                    market.yesPrice != null ? 1 - market.yesPrice : null;
-                  return `
-                    <button data-open-market="${escapeAttr(market.id)}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
-                      <p class="mb-2 text-xs text-slate-500">${escapeHtml(market.category)} ${market.isLive ? "· LIVE" : ""}</p>
-                      <p class="mb-3 max-h-14 overflow-hidden text-base font-normal text-slate-200">${escapeHtml(market.question)}</p>
-                      <div class="flex items-center justify-between text-xs sm:text-sm">
-                        <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span>
-                        <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no) : "\u2014"}</span>
-                        ${trendIndicator(market.change24h)}
-                      </div>
-                    </button>
-                  `;
-                })
+                .map((market, idx) => marketCard(market, idx))
                 .join("")}
             </div>
           </section>
@@ -137,22 +240,30 @@ export function renderHome(): string {
 
         <aside class="grid gap-[13px] sm:grid-cols-2 xl:grid-cols-1">
           <section class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px]">
-            <h3 class="mb-3 text-base font-medium text-slate-400">Trending</h3>
-            <div class="space-y-4">
+            <h3 class="mb-3 flex items-center gap-1.5 text-base font-medium text-slate-400">${categoryIcon("Trending", "h-4 w-4")}Trending</h3>
+            <div class="divide-y divide-slate-800">
               ${trending
                 .slice(0, 3)
                 .map((market, idx) => {
+                  const yesPct = market.yesPrice != null ? Math.round(market.yesPrice * 100) : null;
+                  const noPct = market.yesPrice != null ? Math.round((1 - market.yesPrice) * 100) : null;
                   return `
-                    <button data-open-market="${escapeAttr(market.id)}" class="w-full text-left">
-                      <div class="flex items-start justify-between gap-2">
-                        <p class="w-full text-sm font-normal text-slate-300">${idx + 1}. ${escapeHtml(market.question)}</p>
-                        <p class="text-sm font-normal text-slate-100">${market.yesPrice != null ? `${Math.round(market.yesPrice * 100)}%` : "\u2014"}</p>
+                    <div class="w-full py-3 text-left">
+                      <button data-open-market="${escapeAttr(market.id)}" class="w-full text-left">
+                        <p class="mb-1 text-sm font-normal text-slate-300">${idx + 1}. ${escapeHtml(market.question)}</p>
+                      </button>
+                      <div class="flex items-center gap-2">
+                        ${
+                          market.state === 2 || market.state === 3
+                            ? `<span class="rounded-full ${market.state === 2 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"} px-2.5 py-0.5 text-xs font-medium">${market.state === 2 ? "Resolved YES" : "Resolved NO"}</span>`
+                            : market.state === 4
+                              ? `<span class="rounded-full bg-amber-500/20 px-2.5 py-0.5 text-xs font-medium text-amber-300">Expired</span>`
+                              : `<button data-open-market="${escapeAttr(market.id)}" data-open-side="yes" data-open-intent="buy" class="rounded-full bg-emerald-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-emerald-400">${yesPct != null ? "Yes " + yesPct + "%" : "Buy Yes"}</button>
+                        <button data-open-market="${escapeAttr(market.id)}" data-open-side="no" data-open-intent="buy" class="rounded-full bg-rose-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-rose-400">${noPct != null ? "No " + noPct + "%" : "Buy No"}</button>`
+                        }
+                        <span class="ml-auto text-xs">${trendIndicator(market.change24h)}</span>
                       </div>
-                      <div class="mt-1 flex items-center justify-between">
-                        <p class="text-xs text-slate-500">${escapeHtml(market.category)}</p>
-                        <p class="text-xs">${trendIndicator(market.change24h)}</p>
-                      </div>
-                    </button>
+                    </div>
                   `;
                 })
                 .join("")}
@@ -160,24 +271,58 @@ export function renderHome(): string {
           </section>
 
           <section class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px]">
-            <h3 class="mb-3 text-base font-medium text-slate-400">Top movers</h3>
-            <div class="space-y-4">
+            <h3 class="mb-3 flex items-center gap-1.5 text-base font-medium text-slate-400"><svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3v18"/><path d="m3 7 4-4 4 4"/><path d="M17 21V3"/><path d="m21 17-4 4-4-4"/></svg>Top movers</h3>
+            <div class="divide-y divide-slate-800">
               ${topMovers
                 .map((market, idx) => {
+                  const yesPct = market.yesPrice != null ? Math.round(market.yesPrice * 100) : null;
+                  const noPct = market.yesPrice != null ? Math.round((1 - market.yesPrice) * 100) : null;
                   return `
-                    <button data-open-market="${escapeAttr(market.id)}" class="w-full text-left">
-                      <div class="flex items-start justify-between gap-2">
-                        <p class="w-full text-sm font-normal text-slate-300">${idx + 1}. ${escapeHtml(market.question)}</p>
-                        <p class="text-sm font-normal">${trendIndicator(market.change24h)}</p>
+                    <div class="w-full py-3 text-left">
+                      <button data-open-market="${escapeAttr(market.id)}" class="w-full text-left">
+                        <p class="mb-1 text-sm font-normal text-slate-300">${idx + 1}. ${escapeHtml(market.question)}</p>
+                      </button>
+                      <div class="flex items-center gap-2">
+                        ${
+                          market.state === 2 || market.state === 3
+                            ? `<span class="rounded-full ${market.state === 2 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"} px-2.5 py-0.5 text-xs font-medium">${market.state === 2 ? "Resolved YES" : "Resolved NO"}</span>`
+                            : market.state === 4
+                              ? `<span class="rounded-full bg-amber-500/20 px-2.5 py-0.5 text-xs font-medium text-amber-300">Expired</span>`
+                              : `<button data-open-market="${escapeAttr(market.id)}" data-open-side="yes" data-open-intent="buy" class="rounded-full bg-emerald-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-emerald-400">${yesPct != null ? "Yes " + yesPct + "%" : "Buy Yes"}</button>
+                        <button data-open-market="${escapeAttr(market.id)}" data-open-side="no" data-open-intent="buy" class="rounded-full bg-rose-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-rose-400">${noPct != null ? "No " + noPct + "%" : "Buy No"}</button>`
+                        }
+                        <span class="ml-auto text-xs">${trendIndicator(market.change24h)}</span>
                       </div>
-                      <p class="mt-1 text-xs text-slate-500">${escapeHtml(market.category)}</p>
-                    </button>
+                    </div>
                   `;
                 })
                 .join("")}
             </div>
           </section>
         </aside>
+      </div>
+    </div>
+  `;
+}
+
+function renderSortedView(title: string, sortedMarkets: Market[]): string {
+  if (sortedMarkets.length === 0) {
+    return `
+      <div class="phi-container py-16 text-center">
+        <h2 class="mb-3 text-2xl font-semibold text-slate-100">No ${title.toLowerCase()} markets</h2>
+        <p class="text-base text-slate-400">Check back soon for updates.</p>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="phi-container py-6 lg:py-8">
+      <div class="mb-4 flex items-center justify-between">
+        <h1 class="flex items-center gap-2 text-xl font-medium text-slate-100">${categoryIcon(title, "h-5 w-5")}${title}</h1>
+        <p class="text-sm text-slate-400">${sortedMarkets.length} market${sortedMarkets.length !== 1 ? "s" : ""}</p>
+      </div>
+      <div class="grid gap-3 md:grid-cols-2">
+        ${sortedMarkets.map((market, idx) => marketCard(market, idx)).join("")}
       </div>
     </div>
   `;
@@ -211,8 +356,8 @@ export function renderMyMarkets(): string {
         </div>
         <p class="mb-3 text-base font-normal text-slate-200">${escapeHtml(market.question)}</p>
         <div class="flex items-center justify-between text-sm">
-          <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span>
-          <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no) : "\u2014"}</span>
+          <span class="text-emerald-300">${market.yesPrice != null ? "Yes " + formatProbabilityWithPercent(market.yesPrice) : "Buy Yes"}</span>
+          <span class="text-rose-300">${no != null ? "No " + formatProbabilityWithPercent(no) : "Buy No"}</span>
         </div>
       </button>
     `;
@@ -231,7 +376,7 @@ export function renderMyMarkets(): string {
   return `
     <div class="phi-container py-6 lg:py-8">
       <div class="mb-4 flex items-center justify-between">
-        <h1 class="text-xl font-medium text-slate-100">My Markets</h1>
+        <h1 class="flex items-center gap-2 text-xl font-medium text-slate-100">${categoryIcon("My Markets", "h-5 w-5")}My Markets</h1>
         ${state.marketMakerMode ? `<button data-action="open-create-market" class="rounded-xl bg-emerald-300 px-5 py-2 text-sm font-semibold text-slate-950"><span class="mr-1">+</span> Create New Market</button>` : ""}
       </div>
       <div class="mb-4 grid gap-2 sm:grid-cols-3">
@@ -285,7 +430,7 @@ export function renderCategoryPage(): string {
         </aside>
         <section>
           <div class="mb-4 flex items-center justify-between">
-            <h1 class="text-xl font-medium text-slate-100">${category}</h1>
+            <h1 class="flex items-center gap-2 text-xl font-medium text-slate-100">${categoryIcon(category, "h-5 w-5")}${category}</h1>
             <div class="flex items-center gap-2 text-sm text-slate-400">
               <button class="rounded-full border border-slate-700 px-3 py-1.5">Trending</button>
               <button class="rounded-full border border-slate-700 px-3 py-1.5">Frequency</button>
@@ -311,26 +456,7 @@ export function renderCategoryPage(): string {
             </div>
           </div>
           <div class="grid gap-3 md:grid-cols-2">
-            ${categoryMarkets
-              .map((market) => {
-                const no = market.yesPrice != null ? 1 - market.yesPrice : null;
-                return `
-                  <button data-open-market="${escapeAttr(market.id)}" class="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600">
-                    <div class="mb-2 flex items-center justify-between text-sm">
-                      <span class="text-xs text-slate-500">${escapeHtml(market.category)}</span>
-                      <span class="${market.isLive ? "text-rose-300" : "text-slate-500"}">${market.isLive ? "LIVE" : "SCHEDULED"}</span>
-                    </div>
-                    <p class="mb-3 text-base font-normal text-slate-200">${escapeHtml(market.question)}</p>
-                    <div class="flex items-center justify-between text-sm">
-                      <span class="text-emerald-300">Yes ${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice) : "\u2014"}</span>
-                      <span class="text-rose-300">No ${no != null ? formatProbabilityWithPercent(no) : "\u2014"}</span>
-                      ${trendIndicator(market.change24h)}
-                    </div>
-                    <p class="mt-2 text-xs text-slate-500">Volume ${formatVolumeBtc(market.volumeBtc)} · ${escapeHtml(market.description)}</p>
-                  </button>
-                `;
-              })
-              .join("")}
+            ${categoryMarkets.map((market, idx) => marketCard(market, idx)).join("")}
           </div>
         </section>
         <aside class="space-y-3">

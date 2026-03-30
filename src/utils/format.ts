@@ -20,6 +20,19 @@ export const formatVolumeBtc = (value: number): string =>
 export const formatBlockHeight = (value: number): string =>
   value.toLocaleString("en-US");
 
+/** Estimate time remaining from blocks left (Liquid ≈ 1 min/block). */
+export function formatTimeRemaining(blocksLeft: number): string {
+  if (blocksLeft <= 0) return "Expired";
+  const mins = blocksLeft;
+  if (mins < 60) return `${mins}m left`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h left`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d left`;
+  const months = Math.floor(days / 30);
+  return `${months}mo left`;
+}
+
 const _dateFmtCache = new Map<string, Intl.DateTimeFormat>();
 const _numFmtCache = new Map<string, Intl.NumberFormat>();
 export function cachedDateFmt(

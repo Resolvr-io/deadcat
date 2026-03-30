@@ -48,7 +48,11 @@ pub const POOL_TAG: &str = "deadcat-pool";
 pub const NETWORK_TAG: &str = "liquid-testnet";
 
 /// Default relay URLs.
-pub const DEFAULT_RELAYS: &[&str] = &["wss://relay.damus.io", "wss://relay.primal.net"];
+pub const DEFAULT_RELAYS: &[&str] = &[
+    "wss://relay.astrolabe.finance",
+    "wss://relay.damus.io",
+    "wss://relay.primal.net",
+];
 
 // ---------------------------------------------------------------------------
 // Re-exports: market
