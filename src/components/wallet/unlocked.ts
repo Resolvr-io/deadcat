@@ -51,8 +51,7 @@ export function renderWalletUnlocked(params: {
 
   // Well-known Liquid testnet assets (display-order hex).
   const KNOWN_ASSETS: Record<string, string> = {
-    "38fca2d939696061a8f76d4e6b5eecd54e3b4221c846f24a6b279e79952850a5":
-      "TEST",
+    "38fca2d939696061a8f76d4e6b5eecd54e3b4221c846f24a6b279e79952850a5": "TEST",
   };
 
   // Map token asset IDs to labels for display.

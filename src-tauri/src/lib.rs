@@ -239,7 +239,6 @@ async fn restore_wallet(
 async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, String> {
     let app_handle = app.clone();
 
-
     // 1. Decrypt mnemonic (blocking — Argon2 KDF). This is fast if cached.
     let (mnemonic, network, data_dir) = tokio::task::spawn_blocking({
         let app_ref = app_handle.clone();
@@ -264,7 +263,6 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
     .await
     .map_err(|e| format!("unlock task failed: {e}"))??;
 
-
     // 2. Try fast unlock (SDK mutex is free). If it fails because a
     //    background sync holds the mutex, queue the unlock and return
     //    immediately so the UI isn't blocked.
@@ -280,7 +278,6 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
     let sdk_network = state::to_sdk_network(network);
     let electrum_url = sdk_network.default_electrum_url().to_string();
 
-
     // Check if SDK mutex is free before committing to spawn_blocking
     let sdk_free = node.is_sdk_mutex_free();
 
@@ -291,8 +288,7 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
         let u = electrum_url.clone();
         let d = data_dir.clone();
         tokio::task::spawn_blocking(move || {
-            n.try_unlock_wallet(&m, &u, &d)
-                .map_err(|e| format!("{e}"))
+            n.try_unlock_wallet(&m, &u, &d).map_err(|e| format!("{e}"))
         })
         .await
         .map_err(|e| format!("unlock task failed: {e}"))?
@@ -306,18 +302,16 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
         // Use std::thread (not spawn_blocking) to avoid tokio pool exhaustion
         let bg_app = app_handle.clone();
         std::thread::spawn(move || {
-
             if let Err(e) = node.unlock_wallet(&mnemonic, &electrum_url, &data_dir) {
                 log::warn!("deferred unlock_wallet failed: {e}");
                 return;
             }
-            let wb: Option<std::collections::HashMap<String, u64>> =
-                node.balance().ok().map(|m| {
-                    m.into_iter()
-                        .filter(|(_, v)| *v > 0)
-                        .map(|(k, v)| (k.to_string(), v))
-                        .collect()
-                });
+            let wb: Option<std::collections::HashMap<String, u64>> = node.balance().ok().map(|m| {
+                m.into_iter()
+                    .filter(|(_, v)| *v > 0)
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect()
+            });
             let manager = bg_app.state::<Mutex<AppStateManager>>();
             let mut mgr = match manager.lock() {
                 Ok(m) => m,
@@ -385,7 +379,6 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
 
 #[tauri::command]
 async fn lock_wallet(app: AppHandle) -> Result<AppState, String> {
-
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
 
@@ -393,7 +386,6 @@ async fn lock_wallet(app: AppHandle) -> Result<AppState, String> {
         node.lock_wallet();
     }
     drop(guard);
-
 
     let app_handle = app.clone();
     tokio::task::spawn_blocking(move || {

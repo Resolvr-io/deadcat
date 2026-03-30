@@ -189,10 +189,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         datadir: &Path,
     ) -> Result<(), NodeError> {
         self.wallet_locked_flag.store(false, Ordering::SeqCst);
-        let mut guard = self
-            .sdk
-            .try_lock()
-            .map_err(|_| NodeError::WalletLocked)?;
+        let mut guard = self.sdk.try_lock().map_err(|_| NodeError::WalletLocked)?;
         *guard = None;
         let sdk = DeadcatSdk::new(mnemonic, self.network, electrum_url, datadir)
             .map_err(NodeError::Sdk)?;
@@ -302,7 +299,8 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             })();
             let _ = tx.send(result);
         });
-        rx.await.map_err(|_| NodeError::Task("with_sdk thread dropped".to_string()))?
+        rx.await
+            .map_err(|_| NodeError::Task("with_sdk thread dropped".to_string()))?
     }
 
     /// Run a closure against the shared store on a dedicated OS thread.
@@ -327,7 +325,8 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             })();
             let _ = tx.send(result);
         });
-        rx.await.map_err(|_| NodeError::Task("with_store thread dropped".to_string()))?
+        rx.await
+            .map_err(|_| NodeError::Task("with_store thread dropped".to_string()))?
     }
 
     // ── Internal: store persistence helpers ──────────────────────────────
