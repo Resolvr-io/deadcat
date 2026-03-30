@@ -105,6 +105,7 @@ export function defaultSettlementInput(): string {
 
 export const state: {
   view: ViewMode;
+  previousView: ViewMode | null;
   activeCategory: NavCategory;
   search: string;
   trendingIndex: number;
@@ -253,6 +254,7 @@ export const state: {
   chartAspectDetail: number;
 } = {
   view: "home",
+  previousView: null,
   activeCategory: "Trending",
   search: "",
   trendingIndex: 0,

@@ -599,6 +599,20 @@ export async function handleClick(
 
   if (action === "go-home") {
     state.view = "home";
+    state.previousView = null;
+    state.chartHoverMarketId = null;
+    state.chartHoverX = null;
+    render();
+    return;
+  }
+
+  if (action === "go-back") {
+    if (state.previousView) {
+      state.view = state.previousView;
+      state.previousView = null;
+    } else {
+      state.view = "home";
+    }
     state.chartHoverMarketId = null;
     state.chartHoverX = null;
     render();
@@ -1171,6 +1185,7 @@ export async function handleClick(
     state.walletError = "";
     state.walletPassword = "";
     state.settingsOpen = false;
+    state.previousView = state.view !== "wallet" ? state.view : state.previousView;
     state.view = "wallet";
     render();
     // If already unlocked with cached balance, just do a silent background sync
@@ -1468,6 +1483,18 @@ export async function handleClick(
           ? "https://blockstream.info/liquidtestnet"
           : "https://blockstream.info/liquid";
       void openUrl(`${base}/tx/${txid}`);
+    }
+    return;
+  }
+
+  if (action === "open-explorer-asset") {
+    const asset = actionEl?.getAttribute("data-asset");
+    if (asset) {
+      const base =
+        state.walletNetwork === "testnet"
+          ? "https://blockstream.info/liquidtestnet"
+          : "https://blockstream.info/liquid";
+      void openUrl(`${base}/asset/${asset}`);
     }
     return;
   }
