@@ -311,6 +311,13 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
                 log::warn!("deferred unlock_wallet failed: {e}");
                 return;
             }
+            let wb: Option<std::collections::HashMap<String, u64>> =
+                node.balance().ok().map(|m| {
+                    m.into_iter()
+                        .filter(|(_, v)| *v > 0)
+                        .map(|(k, v)| (k.to_string(), v))
+                        .collect()
+                });
             let manager = bg_app.state::<Mutex<AppStateManager>>();
             let mut mgr = match manager.lock() {
                 Ok(m) => m,
@@ -320,7 +327,7 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
             mgr.purge_stale_swaps();
             mgr.touch_activity();
             mgr.bump_revision();
-            let state = mgr.snapshot();
+            let state = mgr.snapshot_with_balance(wb);
             emit_state(&bg_app, &state);
         });
 
@@ -345,7 +352,15 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
         return Ok(state);
     }
 
-    // 3. Fast path succeeded — update app state
+    // 3. Fast path succeeded — read balance from snapshot and cache it
+    let wallet_balance: Option<std::collections::HashMap<String, u64>> =
+        node.balance().ok().map(|m| {
+            m.into_iter()
+                .filter(|(_, v)| *v > 0)
+                .map(|(k, v)| (k.to_string(), v))
+                .collect()
+        });
+
     let state = tokio::task::spawn_blocking({
         let app_ref = app_handle.clone();
         move || {
@@ -357,7 +372,7 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
             mgr.purge_stale_swaps();
             mgr.touch_activity();
             mgr.bump_revision();
-            let state = mgr.snapshot();
+            let state = mgr.snapshot_with_balance(wallet_balance);
             let _ = app_ref.emit(APP_STATE_UPDATED_EVENT, &state);
             Ok::<_, String>(state)
         }
