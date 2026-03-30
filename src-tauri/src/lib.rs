@@ -142,8 +142,9 @@ async fn set_network(network: Network, app: AppHandle) -> Result<AppState, Strin
 
 #[tauri::command]
 async fn get_app_state(app: AppHandle) -> Result<AppState, String> {
+    let app_ref = app.clone();
     tokio::task::spawn_blocking(move || {
-        let manager = app.state::<Mutex<AppStateManager>>();
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
         let mgr = manager
             .lock()
             .map_err(|_| "state lock failed".to_string())?;
@@ -162,20 +163,12 @@ async fn get_app_state(app: AppHandle) -> Result<AppState, String> {
 
 #[tauri::command]
 async fn get_wallet_status(app: AppHandle) -> Result<wallet::types::WalletStatus, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let is_unlocked = guard
-        .as_ref()
-        .map(|n| n.is_wallet_unlocked())
-        .unwrap_or(false);
-    drop(guard);
-
     tokio::task::spawn_blocking(move || {
         let manager = app.state::<Mutex<AppStateManager>>();
         let mgr = manager
             .lock()
             .map_err(|_| "state lock failed".to_string())?;
-        Ok(mgr.wallet_status_with_unlock(is_unlocked))
+        Ok(mgr.wallet_status())
     })
     .await
     .map_err(|e| format!("wallet_status task failed: {e}"))?
@@ -246,7 +239,8 @@ async fn restore_wallet(
 async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, String> {
     let app_handle = app.clone();
 
-    // 1. Decrypt mnemonic (blocking — Argon2 KDF)
+
+    // 1. Decrypt mnemonic (blocking — Argon2 KDF). This is fast if cached.
     let (mnemonic, network, data_dir) = tokio::task::spawn_blocking({
         let app_ref = app_handle.clone();
         move || {
@@ -270,20 +264,88 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
     .await
     .map_err(|e| format!("unlock task failed: {e}"))??;
 
-    // 2. Unlock the wallet via the node (needs node lock)
-    let node_state = app_handle.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard
-        .as_ref()
-        .ok_or("Node not initialized — call init_nostr_identity first")?;
+
+    // 2. Try fast unlock (SDK mutex is free). If it fails because a
+    //    background sync holds the mutex, queue the unlock and return
+    //    immediately so the UI isn't blocked.
+    let node = {
+        let node_state = app_handle.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or("Node not initialized — call init_nostr_identity first")?
+    };
 
     let sdk_network = state::to_sdk_network(network);
-    let electrum_url = sdk_network.default_electrum_url();
-    node.unlock_wallet(&mnemonic, electrum_url, &data_dir)
-        .map_err(|e| format!("{e}"))?;
-    drop(guard);
+    let electrum_url = sdk_network.default_electrum_url().to_string();
 
-    // 3. Update app state
+
+    // Check if SDK mutex is free before committing to spawn_blocking
+    let sdk_free = node.is_sdk_mutex_free();
+
+    let fast: Result<(), String> = if sdk_free {
+        // Fast path — SDK mutex is available, safe to spawn_blocking
+        let n = node.clone();
+        let m = mnemonic.clone();
+        let u = electrum_url.clone();
+        let d = data_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            n.try_unlock_wallet(&m, &u, &d)
+                .map_err(|e| format!("{e}"))
+        })
+        .await
+        .map_err(|e| format!("unlock task failed: {e}"))?
+    } else {
+        Err("SDK mutex held".to_string())
+    };
+
+    if fast.is_err() {
+        // SDK mutex is held by a background sync — queue unlock in background
+        // and return optimistic state immediately.
+        // Use std::thread (not spawn_blocking) to avoid tokio pool exhaustion
+        let bg_app = app_handle.clone();
+        std::thread::spawn(move || {
+
+            if let Err(e) = node.unlock_wallet(&mnemonic, &electrum_url, &data_dir) {
+                log::warn!("deferred unlock_wallet failed: {e}");
+                return;
+            }
+            let manager = bg_app.state::<Mutex<AppStateManager>>();
+            let mut mgr = match manager.lock() {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            mgr.set_wallet_unlocked(true);
+            mgr.purge_stale_swaps();
+            mgr.touch_activity();
+            mgr.bump_revision();
+            let state = mgr.snapshot();
+            emit_state(&bg_app, &state);
+        });
+
+        // Return optimistic unlocked state
+        let state = tokio::task::spawn_blocking({
+            let app_ref = app_handle.clone();
+            move || {
+                let manager = app_ref.state::<Mutex<AppStateManager>>();
+                let mut mgr = manager
+                    .lock()
+                    .map_err(|_| "state lock failed".to_string())?;
+                mgr.set_wallet_unlocked(true);
+                mgr.bump_revision();
+                let state = mgr.snapshot();
+                let _ = app_ref.emit(APP_STATE_UPDATED_EVENT, &state);
+                Ok::<_, String>(state)
+            }
+        })
+        .await
+        .map_err(|e| format!("unlock state task failed: {e}"))??;
+
+        return Ok(state);
+    }
+
+    // 3. Fast path succeeded — update app state
     let state = tokio::task::spawn_blocking({
         let app_ref = app_handle.clone();
         move || {
@@ -308,13 +370,15 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
 
 #[tauri::command]
 async fn lock_wallet(app: AppHandle) -> Result<AppState, String> {
-    // Lock the node's wallet
+
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
+
     if let Some(node) = guard.as_ref() {
         node.lock_wallet();
     }
     drop(guard);
+
 
     let app_handle = app.clone();
     tokio::task::spawn_blocking(move || {
@@ -522,9 +586,11 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
 
 #[tauri::command]
 async fn get_wallet_balance(app: AppHandle) -> Result<wallet::types::WalletBalance, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let node = {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        guard.as_ref().cloned().ok_or("Node not initialized")?
+    };
     let balance_map = node.balance().map_err(|e| format!("{e}"))?;
 
     let mut assets = std::collections::HashMap::new();
@@ -557,10 +623,12 @@ async fn get_wallet_address(
 async fn get_wallet_transactions(
     app: AppHandle,
 ) -> Result<Vec<wallet::types::WalletTransaction>, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let policy_asset = node.policy_asset().await.map_err(|e| format!("{e}"))?;
+    let node = {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        guard.as_ref().cloned().ok_or("Node not initialized")?
+    };
+    let policy_asset = node.policy_asset();
     let txs = node.transactions().map_err(|e| format!("{e}"))?;
     Ok(txs
         .iter()

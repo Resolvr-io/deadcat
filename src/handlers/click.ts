@@ -1302,46 +1302,20 @@ export async function handleClick(
         hideOverlayLoader();
         render();
 
-        // Load cached local state without blocking the unlock transition.
-        void Promise.all([
-          invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
-          invoke<WalletTransaction[]>("get_wallet_transactions"),
-          invoke<PaymentSwap[]>("list_payment_swaps"),
-        ])
-          .then(([balance, txs, swaps]) => {
+        // Load swaps from cached state (no network I/O).
+        void invoke<PaymentSwap[]>("list_payment_swaps")
+          .then((swaps) => {
             if (!state.walletData) state.walletData = createWalletData();
-            state.walletData.balance = balance.assets;
-            state.walletData.transactions = txs;
             state.walletData.swaps = swaps;
             render();
           })
-          .catch(() => {
-            /* wallet_snapshot background updates will still hydrate the UI */
-          });
-
-        // Fetch own orders for transaction labeling
-        fetchOwnOrders()
-          .then((orders) => {
-            state.ownOrders = orders;
-            render();
-          })
           .catch(() => {});
-        // Background Electrum sync -- updates balances when done
-        invoke("sync_wallet")
-          .then(async () => {
-            const [freshBalance, freshTxs] = await Promise.all([
-              invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
-              invoke<WalletTransaction[]>("get_wallet_transactions"),
-            ]);
-            if (state.walletData) {
-              state.walletData.balance = freshBalance.assets;
-              state.walletData.transactions = freshTxs;
-            }
-            render();
-          })
-          .catch(() => {
-            /* silent background sync failure */
-          });
+
+        // Deferred background sync — balance/txs arrive via wallet_snapshot event.
+        // Short delay ensures unlock UI renders first and avoids lock contention.
+        setTimeout(() => {
+          void invoke("sync_wallet").catch(() => {});
+        }, 2000);
       } catch (e) {
         state.walletError = String(e);
         state.walletLoading = false;
