@@ -211,7 +211,7 @@ pub struct ContractId {
 - **`simplicity_lang`** — provides `Cmr`
 - **`elements`** — provides `Transaction`, `OutPoint`, `Txid`, `Script`, `AssetId` (all top-level), `elements::pset::PartiallySignedTransaction`, and `elements::secp256k1_zkp::schnorr::Signature` (for oracle attestations). All Elements types used in the public API come from this crate.
 
-**Why both fields**: The CMR identifies the program (same params + same covenant source = same CMR), but not the instance. Two on-chain instances with identical params produce the same CMR. While collisions are self-defeating in practice (pools: cosigner=admin makes collision self-inflicted; orders: fresh nonces prevent it), the `creation_txid` component closes all theoretical collision vectors at minimal cost (32 extra bytes, already available from discovery). The struct preserves both fields: `cmr` for discovery dedup (O(1) "do I track anything with this CMR?"), `creation_txid` for instance uniqueness. See [Design Decisions Log](#design-decisions-log) for the full rationale.
+**Why both fields**: The CMR identifies the program (same params + same covenant source = same CMR), but not the instance. Two on-chain instances with identical params produce the same CMR. While collisions are self-defeating in practice (pools: admin key=operator makes collision self-inflicted; orders: fresh nonces prevent it), the `creation_txid` component closes all theoretical collision vectors at minimal cost (32 extra bytes, already available from discovery). The struct preserves both fields: `cmr` for discovery dedup (O(1) "do I track anything with this CMR?"), `creation_txid` for instance uniqueness. See [Design Decisions Log](#design-decisions-log) for the full rationale.
 
 The standalone function `contract_cmr(params, network)` returns only the CMR component — used for discovery dedup without requiring an engine. The full `ContractId` is only available after ingestion (when `creation_txid` is known from the creation transaction or snapshot).
 
@@ -583,8 +583,6 @@ The engine maps between the public `MarketState` and internal `CovenantPhase` as
 #### LmsrPoolState
 
 ```rust
-pub enum ReserveSlot { Yes, No, Collateral }
-
 pub struct PoolReserves {
     pub yes: u64,
     pub no: u64,
@@ -763,12 +761,30 @@ pub struct DerivedContractData {
 }
 ```
 
-Pre-computed data passed to the store during contract tracking so the store can build indexes without knowing about Simplicity. `asset_ids` maps each asset (YES/NO tokens, YES/NO reissuance tokens) to its `AssetInfo`. `covenant_scripts` is the set of covenant script pubkeys used for chain sync (catch-up scanning and steady-state subscription registration). Only prediction markets produce asset IDs; pools and orders have empty `asset_ids`.
+Permanent data derived from Simplicity compilation, passed to the store during contract tracking so it can build indexes without knowing about Simplicity. These fields never change after ingestion — they are static properties of the contract program. `asset_ids` maps each asset (YES/NO tokens, YES/NO reissuance tokens) to its `AssetInfo`. `covenant_scripts` is the set of covenant script pubkeys used for chain sync (catch-up scanning and steady-state subscription registration). Only prediction markets produce asset IDs; pools and orders have empty `asset_ids`.
 
 **`covenant_scripts` per contract type**:
 - **Markets**: All 8 scripts across all covenant phases and slot types. Static — these scripts cover the market's entire lifecycle.
 - **Orders**: The single covenant script. Static — the script does not change across partial fills.
 - **Pools**: Empty. Pool scripts encode the s_index, which changes on every swap (unbounded), so pre-storing all possible scripts is impractical. Pool sync uses outpoint-based forward-chaining and structural output identification instead. See [Chain Sync](#chain-sync).
+
+### InitialContractState
+
+```rust
+pub struct InitialContractState {
+    pub outpoints: Vec<OutPoint>,
+    pub position: ChainPosition,
+}
+```
+
+The mutable initial state of a contract at ingestion time, passed to the store via `track_contract`. Groups the two fields that describe "where the contract is right now": `outpoints` are the contract's current tracked UTXOs (derived from the creation transaction or provided via a `Current` snapshot), and `position` is the chain position at which those outpoints were confirmed.
+
+This is intentionally separate from `DerivedContractData`, which contains permanent data derived from Simplicity compilation (scripts, asset IDs). `InitialContractState` contains mutable state — `outpoints` change with every transition (via `apply_transitions`), and `position` sets the initial `synced_to` height. The two structs represent different categories of data the engine pre-computes for the store.
+
+**Outpoints per contract type**:
+- **Markets**: 2 outpoints (DormantYesRt, DormantNoRt) for initial Dormant state.
+- **Pools**: 3 outpoints (YES reserve, NO reserve, Collateral reserve).
+- **Orders**: 1 outpoint (the order UTXO).
 
 ### Oracle Attestation
 
@@ -972,7 +988,7 @@ pub enum OrderTransition {
 
 `MarketTransition::Issued` carries `pairs` and `collateral_locked` without an `IssuanceKind` discriminant. The engine still knows internally whether it was initial or subsequent issuance (for PSET routing), but this distinction is hidden from callers — it is a covenant implementation detail.
 
-`PoolTransition::Swapped` corresponds to the LMSR covenant's swap path — someone traded through the pool, moving the s-index. `PoolTransition::Adjusted` corresponds to the admin path — the pool operator (with cosigner signature) adjusted liquidity without changing the s-index. The covenant enforces that YES and NO token deltas are equal on the admin path; collateral can change independently. `PoolTransition::Closed` indicates the pool admin reclaimed all reserve UTXOs via the close script path. See [lmsr-pool-close-path.md](lmsr-pool-close-path.md).
+`PoolTransition::Swapped` corresponds to the LMSR covenant's swap path — someone traded through the pool, moving the s-index. `PoolTransition::Adjusted` corresponds to the admin path — the pool operator (with admin key signature) adjusted liquidity without changing the s-index. The covenant enforces that YES and NO token deltas are equal on the admin path; collateral can change independently. `PoolTransition::Closed` indicates the pool admin reclaimed all reserve UTXOs via the close script path. See [lmsr-pool-close-path.md](lmsr-pool-close-path.md).
 
 **Why nested by contract type**: When processing a market transition, the caller wants to match on market-specific variants without wading through pool and order cases. A flat enum mixing all contract types would force exhaustive matching across unrelated variants.
 
@@ -1068,7 +1084,7 @@ pub enum CoreError<E: std::error::Error> {
 }
 ```
 
-`ChainSource` wraps errors from the `ChainSource` trait implementation during `step`. The chain error type is boxed rather than generic to keep the engine at a single generic parameter (`S`) — `step` introduces `C: ChainSource` only at the call site. Integrators can display/debug the error or downcast if they need the concrete type. `InvalidParams` covers caller-provided inputs that violate covenant constraints (e.g., issuance amount exceeds limits, invalid collateral asset, pool/order referencing an unknown parent market, calling `oracle_attestation_spec` on a non-market contract). `InvalidContractState` is returned by PSET builders when the contract is in the wrong state for the requested operation (e.g., `build_issuance_pset` on a settled market, `build_redemption_pset` on a trading market). `InsufficientFunds` is returned by PSET builders when the caller's available UTXOs don't cover the required amounts — the `shortfalls` vec reports all insufficient assets at once (e.g., "need 50 more YES tokens AND 3,000 more sats"), enabling wallet UX that shows all missing resources rather than one at a time. `StaleQuote` is returned by `build_trade_pset` when the quote's snapshotted outpoints are no longer current (a `step` call consumed them between quoting and building) — the caller should re-quote. Internal construction errors (e.g., Pedersen commitment math failure) indicate bugs in core and panic rather than returning an error — every `CoreError` variant represents a condition the caller can meaningfully respond to.
+`ChainSource` wraps errors from the `ChainSource` trait implementation during `step`. The chain error type is boxed rather than generic to keep the engine at a single generic parameter (`S`) — `step` introduces `C: ChainSource` only at the call site. The `ChainSource::Error` bound includes `Send + Sync + 'static` to enable boxing into `Box<dyn Error + Send + Sync>`. Integrators can display/debug the error or downcast if they need the concrete type. `InvalidParams` covers caller-provided inputs that violate covenant constraints (e.g., issuance amount exceeds limits, invalid collateral asset, pool/order referencing an unknown parent market, calling `oracle_attestation_spec` on a non-market contract). `InvalidContractState` is returned by PSET builders when the contract is in the wrong state for the requested operation (e.g., `build_issuance_pset` on a settled market, `build_redemption_pset` on a trading market). `InsufficientFunds` is returned by PSET builders when the caller's available UTXOs don't cover the required amounts — the `shortfalls` vec reports all insufficient assets at once (e.g., "need 50 more YES tokens AND 3,000 more sats"), enabling wallet UX that shows all missing resources rather than one at a time. `StaleQuote` is returned by `build_trade_pset` when the quote's snapshotted outpoints are no longer current (a `step` call consumed them between quoting and building) — the caller should re-quote. Internal construction errors (e.g., Pedersen commitment math failure) indicate bugs in core and panic rather than returning an error — every `CoreError` variant represents a condition the caller can meaningfully respond to.
 
 **Why generic over the store error**: The engine is already generic over `S: ContractStore`, so `CoreError<S::Error>` adds no new generic parameters. Store error types are preserved — consumers can match on `CoreError::Store(e)` and handle their specific store error without downcasting. Store implementors define their own error type independently via an associated type on the trait.
 
@@ -1289,7 +1305,7 @@ pub trait ContractStore {
     fn orders_for_market(&self, market_id: &ContractId, page: Pagination) -> Result<Page<OrderEntry>, Self::Error>;
 
     // Writes — &mut self
-    fn track_contract(&mut self, contract_id: ContractId, contract: Contract, derived: DerivedContractData, initial_position: ChainPosition) -> Result<(), Self::Error>;
+    fn track_contract(&mut self, contract_id: ContractId, contract: Contract, derived: DerivedContractData, initial: InitialContractState) -> Result<(), Self::Error>;
     fn untrack_contract(&mut self, contract_id: &ContractId) -> Result<(), Self::Error>;
     fn apply_transitions(&mut self, transitions: &[StateUpdate]) -> Result<(), Self::Error>;
     fn advance_synced_heights(&mut self, updates: &[(ContractId, u32)]) -> Result<(), Self::Error>;
@@ -1329,11 +1345,11 @@ Every consumer must implement this. Read methods take `&self`, write methods tak
 
 `advance_synced_heights` bulk-advances `synced_to` for multiple contracts. Called by `step` after processing a batch of transactions or after confirming that subscriptions have covered through the tip height.
 
-`track_contract` initializes `synced_to` from `initial_position.block_height`. `rollback_to_height(N)` resets `synced_to = min(synced_to, N)` for all contracts.
+`track_contract` initializes `synced_to` from `initial.position.block_height` and records `initial.outpoints` for outpoint tracking (`find_by_outpoints`, `contract_outpoints`). `rollback_to_height(N)` resets `synced_to = min(synced_to, N)` for all contracts.
 
 `untrack_contract` removes the contract, all derived data (asset ID index entries, covenant scripts), and any history. Store implementations must clean up all references.
 
-**CMR-based lookups**: Store implementations should support lookups by CMR (for discovery dedup) in addition to full `ContractId`. This enables O(1) "do I track anything with this CMR?" checks during discovery, without requiring the full `ContractId`.
+**Discovery dedup**: Discovery payloads always include `creation_txid`, so the caller can construct the full `ContractId` and use `engine.contract(&contract_id)` to check if a contract is already tracked. No CMR-only lookup is needed — full `ContractId` dedup is both correct and efficient. CMR-only dedup would be incorrect in the rare case of two legitimate instances sharing params (same CMR, different `creation_txid`).
 
 **Processing log**: The store must persist enough rollback metadata during `apply_transitions` for `rollback_to_height` to reverse transitions. At minimum: the contract ID, old outpoints, new outpoints, and block height for each processed transition. `prune_finalized` removes this metadata for transitions below the finality threshold. This processing log is separate from `ContractHistory`'s transition history — it exists for rollback, not for user-facing queries. `rollback_to_height` must also clean up derived data (asset ID index, covenant scripts) for contracts removed during rollback.
 
@@ -1475,6 +1491,8 @@ pub fn build_lmsr_close_pset(&self, contract_id: &ContractId, funding: &WalletFu
 
 `build_lmsr_close_pset` atomically consumes all three reserve UTXOs via the dedicated Simplicity close script path (NUMS internal key makes key-spend unspendable). All reserve funds are returned to `funding.return_script`. See [lmsr-pool-close-path.md](lmsr-pool-close-path.md).
 
+**Signing note**: Pool adjust and close PSETs require signing with both the wallet key (for fee inputs) and the pool's admin key (for the covenant spend authorization). Both keys are controlled by the pool operator. Pool swaps (via trade PSETs) are permissionless and require only the taker's wallet key.
+
 Pool swaps are not built directly — they are part of trade transactions (see [Trade PSET Builder](#trade-pset-builder) below).
 
 ### Maker Order Builders
@@ -1534,7 +1552,7 @@ The `ChainSource` trait defines the chain data access capabilities the engine ne
 
 ```rust
 pub trait ChainSource {
-    type Error: std::error::Error;
+    type Error: std::error::Error + Send + Sync + 'static;
 
     // Catch-up (pull — historical data retrieval)
     fn tip_height(&self) -> Result<u32, Self::Error>;
@@ -1554,11 +1572,11 @@ pub trait ChainSource {
 
 **8 methods, split into two groups:**
 
-The **catch-up** methods are synchronous pull queries. `tip_height` returns the current chain tip. `transactions_by_scripts` returns up to `limit` confirmed transactions matching any of the given scripts from `from_height` onwards, in chain order. `spending_transaction` returns the transaction that spent a given outpoint, or `None` if unspent.
+The **catch-up** methods are synchronous pull queries. `tip_height` returns the current chain tip. `transactions_by_scripts` returns up to `limit` confirmed transactions *involving* any of the given scripts from `from_height` onwards, in chain order. "Involving" means both transactions that create outputs paying to those scripts AND transactions that spend outputs from those scripts — the engine needs both for catch-up (creation of covenant UTXOs and their subsequent spends). This matches the standard behavior of Electrum's `blockchain.scripthash.get_history` and Esplora's `/scripthash/:hash/txs`. `spending_transaction` returns the transaction that spent a given outpoint, or `None` if unspent.
 
 The **steady-state** methods manage a notification registration system. `register_scripts` and `register_spends` tell the chain source to watch for activity. `drain_notifications` returns any confirmed transactions that matched since the last drain. `unregister_scripts` and `unregister_spends` clean up when contracts reach terminal states or are untracked.
 
-**Gap-free handoff**: `register_scripts` takes `from_height` — the chain source guarantees delivery of all matching transactions at or above this height. The engine registers with `from_height = synced_to`, creating overlap with the catch-up scan rather than a gap. Overlap is harmless (`process_transaction` is idempotent). `register_spends` does NOT take `from_height` — instead, the chain source checks if the outpoint is already spent and delivers the spending transaction immediately if so. This binary spent/unspent check is sufficient because outpoints (unlike scripts) have a single possible event.
+**Gap-free handoff**: `register_scripts` takes `from_height` — the chain source guarantees delivery of all matching transactions at or above this height. The engine registers with `from_height = synced_to`, creating overlap with the catch-up scan rather than a gap. Overlap is harmless (`process_transaction` is idempotent). `register_spends` does NOT take `from_height` — instead, the chain source checks if the outpoint is already spent and includes the spending transaction in the next `drain_notifications` call if so. This binary spent/unspent check is sufficient because outpoints (unlike scripts) have a single possible event.
 
 **The trait is a read-only data source, not a service.** It makes no writes to the chain, does no broadcasting, and performs no fee estimation. The engine treats it as an immutable data accessor. The `&mut self` on registration methods reflects internal state management (tracking what's registered), not external side effects.
 
@@ -1619,7 +1637,7 @@ The root cause of the split: pool scripts encode the `s_index`, which changes on
 
 ### `synced_to` Tracking
 
-`synced_to` is a per-contract block height stored alongside the contract state. Initialized from `initial_position.block_height` during `track_contract`. Advanced by `step` via `advance_synced_heights`. Reset by `rollback_to_height(N)` → `synced_to = min(synced_to, N)` for all contracts.
+`synced_to` is a per-contract block height stored alongside the contract state. Initialized from `initial.position.block_height` during `track_contract`. Advanced by `step` via `advance_synced_heights`. Reset by `rollback_to_height(N)` → `synced_to = min(synced_to, N)` for all contracts.
 
 The store exposes this through `synced_to` on `ContractEntry` (readable by the caller for informational purposes like "last synced: block 2000") and through `stale_contracts(tip_height)` (used by the engine to efficiently find contracts needing work). See [ContractStore](#required-contractstore).
 
@@ -1651,7 +1669,7 @@ Core maintains a processing log: for each processed transaction, the contract ID
 
 Contracts created at height N are kept. Contracts created at height N+1 or above are removed — their creation transactions may no longer exist on the canonical chain after the reorg.
 
-**Uniform rollback for all ingestion types**: Contracts ingested via `PoolSnapshot::Current` or `OrderSnapshot::Current` include a `ChainPosition` indicating when the snapshot's outpoints were confirmed. The engine passes this as `initial_position` to `track_contract`, and rollback treats it identically to a creation transaction's position — if the initial position is strictly above height N, the contract is removed.
+**Uniform rollback for all ingestion types**: Contracts ingested via `PoolSnapshot::Current` or `OrderSnapshot::Current` include a `ChainPosition` indicating when the snapshot's outpoints were confirmed. The engine passes this via `InitialContractState` to `track_contract`, and rollback treats it identically to a creation transaction's position — if the initial position is strictly above height N, the contract is removed.
 
 **`synced_to` reset**: `rollback_to_height(N)` resets `synced_to = min(synced_to, N)` for all remaining contracts. This ensures the next `step` call re-scans from the rollback height, catching any new chain data on the canonical fork. The engine also invalidates its internal subscription state, so the next `step` re-initializes subscriptions.
 
@@ -1707,7 +1725,7 @@ Core does not add `Send` or `Sync` bounds on the `ContractStore` trait. If a sto
 
 ## LMSR Math
 
-Core provides pure LMSR computation functions (these already exist and are clean):
+Core provides pure LMSR computation functions. These currently live in `src-tauri/crates/deadcat-sdk/src/amm_pool/math.rs` and will be **moved** (not copied) into `deadcat-core` — the SDK will then import them from core. The functions and their parameter types (`LmsrManifest`, `LmsrParams`, `TradeKind`, etc.) are defined in the existing implementation and are imported as-is — no redesign needed.
 
 - `fee_free_yes_spot_price_bps(manifest, params, s_index)` — implied probability
 - `quote_from_table(trade_kind, old_s_index, new_s_index, ...)` — deterministic quote
@@ -1716,6 +1734,8 @@ Core provides pure LMSR computation functions (these already exist and are clean
 - `lmsr_table_root(values)` — Merkle root from table values
 
 These have zero dependencies beyond basic math — no wallet, chain, or state.
+
+**Note for implementors**: After the move to `deadcat-core`, this section should be updated with the final type definitions and full function signatures. The SDK path above will no longer be valid post-migration.
 
 ## Sync Patterns and Discovery
 
@@ -1849,9 +1869,10 @@ for entry in &page.items {
     render_market_card(&entry.contract_id, &entry.params, &entry.state);
 }
 
-// 10. Deduplicate during discovery (CMR-based, no compilation needed)
-let announced_cmr = announcement.cmr;
-if store_has_cmr(&announced_cmr) { continue; }
+// 10. Deduplicate during discovery (full ContractId check — discovery payloads include creation_txid)
+let cmr = contract_cmr(&ContractParams::PredictionMarket(announced_params.clone()), Network::Liquid);
+let contract_id = ContractId { cmr, creation_txid: announced_creation_txid };
+if engine.contract(&contract_id)?.is_some() { continue; }
 
 // 11. Trade: two-step quote + build (engine handles routing, coin selection, fee computation)
 let spec = TradeSpec { side: Side::Yes, direction: TradeDirection::Buy, amount: TradeAmount::ExactInput(5000) };
@@ -2139,7 +2160,7 @@ Note: Covenant scripts are used internally by `step` for catch-up scanning and s
 
 **Chosen**: `ContractId { cmr: Cmr, creation_txid: Txid }` — both fields extractable.
 **Rejected**: (a) CMR alone. (b) Hash of CMR + creation_txid.
-**Why**: CMR alone identifies the program, not the instance. Two on-chain instances with identical params produce the same CMR. While collisions are self-defeating in practice (pools: cosigner=admin makes collision self-inflicted; orders: fresh nonces prevent it), the `creation_txid` component closes all theoretical collision vectors at minimal cost (32 extra bytes, already available from discovery). The struct preserves both fields: `cmr` for discovery dedup (O(1) "do I track anything with this CMR?"), `creation_txid` for instance uniqueness. A hash would discard this extractability.
+**Why**: CMR alone identifies the program, not the instance. Two on-chain instances with identical params produce the same CMR. While collisions are self-defeating in practice (pools: admin key=operator makes collision self-inflicted; orders: fresh nonces prevent it), the `creation_txid` component closes all theoretical collision vectors at minimal cost (32 extra bytes, already available from discovery). The struct preserves both fields: `cmr` for discovery dedup (O(1) "do I track anything with this CMR?"), `creation_txid` for instance uniqueness. A hash would discard this extractability.
 **Trade-off**: Discovery payloads must include `creation_txid`. The standalone `contract_cmr()` returns only the CMR component — the full `ContractId` is only available after ingestion (when `creation_txid` is known).
 
 ### Per-Type Ingestion Methods
@@ -2268,6 +2289,6 @@ Order makers should use a fresh nonce for each order, ensuring unique `maker_rec
 
 ### Snapshot Position for Uniform Rollback
 
-**Chosen**: `PoolSnapshot::Current` and `OrderSnapshot::Current` include a `ChainPosition` field. `track_contract` takes `initial_position: ChainPosition`. Rollback treats all contracts uniformly — if initial position is above rollback height, the contract is removed.
+**Chosen**: `PoolSnapshot::Current` and `OrderSnapshot::Current` include a `ChainPosition` field. `track_contract` takes `InitialContractState` which groups outpoints and position. Rollback treats all contracts uniformly — if initial position is above rollback height, the contract is removed.
 **Rejected**: (a) Separate `known_at_height` field (over-aggressive — uses ingestion time, not outpoint confirmation time). (b) Caller responsible for post-rollback cleanup (latent-bug surface if caller forgets).
 **Why**: The `ChainPosition` in the snapshot represents when the outpoints were confirmed — precise, not over-aggressive. Rollback becomes uniform: creation-tx contracts and snapshot contracts are both removed if their initial position is above the rollback height. The engine's tracked outpoints are always correct after rollback.
