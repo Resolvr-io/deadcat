@@ -101,9 +101,9 @@ Takes only the contract ID and wallet funding. The engine reads the current rese
 |---|---|---|---|
 | Prediction Market | NUMS | No | Redemption / cancellation (existing script paths) |
 | LMSR Pool | NUMS | No | Close script path (this proposal) |
-| Maker Order | `maker_base_pubkey` | Yes | Key-spend by maker (existing), or fill/cancel script paths |
+| Maker Order | `maker_base_pubkey` | Yes (cancellation) | Key-spend by maker, fill script path only |
 
-Maker orders intentionally use a real internal key — the maker's ability to key-spend is the cancellation mechanism (the maker can always reclaim their funds without going through the Simplicity program). Markets and pools use NUMS because their closure is governed by covenant logic, not a single party's key.
+Maker orders intentionally use a real internal key — the maker's ability to key-spend is the sole cancellation mechanism. The Simplicity program handles fills only; cancellation is exclusively via key-spend. See [maker-order-remove-script-cancel.md](maker-order-remove-script-cancel.md). Markets and pools use NUMS because their lifecycle is governed by covenant logic, not a single party's key.
 
 ## Key Files
 

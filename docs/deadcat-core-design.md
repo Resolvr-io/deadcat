@@ -100,7 +100,7 @@ impl<S: ContractStore> ContractEngine<S> {
     // Contract queries (reads — &self)
     pub fn contract(&self, contract_id: &ContractId) -> Result<Option<Contract>, CoreError<S::Error>>;
     pub fn watched_outpoints(&self, page: Pagination) -> Result<Page<OutPoint>, CoreError<S::Error>>;
-    pub fn all_covenant_scripts(&self, contract_id: &ContractId) -> Result<Vec<Script>, CoreError<S::Error>>;
+    pub fn market_catchup_scripts(&self, contract_id: &ContractId) -> Result<Vec<Script>, CoreError<S::Error>>;
 
     // Per-type listing (reads — &self)
     pub fn list_markets(&self, filter: StateFilter, page: Pagination) -> Result<Page<MarketEntry>, CoreError<S::Error>>;
@@ -148,10 +148,14 @@ impl<S: ContractStore> ContractEngine<S> {
     // Transaction interpretation (reads — &self)
     pub fn interpret_transaction(&self, tx: &Transaction) -> Result<Vec<Transition>, CoreError<S::Error>>;
     pub fn identify_asset(&self, asset_id: &AssetId) -> Result<Option<AssetInfo>, CoreError<S::Error>>;
+
+    // Oracle attestation
+    pub fn oracle_attestation_spec(&self, contract_id: &ContractId, outcome_yes: bool) -> Result<OracleAttestationSpec, CoreError<S::Error>>;
 }
 
 // Standalone pure functions (no engine needed — requires Simplicity compilation)
 pub fn contract_cmr(params: &ContractParams, network: Network) -> Cmr;
+pub fn oracle_attestation_message(yes_asset_id: &AssetId, no_asset_id: &AssetId, outcome_yes: bool) -> [u8; 32];
 
 // History methods — only available when the store implements ContractHistory
 impl<S: ContractHistory> ContractEngine<S> {
@@ -203,7 +207,11 @@ pub struct ContractId {
 }
 ```
 
-`Cmr` is `simplicity_lang::Cmr` (re-exported as a public dependency of `deadcat-core`). It implements `AsRef<[u8]>` and `from_byte_array([u8; 32])`. `simplicity_lang` is a public dependency.
+`Cmr` is `simplicity_lang::Cmr`, re-exported from `deadcat-core`. It implements `AsRef<[u8]>` and `from_byte_array([u8; 32])`.
+
+**Public dependencies**: `deadcat-core` has two public dependencies:
+- **`simplicity_lang`** — provides `Cmr`
+- **`elements`** — provides `Transaction`, `OutPoint`, `Txid`, `Script`, `AssetId` (all top-level), `elements::pset::PartiallySignedTransaction`, and `elements::secp256k1_zkp::schnorr::Signature` (for oracle attestations). All Elements types used in the public API come from this crate.
 
 **Why both fields**: The CMR identifies the program (same params + same covenant source = same CMR), but not the instance. Two on-chain instances with identical params produce the same CMR. While collisions are self-defeating in practice (pools: cosigner=admin makes collision self-inflicted; orders: fresh nonces prevent it), the `creation_txid` component closes all theoretical collision vectors at minimal cost (32 extra bytes, already available from discovery). The struct preserves both fields: `cmr` for discovery dedup (O(1) "do I track anything with this CMR?"), `creation_txid` for instance uniqueness. See [Design Decisions Log](#design-decisions-log) for the full rationale.
 
@@ -247,6 +255,7 @@ pub enum PoolSnapshot {
         outpoints: BTreeMap<ReserveSlot, OutPoint>,
         s_index: u64,
         reserves: PoolReserves,
+        position: ChainPosition,
     },
 }
 ```
@@ -270,6 +279,7 @@ pub enum OrderSnapshot {
         creation_txid: Txid,
         outpoint: OutPoint,
         locked_value: u64,
+        position: ChainPosition,
     },
 }
 ```
@@ -355,16 +365,24 @@ pub fn contract(&self, contract_id: &ContractId) -> Result<Option<Contract>, Cor
 
 Returns `None` if the contract hasn't been ingested. The caller matches on the `Contract` enum to access the typed state. Since callers typically know the contract type (they ingested it), this is a single-variant match.
 
-### all_covenant_scripts
+### market_catchup_scripts
 
-Returns covenant script pubkeys for a tracked contract. The behavior differs by contract type:
+Returns all covenant script pubkeys for a tracked prediction market — all 8 scripts across all covenant phases and slot types. Returns `CoreError::InvalidParams` for non-market contracts.
 
-- **Markets**: Returns all possible scripts across all covenant phases and slot types (8 bounded scripts). This is the full set of scripts the contract could ever produce, derived deterministically from the contract's parameters.
-- **Pools**: Returns current-state scripts only. The unbounded s_index makes full enumeration impractical at realistic table depths (2^table_depth x 3 slots). Pool output matching uses reserve-value-based s_index derivation instead of script matching.
+```rust
+pub fn market_catchup_scripts(
+    &self,
+    market_id: &ContractId,
+) -> Result<Vec<Script>, CoreError<S::Error>>;
+```
 
-**Primary use case**: Catch-up scanning for markets. After ingesting a market, the caller uses these scripts to scan the chain for historical transactions that touched the contract since creation.
+**Primary use case**: Catch-up scanning for markets. After ingesting a market, the caller uses these scripts to scan the chain for all historical transactions that touched the contract since creation. The 8 scripts cover all possible states (Dormant, Unresolved, ResolvedYes, ResolvedNo, Expired), so a single batch script query finds every transaction regardless of what states the market passed through.
 
-**Not for steady-state monitoring**: To watch for new spends of a contract's current UTXOs, use `watched_outpoints()` instead — it returns the specific outpoints the engine is currently tracking, which is more precise than the full script set.
+**Also useful for steady-state subscription**: Because the 8 scripts cover all possible future states, the caller can register them with their chain backend once and never re-register — any future transition will involve one of these scripts.
+
+**Market-only**: Pools and orders use different catch-up strategies. Pools use forward-chaining (outpoint-based queries) because the unbounded s_index makes full script enumeration impractical. Orders use forward-chaining or outpoint-based subscription. For steady-state monitoring of any contract type, use `watched_outpoints()`.
+
+**Not to be confused with `watched_outpoints()`**: `market_catchup_scripts` returns all *possible* scripts (for historical scanning). `watched_outpoints()` returns only the *currently tracked* outpoints (for monitoring spends). Different tools for different purposes.
 
 ### Per-Type Listing Methods
 
@@ -620,7 +638,7 @@ pub enum OrderState {
 }
 ```
 
-`total_filled` on `Active` enables "5,000 of 10,000 sats filled" display while the order is still live. `Consumed` means fully filled — `total_filled` equals the original offered amount by definition, so it's not stored. `Cancelled` with `total_filled` enables "partially filled then cancelled" display (if `total_filled == 0`, it was a clean cancellation). Outpoints are internal to the engine and not exposed in the public state.
+`total_filled` on `Active` enables "5,000 of 10,000 sats filled" display while the order is still live. `total_filled` and `fill_amount` are denominated in the order's locked asset — the asset the maker offered (BASE for sell-base orders, QUOTE for sell-quote orders, per `MakerOrderParams.is_sell_base`). `Consumed` means fully filled — `total_filled` equals the original offered amount by definition, so it's not stored. `Cancelled` with `total_filled` enables "partially filled then cancelled" display (if `total_filled == 0`, it was a clean cancellation). Outpoints are internal to the engine and not exposed in the public state.
 
 ### Pagination Types
 
@@ -697,7 +715,11 @@ pub struct WalletFunding<'a> {
 }
 ```
 
-The wallet's contribution to a transaction. Shared across all PSET builders — the caller constructs one and passes it to any builder. `available_utxos` is the candidate UTXO pool (passing all wallet UTXOs is the expected usage — the builder selects the minimum needed). `fee_rate` is obtained from the chain backend. `return_script` receives all non-covenant, non-fee outputs: L-BTC change, collateral refunds, redemption payouts, trade proceeds, etc. Named `return_script` rather than `change_script` because it handles more than just change — it's the destination for all funds returning to the wallet. The builder consolidates outputs to the same script and asset for efficiency — see [Output Consolidation](#output-consolidation).
+The wallet's contribution to a transaction. Shared across all PSET builders — the caller constructs one and passes it to any builder. `available_utxos` is the candidate UTXO pool (passing all wallet UTXOs is the expected usage — the builder selects the minimum needed). `fee_rate` is obtained from the chain backend. `return_script` receives all non-covenant, non-fee outputs: L-BTC change, collateral refunds, redemption payouts, trade proceeds, etc. Named `return_script` rather than `change_script` because it handles more than just change — it's the destination for all funds returning to the wallet.
+
+**`available_utxos` contains wallet UTXOs only**: Covenant UTXOs (reissuance token slots, collateral, pool reserves, order locked value) are managed internally by the engine — it reads them from stored outpoints. Do not include covenant UTXOs in `available_utxos`. The builder uses both internally-sourced covenant UTXOs and caller-provided wallet UTXOs to construct the transaction.
+
+The builder consolidates outputs to the same script and asset for efficiency — see [Output Consolidation](#output-consolidation).
 
 ### ContractEntry
 
@@ -728,9 +750,25 @@ Pre-computed data passed to the store during contract tracking so the store can 
 
 ### Oracle Attestation
 
-The oracle resolve builder takes a `secp256k1::schnorr::Signature` — a BIP-340 Schnorr signature from the oracle. The oracle signs `SHA256(market_id || outcome_byte)` where `outcome_byte` is `0x01` for YES or `0x00` for NO. The engine extracts the outcome by trial verification against both possible messages using the oracle's public key (from market params). `secp256k1` is a public dependency of `deadcat-core`.
+The oracle resolve builder takes an `elements::secp256k1_zkp::schnorr::Signature` — a BIP-340 Schnorr signature from the oracle. The oracle signs a BIP-340 tagged hash message:
 
-If the signature doesn't verify against either outcome message, the engine returns `CoreError::InvalidParams { detail: "oracle attestation does not verify against either outcome" }`.
+```
+message = tagged_hash("deadcat/oracle_attestation", market_id || outcome_byte)
+        = SHA256(SHA256("deadcat/oracle_attestation") || SHA256("deadcat/oracle_attestation") || market_id || outcome_byte)
+```
+
+Where `market_id = SHA256(yes_token_asset_id || no_token_asset_id)` and `outcome_byte` is `0x01` for YES or `0x00` for NO. `market_id` is a covenant-internal identifier derived from the market's token asset IDs — it is NOT the same as `ContractId`. See [oracle-bip340-tagged-hash.md](oracle-bip340-tagged-hash.md) for the full specification and `.simf` changes.
+
+The engine extracts the outcome by trial verification against both possible messages using the oracle's public key (from market params). If the signature doesn't verify against either outcome message, the engine returns `CoreError::InvalidParams { detail: "oracle attestation does not verify against either outcome" }`.
+
+The standalone function `oracle_attestation_message(yes_asset_id, no_asset_id, outcome_yes)` computes and returns the 32-byte message to sign — usable by oracle services without a `ContractEngine`. The engine convenience method `oracle_attestation_spec(contract_id, outcome_yes)` looks up the market's params from the store and returns both the message and the expected oracle public key via `OracleAttestationSpec`.
+
+```rust
+pub struct OracleAttestationSpec {
+    pub message: [u8; 32],
+    pub oracle_pubkey: XOnlyPublicKey,  // elements::secp256k1_zkp::XOnlyPublicKey
+}
+```
 
 ### RedemptionKind
 
@@ -775,9 +813,9 @@ pub struct TradeQuote {
     pub direction: TradeDirection,
     pub requested_amount: u64,
     pub filled_amount: u64,
-    pub total_input: u64,
-    pub total_output: u64,
-    pub effective_price: f64,
+    pub total_input: u64,      // Buy: collateral (L-BTC sats) spent. Sell: tokens sent.
+    pub total_output: u64,     // Buy: tokens received. Sell: collateral (L-BTC sats) received.
+    pub effective_price: f64,  // Display-only approximation. Do not use for computation. Use total_input/total_output for exact amounts.
     pub legs: Vec<RouteLeg>,
 
     // Crate-internal — consumed by build_trade_pset:
@@ -798,8 +836,8 @@ pub enum LiquiditySource {
     },
     LimitOrder {
         order_id: ContractId,
-        price: u64,   // quote asset smallest units per base lot (matches MakerOrderParams.price)
-        lots: u64,    // number of base lots filled in this leg
+        price: u64,         // quote asset units per base asset unit (from MakerOrderParams.price)
+        base_filled: u64,   // base asset units filled in this leg
     },
 }
 ```
@@ -810,7 +848,7 @@ The `pub(crate)` field `route` makes `TradeQuote` non-constructable by external 
 
 `TradeRoute` is a crate-internal type capturing the route plan (contract IDs, leg amounts, outpoint snapshots) needed by `build_trade_pset`. External consumers cannot inspect or construct it.
 
-`RouteLeg` breaks down how the trade is routed across liquidity sources. `LiquiditySource::LmsrPool` includes s-index movement for "pool moved from 50 to 55" display. `LiquiditySource::LimitOrder` includes the matched price and lot count.
+`RouteLeg` breaks down how the trade is routed across liquidity sources. `LiquiditySource::LmsrPool` includes s-index movement for "pool moved from 50 to 55" display. `LiquiditySource::LimitOrder` includes the matched price and base fill amount.
 
 ### ContractMatch
 
@@ -894,7 +932,7 @@ pub enum TransitionDetails {
 
 pub enum MarketTransition {
     Issued { pairs: u64, collateral_locked: u64 },
-    Resolved { outcome_yes: bool },
+    Resolved { outcome: Side },
     Redeemed { kind: RedemptionKind, side: Side, tokens_burned: u64, payout_sats: u64 },
     Cancelled { pairs_burned: u64, collateral_returned: u64 },
     Expired,
@@ -907,7 +945,7 @@ pub enum PoolTransition {
 }
 
 pub enum OrderTransition {
-    Filled { fill_amount: u64 },  // delta for this fill, not cumulative
+    Filled { fill_amount: u64 },  // locked asset units consumed in this fill (delta, not cumulative)
     Cancelled,
 }
 ```
@@ -1083,8 +1121,8 @@ Core determines transitions without decoding Simplicity witness data. Instead, i
 
 The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [SlotType and CovenantPhase](#slottype-and-covenantphase-internal)). The transition type is determined by which slot scripts the new outputs match:
 
-- **Issuance** (Trading with 0 pairs to Trading with >0 pairs, or Trading to Trading with more pairs): Old outputs match Dormant or Unresolved slots; new outputs match Unresolved slots. `pairs` = new collateral value / `collateral_per_token`. `collateral_locked` = new collateral value - old collateral value (zero for initial issuance from Dormant). `IssuanceKind` is determined internally (`Initial` if old phase was Dormant, `Subsequent` if Unresolved) but not exposed in the public `MarketTransition::Issued`.
-- **Resolution** (Trading → ResolvedYes/ResolvedNo): New output matches either `ResolvedYesCollateral` or `ResolvedNoCollateral` script. Which one determines `outcome_yes`.
+- **Issuance** (Trading with 0 pairs to Trading with >0 pairs, or Trading to Trading with more pairs): Old outputs match Dormant or Unresolved slots; new outputs match Unresolved slots. `pairs` = new collateral value / `collateral_per_token`. This division is always exact — the covenant enforces that collateral is a multiple of the pair cost. Implementations should assert exactness rather than silently truncating. `collateral_locked` = new collateral value - old collateral value (zero for initial issuance from Dormant). `IssuanceKind` is determined internally (`Initial` if old phase was Dormant, `Subsequent` if Unresolved) but not exposed in the public `MarketTransition::Issued`.
+- **Resolution** (Trading → ResolvedYes/ResolvedNo): New output matches either `ResolvedYesCollateral` or `ResolvedNoCollateral` script. Which one determines the `outcome`.
 - **Redemption** (ResolvedYes/ResolvedNo/Expired → Settled): No new covenant outputs. `payout_sats` is derived from the old collateral value. `side` from which token burn outputs are present. `RedemptionKind` is `PostResolution` if old state was ResolvedYes/ResolvedNo, `Expiry` if Expired.
 - **Cancellation** (Trading → Trading with fewer pairs): New outputs match Unresolved or Dormant slots. `pairs_burned` = (old collateral - new collateral) / `collateral_per_token`. `collateral_returned` = old collateral - new collateral. If new outputs match Dormant slots (all collateral returned), it's a full cancellation back to zero outstanding pairs.
 - **Expiry** (Trading → Expired): New output matches `ExpiredCollateral` script.
@@ -1102,8 +1140,11 @@ The swap-vs-adjustment distinction is unambiguous: same s_index = adjustment, di
 
 #### Maker Orders
 
-- **Fill** (Active → Active or Consumed): A new covenant output exists with the same script pubkey as the old order. `fill_amount` = old locked value - new locked value. If no new covenant output exists and the maker received payment, the order was fully consumed.
-- **Cancellation** (Active → Cancelled): No new covenant output, and the maker's locked asset was returned to the maker's address (identifiable from `MakerOrderParams.maker_receive_spk_hash`).
+Order transition detection uses a structural witness check — key-spend vs script-spend is trivially distinguishable from the taproot witness stack (key-spend has a single 64-byte element; script-spend has multiple elements including a control block). This is a Bitcoin/Elements-level check, not Simplicity witness decoding. See [maker-order-remove-script-cancel.md](maker-order-remove-script-cancel.md).
+
+- **Partial fill** (Active → Active): Order outpoint spent via script-spend, new covenant output exists with the same script pubkey. `fill_amount` = old locked value - new locked value.
+- **Complete fill** (Active → Consumed): Order outpoint spent via script-spend, no new covenant output. The Simplicity covenant enforced valid payment to the maker. `fill_amount` = total locked value.
+- **Cancellation** (Active → Cancelled): Order outpoint spent via key-spend, no new covenant output. The maker reclaimed their funds without covenant constraints.
 
 #### Why This Works Without Witness Decoding
 
@@ -1136,7 +1177,7 @@ The trade-off is explicit in the type system: `Current` = fast start, no history
 
 When a contract is ingested that was created in the past, it needs to be "caught up" to the chain tip. Core doesn't manage this — it's the caller's responsibility. The approach differs by contract type:
 
-**Markets**: Call `ingest_market`, then `all_covenant_scripts` to get all 8 scripts, scan the chain for matching transactions since creation height, and feed them to `process_transaction` in order.
+**Markets**: Call `ingest_market`, then `market_catchup_scripts` to get all 8 scripts, scan the chain for matching transactions since creation height, and feed them to `process_transaction` in order.
 
 **Pools and orders ingested from creation**: Forward-sync using outpoint-based "what spent this outpoint?" queries (forward-chaining), or use discovery-batched acceleration (see [Sync Patterns and Discovery](#sync-patterns-and-discovery)).
 
@@ -1145,6 +1186,75 @@ When a contract is ingested that was created in the past, it needs to be "caught
 Core doesn't distinguish between "catch-up" and "tip" transactions. It processes whatever it receives. Existing fully-synced contracts can continue processing new tip transactions while a newly-ingested contract catches up — each contract tracks its own outpoints independently.
 
 Whether a contract is "caught up" is determined by the caller, not core. The caller knows the chain tip and knows whether it has scanned all relevant scripts up to that point. Core has no concept of a global sync tip.
+
+### Consumer Flow by Contract Type
+
+**Market** — ingest, catch up, stay current:
+```rust
+// 1. Ingest from creation transaction
+let market_id = engine.ingest_market(&params, &creation_tx)?;
+
+// 2. Catch up via batch script scan (all 8 scripts cover all states)
+let scripts = engine.market_catchup_scripts(&market_id)?;
+let historical_txs = chain.scan_scripts(&scripts, creation_height..tip);
+for tx in historical_txs { engine.process_transaction(&tx)?; }
+
+// 3. Stay current — subscribe to scripts (one-time, covers all future states)
+chain.subscribe_scripts(&scripts);
+// On notification: engine.process_transaction(&new_tx)?;
+```
+
+**Pool (from creation)** — ingest, catch up via forward-chaining, stay current:
+```rust
+// 1. Ingest from creation transaction
+let pool_id = engine.ingest_pool(&params, PoolSnapshot::Creation(creation_tx))?;
+
+// 2. Catch up via forward-chaining (or discovery-batched TXIDs)
+// Forward-chain: sequentially query "what spent this outpoint?"
+// Batched: fetch all TXIDs from discovery payload in parallel, sort by position
+for tx in catch_up_txs { engine.process_transaction(&tx)?; }
+
+// 3. Stay current — subscribe to outpoints (re-subscribe after each transition)
+let outpoints = engine.watched_outpoints(Pagination { after: None, limit: 100 })?;
+chain.subscribe_spends(&outpoints.items);
+// On notification: engine.process_transaction(&new_tx)?; re-subscribe with new outpoints.
+```
+
+**Pool (from current state)** — fast start, no history:
+```rust
+// 1. Ingest from current state snapshot
+let pool_id = engine.ingest_pool(&params, PoolSnapshot::Current { ... })?;
+
+// 2. Already at current state — subscribe to outpoints immediately
+let outpoints = engine.watched_outpoints(Pagination { after: None, limit: 100 })?;
+chain.subscribe_spends(&outpoints.items);
+```
+
+**Order (taker)** — ingest current state, trade:
+```rust
+// 1. Ingest from current state (takers don't need history)
+let order_id = engine.ingest_order(&params, OrderSnapshot::Current { ... })?;
+
+// 2. Trade via quote + build
+let quote = engine.quote_trade(&market_id, spec)?;
+let pset = engine.build_trade_pset(&quote, &funding)?;
+```
+
+**Order (maker)** — create, monitor fills:
+```rust
+// 1. Create the order
+let pset = engine.build_create_order_pset(&params, offered_amount, &funding)?;
+let signed = signer.sign(pset)?;
+chain.broadcast(signed)?;
+
+// 2. Ingest from creation transaction (after confirmation)
+let order_id = engine.ingest_order(&params, OrderSnapshot::Creation(creation_tx))?;
+
+// 3. Monitor via outpoint subscription
+let outpoints = engine.watched_outpoints(Pagination { after: None, limit: 100 })?;
+chain.subscribe_spends(&outpoints.items);
+// On fill notification: engine.process_transaction(&fill_tx)?;
+```
 
 ## Persistence: Store Trait
 
@@ -1177,7 +1287,7 @@ pub trait ContractStore {
     fn orders_for_market(&self, market_id: &ContractId, page: Pagination) -> Result<Page<OrderEntry>, Self::Error>;
 
     // Writes — &mut self
-    fn track_contract(&mut self, contract_id: ContractId, contract: Contract, derived: DerivedContractData) -> Result<(), Self::Error>;
+    fn track_contract(&mut self, contract_id: ContractId, contract: Contract, derived: DerivedContractData, initial_position: ChainPosition) -> Result<(), Self::Error>;
     fn untrack_contract(&mut self, contract_id: &ContractId) -> Result<(), Self::Error>;
     fn apply_transitions(&mut self, transitions: &[StateUpdate]) -> Result<(), Self::Error>;
     fn rollback_to_height(&mut self, height: u32) -> Result<(), Self::Error>;
@@ -1191,7 +1301,7 @@ Every consumer must implement this. Read methods take `&self`, write methods tak
 
 `find_by_outpoints` is the hot-path method called on every `process_transaction`. It is not paginated because its input is bounded by the transaction's input count (constrained by Liquid's transaction size limits).
 
-`find_by_asset_id` and `covenant_scripts` are index lookups populated at ingestion time. The engine passes `DerivedContractData` (asset IDs + scripts) to `track_contract`, and the store indexes this data for fast lookups. `find_by_asset_id` backs the engine's `identify_asset` method. `covenant_scripts` backs the engine's `all_covenant_scripts` method. Neither requires Simplicity knowledge — the engine pre-computes the data and hands it over.
+`find_by_asset_id` and `covenant_scripts` are index lookups populated at ingestion time. The engine passes `DerivedContractData` (asset IDs + scripts) to `track_contract`, and the store indexes this data for fast lookups. `find_by_asset_id` backs the engine's `identify_asset` method. `covenant_scripts` backs the engine's `market_catchup_scripts` method. Neither requires Simplicity knowledge — the engine pre-computes the data and hands it over.
 
 `untrack_contract` removes the contract, all derived data (asset ID index entries, covenant scripts), and any history. Store implementations must clean up all references.
 
@@ -1416,6 +1526,8 @@ Core maintains a processing log: for each processed transaction, the contract ID
 
 Contracts created at height N are kept. Contracts created at height N+1 or above are removed — their creation transactions may no longer exist on the canonical chain after the reorg.
 
+**Uniform rollback for all ingestion types**: Contracts ingested via `PoolSnapshot::Current` or `OrderSnapshot::Current` include a `ChainPosition` indicating when the snapshot's outpoints were confirmed. The engine passes this as `initial_position` to `track_contract`, and rollback treats it identically to a creation transaction's position — if the initial position is strictly above height N, the contract is removed. This ensures `watched_outpoints()` never returns stale outpoints after rollback, regardless of how the contract was ingested.
+
 The caller detects the reorg (their chain backend tells them), calls `rollback_to_height`, then re-scans and feeds the new chain data.
 
 **History cleanup**: For stores implementing `ContractHistory`, `rollback_to_height` must also remove any persisted transition history records above the rollback height. These records reference a chain that may no longer exist after the reorg. **Important**: Both state rollback and history cleanup must be atomic — a single database transaction, not two separate operations. A crash between rolling back state and rolling back history would leave the store in an inconsistent state (current state reflects the rollback but history still contains records from the pre-rollback chain). Since the store implements both `ContractStore` (with `rollback_to_height`) and `ContractHistory` (with its history table), it has everything needed to clean up both in a single operation. This is a `ContractStore::rollback_to_height` implementation concern, not a separate method on `ContractHistory`, because atomicity requires both cleanups to happen in one call.
@@ -1457,7 +1569,7 @@ The caller periodically calls `prune_finalized` with the current chain tip and t
 
 ## Thread Safety
 
-Write methods (`process_transaction`, `ingest_market`, `ingest_pool`, `ingest_order`, `untrack_contract`, `rollback_to_height`, `prune_finalized`) take `&mut self`. Read methods (`interpret_transaction`, `identify_asset`, `watched_outpoints`, `all_covenant_scripts`, `contract`, `list_markets`, `list_pools`, `list_orders`, `pools_for_market`, `orders_for_market`, `quote_trade`, and all PSET builders) take `&self`.
+Write methods (`process_transaction`, `ingest_market`, `ingest_pool`, `ingest_order`, `untrack_contract`, `rollback_to_height`, `prune_finalized`) take `&mut self`. Read methods (`interpret_transaction`, `identify_asset`, `watched_outpoints`, `market_catchup_scripts`, `contract`, `list_markets`, `list_pools`, `list_orders`, `pools_for_market`, `orders_for_market`, `quote_trade`, and all PSET builders) take `&self`.
 
 Rust's borrow rules provide compile-time `RwLock` semantics: multiple concurrent readers OR one exclusive writer, enforced without runtime overhead. For single-threaded consumers this is invisible. For multi-threaded consumers who need concurrent access, wrap the engine in `RwLock<ContractEngine<S>>`:
 
@@ -1499,14 +1611,14 @@ This section describes how the caller (discovery layer, wallet integration) sync
 #### Markets
 
 - Always ingested from creation transaction via `ingest_market`
-- Forward-sync via batch script query: `all_covenant_scripts` returns all 8 bounded scripts (2 Dormant RT slots + 3 Unresolved slots + 1 ResolvedYes + 1 ResolvedNo + 1 Expired)
+- Forward-sync via batch script query: `market_catchup_scripts` returns all 8 bounded scripts (2 Dormant RT slots + 3 Unresolved slots + 1 ResolvedYes + 1 ResolvedNo + 1 Expired)
 - No non-initial ingestion needed (few transitions, fast catch-up)
 - No backward-sync needed
 
 #### LMSR Pools
 
 - Support creation-tx and non-initial ingestion via `PoolSnapshot`
-- `all_covenant_scripts` returns current-state scripts only (unbounded s_index makes full enumeration impractical at realistic table depths — 2^table_depth x 3 slots)
+- Script-based catch-up is not available for pools (unbounded s_index makes full enumeration impractical at realistic table depths — 2^table_depth x 3 slots)
 - Output matching uses reserve-value-based s_index derivation instead of script matching (the new s_index is derived from explicit reserve output values via the LMSR table, not by matching against pre-stored scripts)
 - Catch-up uses forward-chaining (outpoint-based "what spent this outpoint?" queries) rather than script scanning
 - Discovery-batched acceleration: discovery payloads can include `Vec<Txid>` of transition history. The caller batch-fetches all TXIDs in parallel, sorts by chain position, feeds to `process_transaction` in order. The engine verifies chain of custody during processing — each tx must spend the previous outpoints.
@@ -1593,8 +1705,8 @@ let mut engine = ContractEngine::new(aqua_deadcat_store, Network::Liquid);
 let market_id = engine.ingest_market(&market_params, &creation_tx)?;
 
 // 3. Catch up: scan chain for this contract's history since creation.
-//    all_covenant_scripts returns all 8 bounded scripts for markets.
-let scripts = engine.all_covenant_scripts(&market_id)?;
+//    market_catchup_scripts returns all 8 bounded scripts for markets.
+let scripts = engine.market_catchup_scripts(&market_id)?;
 let historical_txs = aqua_chain.scan_history(&scripts, creation_tx.position.block_height);
 for tx in historical_txs {
     engine.process_transaction(&tx)?;
@@ -1940,9 +2052,9 @@ aqua_chain.broadcast(signed)?;
 
 **Chosen**: Asset ID → contract mapping and covenant scripts are persisted in the store (populated at ingestion via `DerivedContractData`). Compiled contracts are not cached — they are recompiled on demand for PSET builders only.
 **Rejected**: (a) All indexes in memory (requires eager reconstruction at startup). (b) In-memory compiled contract cache (adds complexity for minimal benefit). (c) Persisted compiled contracts (simplicityhl's `CompiledProgram` has no serialization API).
-**Why**: Asset ID lookups and covenant script lookups are hot-path operations (called by `identify_asset` and `all_covenant_scripts`). Persisting them in the store ensures O(1) construction of `ContractEngine::new` — no iteration or compilation at startup. `process_transaction` and `interpret_transaction` determine transitions from script pubkey matching and output values — no compiled contracts needed. Only PSET builders require compilation (for witness encoding), and their ~10-100ms recompilation cost is acceptable for a user-initiated operation. An in-memory cache would only save recompilation across multiple PSET builds for the same contract within a single engine lifetime — too rare to justify the complexity (eviction during rollback, interior mutability). If simplicityhl adds `CompiledProgram` serialization, persisting at ingestion time would eliminate recompilation entirely.
+**Why**: Asset ID lookups and covenant script lookups are hot-path operations (called by `identify_asset` and `market_catchup_scripts`). Persisting them in the store ensures O(1) construction of `ContractEngine::new` — no iteration or compilation at startup. `process_transaction` and `interpret_transaction` determine transitions from script pubkey matching and output values — no compiled contracts needed. Only PSET builders require compilation (for witness encoding), and their ~10-100ms recompilation cost is acceptable for a user-initiated operation. An in-memory cache would only save recompilation across multiple PSET builds for the same contract within a single engine lifetime — too rare to justify the complexity (eviction during rollback, interior mutability). If simplicityhl adds `CompiledProgram` serialization, persisting at ingestion time would eliminate recompilation entirely.
 
-Note: `all_covenant_scripts` returns bounded scripts for markets (all 8 across all phases) but current-state-only scripts for pools (unbounded s_index makes full enumeration impractical). Pools use reserve-value-based s_index derivation for output matching instead of pre-stored scripts.
+Note: `market_catchup_scripts` returns bounded scripts for markets (all 8 across all phases). It is market-only — pools and orders use different catch-up strategies. Pools use reserve-value-based s_index derivation for output matching instead of pre-stored scripts.
 
 ### CMR + Creation Txid as Contract ID
 
@@ -1962,7 +2074,7 @@ Note: `all_covenant_scripts` returns bounded scripts for markets (all 8 across a
 **Chosen**: `PoolSnapshot::Current` and `OrderSnapshot::Current` allow ingestion at any point in a contract's lifecycle.
 **Rejected**: Always requiring the creation transaction.
 **Why**: LMSR pools can accumulate thousands of state transitions (one per swap). Forward-syncing from creation requires sequential chain queries for each transition. Non-initial ingestion allows a trader to start using a pool immediately from its current state, without replaying its entire history. For limit orders, takers need only the current state — order history is irrelevant for filling. Makers who need history (monitoring, recovery) use `OrderSnapshot::Creation`.
-**Trade-off**: Ingesting at `Current` means no prior history is recoverable. This is a one-way choice — the caller cannot "upgrade" to full history without untracking and re-ingesting from creation. The API makes this trade-off explicit via the snapshot enum variants.
+**Trade-off**: Ingesting at `Current` means no prior history is recoverable. This is a one-way choice — the caller cannot "upgrade" to full history without untracking and re-ingesting from creation. The API makes this trade-off explicit via the snapshot enum variants. `Current` snapshots include a `ChainPosition` indicating when the outpoints were confirmed, enabling uniform rollback behavior.
 
 ### Forward-Only Sync (Backward-Sync Deferred)
 
@@ -2026,3 +2138,33 @@ Order makers should use a fresh nonce for each order, ensuring unique `maker_rec
 **Chosen**: `ingest_pool` and `ingest_order` validate that the referenced token asset IDs correspond to a known market. If the parent market isn't tracked, returns `CoreError::InvalidParams`. `ingest_market` has no parent requirement.
 **Rejected**: (a) Allow orphaned pools/orders with later backfill. (b) Engine pre-computes parent ID and passes it to store.
 **Why**: The store builds its own parent-market index by resolving token asset IDs via `find_by_asset_id` during `track_contract`. This requires the parent market to already be in the asset index. Allowing orphans would require backfill machinery (scan for orphans when a market is ingested) — significant complexity for a case that shouldn't happen. Discovery naturally produces markets before their pools/orders. The simpler option (engine pre-computes parent ID and passes it via `DerivedContractData`) was rejected because it duplicates work the store can already do with its existing asset index.
+
+### Market-Only Catch-Up Scripts
+
+**Chosen**: `market_catchup_scripts` is market-only. Returns `CoreError::InvalidParams` for pools and orders.
+**Rejected**: Generic `all_covenant_scripts` that returns different things per contract type.
+**Why**: Script-based catch-up scanning is only robustly useful for markets (8 bounded scripts covering all states). For pools, the unbounded s_index makes full script enumeration impractical — pools use forward-chaining. For orders, outpoint-based subscription suffices. Returning partial/stale scripts for pools and orders would mislead callers into thinking script scanning works for those types. A market-specific method makes the intended usage explicit.
+
+### Key-Spend-Only Order Cancellation
+
+**Chosen**: Maker order cancellation is exclusively via taproot key-spend. The Simplicity program handles fills only.
+**Rejected**: Both key-spend and Simplicity cancel path (which existed in the original covenant).
+**Why**: The script cancel path was functionally identical to key-spend (maker signature, no output constraints) but heavier. More importantly, having both paths made it impossible to reliably distinguish complete fills from cancellations using structural witness checks. With key-spend as the sole cancel mechanism, the engine uses a watertight 3-step detection algorithm: script-spend + new covenant output = partial fill, script-spend + no covenant output = complete fill, key-spend = cancel. See [maker-order-remove-script-cancel.md](maker-order-remove-script-cancel.md).
+
+### BIP-340 Tagged Hash for Oracle Attestations
+
+**Chosen**: Oracle attestation messages use BIP-340 tagged hash with tag `"deadcat/oracle_attestation"`.
+**Rejected**: Plain SHA256 without domain separation (the original implementation).
+**Why**: Without tagged hashing, a signature valid in one context could satisfy the covenant if the oracle's key is used in another protocol that signs `SHA256(32_bytes || 1_byte)`. The BIP-340 tagged hash convention creates a domain-separated hash function that cannot collide with untagged SHA256 or other tagged hashes. The double `SHA256(tag)` prefix fills one SHA-256 block (64 bytes), enabling constant-time precomputation. See [oracle-bip340-tagged-hash.md](oracle-bip340-tagged-hash.md).
+
+### Oracle Attestation as Standalone Function + Engine Convenience
+
+**Chosen**: `oracle_attestation_message` is a standalone public function (no engine needed). `oracle_attestation_spec` is an engine convenience method that also returns the oracle pubkey.
+**Rejected**: Engine method only.
+**Why**: Oracle services that sign attestations may not run a `ContractEngine` — they just need the asset IDs and outcome to compute the message. The standalone function serves this use case. The engine method is a convenience for wallet integrators who have an engine and don't want to manually extract asset IDs from params (the engine exclusively owns the store, so the caller can't look up params directly).
+
+### Snapshot Position for Uniform Rollback
+
+**Chosen**: `PoolSnapshot::Current` and `OrderSnapshot::Current` include a `ChainPosition` field. `track_contract` takes `initial_position: ChainPosition`. Rollback treats all contracts uniformly — if initial position is above rollback height, the contract is removed.
+**Rejected**: (a) Separate `known_at_height` field (over-aggressive — uses ingestion time, not outpoint confirmation time). (b) Caller responsible for post-rollback cleanup (latent-bug surface if caller forgets).
+**Why**: The `ChainPosition` in the snapshot represents when the outpoints were confirmed — precise, not over-aggressive. Rollback becomes uniform: creation-tx contracts and snapshot contracts are both removed if their initial position is above the rollback height. `watched_outpoints()` is always correct after rollback.
