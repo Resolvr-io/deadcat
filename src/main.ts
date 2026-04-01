@@ -193,6 +193,7 @@ async function finishOnboarding(): Promise<void> {
   state.onboardingBackupScanning = false;
 
   await fetchWalletStatus();
+  state.view = "wallet";
   render();
 
   if (state.walletStatus === "unlocked") {
