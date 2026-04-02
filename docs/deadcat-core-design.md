@@ -781,10 +781,12 @@ The mutable initial state of a contract at ingestion time, passed to the store v
 
 This is intentionally separate from `DerivedContractData`, which contains permanent data derived from Simplicity compilation (scripts, asset IDs). `InitialContractState` contains mutable state — `outpoints` change with every transition (via `apply_transitions`), and `position` sets the initial `synced_to` height. The two structs represent different categories of data the engine pre-computes for the store.
 
-**Outpoints per contract type**:
-- **Markets**: 2 outpoints (DormantYesRt, DormantNoRt) for initial Dormant state.
-- **Pools**: 3 outpoints (YES reserve, NO reserve, Collateral reserve).
-- **Orders**: 1 outpoint (the order UTXO).
+**Outpoints per contract type** (positional ordering — index = slot identity):
+- **Markets**: 2 outpoints `[DormantYesRt, DormantNoRt]` for initial Dormant state. In Unresolved: `[UnresolvedYesRt, UnresolvedNoRt, UnresolvedCollateral]`. In ResolvedYes/No/Expired: `[collateral_slot]`.
+- **Pools**: 3 outpoints `[YES reserve, NO reserve, Collateral reserve]`.
+- **Orders**: 1 outpoint `[order UTXO]`.
+
+**Positional ordering is a hard invariant**: The engine, store, and PSET builders all depend on `Vec<OutPoint>` index positions matching slot identity. The engine produces outpoints in this canonical order during ingestion (`InitialContractState`) and transitions (`StateUpdate.new_outpoints`). The store must preserve insertion order. `contract_outpoints` must return outpoints in the same positional order they were stored. PSET builders use the index to place the correct outpoint at the correct transaction input position for Simplicity witness encoding.
 
 ### Oracle Attestation
 
@@ -1572,7 +1574,7 @@ pub trait ChainSource {
 
 **8 methods, split into two groups:**
 
-The **catch-up** methods are synchronous pull queries. `tip_height` returns the current chain tip. `transactions_by_scripts` returns up to `limit` confirmed transactions *involving* any of the given scripts from `from_height` onwards, in chain order. "Involving" means both transactions that create outputs paying to those scripts AND transactions that spend outputs from those scripts — the engine needs both for catch-up (creation of covenant UTXOs and their subsequent spends). This matches the standard behavior of Electrum's `blockchain.scripthash.get_history` and Esplora's `/scripthash/:hash/txs`. `spending_transaction` returns the transaction that spent a given outpoint, or `None` if unspent.
+The **catch-up** methods are synchronous pull queries. `tip_height` returns the current chain tip. `transactions_by_scripts` returns up to `limit` confirmed transactions *involving* any of the given scripts from `from_height` onwards, in chain order. Each transaction appears at most once in the result, even if it involves multiple scripts from the input set. "Involving" means both transactions that create outputs paying to those scripts AND transactions that spend outputs from those scripts — the engine needs both for catch-up (creation of covenant UTXOs and their subsequent spends). This matches the standard behavior of Electrum's `blockchain.scripthash.get_history` and Esplora's `/scripthash/:hash/txs`. `spending_transaction` returns the transaction that spent a given outpoint, or `None` if unspent.
 
 The **steady-state** methods manage a notification registration system. `register_scripts` and `register_spends` tell the chain source to watch for activity. `drain_notifications` returns any confirmed transactions that matched since the last drain. `unregister_scripts` and `unregister_spends` clean up when contracts reach terminal states or are untracked.
 
@@ -1580,7 +1582,7 @@ The **steady-state** methods manage a notification registration system. `registe
 
 **The trait is a read-only data source, not a service.** It makes no writes to the chain, does no broadcasting, and performs no fee estimation. The engine treats it as an immutable data accessor. The `&mut self` on registration methods reflects internal state management (tracking what's registered), not external side effects.
 
-**`drain_notifications` returns confirmed transactions only** (with `ChainPosition`). Mempool/unconfirmed transactions are out of scope — the caller handles mempool awareness separately via `interpret_transaction` if they want pending UX.
+**`drain_notifications` returns confirmed transactions only** (with `ChainPosition`), **in chain order** (ascending by `ChainPosition`). This matches the ordering guarantee of `transactions_by_scripts`. The engine processes notifications sequentially — out-of-order delivery could cause it to miss a transaction whose inputs reference outpoints created by a not-yet-processed earlier transaction. Mempool/unconfirmed transactions are out of scope — the caller handles mempool awareness separately via `interpret_transaction` if they want pending UX.
 
 ### Sync Model
 
@@ -1622,7 +1624,7 @@ The root cause of the split: pool scripts encode the `s_index`, which changes on
 
 1. `chain.tip_height()` to determine the target
 2. Read stale contracts from the store (contracts with `synced_to < tip`)
-3. **Script-based catch-up** (markets + orders): Batch all stale contracts' scripts into one `chain.transactions_by_scripts(all_scripts, min_synced_to, BATCH_SIZE)` call. Process results via `process_transaction` (internal). Loop until the scan returns empty.
+3. **Script-based catch-up** (markets + orders): Batch all stale contracts' scripts into one `chain.transactions_by_scripts(all_scripts, from_height, BATCH_SIZE)` call (initial `from_height = min_synced_to`). Process results via `process_transaction` (internal). Advance `from_height` to `max_block_height_in_batch + 1` after each batch. Loop until the scan returns fewer than `BATCH_SIZE` results (indicating no more data). `BATCH_SIZE` must be larger than the maximum number of matching transactions in a single block to avoid skipping intra-block transactions when advancing `from_height`.
 4. **Outpoint-based catch-up** (pools): For each stale pool, forward-chain via `chain.spending_transaction(outpoint)` until `None` (unspent = caught up). The engine picks one representative outpoint per pool (the covenant guarantees all 3 are spent together).
 5. **Set up subscriptions**: `chain.register_scripts(scripts, synced_to)` for markets/orders. `chain.register_spends(outpoints)` for pools.
 6. **Advance `synced_to`** for all contracts to tip.
@@ -1631,7 +1633,8 @@ The root cause of the split: pool scripts encode the `s_index`, which changes on
 
 1. `chain.drain_notifications()` → process any matching transactions
 2. For pool transitions: `chain.unregister_spends(old_outpoints)`, `chain.register_spends(new_outpoints)`
-3. `chain.tip_height()` → advance `synced_to` for all contracts (even if no notifications — the scan/subscription covered everything)
+3. For contracts reaching terminal states (Settled, Closed, Consumed, Cancelled): `chain.unregister_scripts(scripts)` for markets/orders, `chain.unregister_spends(outpoints)` for pools. Prevents stale subscriptions from producing irrelevant notifications.
+4. `chain.tip_height()` → advance `synced_to` for all contracts (even if no notifications — the scan/subscription covered everything)
 
 **Subscription state invalidation**: Ingesting a contract, untracking a contract, or calling `rollback_to_height` invalidates the engine's internal subscription state. The next `step` re-initializes (re-reads from store, re-registers subscriptions). Invalidation is rare — ingestion and untracking are infrequent, rollbacks are exceptional on Liquid.
 
