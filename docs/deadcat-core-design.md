@@ -106,8 +106,8 @@ impl<S: ContractStore> ContractEngine<S> {
     pub fn list_orders(&self, filter: StateFilter, page: Pagination) -> Result<Page<OrderEntry>, CoreError<S::Error>>;
 
     // Relationship queries (reads — &self)
-    pub fn pools_for_market(&self, market_id: &ContractId, page: Pagination) -> Result<Page<PoolEntry>, CoreError<S::Error>>;
-    pub fn orders_for_market(&self, market_id: &ContractId, page: Pagination) -> Result<Page<OrderEntry>, CoreError<S::Error>>;
+    pub fn pools_for_market(&self, market_id: &ContractId, filter: StateFilter, page: Pagination) -> Result<Page<PoolEntry>, CoreError<S::Error>>;
+    pub fn orders_for_market(&self, market_id: &ContractId, filter: StateFilter, page: Pagination) -> Result<Page<OrderEntry>, CoreError<S::Error>>;
 
     // Chain sync (writes — &mut self)
     pub fn step<C: ChainSource>(&mut self, chain: &mut C) -> Result<StepReport, CoreError<S::Error>>;
@@ -125,13 +125,16 @@ impl<S: ContractStore> ContractEngine<S> {
     // All builders take a &WalletFunding for coin selection, fee computation, and change.
     // Creation builders take concrete param types (compile on the fly).
     // Post-ingestion builders take contract_id (recompile from stored params).
+    // Builders that involve reissuance token outputs return UnblindedPset (see Confidential Transaction Blinding).
+    // All other builders return PartiallySignedTransaction directly.
 
-    // Prediction market builders
-    pub fn build_creation_pset(&self, params: &PredictionMarketParams, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
-    pub fn build_issuance_pset(&self, contract_id: &ContractId, pairs: u64, yes_dest: &Script, no_dest: &Script, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
-    pub fn build_cancellation_pset(&self, contract_id: &ContractId, pairs_to_burn: Option<u64>, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
-    pub fn build_oracle_resolve_pset(&self, contract_id: &ContractId, oracle_attestation: &schnorr::Signature, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
-    pub fn build_expire_transition_pset(&self, contract_id: &ContractId, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    // Prediction market builders (RT-involving → UnblindedPset)
+    pub fn build_creation_pset(&self, params: &PredictionMarketParams, funding: &WalletFunding) -> Result<UnblindedPset, CoreError<S::Error>>;
+    pub fn build_issuance_pset(&self, contract_id: &ContractId, pairs: u64, yes_dest: &Script, no_dest: &Script, funding: &WalletFunding) -> Result<UnblindedPset, CoreError<S::Error>>;
+    pub fn build_cancellation_pset(&self, contract_id: &ContractId, pairs_to_burn: Option<u64>, funding: &WalletFunding) -> Result<UnblindedPset, CoreError<S::Error>>;
+    pub fn build_oracle_resolve_pset(&self, contract_id: &ContractId, oracle_attestation: &schnorr::Signature, funding: &WalletFunding) -> Result<UnblindedPset, CoreError<S::Error>>;
+    pub fn build_expire_transition_pset(&self, contract_id: &ContractId, funding: &WalletFunding) -> Result<UnblindedPset, CoreError<S::Error>>;
+    // Prediction market builder (no RT involvement → PartiallySignedTransaction)
     pub fn build_redemption_pset(&self, contract_id: &ContractId, side: Side, tokens_to_redeem: u64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     // LMSR pool builders
     pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, initial_reserves: &PoolReserves, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
@@ -390,11 +393,11 @@ The store's listing methods return typed results (e.g., `Page<MarketEntry>` rath
 ### Relationship Queries
 
 ```rust
-pub fn pools_for_market(&self, market_id: &ContractId, page: Pagination) -> Result<Page<PoolEntry>, CoreError<S::Error>>;
-pub fn orders_for_market(&self, market_id: &ContractId, page: Pagination) -> Result<Page<OrderEntry>, CoreError<S::Error>>;
+pub fn pools_for_market(&self, market_id: &ContractId, filter: StateFilter, page: Pagination) -> Result<Page<PoolEntry>, CoreError<S::Error>>;
+pub fn orders_for_market(&self, market_id: &ContractId, filter: StateFilter, page: Pagination) -> Result<Page<OrderEntry>, CoreError<S::Error>>;
 ```
 
-Return pools or orders associated with a specific market. The relationship is encoded in pool/order params (they reference the market's token asset IDs). The store maintains a secondary index on market_id for efficient lookups, built during ingestion by resolving the pool/order's token asset IDs via the store's own `find_by_asset_id` index.
+Return pools or orders associated with a specific market. Accept `StateFilter` to avoid paging through terminal contracts at scale — a popular market could accumulate thousands of consumed/cancelled orders. The relationship is encoded in pool/order params (they reference the market's token asset IDs). The store maintains a secondary index on market_id for efficient lookups, built during ingestion by resolving the pool/order's token asset IDs via the store's own `find_by_asset_id` index.
 
 **Ingestion ordering constraint**: Pools and orders require their parent market to be ingested first. During `ingest_pool` or `ingest_order`, the engine validates that the referenced token asset IDs correspond to a known market. If the parent market isn't tracked, the engine returns `CoreError::InvalidParams`. This is a natural constraint — you shouldn't track a pool for a market you don't know about, and discovery naturally produces markets before their pools/orders.
 
@@ -609,19 +612,24 @@ Active pools track their reserves and s_index. Outpoints are internal to the eng
 ```rust
 pub enum OrderState {
     Active {
+        offered_amount: u64,
         total_filled: u64,
     },
     Consumed {
         final_txid: Txid,
+        offered_amount: u64,
     },
     Cancelled {
         cancel_txid: Txid,
+        offered_amount: u64,
         total_filled: u64,
     },
 }
 ```
 
-`total_filled` on `Active` enables "5,000 of 10,000 sats filled" display while the order is still live. `total_filled` and `fill_amount` are denominated in the order's locked asset — the asset the maker offered (BASE for sell-base orders, QUOTE for sell-quote orders, per `MakerOrderParams.is_sell_base`). `Consumed` means fully filled — `total_filled` equals the original offered amount by definition, so it's not stored. `Cancelled` with `total_filled` enables "partially filled then cancelled" display (if `total_filled == 0`, it was a clean cancellation). Outpoints are internal to the engine and not exposed in the public state.
+`offered_amount` is the total value the maker locked when the order was created. For `Creation` ingestion, this is the initial UTXO value (the true original). For `Current` ingestion, this is `locked_value` from the snapshot (the remaining at discovery time — the best available without history). `total_filled` is cumulative fills since ingestion. Both are denominated in the order's locked asset — the asset the maker offered (BASE for sell-base orders, QUOTE for sell-quote orders, per `MakerOrderParams.is_sell_base`). Remaining liquidity is `offered_amount - total_filled`.
+
+`Active` enables "5,000 of 10,000 sats filled" display. `Consumed` stores `offered_amount` (which equals `total_filled` by definition — only one is needed). `Cancelled` enables "5,000 of 10,000 filled, then cancelled" display (if `total_filled == 0`, it was a clean cancellation). Outpoints are internal to the engine and not exposed in the public state.
 
 ### Pagination Types
 
@@ -1090,6 +1098,30 @@ pub enum CoreError<E: std::error::Error> {
 
 **Why generic over the store error**: The engine is already generic over `S: ContractStore`, so `CoreError<S::Error>` adds no new generic parameters. Store error types are preserved — consumers can match on `CoreError::Store(e)` and handle their specific store error without downcasting. Store implementors define their own error type independently via an associated type on the trait.
 
+### UnblindedPset and PreparedPset
+
+See [Confidential Transaction Blinding](#confidential-transaction-blinding) for the full design and rationale. Summarized here for type reference:
+
+```rust
+/// Returned by the 5 market builders that involve reissuance token outputs.
+/// Private fields prevent extracting the PSET without going through a blinding method.
+pub struct UnblindedPset { /* private: pset, rt_blinding_factors, input_secrets, output_classification */ }
+
+impl UnblindedPset {
+    pub fn prepare(self, wallet_blinding_pubkey: &PublicKey) -> Result<PreparedPset, BlindingError>;
+    pub fn finalize(self) -> Result<PartiallySignedTransaction, BlindingError>;
+}
+
+/// Returned by UnblindedPset::prepare(). The caller must call
+/// pset.blind_last(rng, secp, &input_secrets) before signing.
+pub struct PreparedPset {
+    pub pset: PartiallySignedTransaction,
+    pub input_secrets: HashMap<usize, TxOutSecrets>,
+}
+```
+
+`BlindingError` is a simple error type for cryptographic failures during blinding (proof generation, commitment construction). It is separate from `CoreError` — blinding is a post-builder step decoupled from the engine's store generic. The builder returns `Result<UnblindedPset, CoreError<S::Error>>`; the blinding methods return `Result<_, BlindingError>`.
+
 ## Core Design: UTXO-Following State Machine
 
 ### Fundamental Loop
@@ -1303,8 +1335,11 @@ pub trait ContractStore {
     fn list_orders(&self, filter: StateFilter, page: Pagination) -> Result<Page<OrderEntry>, Self::Error>;
 
     // Relationship queries — &self (typed results)
-    fn pools_for_market(&self, market_id: &ContractId, page: Pagination) -> Result<Page<PoolEntry>, Self::Error>;
-    fn orders_for_market(&self, market_id: &ContractId, page: Pagination) -> Result<Page<OrderEntry>, Self::Error>;
+    fn pools_for_market(&self, market_id: &ContractId, filter: StateFilter, page: Pagination) -> Result<Page<PoolEntry>, Self::Error>;
+    fn orders_for_market(&self, market_id: &ContractId, filter: StateFilter, page: Pagination) -> Result<Page<OrderEntry>, Self::Error>;
+
+    // Trade routing support — &self (used by quote_trade internally)
+    fn best_orders_for_market(&self, market_id: &ContractId, is_sell_base: bool, ascending: bool, min_remaining: u64, limit: u32) -> Result<Vec<OrderEntry>, Self::Error>;
 
     // Writes — &mut self
     fn track_contract(&mut self, contract_id: ContractId, contract: Contract, derived: DerivedContractData, initial: InitialContractState) -> Result<(), Self::Error>;
@@ -1344,6 +1379,8 @@ Every consumer must implement this. Read methods take `&self`, write methods tak
 `stale_contracts` is the primary sync-support method. It returns all contracts with `synced_to < tip_height`, pre-grouped by sync strategy (script-based vs outpoint-based) with their scripts/outpoints included. This allows the engine to build catch-up queries and subscription registrations in a single store call. A SQLite implementation does this with one JOIN + WHERE query. In steady-state (all contracts at tip), it returns empty — no pagination needed.
 
 `contract_outpoints` returns the current tracked outpoints for a contract. Used by `step` for pool forward-chaining. The store already tracks outpoints internally (for `find_by_outpoints`); this method exposes them per-contract.
+
+`best_orders_for_market` returns active orders for a market, sorted by price (ascending or descending as specified) and filtered by minimum remaining locked value. Used by `quote_trade` internally for trade routing — not a user-facing listing method. The `is_sell_base` parameter selects which order direction to match (the engine translates from the taker's `TradeSpec`). The `min_remaining` parameter filters dust orders at the store level. The `limit` bounds the result count (e.g., 50). No cursor pagination — the router processes all returned orders in a single pass. See [trade-routing-algorithm.md](trade-routing-algorithm.md) for the full routing algorithm.
 
 `advance_synced_heights` bulk-advances `synced_to` for multiple contracts. Called by `step` after processing a batch of transactions or after confirming that subscriptions have covered through the tip height.
 
@@ -1412,7 +1449,7 @@ The `Transition.external_outputs` bridges the gap — core identifies which outp
 
 ## PSET Construction
 
-All PSET builders are engine methods. They return unsigned PSETs — no wallet access, no chain queries, no signing. The caller provides operation-specific arguments and a `WalletFunding` struct. The engine handles Simplicity contract compilation, script derivation, taproot tree construction, coin selection, and fee computation internally. The caller signs the resulting PSET and broadcasts.
+All PSET builders are engine methods — no wallet access, no chain queries, no signing. The caller provides operation-specific arguments and a `WalletFunding` struct. The engine handles Simplicity contract compilation, script derivation, taproot tree construction, coin selection, and fee computation internally. Builders that involve reissuance token (RT) outputs return `UnblindedPset` — a newtype that enforces covenant blinding before the caller can sign (see [Confidential Transaction Blinding](#confidential-transaction-blinding)). All other builders return `PartiallySignedTransaction` directly.
 
 **Simplicity is fully encapsulated**: Consumers never see compiled contracts (`CompiledPredictionMarket`, `CompiledLmsrPool`, `CompiledMakerOrder`), Commitment Merkle Roots (CMRs), taproot trees, or witness encoding. These are internal to the engine. Consumers provide contract params (plain data: oracle keys, asset IDs, prices, expiry times) and receive PSETs back. The word "Simplicity" need not appear in consumer code.
 
@@ -1454,21 +1491,27 @@ Creation takes concrete param type `&PredictionMarketParams` (compiles on the fl
 `build_oracle_resolve_pset` and `build_expire_transition_pset` branch internally based on outstanding pairs — when called on a market with zero outstanding pairs (Dormant), they handle the dormant terminal paths (both RT UTXOs consumed, market reaches Settled). No new builder methods are needed for this case. See [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md).
 
 ```rust
-// Creation — takes concrete params, compiles on the fly
+// Creation — takes concrete params, compiles on the fly. Returns UnblindedPset (RT outputs).
 pub fn build_creation_pset(&self, params: &PredictionMarketParams, funding: &WalletFunding)
-    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    -> Result<UnblindedPset, CoreError<S::Error>>;
 
-// Post-ingestion — takes contract_id, recompiles from stored params
+// Post-ingestion — takes contract_id, recompiles from stored params. Returns UnblindedPset (RT outputs).
 pub fn build_issuance_pset(&self, contract_id: &ContractId, pairs: u64, yes_dest: &Script, no_dest: &Script, funding: &WalletFunding)
-    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    -> Result<UnblindedPset, CoreError<S::Error>>;
 
 pub fn build_cancellation_pset(&self, contract_id: &ContractId, pairs_to_burn: Option<u64>, funding: &WalletFunding)
-    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    -> Result<UnblindedPset, CoreError<S::Error>>;
 
-// ... same pattern for all post-ingestion builders
+// ... same pattern for oracle_resolve and expire_transition (UnblindedPset)
+
+// Redemption has no RT outputs — returns PartiallySignedTransaction directly
+pub fn build_redemption_pset(&self, contract_id: &ContractId, side: Side, tokens_to_redeem: u64, funding: &WalletFunding)
+    -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 ```
 
 `build_cancellation_pset` takes `pairs_to_burn: Option<u64>` — if `None`, the engine computes the maximum cancellable amount from the available YES and NO tokens in `funding.available_utxos` (minimum of the two token balances).
+
+`build_creation_pset` includes a 77-byte zero-value OP_RETURN output containing the non-derivable covenant params (oracle pubkey, collateral asset ID, collateral per pair, expiry time) as a recovery hint. See [Wallet Recovery](#wallet-recovery).
 
 ### LMSR Pool Builders
 
@@ -1493,6 +1536,8 @@ pub fn build_lmsr_close_pset(&self, contract_id: &ContractId, funding: &WalletFu
 
 `build_lmsr_close_pset` atomically consumes all three reserve UTXOs via the dedicated Simplicity close script path (NUMS internal key makes key-spend unspendable). All reserve funds are returned to `funding.return_script`. See [lmsr-pool-close-path.md](lmsr-pool-close-path.md).
 
+`build_lmsr_bootstrap_pset` includes a 68-byte zero-value OP_RETURN output containing the parent market's creation txid and compressed non-derivable liquidity params as a recovery hint. See [Wallet Recovery](#wallet-recovery).
+
 **Signing note**: Pool adjust and close PSETs require signing with both the wallet key (for fee inputs) and the pool's admin key (for the covenant spend authorization). Both keys are controlled by the pool operator. Pool swaps (via trade PSETs) are permissionless and require only the taker's wallet key.
 
 Pool swaps are not built directly — they are part of trade transactions (see [Trade PSET Builder](#trade-pset-builder) below).
@@ -1514,6 +1559,8 @@ pub fn build_cancel_order_pset(&self, contract_id: &ContractId, funding: &Wallet
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 ```
 
+`build_create_order_pset` includes a 39-byte zero-value OP_RETURN output containing the order index, parent market's creation txid, price, and direction as a recovery hint. This enables instant mnemonic-based order recovery without brute-force scanning. See [Wallet Recovery](#wallet-recovery).
+
 ### Trade PSET Builder
 
 Trade transactions are unique: they route across multiple contracts (LMSR pools and/or maker orders) in a single transaction. This requires cross-contract route optimization — choosing which pools and orders to hit, in what amounts, for best execution. The engine has the state needed for this (pool reserves, order books, LMSR math), so trade PSET construction uses a two-step pattern:
@@ -1528,7 +1575,7 @@ pub fn quote_trade(
 ) -> Result<TradeQuote, CoreError<S::Error>>;
 ```
 
-The engine computes the optimal route across all available pools and orders for the market, using current state (reserves, s-indices, fill levels) and LMSR math. Returns a `TradeQuote` representing the best available fill. Returns `Err(CoreError::NoLiquidity)` only when zero liquidity is available; any positive fill returns `Ok` (see [TradeQuote](#tradequote-and-related-types) for partial fill handling).
+The engine computes the optimal route across all available pools and orders for the market, minimizing total cost to the taker including transaction fee overhead. The routing algorithm uses pool-subset enumeration combined with fee-aware greedy order selection — see [trade-routing-algorithm.md](trade-routing-algorithm.md) for the full specification. Returns a `TradeQuote` representing the best available fill. Returns `Err(CoreError::NoLiquidity)` only when zero liquidity is available; any positive fill returns `Ok` (see [TradeQuote](#tradequote-and-related-types) for partial fill handling).
 
 **Step 2: Build** (engine method):
 
@@ -1545,6 +1592,75 @@ Takes the accepted quote and the caller's wallet funding. The engine recompiles 
 See [Trade Types](#trade-types) and [TradeQuote](#tradequote-and-related-types) for full type definitions.
 
 **Why trades use a two-step pattern**: Trade is the only operation requiring cross-contract route optimization from engine state. The two-step pattern enables the standard trading UX of "show quote, user confirms, then build." All other PSET builders are single-step — the caller provides the operation params directly and gets a PSET back. They don't need a quoting step because they operate on a single contract whose state the caller already knows.
+
+### Confidential Transaction Blinding
+
+On Liquid, transaction outputs can be **explicit** (asset and value visible) or **confidential** (hidden behind Pedersen commitments with range and surjection proofs). The three Deadcat covenants require all covenant outputs (collateral, reserves, order locked value) to be **explicit** — the Simplicity programs use `unwrap_right()` on output introspection jets, which fails on confidential outputs. The one exception is reissuance token (RT) outputs, which Elements requires to be blinded for reissuance mechanics to work.
+
+**Which builders need RT blinding**: The 5 prediction market builders that involve RT outputs (`build_creation_pset`, `build_issuance_pset`, `build_cancellation_pset`, `build_oracle_resolve_pset`, `build_expire_transition_pset`). The remaining 7 builders have no RT involvement — their covenant outputs are all explicit and require no blinding by core.
+
+**Deterministic RT blinding**: RT blinding factors are derived deterministically from public on-chain data (see [deterministic-rt-blinding.md](deterministic-rt-blinding.md)), not generated randomly. This is essential for core's architecture: the engine internally manages RT outpoints and must reconstruct blinding factors when building future PSETs that spend those outpoints. With deterministic derivation, the engine recomputes the factors on demand without needing to persist blinding secrets.
+
+**`UnblindedPset` newtype**: The 5 RT-involving builders return `UnblindedPset` — an opaque type whose private fields capture the explicit PSET, deterministic RT blinding factors, and all input secrets (both covenant inputs with zero blinding factors and wallet inputs with real blinding factors from `UnblindedUtxo`). The type enforces that the caller cannot extract a `PartiallySignedTransaction` without going through a blinding method, making "forgot to blind" unrepresentable at the type level.
+
+```rust
+pub struct UnblindedPset { /* private */ }
+
+impl UnblindedPset {
+    /// Blind covenant RT outputs, mark wallet outputs for confidential blinding.
+    /// Returns a PreparedPset. Caller must then call
+    /// `pset.blind_last(rng, secp, &input_secrets)` to blind wallet outputs,
+    /// then sign.
+    pub fn prepare(
+        self,
+        wallet_blinding_pubkey: &PublicKey,
+    ) -> Result<PreparedPset, BlindingError>;
+
+    /// Blind covenant RT outputs with VBF balancing. Wallet outputs remain
+    /// explicit (unblinded). Returns a ready-to-sign PSET.
+    pub fn finalize(self) -> Result<PartiallySignedTransaction, BlindingError>;
+}
+
+pub struct PreparedPset {
+    pub pset: PartiallySignedTransaction,
+    /// Complete input secrets for all inputs (covenant + wallet).
+    /// Pass directly to `pset.blind_last()`.
+    pub input_secrets: HashMap<usize, TxOutSecrets>,
+}
+```
+
+**`prepare` vs `finalize`**: Both methods blind the RT outputs identically using deterministic factors. The difference is a **privacy decision** about wallet outputs:
+
+- **`prepare(pubkey)`**: For callers who want confidential wallet outputs (the common case on Liquid mainnet). Blinds RT outputs using non-last semantics (pushes VBF delta to `global.scalars` for later balancing). Marks wallet outputs with the provided blinding public key. Returns `PreparedPset` with the PSET and complete input secrets map. The caller then calls `pset.blind_last(rng, secp, &input_secrets)` which blinds the wallet outputs and balances VBFs. After `blind_last`, the PSET is ready to sign.
+
+- **`finalize()`**: For callers who don't need wallet output privacy (regtest, testing, explicit-only workflows). Blinds all RT outputs including VBF balancing for the final RT output. Wallet outputs stay explicit. Returns a `PartiallySignedTransaction` ready to sign immediately.
+
+**Signing must happen after blinding**: The sighash commits to output commitments. If outputs are blinded after signing, the commitments change and signatures become invalid.
+
+**Implementation**: Core implements deterministic RT blinding using public APIs from `elements` (PSET output fields: `amount_comm`, `asset_comm`, `value_rangeproof`, `asset_surjection_proof`, etc.) and `secp256k1-zkp` (Pedersen commitments, range proof generation, surjection proof generation). The `global.scalars` field (used for VBF delta tracking in the `prepare` path) is a serialized PSET field that survives cross-process serialization/deserialization. No fork of the `elements` crate is needed.
+
+**Non-RT builders**: The 7 builders without RT involvement (`build_redemption_pset`, all pool builders, all order builders, `build_trade_pset`) return `PartiallySignedTransaction` directly with all outputs explicit. If the caller wants confidential wallet outputs, they handle blinding using their standard Elements wallet workflow — this is a general Liquid concern, not deadcat-specific.
+
+**Caller flow — RT builders**:
+```rust
+// Confidential wallet outputs (Liquid mainnet)
+let unblinded = engine.build_issuance_pset(&id, pairs, &yes, &no, &funding)?;
+let prepared = unblinded.prepare(&wallet_blinding_pubkey)?;
+prepared.pset.blind_last(&mut rng, &secp, &prepared.input_secrets)?;
+signer.sign(&mut prepared.pset)?;
+
+// Explicit wallet outputs (regtest / testing)
+let unblinded = engine.build_issuance_pset(&id, pairs, &yes, &no, &funding)?;
+let mut pset = unblinded.finalize()?;
+signer.sign(&mut pset)?;
+```
+
+**Caller flow — non-RT builders**:
+```rust
+let mut pset = engine.build_lmsr_close_pset(&id, &funding)?;
+// Optional: standard wallet blinding if desired
+signer.sign(&mut pset)?;
+```
 
 ## Chain Sync
 
@@ -1798,6 +1914,107 @@ A contract ingested with a `Current` snapshot (no history) can be promoted to fu
 
 This is useful when a trader initially ingested a pool for quick trading (non-initial) and later wants price history (e.g., for charting).
 
+## Wallet Recovery
+
+When a wallet is restored from a mnemonic, Deadcat positions need to be rediscovered. Fund recovery is **fully mnemonic-driven and stateless** — all three contract creation transactions (markets, pools, orders) embed OP_RETURN recovery hints that, combined with the mnemonic and chain data, enable complete reconstruction of contract params without any external services. Only human-readable contract metadata (e.g., "Will BTC hit $200k by 2027?") requires the discovery layer — the cryptographic parameters that control funds are all recoverable from the chain.
+
+**Wallet-funded prerequisite**: The OP_RETURN recovery hints are found by scanning wallet-funded transactions (transactions where the wallet spent a UTXO as input). This means recovery only works for contracts the wallet itself funded. If a third party funded the creation transaction on the user's behalf, the wallet's rescan would not find it and the hint would be invisible. In practice, self-funded creation is the standard case.
+
+**OP_RETURN properties**: All recovery hints use zero-value OP_RETURN outputs, which are both consensus-valid and relay-standard on Elements (OP_RETURN scripts are classified as unspendable, so `GetDustThreshold` returns 0). Each hint adds ~59 bytes to the transaction — negligible fee impact (~6 sats at typical Liquid rates). The hints are always included; there is no opt-out. No new information is leaked — everything in the hints is already derivable from the covenant scripts by anyone with the relevant params.
+
+### YES/NO Token Positions
+
+Token recovery is automatic. YES and NO tokens are standard Elements confidential assets held at the wallet's own addresses. The wallet's normal mnemonic-based rescan (gap-limit scan over derived scriptpubkeys) finds them the same way it finds L-BTC UTXOs. No deadcat-specific recovery logic is needed.
+
+**Labeling** requires market ingestion. The wallet discovers it holds a UTXO with an unfamiliar asset ID, but doesn't know it's a "YES token for market X" until the market's `PredictionMarketParams` are available and the market is ingested. At that point, `identify_asset` provides the label. The market params can be reconstructed from the market creation transaction's OP_RETURN hint (see below) — no discovery needed.
+
+### Prediction Market Positions
+
+Markets have no on-chain "owner" — the taproot internal key is NUMS. However, `build_creation_pset` includes an OP_RETURN recovery hint in the market creation transaction. This serves two purposes: (1) enabling the market creator to re-discover and re-announce their market, and (2) providing the anchor for chain-only pool and order recovery — pool and order hints point to the market creation transaction by txid.
+
+```
+OP_RETURN <type_tag: u8> <oracle_public_key: [u8; 32]> <collateral_asset_id: [u8; 32]>
+          <collateral_per_pair: u64> <expiry_time: u32>
+```
+
+**77 bytes** — fits in a single OP_RETURN. Only 4 of 8 `PredictionMarketParams` fields are included: the other 4 (YES/NO token asset IDs and YES/NO reissuance token asset IDs) are deterministically derived from the creation transaction's input outpoints via Elements issuance entropy. The recovery code reconstructs the full params by reading the non-derivable fields from the OP_RETURN and computing the derivable fields from the same transaction's inputs.
+
+### Maker Order Positions
+
+Maker order UTXOs are NOT at wallet addresses — they're at covenant addresses (taproot scripts derived from the Simplicity covenant with order params baked in). The wallet's standard rescan does not find them. The maker's key is derived from the mnemonic, but the covenant script depends on the full order params (market, price, direction, deterministic nonce). Without the params, the output key cannot be computed.
+
+Maker orders are the only contract type directly "owned" by regular end users (as opposed to markets and pools, which are created by operators in managerial roles). This makes mnemonic-only recovery especially important — regular users should not be expected to maintain stateful backups.
+
+`build_create_order_pset` includes a zero-value OP_RETURN output containing:
+
+```
+OP_RETURN <type_tag: u8> <order_index: u32> <market_creation_txid: [u8; 32]>
+          <price: u8> <direction: u8>
+```
+
+**39 bytes** — fits in a single OP_RETURN with substantial headroom. The `market_creation_txid` points to the parent market's creation transaction, enabling chain-only recovery without a market catalog from Nostr.
+
+**Chain-only recovery flow** (given mnemonic + chain connection):
+
+1. Wallet rescan finds all wallet-funded transactions (standard mnemonic recovery)
+2. Scan those transactions for OP_RETURN outputs matching the order hint format
+3. For each hint: extract `order_index`, `market_creation_txid`, `price`, `direction`
+4. Fetch the market creation transaction from the chain by txid
+5. Read the market's OP_RETURN hint → reconstruct `PredictionMarketParams` (non-derivable fields from hint + derivable asset IDs from the market tx's input outpoints)
+6. Derive the maker keypair at `order_index` from the mnemonic
+7. Reconstruct the full `MakerOrderParams` (deterministic nonce derived from mnemonic + extracted fields)
+8. Verify by compiling the covenant and checking the script matches a creation transaction output
+9. Ingest the recovered order via `ingest_order`
+
+Without the OP_RETURN hint, recovery requires brute-forcing `order_index × market × price × direction` — each candidate requiring Simplicity compilation (~10-100ms). With the hint, recovery requires one compilation per order to verify. The difference is minutes of scanning vs instant recovery.
+
+### LMSR Pool Positions
+
+Like maker orders, pool reserve UTXOs are at covenant addresses — the wallet's standard rescan does not find them. The operator derives their admin key from the mnemonic, but the admin pubkey alone is insufficient to find the pool on-chain — the covenant scripts also depend on liquidity parameters and the s_index (which changes on every swap, making script enumeration impractical).
+
+`build_lmsr_bootstrap_pset` includes a zero-value OP_RETURN output containing:
+
+```
+OP_RETURN <type_tag: u8>                         --  1 byte
+          <market_creation_txid: [u8; 32]>       -- 32 bytes
+          <table_depth: u8>                      --  1 byte
+          <q_step_lots: u32>                     --  4 bytes
+          <s_bias: u32>                          --  4 bytes
+          <s_max_index: u32>                     --  4 bytes
+          <half_payout_sats: u64>                --  8 bytes
+          <fee_bps: u16>                         --  2 bytes
+          <min_r_yes: u32>                       --  4 bytes
+          <min_r_no: u32>                        --  4 bytes
+          <min_r_collateral: u32>                --  4 bytes
+                                          Total: 68 bytes
+```
+
+**68 bytes** — fits in a single OP_RETURN with 12 bytes of headroom. The hint encodes all non-derivable pool-specific liquidity parameters. Derivable fields are omitted: token asset IDs (from parent market via `market_creation_txid`), collateral asset ID (same), admin pubkey (from mnemonic), and LMSR table root (recomputed from the liquidity params).
+
+**Compressed encoding**: The Simplicity covenant uses `u64` for most numeric params because its arithmetic jets operate on fixed widths with no implicit type widening — a param used in `safe_multiply(u64, u64)` must itself be `u64`. The OP_RETURN encoding compresses to actual value ranges (e.g., `fee_bps` is validated < 10,000 → `u16`; `table_depth` is validated 1-63 → `u8`) and widens back losslessly during param reconstruction.
+
+**Chain-only recovery flow**: Same pattern as orders — hint → fetch market creation tx → read market OP_RETURN → reconstruct market params → derive admin key from mnemonic → reconstruct full `LmsrPoolParams` → compile → verify → ingest.
+
+### Oracle Market Discovery
+
+An oracle derives their key from the mnemonic and re-discovers markets referencing that key via Nostr (filtering market announcements by `oracle_public_key`), or by scanning market OP_RETURN hints in wallet-funded transactions for their oracle pubkey. The oracle's role is limited to resolution — a managerial role where maintaining backups of market params is a reasonable expectation.
+
+### Cost Amortization
+
+Market and pool creations are infrequent lifecycle events — the ~6-sat OP_RETURN cost is paid once and amortized over the entire lifetime of the contract (every trade, fill, adjustment, and redemption that follows). Maker order creation is the most frequent user-facing operation with an OP_RETURN, but the ~6-sat cost is negligible relative to the order value and trade fees. The OP_RETURN cost is never paid by market takers or regular traders — only by contract creators.
+
+### Recovery Summary
+
+| Position | Recovery hint | Hint size | Chain-only recovery? | Discovery needed? |
+|---|---|---|---|---|
+| YES/NO tokens | N/A (standard wallet rescan) | — | Yes | For labeling only |
+| Prediction markets | Non-derivable covenant params | 77 bytes | Yes | No |
+| Maker orders | Index + market txid + price + direction | 39 bytes | Yes (via market hint) | No |
+| LMSR pools | Market txid + compressed liquidity params | 68 bytes | Yes (via market hint) | No |
+| Oracle markets | N/A (managerial role) | — | Via market hint if self-created | Nostr or backup |
+
+**Core's role in recovery**: Core provides the building blocks — `identify_asset` for token labeling, `contract_cmr` for CMR matching, Simplicity compilation for contract verification, and `ingest_*` methods for re-tracking recovered contracts. The OP_RETURN recovery hints in all three contract creation builders are proactive recovery mechanisms core embeds in the transaction structure, enabling fully stateless fund recovery from a mnemonic and chain connection alone.
+
 ## Example Integration: Aqua Wallet
 
 ```rust
@@ -1891,14 +2108,16 @@ if user_confirms(&quote) {
     aqua_chain.broadcast(signed)?;
 }
 
-// 12. Build a single-contract transaction (engine handles compilation, coin selection, fee)
+// 12. Build an RT-involving transaction (returns UnblindedPset — must blind before signing)
 let funding = WalletFunding {
     available_utxos: &aqua_wallet.list_utxos(),
     fee_rate: FeeRate::from_sat_per_vb(aqua_chain.estimate_fee_rate()),
     return_script: &aqua_wallet.next_return_script(),
 };
-let pset = engine.build_issuance_pset(&market_id, 100, &token_dest, &token_dest, &funding)?;
-let signed = aqua_signer.sign(pset)?;
+let unblinded = engine.build_issuance_pset(&market_id, 100, &token_dest, &token_dest, &funding)?;
+let prepared = unblinded.prepare(&aqua_wallet.blinding_pubkey())?;
+prepared.pset.blind_last(&mut rng, &secp, &prepared.input_secrets)?;
+let signed = aqua_signer.sign(prepared.pset)?;
 aqua_chain.broadcast(signed)?;
 ```
 
@@ -2072,6 +2291,12 @@ aqua_chain.broadcast(signed)?;
 **Rejected**: Random blinding factors for RT outputs, requiring an anchor (blinding factors) to be shared via Nostr.
 **Why**: The Elements protocol requires reissuance token outputs to be blinded (ABF != 0) for reissuance to work. Traditionally, random ABFs are used as an authorization mechanism — only someone who knows the ABF can reissue. With Simplicity covenants, authorization is enforced by the covenant itself, not by ABF secrecy. Using deterministic ABFs derived from public data (defining outpoints via tagged hash) satisfies the protocol requirement while eliminating the need for anchor distribution. This simplifies the ingestion API (no anchor parameter), the Nostr announcement format, and removes the "lost anchor" failure mode. See [Deterministic RT Blinding](deterministic-rt-blinding.md) for the derivation spec.
 
+### UnblindedPset Newtype for RT-Involving Builders
+
+**Chosen**: The 5 prediction market builders that involve reissuance token outputs return `UnblindedPset` — an opaque newtype with `prepare(pubkey)` and `finalize()` methods. The 7 remaining builders return `PartiallySignedTransaction` directly.
+**Rejected**: (a) All 12 builders return `UnblindedPset` (uniform but unnecessary wrapping for RT-free builders). (b) All builders return raw `PartiallySignedTransaction` (no enforcement). (c) Builders take blinding parameters and handle all blinding internally (conflates construction with wallet-level blinding, requires RNG/secp context parameters). (d) Two builder functions per RT-involving transaction type — one fully-blinded, one partially-blinded (doubles API surface, the fully-blinded variant has a hidden precondition about wallet input confidentiality).
+**Why**: RT blinding is deadcat-specific, non-standard, and easy to forget — the newtype makes "forgot to blind" a compile error. Wallet output blinding for RT-free builders is standard Elements wallet behavior that every integrator already handles — wrapping it adds ceremony without preventing a novel mistake. The `prepare`/`finalize` choice is a simple privacy decision (confidential vs explicit wallet outputs), not a technical one about input types. The `UnblindedPset` captures all needed state at build time (PSET, deterministic RT factors, input secrets from `WalletFunding`), so neither method requires additional crypto parameters from the caller. Core implements deterministic blinding using public `elements`/`secp256k1-zkp` APIs — no fork needed.
+
 ### Store Returns Typed Results for Listing Methods
 
 **Chosen**: Store's `list_markets`, `list_pools`, `list_orders`, `pools_for_market`, and `orders_for_market` return typed results (e.g., `Page<MarketEntry>`) rather than the generic `Contract` enum. Results use `ContractEntry<P, S>`, a generic struct with type aliases for ergonomics.
@@ -2196,6 +2421,8 @@ Note: Covenant scripts are used internally by `step` for catch-up scanning and s
 An LMSR pool operator could create a pool, manipulate its price privately (no one can arbitrage because no one knows about it), then announce it on Nostr. The historical price data looks legitimate (all real on-chain transactions) but wasn't subject to market pressure during the private period. The same attack extends to markets: an undiscoverable market + discoverable pool means only the operator can issue tokens and trade.
 The ideal solution: embed full contract params in an OP_RETURN output in the creation transaction, making the contract provably discoverable from the chain from the moment of creation. However, `LmsrPoolParams` is 228 bytes and `PredictionMarketParams` is 204 bytes — both exceed Liquid's default 80-byte OP_RETURN relay policy. This is a policy limit (configurable by federation, not a consensus constraint), and Bitcoin Core has recently removed it entirely. When Elements merges this change, OP_RETURN-based discoverability becomes viable. Deferred until then.
 
+Note: The recovery hints described in [Wallet Recovery](#wallet-recovery) are distinct from the full-params discoverability discussed here. Recovery hints are smaller than full params because they omit derivable fields and compress numeric types — they enable fund recovery (reconstructing params when combined with a mnemonic and chain data), not public discoverability (making params available to anyone scanning the chain). Full discoverability requires embedding complete params, which exceeds the current OP_RETURN policy limit.
+
 ### Flat MarketState (Dormant/Unresolved Hidden)
 
 **Chosen**: The public `MarketState` does not distinguish between Dormant (0 outstanding pairs) and Unresolved (>0 outstanding pairs). Both are `Trading`.
@@ -2223,6 +2450,12 @@ The ideal solution: embed full contract params in an OP_RETURN output in the cre
 ### Fresh Nonce Recommendation for Order Makers
 
 Order makers should use a fresh nonce for each order, ensuring unique `maker_receive_spk_hash` values across orders. This prevents CMR collisions between orders from the same maker at the same price/direction. While collisions are self-defeating (the maker hides their own duplicate orders), fresh nonces eliminate the issue entirely. This is a recommendation, not an engine-enforced constraint.
+
+### OP_RETURN Recovery Hints in All Contract Creation Transactions
+
+**Chosen**: All three creation builders (`build_creation_pset`, `build_create_order_pset`, `build_lmsr_bootstrap_pset`) always include a zero-value OP_RETURN output with a compact recovery hint. Markets: 77 bytes (non-derivable covenant params). Orders: 39 bytes (order index, market creation txid, price, direction). Pools: 68 bytes (market creation txid, compressed liquidity params). No opt-out. All fit within a single 80-byte OP_RETURN.
+**Rejected**: (a) No on-chain hints — orders require brute-force scanning (slow); pools require Nostr announcements or backup (fragile); markets are irrecoverable from chain alone. (b) Optional hint via builder flag (risk of users opting out without understanding the recovery consequence). (c) Storing full uncompressed params (exceeds 80-byte limit for pools). (d) Hints for orders and pools only, not markets (breaks chain-only recovery — pool/order hints need to reference the market's on-chain data).
+**Why**: Order, pool, and market UTXOs are at covenant addresses — standard mnemonic recovery cannot find them. Pool and order hints include the parent market's creation txid, enabling **chain-only recovery**: hint → fetch market creation tx → read market's OP_RETURN → reconstruct market params → reconstruct pool/order params → verify → ingest. No Nostr or external discovery needed for fund recovery. Maker orders are the only contract type directly "owned" by regular end users (not operators or oracles), making mnemonic-only recovery especially important — regular users should not be expected to maintain stateful backups. Pool OP_RETURN data uses compressed numeric types (e.g., `fee_bps: u16` instead of `u64`) because the Simplicity covenant's arithmetic jets require fixed-width `u64` operands (no implicit type widening), but the OP_RETURN encoding is not bound by this constraint — it compresses to actual value ranges and widens back losslessly during reconstruction. Market and pool creation costs (~6 sats per OP_RETURN) are infrequent lifecycle events amortized over the contract's entire lifetime. Order creation is the most frequent user-facing OP_RETURN cost, but ~6 sats is negligible relative to order value and trade fees. The OP_RETURN cost is never paid by market takers or regular traders — only by contract creators.
 
 ### Taker Order Fills Via Trade Router
 
