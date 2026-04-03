@@ -1,0 +1,312 @@
+# LMSR Pool Design
+
+## Overview
+
+LMSR (Logarithmic Market Scoring Rule) pools are automated market makers for binary prediction markets on Liquid/Elements. A pool holds YES tokens, NO tokens, and L-BTC collateral, and traders swap against it. The pool's pricing is governed by a mathematical cost function committed to at creation time via a Merkle root in the Simplicity covenant.
+
+This document specifies the pool's conceptual model, parameter design, on-chain mechanics, and wallet-layer API. It is a satellite document referenced by [deadcat-core-design.md](deadcat-core-design.md).
+
+## How Binary LMSR Works
+
+### The Cost Function
+
+The pool's state is a single integer: `s_index`. As `s_index` increases, the YES price increases (and NO decreases). The cost of moving the pool from state s1 to s2 is determined by a precomputed cost function:
+
+```
+C(s) = b × ln(exp(s/b) + exp(-s/b))
+```
+
+Where `b` is the liquidity parameter (in sats). This function is:
+- **Convex and symmetric** — cheap to move near the center (50/50), expensive at the extremes (near 0% or 100%)
+- **Bounded loss** — the pool's worst-case loss is `b × ln(2)` sats (~0.693 × b)
+
+The implied YES price at state s is the logistic function: `p = 1 / (1 + exp(-2s/b))`, which naturally stays in (0, 1).
+
+### Pool as Inventory Manager
+
+The pool holds three reserves:
+- **YES tokens** — sold to traders who buy YES (s_index increases)
+- **NO tokens** — sold to traders who buy NO (s_index decreases)
+- **Collateral (L-BTC)** — flows in when traders buy, flows out when traders sell
+
+When a trader buys YES tokens, they pay collateral and receive YES tokens from the pool. The cost is `C(s2) - C(s1)` (plus fees), where s1 → s2 is the state movement. The pool's YES reserve decreases and collateral increases. The reverse for sells.
+
+The reserves determine the pool's **capacity** — how many trades it can absorb before hitting minimum reserve limits. The cost function determines the **pricing** — how much each trade costs. These are independent: a pool can have deep pricing (high `b`) with limited capacity (low reserves), or vice versa.
+
+### Discretization and the Merkle-Committed Curve
+
+On-chain, the cost function is evaluated at discrete points. The F-values (`F(0), F(1), ..., F(65535)`) are the cost function evaluated at each `s_index`. These are precomputed as integers and committed to via a Merkle tree root in the covenant parameters.
+
+Each swap transaction provides two Merkle proofs — `F(old_s_index)` and `F(new_s_index)` — and the covenant verifies:
+
+1. Both proofs are valid against the committed Merkle root
+2. The collateral amount satisfies the conservation equation (with fee adjustment)
+3. The trade direction is correct (buying YES must increase s_index)
+4. Reserve minimums are maintained after the trade
+
+This approach avoids on-chain exp/ln computation entirely — the covenant only performs hash verification and integer arithmetic. The full curve is committed at creation; each trade reveals exactly two points with logarithmic-sized proofs.
+
+**Curve well-formedness is caveat emptor at the covenant level**: the covenant verifies trades are *consistent with* the committed curve, not that the curve itself is well-formed (convex, monotonic, etc.). However, `deadcat-core` generates all curves deterministically from high-level parameters (see [Deterministic Table Generation](#deterministic-table-generation)), so traders can verify well-formedness by regenerating the table from the pool's parameters and checking the Merkle root matches.
+
+## Parameter Design
+
+### Creator-Facing Parameters
+
+A pool creator specifies exactly four values:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `max_loss_sats` | `u64` | Maximum possible loss for the pool (worst case). Determines market depth. |
+| `fee_bps` | `u16` | Swap fee in basis points (0-9999). Pool operator's revenue per trade. |
+| `half_payout_sats` | `u64` | Denomination — sats per "lot" of outcome tokens. Determines the monetary scale. |
+| `starting_price_bps` | `u16` | Starting YES price in basis points (0-10000). Where the pool begins on the curve. |
+
+Everything else is either derived or a protocol constant.
+
+### Derived Parameters
+
+| Parameter | Derived from | Formula / Logic |
+|---|---|---|
+| `b` | `max_loss_sats` | `b = max_loss_sats / ln(2)` (deterministic integer math) |
+| `q_step_lots` | `b`, `half_payout_sats` | Minimum value such that the 0.1%-99.9% price range fits in 32,768 steps from center: `max(1, ceil(6.9 × b / (32768 × half_payout_sats)))` |
+| `s_index` (initial) | `starting_price_bps` | Nearest valid s_index for the requested price, derived from the inverse logistic function |
+| `lmsr_table_root` | `b`, `half_payout_sats`, `q_step_lots` | Merkle root of the deterministically generated F-value table |
+| Initial reserves | `b`, `starting_price_bps`, `half_payout_sats` | Balanced allocation — equal trading depth in both directions from starting price |
+
+### Protocol Constants
+
+| Constant | Value | Rationale |
+|---|---|---|
+| `TABLE_DEPTH` | 16 | 65,536 discrete price points. More than sufficient for any practical market. Fixed in the `.simf` — no metaprogramming needed. |
+| `S_BIAS` | 32,768 | Always centered (s_max_index / 2). No advantage to asymmetry in a fair prediction market. |
+| `S_MAX_INDEX` | 65,535 | Full table range. The LMSR cost function naturally makes extremes expensive — no need to artificially limit. |
+| `MIN_POOL_RESERVE` | 1,000 sats | Applied to all three reserves (YES, NO, Collateral). Well above Liquid's dust limit (~546 sats), negligible locked capital (3,000 sats total per pool). |
+
+### Why Fixed Depth 16
+
+The table depth determines the number of discrete price points (2^depth) and affects Merkle proof size:
+
+| Depth | Price points | Proof size (2 per swap) | Table in memory | Generation time |
+|---|---|---|---|---|
+| 12 | 4,096 | ~784 B | 32 KB | ~5ms |
+| 14 | 16,384 | ~912 B | 128 KB | ~20ms |
+| **16** | **65,536** | **~1,040 B** | **512 KB** | **~80ms** |
+| 18 | 262,144 | ~1,168 B | 2 MB | ~300ms |
+| 20 | 1,048,576 | ~1,296 B | 8 MB | ~1s |
+
+Depth 16 provides 65K price points — far more than any practical market needs. A typical pool uses ~1,000-2,000 of these for the 0.1%-99.9% range. The proof size difference from depth 12 to 16 is only 256 bytes per swap (~25 extra sats in fees on Liquid). The 512 KB table is trivial to hold in memory.
+
+A fixed depth means:
+- Single `.simf` file with no metaprogramming or template-based code generation
+- All pools share the same Merkle verification structure (same covenant program for the proof-checking logic)
+- `table_depth` is not a covenant parameter — it's a protocol constant
+- One fewer parameter in discovery payloads and OP_RETURN recovery hints
+
+Variable depth would require either code generation (producing `.simf` source with unrolled Merkle verification for each depth) or SimplicityHL metaprogramming support that doesn't currently exist. The complexity isn't justified when depth 16 has massive headroom.
+
+### Why `max_loss_sats` Instead of `b`
+
+`b` is the mathematically correct LMSR liquidity parameter, but it's opaque — "set b to 500,000" means nothing without understanding the LMSR formula. `max_loss_sats` directly answers the pool creator's risk question: "What's the most I can lose?"
+
+The conversion is trivial: `b = max_loss_sats / ln(2)`. The creator thinks "I'm willing to risk up to 100,000 sats" and gets a pool with the corresponding depth. `b` never appears in any public API — it's an internal implementation detail of the LMSR math.
+
+For context: `max_loss_sats = 100,000` creates a pool where a 10,000-sat trade near 50/50 moves the price by roughly 500 basis points. `max_loss_sats = 1,000,000` creates a pool where the same trade moves the price by ~50 basis points. Deeper pools require more capital but provide better trading experiences.
+
+### Why `q_step_lots` Is Derived
+
+With fixed depth 16 (65,536 entries), `q_step_lots` determines how many of those entries span the useful price range. The formula ensures the 0.1%-99.9% range fits in half the table (32,768 steps from center to edge):
+
+```
+q_step_lots = max(1, ceil(6.9 × b / (32768 × half_payout_sats)))
+```
+
+For most pools (b up to ~5M sats), `q_step_lots = 1`. Only very deep pools need larger values. The pool creator has no meaningful reason to override this — it's purely a consequence of the depth and denomination choices.
+
+### Why `min_r_*` Are Constants
+
+The minimum reserves exist to prevent full drain of the pool. The "right" value is "above dust, small enough to be negligible" — there's no strategic decision here. Making them protocol constants (1,000 sats each) removes three parameters from the covenant, discovery payloads, and OP_RETURN recovery hints. The total locked capital per pool is 3,000 sats — trivially small for any liquidity provider.
+
+If the pool creator wants higher effective minimums (e.g., the pool should always have at least 100,000 sats of each reserve), they achieve this through initial funding, not through min_r. The minimum reserves are a safety floor, not a business parameter.
+
+## Deterministic Table Generation
+
+### The Problem with Floating Point
+
+The LMSR cost function `C(s) = b × ln(exp(s/b) + exp(-s/b))` involves transcendental functions (`exp`, `ln`). The existing SDK implementation uses `f64` for table generation. However, IEEE 754 only guarantees bit-identical results for basic arithmetic (+, -, ×, ÷) — transcendental functions like `exp()` and `ln()` can produce different results across platforms, compilers, and math libraries.
+
+This matters because the F-values are committed to via a Merkle root. If two implementations produce different F-values from the same parameters, they produce different Merkle roots, and one of them won't match the on-chain commitment.
+
+### The Solution: Deterministic Integer Algorithm
+
+`deadcat-core` defines a canonical integer-only algorithm for generating F-values. The algorithm uses only operations with guaranteed deterministic results (addition, subtraction, multiplication, division, bit shifts) at sufficient precision (128-bit or higher intermediates) to produce bit-identical F-values on any platform.
+
+The specific algorithm (fixed-point arithmetic with defined precision, or series expansion with a fixed number of terms) is an implementation detail specified in the code. The key property is: **given the same `(b, half_payout_sats, q_step_lots)`, every implementation produces the identical `Vec<u64>` of F-values and thus the identical Merkle root.**
+
+### Implications
+
+Deterministic generation eliminates several problems:
+
+1. **No manifest storage needed**: The engine regenerates the table on demand from pool params. No 512 KB blob to store per pool in the `ContractStore`.
+2. **No manifest in discovery payloads**: Discoverers regenerate the table from the announced params.
+3. **OP_RETURN recovery works**: The hint contains enough params to regenerate the table, compute the Merkle root, and verify against the on-chain commitment.
+4. **Caveat emptor resolved**: Anyone can verify a pool's curve is well-formed by regenerating the table from params and inspecting the F-values. No trust in the pool creator's off-chain claims.
+5. **`interpret_transaction` works without stored manifests**: The engine regenerates the table for any pool whose params are known.
+
+The generation cost (~80ms for depth 16) is acceptable for one-time operations at pool ingestion or PSET building. For repeated access during `quote_trade` (which may evaluate multiple pools), the engine can cache the manifest in memory for the duration of the call.
+
+## Pool Lifecycle
+
+### Bootstrap
+
+The pool creator:
+
+1. Specifies `max_loss_sats`, `fee_bps`, `half_payout_sats`, `starting_price_bps`
+2. Calls `estimate_bootstrap(...)` to see the required reserves (YES tokens, NO tokens, collateral)
+3. Obtains the required YES and NO tokens by issuing pairs on the parent prediction market
+4. Calls `build_lmsr_bootstrap_pset(...)` with a `WalletFunding` containing the required tokens and collateral
+5. Signs and broadcasts
+
+The engine internally derives all covenant params (`b`, `q_step_lots`, `lmsr_table_root`, etc.), generates the table, computes the Merkle root, compiles the Simplicity covenant, and constructs the creation transaction with three reserve outputs (YES, NO, Collateral) and an OP_RETURN recovery hint.
+
+The starting `s_index` is computed from `starting_price_bps` — the engine maps the requested price to the nearest valid discrete s_index. The initial reserves are computed as a balanced allocation: equal trading depth in both directions from the starting price.
+
+### Estimation
+
+```rust
+pub fn estimate_bootstrap(
+    max_loss_sats: u64,
+    half_payout_sats: u64,
+    fee_bps: u16,
+    starting_price_bps: u16,
+) -> BootstrapEstimate;
+
+pub struct BootstrapEstimate {
+    pub s_index: u64,
+    pub implied_price_bps: u16,
+    pub yes_tokens_needed: u64,
+    pub no_tokens_needed: u64,
+    pub collateral_needed: u64,
+    pub total_capital_needed: u64,
+    pub max_loss_sats: u64,
+}
+```
+
+A standalone pure function (no engine needed). The UI calls this on every slider change for live feedback — sub-millisecond, just LMSR math. `implied_price_bps` shows the actual price at the nearest valid s_index (may differ slightly from the requested price due to discretization).
+
+The `yes_tokens_needed` and `no_tokens_needed` are determined by the pool's capacity in each direction from the starting price. At 50/50, they're roughly equal. At 70/30, more NO tokens are needed (more room to move toward 0%) and fewer YES tokens (less room toward 100%). The balanced allocation ensures equal trading depth in both directions.
+
+### Trading (Swaps)
+
+Swaps are not built directly — they're part of trade transactions routed by the engine. See [trade-routing-algorithm.md](trade-routing-algorithm.md). The trade router evaluates pools alongside limit orders for best execution, factoring in both the pool's swap fee (`fee_bps`) and the transaction weight overhead.
+
+The covenant's swap path enforces:
+- `old_s_index != new_s_index` (state must change)
+- Correct trade direction (BuyYes/SellNo must increase s_index; SellYes/BuyNo must decrease)
+- Collateral conservation with fee inequality:
+  - Buys: `collateral_in × (FEE_DENOM - fee_bps) >= base_cost × FEE_DENOM`
+  - Sells: `collateral_out × FEE_DENOM <= base_rebate × (FEE_DENOM - fee_bps)`
+- Reserve minimums maintained after the trade
+- Valid Merkle proofs for F(old_s_index) and F(new_s_index)
+
+Fee rounding always favors the pool: buyers pay ceiling, sellers receive floor.
+
+### Admin Adjustments
+
+The pool operator can adjust reserves without changing the s_index (and thus without changing the pricing curve). This is the admin path, authorized by the operator's admin key signature.
+
+```rust
+pub fn build_lmsr_adjust_pset(
+    &self,
+    contract_id: &ContractId,
+    pair_delta: i64,
+    collateral_delta: i64,
+    funding: &WalletFunding,
+) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+```
+
+`pair_delta` is applied equally to both YES and NO reserves (the covenant enforces paired deltas). `collateral_delta` is independent. Both deltas being zero returns `CoreError::InvalidParams`.
+
+**Use cases:**
+- **Add liquidity**: Positive `pair_delta` + positive `collateral_delta`. The pool's capacity increases. The pricing curve doesn't change.
+- **Remove liquidity / take profits**: Negative deltas. The operator extracts fee revenue accumulated as excess collateral.
+- **Rebalance**: Adjust collateral without changing token reserves.
+
+Admin adjustments change **capacity**, not **pricing**. The F-values (and thus the cost function) are fixed at creation — only the reserves change.
+
+### Closure
+
+The pool operator closes the pool via the dedicated close script path, atomically consuming all three reserve UTXOs. See [lmsr-pool-close-path.md](lmsr-pool-close-path.md).
+
+```rust
+pub fn build_lmsr_close_pset(
+    &self,
+    contract_id: &ContractId,
+    funding: &WalletFunding,
+) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+```
+
+All reserve funds are returned to `funding.return_script`. The pool transitions to `LmsrPoolState::Closed`.
+
+### Market Resolution
+
+The pool covenant is **market-state-agnostic** — it doesn't know or care whether the parent prediction market has resolved. Swaps remain technically valid after resolution. However, no rational trader would swap after resolution (the outcome is known, so the token prices are known), so the pool naturally goes idle. The operator closes the pool when convenient, then redeems any winning tokens via the parent market's redemption path.
+
+## Pool Operator Economics
+
+### Revenue
+
+The pool earns fee revenue on every swap. The fee (`fee_bps`) is the spread between the true LMSR cost and what the trader pays. Fee revenue accumulates as excess collateral in the pool's reserves. The operator extracts it via admin adjustments.
+
+### Risk
+
+The pool's maximum loss is `max_loss_sats` (= `b × ln(2)`). This worst case occurs when the market moves maximally in one direction from the pool's starting price. In practice, if the market moves and then returns, the pool profits from the round-trip fees.
+
+The pool's net P&L = cumulative fee revenue - trading losses from directional movement. A pool in an active, balanced market (prices moving around rather than trending in one direction) typically profits from fees exceeding losses.
+
+### Capital Efficiency
+
+The total capital needed (`total_capital_needed` from `BootstrapEstimate`) is the YES tokens + NO tokens + collateral for the balanced allocation. This is larger than `max_loss_sats` because the pool must hold token inventory, not just collateral to cover losses.
+
+## On-Chain Covenant Parameters
+
+With the simplifications above, the on-chain `LmsrPoolParams` contains:
+
+| Field | Size | Source |
+|---|---|---|
+| `yes_asset_id` | 32 bytes | From parent market |
+| `no_asset_id` | 32 bytes | From parent market |
+| `collateral_asset_id` | 32 bytes | From parent market |
+| `lmsr_table_root` | 32 bytes | Derived (Merkle root of F-values) |
+| `q_step_lots` | u64 | Derived from `b` and `half_payout_sats` |
+| `half_payout_sats` | u64 | Creator-specified |
+| `fee_bps` | u64 | Creator-specified (u64 for Simplicity arithmetic jets; validated < 10,000) |
+| `admin_pubkey` | 32 bytes | From mnemonic |
+
+**Removed from params** (now constants in the `.simf`): `table_depth`, `s_bias`, `s_max_index`, `min_r_yes`, `min_r_no`, `min_r_collateral`.
+
+**Not in params** (used for generation only): `b`, `max_loss_sats`. These are communicated via discovery payloads and OP_RETURN recovery hints.
+
+## OP_RETURN Recovery Hint
+
+The pool creation transaction includes a zero-value OP_RETURN output for mnemonic-based recovery:
+
+```
+OP_RETURN <type_tag: u8>                         --  1 byte
+          <market_creation_txid: [u8; 32]>       -- 32 bytes
+          <max_loss_sats: u64>                   --  8 bytes
+          <half_payout_sats: u64>                --  8 bytes
+          <fee_bps: u16>                         --  2 bytes
+                                          Total: 51 bytes
+```
+
+**51 bytes** — fits in a single OP_RETURN with 29 bytes of headroom.
+
+**Recovery flow**: Read `max_loss_sats` and `half_payout_sats` from the hint → derive `b` and `q_step_lots` → generate F-value table deterministically → compute `lmsr_table_root` → fetch market creation tx by `market_creation_txid` → read market OP_RETURN → reconstruct `PredictionMarketParams` → derive token asset IDs → derive admin key from mnemonic → reconstruct full `LmsrPoolParams` → compile → verify script matches creation tx output → ingest.
+
+## Key Files
+
+- `docs/deadcat-core-design.md` — main design doc (references this satellite doc)
+- `docs/trade-routing-algorithm.md` — trade routing algorithm using LMSR pools + limit orders
+- `docs/lmsr-pool-close-path.md` — close script path covenant design
+- `src-tauri/crates/deadcat-sdk/src/lmsr_pool/math.rs` — current LMSR math (will move to `deadcat-core`)
+- `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — pool covenant source

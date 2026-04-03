@@ -138,7 +138,7 @@ impl<S: ContractStore> ContractEngine<S> {
     // Prediction market builder (no RT involvement → PartiallySignedTransaction)
     pub fn build_redemption_pset(&self, contract_id: &ContractId, side: Side, tokens_to_redeem: u64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     // LMSR pool builders
-    pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, initial_reserves: &PoolReserves, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, starting_price_bps: u16, max_loss_sats: u64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     pub fn build_lmsr_adjust_pset(&self, contract_id: &ContractId, pair_delta: i64, collateral_delta: i64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     pub fn build_lmsr_close_pset(&self, contract_id: &ContractId, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     // Maker order builders (maker lifecycle only — taker fills go through build_trade_pset)
@@ -1251,7 +1251,7 @@ Transition details:
 
 #### Maker Orders
 
-Order transition detection uses a structural witness check — key-spend vs script-spend is trivially distinguishable from the taproot witness stack (key-spend has a single 64-byte element; script-spend has multiple elements including a control block). This is a Bitcoin/Elements-level check, not Simplicity witness decoding. See [maker-order-remove-script-cancel.md](maker-order-remove-script-cancel.md).
+Order transition detection uses a structural witness check — key-spend vs script-spend is distinguishable from the taproot witness stack element count. Per BIP 341: strip the optional annex (if ≥2 elements and the last starts with byte `0x50`), then count remaining elements. One element = key-spend (the signature). Three elements = Simplicity script-spend (witness bytes, program bytes, control block). This is a Bitcoin/Elements-level structural check, not Simplicity witness decoding. **Dependency**: this detection requires the script-cancel refactor (see [maker-order-remove-script-cancel.md](maker-order-remove-script-cancel.md)) — post-refactor, the Simplicity program handles fills only, and cancellation is exclusively via key-spend. Without the refactor, both fill and cancel are script-spends and cannot be distinguished by element count.
 
 - **Partial fill** (Active → Active): Order outpoint spent via script-spend, new covenant output exists with the same script pubkey. `fill_amount` = old locked value - new locked value.
 - **Complete fill** (Active → Consumed): Order outpoint spent via script-spend, no new covenant output. The Simplicity covenant enforced valid payment to the maker. `fill_amount` = total locked value.
@@ -1578,7 +1578,7 @@ pub fn build_redemption_pset(&self, contract_id: &ContractId, side: Side, tokens
 | `build_lmsr_close_pset` | Pool closure (reclaim all reserves) | Close script path |
 
 ```rust
-pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, initial_reserves: &PoolReserves, funding: &WalletFunding)
+pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, starting_price_bps: u16, max_loss_sats: u64, funding: &WalletFunding)
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 
 pub fn build_lmsr_adjust_pset(&self, contract_id: &ContractId, pair_delta: i64, collateral_delta: i64, funding: &WalletFunding)
@@ -1588,11 +1588,11 @@ pub fn build_lmsr_close_pset(&self, contract_id: &ContractId, funding: &WalletFu
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 ```
 
-`build_lmsr_adjust_pset` takes `pair_delta` (applied equally to both YES and NO reserves) and `collateral_delta` (applied to collateral independently). This API shape makes the covenant's paired-delta constraint (YES and NO must move equally) unrepresentable as an error — the caller cannot express asymmetric deltas. The engine validates that the resulting reserves meet the covenant's minimum reserve floors (`MIN_R_YES`, `MIN_R_NO`, `MIN_R_COLLATERAL` from pool params) and returns `CoreError::InvalidParams` if violated. If both deltas are zero, the engine returns `CoreError::InvalidParams` — a no-op adjustment would produce a valid but pointless transaction that wastes fees. The wallet can present an absolute-target UI ("set pool to 1000 YES/NO") by computing the delta from current reserves on their side.
+`build_lmsr_adjust_pset` takes `pair_delta` (applied equally to both YES and NO reserves) and `collateral_delta` (applied to collateral independently). This API shape makes the covenant's paired-delta constraint (YES and NO must move equally) unrepresentable as an error — the caller cannot express asymmetric deltas. The engine validates that the resulting reserves meet the covenant's minimum reserve floor (`MIN_POOL_RESERVE` — a protocol constant, 1,000 sats per reserve, hardcoded in the covenant) and returns `CoreError::InvalidParams` if violated. If both deltas are zero, the engine returns `CoreError::InvalidParams` — a no-op adjustment would produce a valid but pointless transaction that wastes fees. The wallet can present an absolute-target UI ("set pool to 1000 YES/NO") by computing the delta from current reserves on their side. See [lmsr-pool-design.md](lmsr-pool-design.md) for the full pool parameter design.
 
 `build_lmsr_close_pset` atomically consumes all three reserve UTXOs via the dedicated Simplicity close script path (NUMS internal key makes key-spend unspendable). All reserve funds are returned to `funding.return_script`. See [lmsr-pool-close-path.md](lmsr-pool-close-path.md).
 
-`build_lmsr_bootstrap_pset` includes a 68-byte zero-value OP_RETURN output containing the parent market's creation txid and compressed non-derivable liquidity params as a recovery hint. See [Wallet Recovery](#wallet-recovery).
+`build_lmsr_bootstrap_pset` includes a 51-byte zero-value OP_RETURN output containing the parent market's creation txid and the creator-specified params (`max_loss_sats`, `half_payout_sats`, `fee_bps`) as a recovery hint. All other covenant params are derived via deterministic table generation. See [Wallet Recovery](#wallet-recovery) and [lmsr-pool-design.md](lmsr-pool-design.md).
 
 **Signing note**: Pool adjust and close PSETs require signing with both the wallet key (for fee inputs) and the pool's admin key (for the covenant spend authorization). Both keys are controlled by the pool operator. Pool swaps (via trade PSETs) are permissionless and require only the taker's wallet key.
 
@@ -2034,23 +2034,15 @@ Like maker orders, pool reserve UTXOs are at covenant addresses — the wallet's
 ```
 OP_RETURN <type_tag: u8>                         --  1 byte
           <market_creation_txid: [u8; 32]>       -- 32 bytes
-          <table_depth: u8>                      --  1 byte
-          <q_step_lots: u32>                     --  4 bytes
-          <s_bias: u32>                          --  4 bytes
-          <s_max_index: u32>                     --  4 bytes
+          <max_loss_sats: u64>                   --  8 bytes
           <half_payout_sats: u64>                --  8 bytes
           <fee_bps: u16>                         --  2 bytes
-          <min_r_yes: u32>                       --  4 bytes
-          <min_r_no: u32>                        --  4 bytes
-          <min_r_collateral: u32>                --  4 bytes
-                                          Total: 68 bytes
+                                          Total: 51 bytes
 ```
 
-**68 bytes** — fits in a single OP_RETURN with 12 bytes of headroom. The hint encodes all non-derivable pool-specific liquidity parameters. Derivable fields are omitted: token asset IDs (from parent market via `market_creation_txid`), collateral asset ID (same), admin pubkey (from mnemonic), and LMSR table root (recomputed from the liquidity params).
+**51 bytes** — fits in a single OP_RETURN with 29 bytes of headroom. The hint includes only the non-derivable creator-specified parameters. All other covenant params are derived: `b` from `max_loss_sats`, `q_step_lots` from `b` and `half_payout_sats`, `lmsr_table_root` from deterministic F-value generation (see [lmsr-pool-design.md](lmsr-pool-design.md)), token asset IDs from the parent market, admin pubkey from the mnemonic. Protocol constants (`table_depth`, `s_bias`, `s_max_index`, `min_r_*`) require no encoding. `fee_bps` is compressed to `u16` (validated < 10,000) from its `u64` covenant representation — the Simplicity covenant uses `u64` because its arithmetic jets require fixed-width operands with no implicit type widening.
 
-**Compressed encoding**: The Simplicity covenant uses `u64` for most numeric params because its arithmetic jets operate on fixed widths with no implicit type widening — a param used in `safe_multiply(u64, u64)` must itself be `u64`. The OP_RETURN encoding compresses to actual value ranges (e.g., `fee_bps` is validated < 10,000 → `u16`; `table_depth` is validated 1-63 → `u8`) and widens back losslessly during param reconstruction.
-
-**Chain-only recovery flow**: Same pattern as orders — hint → fetch market creation tx → read market OP_RETURN → reconstruct market params → derive admin key from mnemonic → reconstruct full `LmsrPoolParams` → compile → verify → ingest.
+**Chain-only recovery flow**: Read `max_loss_sats`, `half_payout_sats`, `fee_bps` from hint → derive `b`, `q_step_lots` → generate F-value table deterministically → compute `lmsr_table_root` → fetch market creation tx by `market_creation_txid` → read market OP_RETURN → reconstruct market params → derive admin key from mnemonic → reconstruct full `LmsrPoolParams` → compile → verify → ingest.
 
 ### Oracle Market Discovery
 
@@ -2067,7 +2059,7 @@ Market and pool creations are infrequent lifecycle events — the ~6-sat OP_RETU
 | YES/NO tokens | N/A (standard wallet rescan) | — | Yes | For labeling only |
 | Prediction markets | Non-derivable covenant params | 77 bytes | Yes | No |
 | Maker orders | Index + market txid + price + direction | 39 bytes | Yes (via market hint) | No |
-| LMSR pools | Market txid + compressed liquidity params | 68 bytes | Yes (via market hint) | No |
+| LMSR pools | Market txid + max_loss + denomination + fee | 51 bytes | Yes (via market hint + deterministic table generation) | No |
 | Oracle markets | N/A (managerial role) | — | Via market hint if self-created | Nostr or backup |
 
 **Core's role in recovery**: Core provides the building blocks — `identify_asset` for token labeling, `contract_cmr` for CMR matching, Simplicity compilation for contract verification, and `ingest_*` methods for re-tracking recovered contracts. The OP_RETURN recovery hints in all three contract creation builders are proactive recovery mechanisms core embeds in the transaction structure, enabling fully stateless fund recovery from a mnemonic and chain connection alone.
@@ -2511,7 +2503,7 @@ Order makers should use a fresh nonce for each order, ensuring unique `maker_rec
 
 ### OP_RETURN Recovery Hints in All Contract Creation Transactions
 
-**Chosen**: All three creation builders (`build_creation_pset`, `build_create_order_pset`, `build_lmsr_bootstrap_pset`) always include a zero-value OP_RETURN output with a compact recovery hint. Markets: 77 bytes (non-derivable covenant params). Orders: 39 bytes (order index, market creation txid, price, direction). Pools: 68 bytes (market creation txid, compressed liquidity params). No opt-out. All fit within a single 80-byte OP_RETURN.
+**Chosen**: All three creation builders (`build_creation_pset`, `build_create_order_pset`, `build_lmsr_bootstrap_pset`) always include a zero-value OP_RETURN output with a compact recovery hint. Markets: 77 bytes (non-derivable covenant params). Orders: 39 bytes (order index, market creation txid, price, direction). Pools: 51 bytes (market creation txid, max_loss_sats, half_payout_sats, fee_bps — all other params derived via deterministic table generation). No opt-out. All fit within a single 80-byte OP_RETURN.
 **Rejected**: (a) No on-chain hints — orders require brute-force scanning (slow); pools require Nostr announcements or backup (fragile); markets are irrecoverable from chain alone. (b) Optional hint via builder flag (risk of users opting out without understanding the recovery consequence). (c) Storing full uncompressed params (exceeds 80-byte limit for pools). (d) Hints for orders and pools only, not markets (breaks chain-only recovery — pool/order hints need to reference the market's on-chain data).
 **Why**: Order, pool, and market UTXOs are at covenant addresses — standard mnemonic recovery cannot find them. Pool and order hints include the parent market's creation txid, enabling **chain-only recovery**: hint → fetch market creation tx → read market's OP_RETURN → reconstruct market params → reconstruct pool/order params → verify → ingest. No Nostr or external discovery needed for fund recovery. Maker orders are the only contract type directly "owned" by regular end users (not operators or oracles), making mnemonic-only recovery especially important — regular users should not be expected to maintain stateful backups. Pool OP_RETURN data uses compressed numeric types (e.g., `fee_bps: u16` instead of `u64`) because the Simplicity covenant's arithmetic jets require fixed-width `u64` operands (no implicit type widening), but the OP_RETURN encoding is not bound by this constraint — it compresses to actual value ranges and widens back losslessly during reconstruction. Market and pool creation costs (~6 sats per OP_RETURN) are infrequent lifecycle events amortized over the contract's entire lifetime. Order creation is the most frequent user-facing OP_RETURN cost, but ~6 sats is negligible relative to order value and trade fees. The OP_RETURN cost is never paid by market takers or regular traders — only by contract creators.
 
