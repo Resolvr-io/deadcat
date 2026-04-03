@@ -119,6 +119,7 @@ impl<S: ContractStore> ContractEngine<S> {
         &self,
         market_id: &ContractId,
         spec: TradeSpec,
+        fee_rate: FeeRate,
     ) -> Result<TradeQuote, CoreError<S::Error>>;
 
     // PSET builders (reads — &self)
@@ -636,7 +637,12 @@ pub enum OrderState {
 All listing and bulk-read methods use cursor-based pagination. Cursors are opaque — only the store generates and interprets them. This avoids the offset-based pagination instability problem (items shifting between pages due to concurrent ingestion or state changes) and allows each store implementation to choose its own ordering strategy.
 
 ```rust
-pub struct Cursor(pub String);
+pub struct Cursor(String);  // opaque — only the store generates and interprets cursors
+
+impl Cursor {
+    pub fn from_string(s: String) -> Self { Self(s) }
+    pub fn as_str(&self) -> &str { &self.0 }
+}
 
 pub struct Pagination {
     pub after: Option<Cursor>,  // None = first page
@@ -656,7 +662,7 @@ pub enum StateFilter {
 }
 ```
 
-**Cursor opacity and validation**: The store encodes whatever it needs into the cursor string (e.g., last seen contract_id, ordering position, method identity, filter). The caller passes cursors back without interpreting them. The store validates cursors on use: if a caller passes a cursor from one method to a different method, or reuses a cursor with different parameters (e.g., a cursor from `list_markets(ActiveOnly, ...)` used with `list_markets(TerminalOnly, ...)`), the store should return an error. Cursors encode a position within a specific filtered result set — changing the filter invalidates the position.
+**Cursor opacity and validation**: The `Cursor` type has a private inner field — callers can extract the string via `as_str()` (for serialization, e.g., HTTP query params) and reconstruct via `from_string()` (for deserialization), but they cannot inspect or construct cursor values meaningfully. The store encodes whatever it needs into the cursor string (e.g., last seen contract_id, ordering position, method identity, filter). The caller passes cursors back without interpreting them. The store validates cursors on use: if a caller passes a cursor from one method to a different method, or reuses a cursor with different parameters (e.g., a cursor from `list_markets(ActiveOnly, ...)` used with `list_markets(TerminalOnly, ...)`), the store should return an error. Cursors encode a position within a specific filtered result set — changing the filter invalidates the position.
 
 **Count-only queries**: Pass `limit: 0` to get just the `total` count without loading any items. No separate count methods needed. The response is `Page { items: vec![], next_cursor: None, total }` — `next_cursor` is `None` because no items were returned and there is no position to continue from. To fetch the first page after a count-only query, call again with `after: None` and a non-zero limit.
 
@@ -863,6 +869,7 @@ pub struct TradeQuote {
     pub filled_amount: u64,    // same units as requested_amount (input units for ExactInput, output units for future ExactOutput)
     pub total_input: u64,      // Buy: collateral (L-BTC sats) spent. Sell: tokens sent.
     pub total_output: u64,     // Buy: tokens received. Sell: collateral (L-BTC sats) received.
+    pub estimated_fee: u64,    // Estimated transaction fee in sats, computed from route weight × fee_rate.
     pub effective_price: f64,  // Display-only approximation. Do not use for computation. Use total_input/total_output for exact amounts.
     pub legs: Vec<RouteLeg>,
 
@@ -1187,38 +1194,60 @@ Core requires the caller to feed transactions in chain order. As long as this gu
 
 ### State Advancement via Script Matching and Output Values
 
-Core determines transitions without decoding Simplicity witness data. Instead, it uses the current contract state, script pubkey matching (against the store's persisted script index), and explicit output values. This is possible because the covenant design encodes state into the script pubkey — different states produce different addresses — so the new state is identifiable from the transaction's outputs alone.
+Core determines transitions primarily through the current contract state, script pubkey matching (against the store's persisted script index), and explicit output values. This works because the covenant design encodes state into the script pubkey — different states produce different addresses — so the new state is usually identifiable from the transaction's outputs alone.
+
+Two specific transitions produce no new covenant outputs, making the spend path indistinguishable from outputs alone. For these cases, the engine uses lightweight Simplicity witness path detection — see [Detection Strategy and Robustness](#detection-strategy-and-robustness).
 
 #### Prediction Markets
 
 The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [SlotType and CovenantPhase](#slottype-and-covenantphase-internal)). The transition type is determined by which slot scripts the new outputs match:
 
 - **Issuance** (Trading with 0 pairs to Trading with >0 pairs, or Trading to Trading with more pairs): Old outputs match Dormant or Unresolved slots; new outputs match Unresolved slots. `pairs` = new collateral value / `collateral_per_pair`. This division is always exact — the covenant enforces that collateral is a multiple of the pair cost. Implementations should assert exactness rather than silently truncating. `collateral_locked` = new collateral value - old collateral value. For initial issuance from Dormant, old collateral value is zero (no prior collateral output exists), so `collateral_locked` equals the full new collateral value. `IssuanceKind` is determined internally (`Initial` if old phase was Dormant, `Subsequent` if Unresolved) but not exposed in the public `MarketTransition::Issued`.
-- **Resolution** (Trading → ResolvedYes/ResolvedNo): New output matches either `ResolvedYesCollateral` or `ResolvedNoCollateral` script. Which one determines the `outcome`.
+- **Resolution** (Trading with >0 pairs → ResolvedYes/ResolvedNo): New output matches either `ResolvedYesCollateral` or `ResolvedNoCollateral` script. Which one determines the `outcome`.
 - **Redemption** (ResolvedYes/ResolvedNo/Expired → Settled): No new covenant outputs. `payout_sats` is derived from the old collateral value. `side` from which token burn outputs are present. `RedemptionKind` is `PostResolution` if old state was ResolvedYes/ResolvedNo, `Expiry` if Expired.
 - **Cancellation** (Trading → Trading with fewer pairs): New outputs match Unresolved or Dormant slots. `pairs_burned` = (old collateral - new collateral) / `collateral_per_pair`. `collateral_returned` = old collateral - new collateral. If new outputs match Dormant slots (all collateral returned), it's a full cancellation back to zero outstanding pairs.
-- **Expiry** (Trading → Expired): New output matches `ExpiredCollateral` script.
-- **Dormant terminal paths**: Both RT outpoints spent from zero-pair state + oracle attestation results in `Settled(ResolvedYes/No)`, or timelock passed results in `Settled(Expired)`. See [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md).
+- **Expiry** (Trading with >0 pairs → Expired): New output matches `ExpiredCollateral` script.
+- **Dormant terminal paths** (Trading with 0 pairs → Settled): Both RT outpoints consumed, no new covenant outputs. The engine cannot distinguish dormant resolution (YES or NO) from dormant expiry using outputs alone — all three paths produce identical observable results (both DormantRT inputs spent, zero covenant outputs). The engine uses **witness-based path detection** to determine the outcome: it extracts the Simplicity program bytes and witness bytes from the spending transaction's witness stack and calls `RedeemNode::decode` to identify which covenant spend path was taken. This determines the `MarketOutcome` (ResolvedYes, ResolvedNo, or Expired) for the resulting `Settled` state. See [Detection Strategy and Robustness](#detection-strategy-and-robustness) and [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md).
+
+**Detection strategy summary:**
+
+| Transition | Detection method | Airtight? |
+|---|---|---|
+| Issuance (initial) | Dormant input scripts → Unresolved output scripts | Yes — unique scripts per phase |
+| Issuance (subsequent) | Unresolved input scripts → Unresolved output scripts, collateral increased | Yes — value direction distinguishes from cancellation |
+| Resolution (non-dormant) | Unresolved inputs → ResolvedYes or ResolvedNo output script | Yes — unique scripts for slots 5 and 6 |
+| Redemption | Resolved/Expired inputs → no covenant outputs, old state was Resolved/Expired | Yes — old state distinguishes from dormant terminal |
+| Partial cancellation | Unresolved inputs → Unresolved outputs, collateral decreased | Yes — value direction distinguishes from issuance |
+| Full cancellation | Unresolved inputs → Dormant output scripts | Yes — unique scripts |
+| Expiry (non-dormant) | Unresolved inputs → ExpiredCollateral output script | Yes — unique script for slot 7 |
+| Dormant terminal | Dormant RT inputs → no covenant outputs, old state was Trading(0 pairs) | **No** — three-way ambiguity (YES/NO/Expired) requires witness path detection |
 
 #### LMSR Pools
 
-Different `s_index` values produce different covenant addresses (the s_index is a parameter in the script derivation). Unlike markets and orders, pools cannot use pre-stored scripts for output matching because the unbounded s_index makes full script enumeration impractical. Instead, the engine identifies new reserve outputs using a structural pattern enforced by the covenant.
+Different `s_index` values produce different covenant addresses (the s_index is a parameter in the script derivation). Unlike markets and orders, pools cannot use pre-stored scripts for output matching because the unbounded s_index makes full script enumeration impractical. Pool transition detection uses **witness-based path and s_index extraction** for all transitions, combined with output scanning for reserve values.
 
-**Pool output identification algorithm**: The LMSR covenant enforces that reserve outputs form a contiguous 3-slot window with a fixed layout: `[out_base] = YES reserve`, `[out_base+1] = NO reserve`, `[out_base+2] = Collateral reserve`. All three are explicit (unblinded) and share the same script pubkey (co-membership). The engine identifies them by:
+**Why witness-based for all pool transitions**: The engine needs the new `s_index` on every pool transition (it's stored in `LmsrPoolState::Active`). Deriving s_index from reserve values (reverse LMSR table lookup) is fragile — admin adjustments change reserves without moving along the LMSR curve, so the reserves no longer correspond to a single point on the curve. The witness contains the exact `old_s_index` and `new_s_index` used in the covenant verification — this is ground truth, not a derived estimate. Additionally, output-only detection cannot reliably distinguish close from swap/admin (wallet outputs can mimic the covenant window pattern). Witness parsing resolves all ambiguities definitively for a negligible cost (~<1ms per `RedeemNode::decode` call, at most once per pool per block).
 
-1. **Closure check**: Scan for any explicit output with the pool's YES asset ID. If none → `PoolTransition::Closed`.
-2. **Find the window**: Locate the explicit output with the pool's YES asset ID at index N. Verify N+1 has the NO asset ID and N+2 has the collateral asset ID. The contiguous-window layout is covenant-enforced.
-3. **Read values**: All three outputs are explicit — read their reserve values directly.
-4. **Derive s_index**: Use the reserve values + LMSR table to compute the new s_index.
-5. **Classify**: Same s_index as stored state → `Adjusted`. Different → `Swapped`.
+**Pool transition detection algorithm**:
+
+1. **Parse witness**: Extract the Simplicity program bytes and witness bytes from the spending transaction's witness stack for the input that spent a tracked pool outpoint. Call `RedeemNode::decode` to identify the spend path (swap, admin, or close) and extract `old_s_index` and `new_s_index`.
+2. **Switch on spend path**:
+   - **Swap or Admin**: Find the covenant output window — three consecutive explicit outputs where index N has the pool's YES asset ID, N+1 has the NO asset ID, N+2 has the Collateral asset ID, and all three share the same script pubkey (co-membership). The window must exist (covenant-enforced for swap/admin paths). Read reserve values from the explicit outputs. Classify: `new_s_index != old_s_index` → `Swapped`, `new_s_index == old_s_index` → `Adjusted`.
+   - **Close**: No covenant output window expected. The pool transitions to `Closed`. `final_reserves` from the stored state at time of closure.
 
 Transition details:
 
-- **Swap**: `old_s_index` from stored state. `new_s_index` derived from the new reserve output values via the LMSR table. `old_reserves` from stored state. `new_reserves` from explicit output values.
-- **Adjustment**: New outputs have the same s_index as old outputs (s_index frozen on admin path). `old_reserves` and `new_reserves` from stored state and output values.
-- **Closure**: All pool outpoints are spent and no new covenant outputs are produced (step 1 above finds no explicit output with the YES asset ID). The pool transitions to `Closed`. `final_reserves` from the stored state at time of closure.
+- **Swap**: `old_s_index` and `new_s_index` from the witness. `old_reserves` from stored state. `new_reserves` from explicit output values.
+- **Adjustment**: `old_s_index == new_s_index` confirmed by the witness (s_index frozen on admin path). `old_reserves` and `new_reserves` from stored state and output values.
+- **Closure**: Spend path confirmed as close by the witness. All pool outpoints consumed, no new covenant outputs. `final_reserves` from the stored state at time of closure.
 
-The swap-vs-adjustment distinction is unambiguous: same s_index = adjustment, different s_index = swap.
+**Detection strategy summary:**
+
+| Transition | Detection method | Airtight? |
+|---|---|---|
+| Swap | Witness: spend path + s_index extraction. Outputs: reserve values from covenant window. | Yes — witness is ground truth |
+| Admin adjust | Witness: spend path + s_index unchanged. Outputs: reserve values from covenant window. | Yes — witness is ground truth |
+| Close | Witness: close spend path confirmed | Yes — witness is ground truth |
 
 #### Maker Orders
 
@@ -1228,9 +1257,36 @@ Order transition detection uses a structural witness check — key-spend vs scri
 - **Complete fill** (Active → Consumed): Order outpoint spent via script-spend, no new covenant output. The Simplicity covenant enforced valid payment to the maker. `fill_amount` = total locked value.
 - **Cancellation** (Active → Cancelled): Order outpoint spent via key-spend, no new covenant output. The maker reclaimed their funds without covenant constraints.
 
-#### Why This Works Without Witness Decoding
+**Detection strategy summary:**
 
-The key insight is that Simplicity covenants encode state into the script pubkey. Each unique state (phase, s_index, slot type) produces a unique script. This is a deliberate design property — it allows trustless state identification from the chain alone without requiring covenant-specific witness parsing. The witness is needed for *authorization* (proving the spend is valid) and for *constructing* new spends (PSET builders), but not for *observing* what happened after the fact. This separation is what enables the no-cache architecture: `process_transaction` and `interpret_transaction` work entirely from persisted data (scripts, state, output values), while only PSET builders need the full compiled contract for witness encoding.
+| Transition | Detection method | Airtight? |
+|---|---|---|
+| Partial fill | Script-spend + new covenant output at same script with lower value | Yes — unique script, value decreased |
+| Complete fill | Script-spend + no new covenant output | Yes — script-spend rules out cancellation |
+| Cancellation | Key-spend (single witness stack element) | Yes — taproot structural check |
+
+#### Detection Strategy and Robustness
+
+Each contract type uses the detection method best suited to its structural characteristics — not a uniform approach, but the right tool for each type:
+
+| Contract type | Key characteristic | Detection method | Why this is the right tool |
+|---|---|---|---|
+| Markets (non-dormant) | 8 bounded, pre-storable scripts | Script pubkey matching | Each phase has unique scripts — byte comparison is O(1) and trivially airtight |
+| Markets (dormant terminal) | No covenant outputs produced | Witness path detection | No scripts to match against — spend path only exists in the witness |
+| Orders | Two spend types at taproot level | Taproot structural check | Witness element count (1 vs 3) is the simplest possible distinguisher |
+| Pools (all transitions) | Unbounded s_index, need s_index value on every transition | Witness-based | s_index only in witness; scripts can't be pre-stored; reserve-based derivation is fragile after admin adjustments |
+
+**The underlying principle**: Simplicity covenants encode state into the script pubkey — each unique state produces a unique script. For markets and orders, this enables output-based detection (script matching, structural checks). For pools, the unbounded s_index makes script enumeration impractical, and the engine needs the s_index value on every transition, so witness-based extraction is the natural fit. For dormant market terminals, no covenant outputs are produced, leaving no scripts to match — the witness is the only source of truth.
+
+**Witness-based detection uses `RedeemNode::decode`** from the `simplicity_lang` crate. Key properties:
+
+- **No compilation needed**: `RedeemNode::decode` takes raw bytes from the transaction's witness stack — it parses the serialized program, not a `CompiledProgram`. This is lighter than full Simplicity compilation (no type inference, no commitment computation).
+- **No storage needed**: The program bytes are already in the transaction being processed. Nothing needs to be pre-stored or cached.
+- **Works for both `process_transaction` and `interpret_transaction`**: Both receive the full transaction, so both have access to the witness stack.
+- **Acceptable performance**: Pool transitions occur at most once per pool per block (~1 minute on Liquid). Dormant market terminals occur at most once per market lifetime. The `RedeemNode::decode` cost (~<1ms) is negligible at these frequencies.
+- **Authoritative**: The witness bytes are what was actually executed on-chain. This is ground truth, not a heuristic.
+
+The no-cache architecture is preserved: output-based detection works from persisted data (scripts, state, output values) without compiled contracts. Witness-based detection reads from the transaction itself without compiled contracts. Only PSET builders need the full compiled contract (for witness *encoding*).
 
 ## Contract Ingestion
 
@@ -1288,7 +1344,7 @@ The caller never manages scripts, outpoints, subscriptions, or per-contract sync
 
 **Trading** (same as before — unrelated to sync):
 ```rust
-let quote = engine.quote_trade(&market_id, spec)?;
+let quote = engine.quote_trade(&market_id, spec, fee_rate)?;
 let pset = engine.build_trade_pset(&quote, &funding)?;
 let signed = signer.sign(pset)?;
 chain.broadcast(signed)?;
@@ -1370,17 +1426,17 @@ pub struct OutpointContractInfo {
 
 Every consumer must implement this. Read methods take `&self`, write methods take `&mut self` — mirroring the engine's own borrow semantics. The engine calls read methods during interpretation (`&self` on the engine borrows the store as `&self`) and write methods during processing (`&mut self` on the engine borrows the store as `&mut self`).
 
-`apply_transitions` must be durable when it returns — the engine depends on this for crash safety.
+`apply_transitions` must be durable when it returns — the engine depends on this for crash safety. It must also be **idempotent**: calling it twice with the same `StateUpdate` (same `contract_id` + `txid`) must be a no-op on the second call. This is required because `process_transaction` is idempotent, which flows through to `apply_transitions`. For stores implementing `ContractHistory`, idempotency means avoiding duplicate history entries — the store should check whether a transition for the given `(contract_id, txid)` already exists before inserting.
 
 `find_by_outpoints` is the hot-path method called on every internal `process_transaction`. It is not paginated because its input is bounded by the transaction's input count (constrained by Liquid's transaction size limits).
 
 `find_by_asset_id` and `covenant_scripts` are index lookups populated at ingestion time. The engine passes `DerivedContractData` (asset IDs + scripts) to `track_contract`, and the store indexes this data for fast lookups. `find_by_asset_id` backs the engine's `identify_asset` method. `covenant_scripts` is used by `step` internally for building catch-up scan queries and subscription registrations. Neither requires Simplicity knowledge — the engine pre-computes the data and hands it over.
 
-`stale_contracts` is the primary sync-support method. It returns all contracts with `synced_to < tip_height`, pre-grouped by sync strategy (script-based vs outpoint-based) with their scripts/outpoints included. This allows the engine to build catch-up queries and subscription registrations in a single store call. A SQLite implementation does this with one JOIN + WHERE query. In steady-state (all contracts at tip), it returns empty — no pagination needed.
+`stale_contracts` is the primary sync-support method. It returns all contracts with `synced_to < tip_height`, pre-grouped by sync strategy (script-based vs outpoint-based) with their scripts/outpoints included. This allows the engine to build catch-up queries and subscription registrations in a single store call. The store determines which group a contract belongs to based on its `DerivedContractData`: contracts with non-empty `covenant_scripts` go into `script_contracts` (markets and orders); contracts with empty `covenant_scripts` go into `outpoint_contracts` (pools). A SQLite implementation does this with one JOIN + WHERE query. In steady-state (all contracts at tip), it returns empty — no pagination needed.
 
 `contract_outpoints` returns the current tracked outpoints for a contract. Used by `step` for pool forward-chaining. The store already tracks outpoints internally (for `find_by_outpoints`); this method exposes them per-contract.
 
-`best_orders_for_market` returns active orders for a market, sorted by price (ascending or descending as specified) and filtered by minimum remaining locked value. Used by `quote_trade` internally for trade routing — not a user-facing listing method. The `is_sell_base` parameter selects which order direction to match (the engine translates from the taker's `TradeSpec`). The `min_remaining` parameter filters dust orders at the store level. The `limit` bounds the result count (e.g., 50). No cursor pagination — the router processes all returned orders in a single pass. See [trade-routing-algorithm.md](trade-routing-algorithm.md) for the full routing algorithm.
+`best_orders_for_market` returns orders for a market in `Active` state with `offered_amount - total_filled >= min_remaining`, sorted by price (ascending or descending as specified). The Active filter is implicit — consumed and cancelled orders cannot participate in routing. Used by `quote_trade` internally for trade routing — not a user-facing listing method. The `is_sell_base` parameter selects which order direction to match (the engine translates from the taker's `TradeSpec`). The `min_remaining` parameter filters dust orders at the store level. The `limit` bounds the result count (e.g., 50). No cursor pagination — the router processes all returned orders in a single pass. See [trade-routing-algorithm.md](trade-routing-algorithm.md) for the full routing algorithm.
 
 `advance_synced_heights` bulk-advances `synced_to` for multiple contracts. Called by `step` after processing a batch of transactions or after confirming that subscriptions have covered through the tip height.
 
@@ -1532,7 +1588,7 @@ pub fn build_lmsr_close_pset(&self, contract_id: &ContractId, funding: &WalletFu
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 ```
 
-`build_lmsr_adjust_pset` takes `pair_delta` (applied equally to both YES and NO reserves) and `collateral_delta` (applied to collateral independently). This API shape makes the covenant's paired-delta constraint (YES and NO must move equally) unrepresentable as an error — the caller cannot express asymmetric deltas. The engine validates that the resulting reserves meet the covenant's minimum reserve floors (`MIN_R_YES`, `MIN_R_NO`, `MIN_R_COLLATERAL` from pool params) and returns `CoreError::InvalidParams` if violated. The wallet can present an absolute-target UI ("set pool to 1000 YES/NO") by computing the delta from current reserves on their side.
+`build_lmsr_adjust_pset` takes `pair_delta` (applied equally to both YES and NO reserves) and `collateral_delta` (applied to collateral independently). This API shape makes the covenant's paired-delta constraint (YES and NO must move equally) unrepresentable as an error — the caller cannot express asymmetric deltas. The engine validates that the resulting reserves meet the covenant's minimum reserve floors (`MIN_R_YES`, `MIN_R_NO`, `MIN_R_COLLATERAL` from pool params) and returns `CoreError::InvalidParams` if violated. If both deltas are zero, the engine returns `CoreError::InvalidParams` — a no-op adjustment would produce a valid but pointless transaction that wastes fees. The wallet can present an absolute-target UI ("set pool to 1000 YES/NO") by computing the delta from current reserves on their side.
 
 `build_lmsr_close_pset` atomically consumes all three reserve UTXOs via the dedicated Simplicity close script path (NUMS internal key makes key-spend unspendable). All reserve funds are returned to `funding.return_script`. See [lmsr-pool-close-path.md](lmsr-pool-close-path.md).
 
@@ -1572,10 +1628,11 @@ pub fn quote_trade(
     &self,
     market_id: &ContractId,
     spec: TradeSpec,
+    fee_rate: FeeRate,
 ) -> Result<TradeQuote, CoreError<S::Error>>;
 ```
 
-The engine computes the optimal route across all available pools and orders for the market, minimizing total cost to the taker including transaction fee overhead. The routing algorithm uses pool-subset enumeration combined with fee-aware greedy order selection — see [trade-routing-algorithm.md](trade-routing-algorithm.md) for the full specification. Returns a `TradeQuote` representing the best available fill. Returns `Err(CoreError::NoLiquidity)` only when zero liquidity is available; any positive fill returns `Ok` (see [TradeQuote](#tradequote-and-related-types) for partial fill handling).
+The engine computes the optimal route across all available pools and orders for the market, minimizing total cost to the taker including transaction fee overhead. The `fee_rate` parameter is required because the routing algorithm uses fee-adjusted effective prices — each liquidity source's activation cost (transaction weight) is weighted by the fee rate to determine whether including it improves the route. The routing algorithm uses pool-subset enumeration combined with fee-aware greedy order selection — see [trade-routing-algorithm.md](trade-routing-algorithm.md) for the full specification. Returns a `TradeQuote` representing the best available fill, including `estimated_fee` computed from the route's total transaction weight and the provided fee rate. Returns `Err(CoreError::NoLiquidity)` only when zero liquidity is available; any positive fill returns `Ok` (see [TradeQuote](#tradequote-and-related-types) for partial fill handling).
 
 **Step 2: Build** (engine method):
 
@@ -1690,7 +1747,7 @@ pub trait ChainSource {
 
 **8 methods, split into two groups:**
 
-The **catch-up** methods are synchronous pull queries. `tip_height` returns the current chain tip. `transactions_by_scripts` returns up to `limit` confirmed transactions *involving* any of the given scripts from `from_height` onwards, in chain order. Each transaction appears at most once in the result, even if it involves multiple scripts from the input set. "Involving" means both transactions that create outputs paying to those scripts AND transactions that spend outputs from those scripts — the engine needs both for catch-up (creation of covenant UTXOs and their subsequent spends). This matches the standard behavior of Electrum's `blockchain.scripthash.get_history` and Esplora's `/scripthash/:hash/txs`. `spending_transaction` returns the transaction that spent a given outpoint, or `None` if unspent.
+The **catch-up** methods are synchronous pull queries. `tip_height` returns the current chain tip. `transactions_by_scripts` returns confirmed transactions *involving* any of the given scripts from `from_height` onwards, in chain order. Each transaction appears at most once in the result, even if it involves multiple scripts from the input set. "Involving" means both transactions that create outputs paying to those scripts AND transactions that spend outputs from those scripts — the engine needs both for catch-up (creation of covenant UTXOs and their subsequent spends). This matches the standard behavior of Electrum's `blockchain.scripthash.get_history` and Esplora's `/scripthash/:hash/txs`. **Important**: the `limit` parameter bounds total results, but the implementation must return ALL matching transactions from the `from_height` block even if that alone exceeds `limit`. The engine advances `from_height` by block after each batch — incomplete blocks would cause skipped transactions. `spending_transaction` returns the transaction that spent a given outpoint, or `None` if unspent.
 
 The **steady-state** methods manage a notification registration system. `register_scripts` and `register_spends` tell the chain source to watch for activity. `drain_notifications` returns any confirmed transactions that matched since the last drain. `unregister_scripts` and `unregister_spends` clean up when contracts reach terminal states or are untracked.
 
@@ -1740,7 +1797,7 @@ The root cause of the split: pool scripts encode the `s_index`, which changes on
 
 1. `chain.tip_height()` to determine the target
 2. Read stale contracts from the store (contracts with `synced_to < tip`)
-3. **Script-based catch-up** (markets + orders): Batch all stale contracts' scripts into one `chain.transactions_by_scripts(all_scripts, from_height, BATCH_SIZE)` call (initial `from_height = min_synced_to`). Process results via `process_transaction` (internal). Advance `from_height` to `max_block_height_in_batch + 1` after each batch. Loop until the scan returns fewer than `BATCH_SIZE` results (indicating no more data). `BATCH_SIZE` must be larger than the maximum number of matching transactions in a single block to avoid skipping intra-block transactions when advancing `from_height`.
+3. **Script-based catch-up** (markets + orders): Batch all stale contracts' scripts into one `chain.transactions_by_scripts(all_scripts, from_height, BATCH_SIZE)` call (initial `from_height = min_synced_to`). Process results via `process_transaction` (internal). Advance `from_height` to `max_block_height_in_batch + 1` after each batch. Loop until the scan returns fewer than `BATCH_SIZE` results (indicating no more data). **`ChainSource` implementation requirement**: `transactions_by_scripts` must return ALL matching transactions from the starting block (`from_height`) even if the total exceeds `limit`. The `limit` parameter bounds the result count for blocks *after* the starting block, but the starting block must be returned in full. This prevents the engine from skipping intra-block transactions when advancing `from_height`. In practice, Liquid blocks rarely contain more than a handful of matching transactions for a given script set.
 4. **Outpoint-based catch-up** (pools): For each stale pool, forward-chain via `chain.spending_transaction(outpoint)` until `None` (unspent = caught up). The engine picks one representative outpoint per pool (the covenant guarantees all 3 are spent together).
 5. **Set up subscriptions**: `chain.register_scripts(scripts, synced_to)` for markets/orders. `chain.register_spends(outpoints)` for pools.
 6. **Advance `synced_to`** for all contracts to tip.
@@ -2096,11 +2153,12 @@ if engine.contract(&contract_id)?.is_some() { continue; }
 
 // 11. Trade: two-step quote + build (engine handles routing, coin selection, fee computation)
 let spec = TradeSpec { side: Side::Yes, direction: TradeDirection::Buy, amount: TradeAmount::ExactInput(5000) };
-let quote = engine.quote_trade(&market_id, spec)?;
+let fee_rate = FeeRate::from_sat_per_vb(aqua_chain.estimate_fee_rate());
+let quote = engine.quote_trade(&market_id, spec, fee_rate)?;
 if user_confirms(&quote) {
     let funding = WalletFunding {
         available_utxos: &aqua_wallet.list_utxos(),
-        fee_rate: FeeRate::from_sat_per_vb(aqua_chain.estimate_fee_rate()),
+        fee_rate,
         return_script: &aqua_wallet.next_return_script(),
     };
     let pset = engine.build_trade_pset(&quote, &funding)?;
@@ -2215,9 +2273,9 @@ aqua_chain.broadcast(signed)?;
 
 ### Advance Logic Uses Script Matching and Output Values
 
-**Chosen**: Determine transition type from script pubkey matching (against the store's persisted script index) and explicit output values. No Simplicity witness decoding. For LMSR pools, s_index derivation uses reserve output values via the LMSR table rather than script matching (unbounded s_index makes full script enumeration impractical).
-**Rejected**: (a) Pattern-match transaction structure (input/output counts). (b) Decode Simplicity witness data.
-**Why**: Script matching is deterministic and precise — each covenant state produces unique script pubkeys, so matching new outputs against expected scripts unambiguously identifies the new state. Output values provide the numeric transition details (reserves, amounts, fill levels). For pools, the new s_index is derived from the reserve output values via the LMSR table — this is equivalent to script matching but avoids pre-computing scripts for all possible s_index values. This approach avoids the need for compiled Simplicity contracts during transaction processing, which is critical for the no-cache architecture — only PSET builders (which need witness *encoding*) require compilation. Witness decoding would require compiled contracts on every `process_transaction` and `interpret_transaction` call, forcing either a cache or repeated recompilation on a hot path.
+**Chosen**: Use the detection method best suited to each contract type's structural characteristics. Markets: script pubkey matching (8 bounded, pre-storable scripts). Orders: taproot structural check (key-spend vs script-spend element count). Pools: witness-based path and s_index extraction via `RedeemNode::decode` for all transitions. Dormant market terminals: witness-based path detection for the three-way ambiguity.
+**Rejected**: (a) Pattern-match transaction structure (input/output counts). (b) Uniform witness decoding on all transitions for all contract types. (c) Output-only detection for all transitions (no witness inspection). (d) Reserve-based s_index derivation for pool swap/admin transitions.
+**Why**: Each contract type has a naturally fitting detection method. Markets have 8 bounded phase scripts — byte comparison is O(1) and trivially airtight for all non-dormant transitions. Orders have a taproot-level key-spend/script-spend split — element count is the simplest possible check. Pools have unbounded s_index (scripts can't be pre-stored), and the engine needs the s_index value on every transition — the witness is the only reliable source, since reserve-based derivation (option d) is fragile after admin adjustments (reserves change without moving along the LMSR curve). Dormant market terminals produce no covenant outputs, creating a three-way ambiguity (resolution YES/NO vs expiry) only resolvable from the witness. Uniform witness decoding (option b) was rejected because markets and orders have simpler, equally correct methods — adding `RedeemNode::decode` overhead to script matching or element counting would be strictly worse. Pure output-based detection (option c) was rejected because pool s_index derivation from reserves is unreliable and dormant terminal ambiguities produce wrong `MarketOutcome` values. `RedeemNode::decode` takes raw bytes from the transaction — no `CompiledProgram` or compilation needed, no storage needed. See [Detection Strategy and Robustness](#detection-strategy-and-robustness) for the full analysis.
 
 ### Output Identification via Script Pubkey Matching
 
@@ -2412,9 +2470,9 @@ Note: Covenant scripts are used internally by `step` for catch-up scanning and s
 
 ### Discovery-Batched Forward Sync
 
-**Chosen**: Pool discovery payloads can include `Vec<Txid>` of historical transitions. The caller batch-fetches all TXIDs in parallel and feeds them to `process_transaction` in chain order.
+**Chosen**: Pool discovery payloads can include `Vec<Txid>` of historical transitions. The caller pre-fetches all transactions in parallel and provides them through a `ChainSource` implementation that returns pre-cached results for `spending_transaction` calls. The engine's forward-chaining logic (via `step`) is unchanged — it still calls `spending_transaction` sequentially, but each call returns instantly from the cache instead of making a network request.
 **Rejected**: Sequential forward-chaining as the only catch-up mechanism.
-**Why**: A pool with 1000 transitions requires 1000 sequential "what spent this outpoint?" queries when forward-chaining. With bundled TXIDs, the caller fetches all 1000 transactions in parallel (one batch request) and sorts by chain position. The engine doesn't change — it still processes transactions forward. The optimization is purely in the discovery layer. The engine verifies chain of custody during processing (each tx must spend the previous outpoints), so bundled TXIDs are verified, not blindly trusted.
+**Why**: A pool with 1000 transitions requires 1000 sequential `spending_transaction` queries when forward-chaining. With bundled TXIDs, the caller's `ChainSource` pre-fetches all 1000 transactions in parallel (one batch request to their chain backend) and caches them. The engine's `step` call then forward-chains through the cache at memory speed. The optimization lives entirely in the `ChainSource` implementation — the engine's internal logic is unchanged. The engine verifies chain of custody during processing (each tx must spend the previous outpoints), so pre-cached transactions are verified, not blindly trusted.
 
 ### Discoverability Trust Gap (OP_RETURN Deferred)
 

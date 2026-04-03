@@ -67,13 +67,13 @@ The caller doesn't need to know which path is taken — the engine determines it
 
 ### State Advancement
 
-`process_transaction` identifies these transitions by: both RT outpoints spent + no new covenant outputs + market had zero outstanding pairs. Produces `MarketTransition::Resolved { outcome_yes }` or `MarketTransition::Expired` as appropriate (same transition variants as the existing paths — the zero-pair detail is internal).
+`process_transaction` identifies these transitions by: both RT outpoints spent + no new covenant outputs + market had zero outstanding pairs. Since all three dormant terminal paths produce identical observable outputs (no covenant outputs), the engine uses **witness-based path detection** — extracting the Simplicity program and witness bytes from the spending transaction's witness stack and calling `RedeemNode::decode` to determine which spend path was taken. This yields `MarketTransition::Resolved { outcome: Side }` or `MarketTransition::Expired` as appropriate. See the main design doc's [Detection Strategy and Robustness](deadcat-core-design.md#detection-strategy-and-robustness) section.
 
 ### Transition Details
 
 From the public API perspective, these transitions look the same as their non-zero-pair counterparts:
 
-- `MarketTransition::Resolved { outcome_yes: bool }` — whether triggered from zero or non-zero pairs
+- `MarketTransition::Resolved { outcome: Side }` — whether triggered from zero or non-zero pairs
 - `MarketTransition::Expired` — same
 
 The distinction (zero pairs vs non-zero pairs) is an internal routing detail for PSET construction, not a public API concern. This is consistent with hiding the Dormant/Unresolved distinction.
