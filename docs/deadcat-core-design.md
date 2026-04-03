@@ -138,7 +138,7 @@ impl<S: ContractStore> ContractEngine<S> {
     // Prediction market builder (no RT involvement → PartiallySignedTransaction)
     pub fn build_redemption_pset(&self, contract_id: &ContractId, side: Side, tokens_to_redeem: u64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     // LMSR pool builders
-    pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, starting_price_bps: u16, max_loss_sats: u64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, starting_price_bps: u16, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     pub fn build_lmsr_adjust_pset(&self, contract_id: &ContractId, pair_delta: i64, collateral_delta: i64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     pub fn build_lmsr_close_pset(&self, contract_id: &ContractId, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     // Maker order builders (maker lifecycle only — taker fills go through build_trade_pset)
@@ -155,9 +155,11 @@ impl<S: ContractStore> ContractEngine<S> {
     pub fn oracle_attestation_spec(&self, contract_id: &ContractId, outcome_yes: bool) -> Result<OracleAttestationSpec, CoreError<S::Error>>;
 }
 
-// Standalone pure functions (no engine needed — requires Simplicity compilation)
-pub fn contract_cmr(params: &ContractParams, network: Network) -> Cmr;
+// Standalone pure functions (no engine needed)
+pub fn contract_cmr(params: &ContractParams, network: Network) -> Cmr;  // requires Simplicity compilation
 pub fn oracle_attestation_message(yes_asset_id: &AssetId, no_asset_id: &AssetId, outcome_yes: bool) -> [u8; 32];
+pub fn estimate_bootstrap(max_loss_sats: u64, half_payout_sats: u64, fee_bps: u16, starting_price_bps: u16) -> BootstrapEstimate;
+pub fn derive_pool_params(market_params: &PredictionMarketParams, max_loss_sats: u64, half_payout_sats: u64, fee_bps: u16, admin_pubkey: XOnlyPublicKey) -> LmsrPoolParams;
 
 // History methods — only available when the store implements ContractHistory
 impl<S: ContractHistory> ContractEngine<S> {
@@ -1578,7 +1580,7 @@ pub fn build_redemption_pset(&self, contract_id: &ContractId, side: Side, tokens
 | `build_lmsr_close_pset` | Pool closure (reclaim all reserves) | Close script path |
 
 ```rust
-pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, starting_price_bps: u16, max_loss_sats: u64, funding: &WalletFunding)
+pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, starting_price_bps: u16, funding: &WalletFunding)
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 
 pub fn build_lmsr_adjust_pset(&self, contract_id: &ContractId, pair_delta: i64, collateral_delta: i64, funding: &WalletFunding)
@@ -1901,17 +1903,21 @@ Core does not add `Send` or `Sync` bounds on the `ContractStore` trait. If a sto
 
 ## LMSR Math
 
-Core provides pure LMSR computation functions. These currently live in `src-tauri/crates/deadcat-sdk/src/amm_pool/math.rs` and will be **moved** (not copied) into `deadcat-core` — the SDK will then import them from core. The functions and their parameter types (`LmsrManifest`, `LmsrParams`, `TradeKind`, etc.) are defined in the existing implementation and are imported as-is — no redesign needed.
+Core provides pure LMSR computation functions for pricing, quoting, and table generation. See [lmsr-pool-design.md](lmsr-pool-design.md) for the full pool design, parameter simplification rationale, and Merkle-committed curve approach.
 
-- `fee_free_yes_spot_price_bps(manifest, params, s_index)` — implied probability
-- `quote_from_table(trade_kind, old_s_index, new_s_index, ...)` — deterministic quote
+The key functions (currently in `src-tauri/crates/deadcat-sdk/src/lmsr_pool/math.rs`, will move to `deadcat-core`):
+
+- `fee_free_yes_spot_price_bps(manifest, params, s_index)` — implied probability at a given state
+- `quote_from_table(trade_kind, old_s_index, new_s_index, ...)` — deterministic quote from F-value table lookup
 - `quote_exact_input_from_manifest(manifest, params, trade_kind, s_index, input)` — best trade for a given input amount
-- `generate_lmsr_table(liquidity, depth, q_step_lots, s_bias, half_payout)` — generate lookup table
+- `generate_lmsr_table(b, half_payout_sats, q_step_lots)` — deterministic integer-only F-value generation (see [Deterministic Table Generation](lmsr-pool-design.md#deterministic-table-generation))
 - `lmsr_table_root(values)` — Merkle root from table values
+
+Types: `LmsrTradeKind` (BuyYes, SellYes, BuyNo, SellNo), `LmsrQuote` (full trade result with reserve deltas), `LmsrTableManifest` (in-memory table: depth + F-values vector).
 
 These have zero dependencies beyond basic math — no wallet, chain, or state.
 
-**Note for implementors**: After the move to `deadcat-core`, this section should be updated with the final type definitions and full function signatures. The SDK path above will no longer be valid post-migration.
+**Note for implementors**: After the move to `deadcat-core`, this section should be updated with the final type definitions and full function signatures. The `generate_lmsr_table` function must use a deterministic integer-only algorithm (no floating point) to ensure bit-identical F-values across all platforms — the specific algorithm is defined in the implementation. The SDK path above will no longer be valid post-migration.
 
 ## Sync Patterns and Discovery
 

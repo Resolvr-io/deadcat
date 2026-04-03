@@ -22,6 +22,8 @@ Where `b` is the liquidity parameter (in sats). This function is:
 
 The implied YES price at state s is the logistic function: `p = 1 / (1 + exp(-2s/b))`, which naturally stays in (0, 1).
 
+**UI visualization note**: The pricing curve is the standard logistic function — any UI framework can compute and plot it directly from `b` and `s_bias` without calling `deadcat-core`. The discrete LMSR table steps are invisible at UI rendering resolution; the continuous logistic curve is visually identical. More complex visualizations (price impact curves, depth charts, P&L scenarios) would depend on the actual LMSR math and could be added as core functions if needed.
+
 ### Pool as Inventory Manager
 
 The pool holds three reserves:
@@ -161,12 +163,15 @@ The generation cost (~80ms for depth 16) is acceptable for one-time operations a
 The pool creator:
 
 1. Specifies `max_loss_sats`, `fee_bps`, `half_payout_sats`, `starting_price_bps`
-2. Calls `estimate_bootstrap(...)` to see the required reserves (YES tokens, NO tokens, collateral)
+2. Calls `estimate_bootstrap(...)` to see the required reserves (YES tokens, NO tokens, collateral) — lightweight, called on every slider change
 3. Obtains the required YES and NO tokens by issuing pairs on the parent prediction market
-4. Calls `build_lmsr_bootstrap_pset(...)` with a `WalletFunding` containing the required tokens and collateral
-5. Signs and broadcasts
+4. Calls `derive_pool_params(...)` to construct the full `LmsrPoolParams` with all derived fields (table root, q_step_lots, asset IDs) — heavier, called once when the user commits to creating
+5. Calls `build_lmsr_bootstrap_pset(&params, starting_price_bps, &funding)` to build the transaction
+6. Signs and broadcasts
 
-The engine internally derives all covenant params (`b`, `q_step_lots`, `lmsr_table_root`, etc.), generates the table, computes the Merkle root, compiles the Simplicity covenant, and constructs the creation transaction with three reserve outputs (YES, NO, Collateral) and an OP_RETURN recovery hint.
+`derive_pool_params` is a standalone pure function that takes the parent market's `PredictionMarketParams` (for asset IDs), the creator's four params, and the admin pubkey (from mnemonic). It derives `b`, `q_step_lots`, generates the F-value table deterministically, computes the Merkle root, and returns a fully-formed `LmsrPoolParams`. The builder then compiles the Simplicity covenant from these params and constructs the creation transaction with three reserve outputs (YES, NO, Collateral) and an OP_RETURN recovery hint.
+
+Note: an integrator COULD construct `LmsrPoolParams` manually (it's a plain data struct with public fields), but `derive_pool_params` is strongly recommended because it guarantees the canonical deterministic table generation algorithm is used. A different implementation would produce a different Merkle root, and the covenant would reject all swaps.
 
 The starting `s_index` is computed from `starting_price_bps` — the engine maps the requested price to the nearest valid discrete s_index. The initial reserves are computed as a balanced allocation: equal trading depth in both directions from the starting price.
 
@@ -194,6 +199,20 @@ pub struct BootstrapEstimate {
 A standalone pure function (no engine needed). The UI calls this on every slider change for live feedback — sub-millisecond, just LMSR math. `implied_price_bps` shows the actual price at the nearest valid s_index (may differ slightly from the requested price due to discretization).
 
 The `yes_tokens_needed` and `no_tokens_needed` are determined by the pool's capacity in each direction from the starting price. At 50/50, they're roughly equal. At 70/30, more NO tokens are needed (more room to move toward 0%) and fewer YES tokens (less room toward 100%). The balanced allocation ensures equal trading depth in both directions.
+
+### Param Derivation
+
+```rust
+pub fn derive_pool_params(
+    market_params: &PredictionMarketParams,
+    max_loss_sats: u64,
+    half_payout_sats: u64,
+    fee_bps: u16,
+    admin_pubkey: XOnlyPublicKey,
+) -> LmsrPoolParams;
+```
+
+A standalone pure function that constructs the full `LmsrPoolParams` with all derived fields. Called once when the user commits to creating a pool — heavier than `estimate_bootstrap` because it generates the full 65K-entry F-value table and computes the Merkle root (~80ms). The resulting `LmsrPoolParams` is passed directly to `build_lmsr_bootstrap_pset`.
 
 ### Trading (Swaps)
 
