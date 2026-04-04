@@ -154,7 +154,9 @@ Deterministic generation eliminates several problems:
 4. **Caveat emptor resolved**: Anyone can verify a pool's curve is well-formed by regenerating the table from params and inspecting the F-values. No trust in the pool creator's off-chain claims.
 5. **`interpret_transaction` works without stored manifests**: The engine regenerates the table for any pool whose params are known.
 
-The generation cost (~80ms for depth 16) is acceptable for one-time operations at pool ingestion or PSET building. For repeated access during `quote_trade` (which may evaluate multiple pools), the engine can cache the manifest in memory for the duration of the call.
+The generation cost (~80ms for depth 16) is acceptable for one-time operations at pool ingestion or PSET building.
+
+**Point evaluation for quoting**: The quoting hot path (`quote_trade`) does NOT need the full 65K-entry table. It evaluates the cost function at specific points using the same deterministic integer algorithm (~1us per evaluation). A binary search to find the optimal `new_s_index` for a given input amount requires ~16 evaluations = ~16us per pool. Compare: full table generation = ~80ms. This means `quote_trade` evaluating 5 candidate pools costs ~80us total, with no table caching needed. The full table is only required for Merkle proof generation (`build_trade_pset`, `build_lmsr_bootstrap_pset`) and pool ingestion verification — infrequent, user-initiated operations where ~80ms is acceptable.
 
 ## Pool Lifecycle
 
@@ -307,20 +309,11 @@ With the simplifications above, the on-chain `LmsrPoolParams` contains:
 
 ## OP_RETURN Recovery Hint
 
-The pool creation transaction includes a zero-value OP_RETURN output for mnemonic-based recovery:
+The pool creation transaction includes a **39-byte** zero-value OP_RETURN output for mnemonic-based recovery. The hint uses compressed encoding: `max_loss_sats` and `half_payout_sats` as 9-bit values (26-value mantissa x 10^exponent, supporting non-L-BTC assets), `fee_bps` as u12 (0.01% granularity), plus an XOR-masked pool operator derivation index.
 
-```
-OP_RETURN <type_tag: u8>                         --  1 byte
-          <market_creation_txid: [u8; 32]>       -- 32 bytes
-          <max_loss_sats: u64>                   --  8 bytes
-          <half_payout_sats: u64>                --  8 bytes
-          <fee_bps: u16>                         --  2 bytes
-                                          Total: 51 bytes
-```
+All other covenant params are derived: `b` from `max_loss_sats`, `q_step_lots` from `b` and `half_payout_sats`, `lmsr_table_root` from deterministic F-value generation, token asset IDs from the parent market, admin pubkey from the mnemonic at `pool_index`. Protocol constants require no encoding.
 
-**51 bytes** — fits in a single OP_RETURN with 29 bytes of headroom.
-
-**Recovery flow**: Read `max_loss_sats` and `half_payout_sats` from the hint → derive `b` and `q_step_lots` → generate F-value table deterministically → compute `lmsr_table_root` → fetch market creation tx by `market_creation_txid` → read market OP_RETURN → reconstruct `PredictionMarketParams` → derive token asset IDs → derive admin key from mnemonic → reconstruct full `LmsrPoolParams` → compile → verify script matches creation tx output → ingest.
+See [chain-only-recovery.md](chain-only-recovery.md) for the exact byte layout, per-field justification, recovery flow, denomination convention specification, and XOR index masking details.
 
 ## Key Files
 

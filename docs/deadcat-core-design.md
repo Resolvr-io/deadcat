@@ -6,6 +6,8 @@
 
 The primary motivating use case: integrating Deadcat functionality into existing wallets like Aqua, which already have their own wallet backend, chain connection, signer, and state management. These wallets need the covenant logic without an opinionated runtime.
 
+**Implementation prerequisite**: This document specifies the planned end state — after several pending `.simf` covenant refactors (collateral-per-pair rename, oracle BIP-340 tagged hash, cosigner removal, script-cancel removal, pool close path addition, pool param constants). These refactors should be applied before implementing `deadcat-core`. See [contract-specification.md § Pending Refactors](contract-specification.md#pending-refactors) for the complete list and status.
+
 ## Architecture Overview
 
 ### Layer Separation
@@ -138,11 +140,11 @@ impl<S: ContractStore> ContractEngine<S> {
     // Prediction market builder (no RT involvement → PartiallySignedTransaction)
     pub fn build_redemption_pset(&self, contract_id: &ContractId, side: Side, tokens_to_redeem: u64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     // LMSR pool builders
-    pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, starting_price_bps: u16, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, starting_price_bps: u16, masked_index: u16, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     pub fn build_lmsr_adjust_pset(&self, contract_id: &ContractId, pair_delta: i64, collateral_delta: i64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     pub fn build_lmsr_close_pset(&self, contract_id: &ContractId, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     // Maker order builders (maker lifecycle only — taker fills go through build_trade_pset)
-    pub fn build_create_order_pset(&self, params: &MakerOrderParams, offered_amount: u64, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    pub fn build_create_order_pset(&self, params: &MakerOrderParams, offered_amount: u64, masked_index: u16, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     pub fn build_cancel_order_pset(&self, contract_id: &ContractId, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
     // Trade builder (uses TradeQuote from quote_trade — handles all taker operations including order fills)
     pub fn build_trade_pset(&self, quote: &TradeQuote, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
@@ -160,6 +162,7 @@ pub fn contract_cmr(params: &ContractParams, network: Network) -> Cmr;  // requi
 pub fn oracle_attestation_message(yes_asset_id: &AssetId, no_asset_id: &AssetId, outcome_yes: bool) -> [u8; 32];
 pub fn estimate_bootstrap(max_loss_sats: u64, half_payout_sats: u64, fee_bps: u16, starting_price_bps: u16) -> BootstrapEstimate;
 pub fn derive_pool_params(market_params: &PredictionMarketParams, max_loss_sats: u64, half_payout_sats: u64, fee_bps: u16, admin_pubkey: XOnlyPublicKey) -> LmsrPoolParams;
+pub fn derive_order_params(market_params: &PredictionMarketParams, order_secret_key: &[u8; 32], maker_base_pubkey: &XOnlyPublicKey, order_index: u16, side: Side, direction: OrderDirection, price: u64, min_fill_lots: u8, min_remainder_lots: u8) -> (MakerOrderParams, u16 /* masked_index */);
 
 // History methods — only available when the store implements ContractHistory
 impl<S: ContractHistory> ContractEngine<S> {
@@ -483,7 +486,7 @@ pub enum ContractParams {
 
 `ContractParams` is purely definitional — it contains only the data needed to derive the contract's identity (CMR) and addresses (covenant script pubkeys). No creation-time secrets or blinding factors. Given `ContractParams` + network + the Simplicity source code (built into `deadcat-core`), all covenant addresses for all states can be derived deterministically.
 
-`PredictionMarketParams` defines the market's covenant parameters (oracle key, expiry, etc.). `LmsrPoolParams` defines the pool's parameters (token asset IDs referencing the parent market, liquidity parameters). `MakerOrderParams` defines the order's parameters (base/quote asset IDs, price, direction). These types map 1:1 to Simplicity covenant parameters. The `.simf` contract sources are authoritative for which parameters exist; see `src-tauri/crates/deadcat-sdk/src/{prediction_market,lmsr_pool,maker_order}/params.rs` for current Rust definitions.
+`PredictionMarketParams` defines the market's covenant parameters (oracle key, expiry, etc.). `LmsrPoolParams` defines the pool's parameters (token asset IDs referencing the parent market, liquidity parameters). `MakerOrderParams` defines the order's parameters (base/quote asset IDs, price, direction). These types map 1:1 to Simplicity covenant parameters. See [contract-specification.md](contract-specification.md) for the planned field definitions (post-refactor), per-contract covenant structure, spend paths, and witness data. The current SDK implementations (`src-tauri/crates/deadcat-sdk/src/{prediction_market,lmsr_pool,maker_order}/params.rs`) differ from the planned state — see [contract-specification.md § Pending Refactors](contract-specification.md#pending-refactors).
 
 ### Contract
 
@@ -528,22 +531,12 @@ pub enum MarketState {
     Expired {
         outstanding_pairs: u64,
     },
-    Settled {
-        final_txid: Txid,
-        outcome: MarketOutcome,
-    },
-}
-
-pub enum MarketOutcome {
-    ResolvedYes,
-    ResolvedNo,
-    Expired,
 }
 ```
 
 `Trading` covers both the Dormant (zero outstanding pairs) and Unresolved (non-zero outstanding pairs) covenant phases. The distinction between these two phases is a covenant implementation detail — from the user's perspective, a market with 0 pairs is simply "a market where no one has issued yet" or "a fully cancelled market." `outstanding_pairs` is derived from collateral value: `collateral / collateral_per_pair`. Collateral amount is derivable in reverse: `outstanding_pairs * collateral_per_pair`. See [collateral-per-pair-refactor.md](collateral-per-pair-refactor.md) for the covenant parameter rename.
 
-`MarketOutcome` carries the outcome so a wallet can answer "did this market resolve YES or NO?" without requiring transition history. This is essential for basic UX: showing "Your YES tokens are redeemable" vs "Your YES tokens are worthless."
+**Terminal state**: `ResolvedYes`, `ResolvedNo`, or `Expired` with `outstanding_pairs == 0`. This represents a market where all covenant UTXOs have been consumed — no collateral left to redeem. The outcome is implicit in the variant name (no separate `MarketOutcome` type needed). A wallet answers "did this market resolve YES or NO?" directly from the variant. `Trading { outstanding_pairs: 0 }` is NOT terminal — it's dormant (can still receive issuance, resolution, or expiry). Resolution and expiry always produce the corresponding `ResolvedYes`/`ResolvedNo`/`Expired` variant, regardless of whether the market had outstanding pairs. If `outstanding_pairs == 0` (dormant terminal path), the resulting state is immediately terminal. If `outstanding_pairs > 0`, collateral remains locked until redeemed (at which point `outstanding_pairs` reaches 0).
 
 Outpoints are not exposed in the public state — they are internal to the engine.
 
@@ -630,7 +623,7 @@ pub enum OrderState {
 }
 ```
 
-`offered_amount` is the total value the maker locked when the order was created. For `Creation` ingestion, this is the initial UTXO value (the true original). For `Current` ingestion, this is `locked_value` from the snapshot (the remaining at discovery time — the best available without history). `total_filled` is cumulative fills since ingestion. Both are denominated in the order's locked asset — the asset the maker offered (BASE for sell-base orders, QUOTE for sell-quote orders, per `MakerOrderParams.is_sell_base`). Remaining liquidity is `offered_amount - total_filled`.
+`offered_amount` is the total value the maker locked when the order was created. For `Creation` ingestion, this is the initial UTXO value (the true original). For `Current` ingestion, this is `locked_value` from the snapshot (the remaining at discovery time — the best available without history). `total_filled` is cumulative fills since ingestion. Both are denominated in the order's locked asset — the asset the maker offered (BASE for sell-base orders, QUOTE for sell-quote orders, per `MakerOrderParams.direction`). Remaining liquidity is `offered_amount - total_filled`.
 
 `Active` enables "5,000 of 10,000 sats filled" display. `Consumed` stores `offered_amount` (which equals `total_filled` by definition — only one is needed). `Cancelled` enables "5,000 of 10,000 filled, then cancelled" display (if `total_filled == 0`, it was a clean cancellation). Outpoints are internal to the engine and not exposed in the public state.
 
@@ -830,8 +823,8 @@ pub struct OracleAttestationSpec {
 
 ```rust
 pub enum RedemptionKind {
-    PostResolution,  // Resolved → Settled (winning tokens redeemed at full value)
-    Expiry,          // Expired → Settled (any tokens redeemed at half value)
+    PostResolution,  // ResolvedYes/ResolvedNo with outstanding_pairs decremented (winning tokens redeemed at full value)
+    Expiry,          // Expired with outstanding_pairs decremented (any tokens redeemed at half value)
 }
 ```
 
@@ -995,7 +988,7 @@ pub enum MarketTransition {
 
 pub enum PoolTransition {
     Swapped { old_s_index: u64, new_s_index: u64, old_reserves: PoolReserves, new_reserves: PoolReserves },
-    Adjusted { old_reserves: PoolReserves, new_reserves: PoolReserves },
+    Adjusted { s_index: u64, old_reserves: PoolReserves, new_reserves: PoolReserves },
     Closed { final_reserves: PoolReserves },
 }
 
@@ -1206,10 +1199,10 @@ The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [S
 
 - **Issuance** (Trading with 0 pairs to Trading with >0 pairs, or Trading to Trading with more pairs): Old outputs match Dormant or Unresolved slots; new outputs match Unresolved slots. `pairs` = new collateral value / `collateral_per_pair`. This division is always exact — the covenant enforces that collateral is a multiple of the pair cost. Implementations should assert exactness rather than silently truncating. `collateral_locked` = new collateral value - old collateral value. For initial issuance from Dormant, old collateral value is zero (no prior collateral output exists), so `collateral_locked` equals the full new collateral value. `IssuanceKind` is determined internally (`Initial` if old phase was Dormant, `Subsequent` if Unresolved) but not exposed in the public `MarketTransition::Issued`.
 - **Resolution** (Trading with >0 pairs → ResolvedYes/ResolvedNo): New output matches either `ResolvedYesCollateral` or `ResolvedNoCollateral` script. Which one determines the `outcome`.
-- **Redemption** (ResolvedYes/ResolvedNo/Expired → Settled): No new covenant outputs. `payout_sats` is derived from the old collateral value. `side` from which token burn outputs are present. `RedemptionKind` is `PostResolution` if old state was ResolvedYes/ResolvedNo, `Expiry` if Expired.
+- **Redemption** (ResolvedYes/ResolvedNo/Expired with outstanding_pairs decremented, terminal when reaching 0): No new covenant outputs. `payout_sats` is derived from the old collateral value. `side` from which token burn outputs are present. `RedemptionKind` is `PostResolution` if old state was ResolvedYes/ResolvedNo, `Expiry` if Expired.
 - **Cancellation** (Trading → Trading with fewer pairs): New outputs match Unresolved or Dormant slots. `pairs_burned` = (old collateral - new collateral) / `collateral_per_pair`. `collateral_returned` = old collateral - new collateral. If new outputs match Dormant slots (all collateral returned), it's a full cancellation back to zero outstanding pairs.
 - **Expiry** (Trading with >0 pairs → Expired): New output matches `ExpiredCollateral` script.
-- **Dormant terminal paths** (Trading with 0 pairs → Settled): Both RT outpoints consumed, no new covenant outputs. The engine cannot distinguish dormant resolution (YES or NO) from dormant expiry using outputs alone — all three paths produce identical observable results (both DormantRT inputs spent, zero covenant outputs). The engine uses **witness-based path detection** to determine the outcome: it extracts the Simplicity program bytes and witness bytes from the spending transaction's witness stack and calls `RedeemNode::decode` to identify which covenant spend path was taken. This determines the `MarketOutcome` (ResolvedYes, ResolvedNo, or Expired) for the resulting `Settled` state. See [Detection Strategy and Robustness](#detection-strategy-and-robustness) and [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md).
+- **Dormant terminal paths** (Trading with 0 pairs → ResolvedYes/ResolvedNo/Expired with 0 pairs): Both RT outpoints consumed, no new covenant outputs. The engine cannot distinguish dormant resolution (YES or NO) from dormant expiry using outputs alone — all three paths produce identical observable results (both DormantRT inputs spent, zero covenant outputs). The engine uses **witness-based path detection**: it extracts the Simplicity program bytes and witness bytes from the spending transaction's witness stack and calls `RedeemNode::decode` to identify which covenant spend path was taken. This determines the resulting variant (`ResolvedYes`, `ResolvedNo`, or `Expired`) — all with `outstanding_pairs: 0` (immediately terminal). See [Detection Strategy and Robustness](#detection-strategy-and-robustness) and [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md).
 
 **Detection strategy summary:**
 
@@ -1222,7 +1215,7 @@ The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [S
 | Partial cancellation | Unresolved inputs → Unresolved outputs, collateral decreased | Yes — value direction distinguishes from issuance |
 | Full cancellation | Unresolved inputs → Dormant output scripts | Yes — unique scripts |
 | Expiry (non-dormant) | Unresolved inputs → ExpiredCollateral output script | Yes — unique script for slot 7 |
-| Dormant terminal | Dormant RT inputs → no covenant outputs, old state was Trading(0 pairs) | **No** — three-way ambiguity (YES/NO/Expired) requires witness path detection |
+| Dormant terminal | Dormant RT inputs → no covenant outputs, old state was Trading(0 pairs), witness path detection for three-way ambiguity | Yes — witness is ground truth (determines ResolvedYes/ResolvedNo/Expired, all with outstanding_pairs: 0) |
 
 #### LMSR Pools
 
@@ -1355,7 +1348,8 @@ chain.broadcast(signed)?;
 
 **Order creation** (maker):
 ```rust
-let pset = engine.build_create_order_pset(&params, offered_amount, &funding)?;
+let (params, masked_index) = derive_order_params(&market_params, &order_secret_key, &maker_pubkey, order_index, Side::Yes, OrderDirection::SellBase, price, 1, 1);
+let pset = engine.build_create_order_pset(&params, offered_amount, masked_index, &funding)?;
 let signed = signer.sign(pset)?;
 chain.broadcast(signed)?;
 // After confirmation: ingest and step catches it up
@@ -1485,7 +1479,7 @@ This is an implementation detail — core doesn't need per-contract configuratio
 
 The current contract state (stored via `ContractStore`) carries enough information for basic wallet UX without requiring `ContractHistory`. A minimal consumer that only implements `ContractStore` can still answer:
 
-- "Did this market resolve YES or NO?" -> `MarketState::Settled { outcome: MarketOutcome::ResolvedYes }` or `MarketState::ResolvedYes { .. }`
+- "Did this market resolve YES or NO?" -> `MarketState::ResolvedYes { outstanding_pairs: 0 }` (terminal) or `MarketState::ResolvedYes { outstanding_pairs: 500 }` (awaiting redemption)
 - "How much of my order has been filled?" -> `OrderState::Active { total_filled }` or `OrderState::Cancelled { total_filled }`
 - "What are my pool's current reserves?" -> `LmsrPoolState::Active { reserves, .. }`
 
@@ -1542,11 +1536,11 @@ PSET builders take operation-specific arguments as direct function parameters al
 | `build_cancellation_pset` | Cancel market (burn tokens, return collateral) | Trading → Trading (fewer pairs) or → Trading (0 pairs) |
 | `build_oracle_resolve_pset` | Oracle resolution | Trading → ResolvedYes/ResolvedNo |
 | `build_expire_transition_pset` | Expire market | Trading → Expired |
-| `build_redemption_pset` | Redeem tokens (post-resolution or post-expiry) | ResolvedYes/ResolvedNo/Expired → Settled |
+| `build_redemption_pset` | Redeem tokens (post-resolution or post-expiry) | ResolvedYes/ResolvedNo/Expired → same variant with fewer pairs (terminal at 0) |
 
 Creation takes concrete param type `&PredictionMarketParams` (compiles on the fly). All others take `contract_id` (recompiles from stored params). `build_issuance_pset` handles both initial and subsequent issuance — the engine determines which from the contract's current state. `build_redemption_pset` handles both post-resolution and post-expiry redemption — the engine determines which from the current state. The `side` parameter specifies which token to burn; for resolved markets, the engine validates it matches the winning side.
 
-`build_oracle_resolve_pset` and `build_expire_transition_pset` branch internally based on outstanding pairs — when called on a market with zero outstanding pairs (Dormant), they handle the dormant terminal paths (both RT UTXOs consumed, market reaches Settled). No new builder methods are needed for this case. See [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md).
+`build_oracle_resolve_pset` and `build_expire_transition_pset` branch internally based on outstanding pairs — when called on a market with zero outstanding pairs (Dormant), they handle the dormant terminal paths (both RT UTXOs consumed, market reaches terminal state with outstanding_pairs: 0). No new builder methods are needed for this case. See [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md).
 
 ```rust
 // Creation — takes concrete params, compiles on the fly. Returns UnblindedPset (RT outputs).
@@ -1569,7 +1563,7 @@ pub fn build_redemption_pset(&self, contract_id: &ContractId, side: Side, tokens
 
 `build_cancellation_pset` takes `pairs_to_burn: Option<u64>` — if `None`, the engine computes the maximum cancellable amount from the available YES and NO tokens in `funding.available_utxos` (minimum of the two token balances).
 
-`build_creation_pset` includes a 77-byte zero-value OP_RETURN output containing the non-derivable covenant params (oracle pubkey, collateral asset ID, collateral per pair, expiry time) as a recovery hint. See [Wallet Recovery](#wallet-recovery).
+`build_creation_pset` includes a 36-byte zero-value OP_RETURN recovery hint (compressed encoding of non-derivable covenant params). See [Wallet Recovery](#wallet-recovery) and [chain-only-recovery.md](chain-only-recovery.md).
 
 ### LMSR Pool Builders
 
@@ -1580,7 +1574,7 @@ pub fn build_redemption_pset(&self, contract_id: &ContractId, side: Side, tokens
 | `build_lmsr_close_pset` | Pool closure (reclaim all reserves) | Close script path |
 
 ```rust
-pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, starting_price_bps: u16, funding: &WalletFunding)
+pub fn build_lmsr_bootstrap_pset(&self, params: &LmsrPoolParams, starting_price_bps: u16, masked_index: u16, funding: &WalletFunding)
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 
 pub fn build_lmsr_adjust_pset(&self, contract_id: &ContractId, pair_delta: i64, collateral_delta: i64, funding: &WalletFunding)
@@ -1594,7 +1588,7 @@ pub fn build_lmsr_close_pset(&self, contract_id: &ContractId, funding: &WalletFu
 
 `build_lmsr_close_pset` atomically consumes all three reserve UTXOs via the dedicated Simplicity close script path (NUMS internal key makes key-spend unspendable). All reserve funds are returned to `funding.return_script`. See [lmsr-pool-close-path.md](lmsr-pool-close-path.md).
 
-`build_lmsr_bootstrap_pset` includes a 51-byte zero-value OP_RETURN output containing the parent market's creation txid and the creator-specified params (`max_loss_sats`, `half_payout_sats`, `fee_bps`) as a recovery hint. All other covenant params are derived via deterministic table generation. See [Wallet Recovery](#wallet-recovery) and [lmsr-pool-design.md](lmsr-pool-design.md).
+`build_lmsr_bootstrap_pset` includes a **39-byte** zero-value OP_RETURN recovery hint containing: market creation txid, `max_loss_sats` and `half_payout_sats` (9-bit encoded: 26-value mantissa x 10^exponent, supporting non-L-BTC assets), `fee_bps` (u12, 0.01% granularity), and XOR-masked pool operator derivation index. All other covenant params are derived via deterministic table generation. See [Wallet Recovery](#wallet-recovery), [chain-only-recovery.md](chain-only-recovery.md), and [lmsr-pool-design.md](lmsr-pool-design.md).
 
 **Signing note**: Pool adjust and close PSETs require signing with both the wallet key (for fee inputs) and the pool's admin key (for the covenant spend authorization). Both keys are controlled by the pool operator. Pool swaps (via trade PSETs) are permissionless and require only the taker's wallet key.
 
@@ -1610,14 +1604,14 @@ The maker's lifecycle is directly exposed. The taker side (filling orders) is ha
 | `build_cancel_order_pset` | Cancel order | Active → Cancelled |
 
 ```rust
-pub fn build_create_order_pset(&self, params: &MakerOrderParams, offered_amount: u64, funding: &WalletFunding)
+pub fn build_create_order_pset(&self, params: &MakerOrderParams, offered_amount: u64, masked_index: u16, funding: &WalletFunding)
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 
 pub fn build_cancel_order_pset(&self, contract_id: &ContractId, funding: &WalletFunding)
     -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 ```
 
-`build_create_order_pset` includes a 39-byte zero-value OP_RETURN output containing the order index, parent market's creation txid, price, and direction as a recovery hint. This enables instant mnemonic-based order recovery without brute-force scanning. See [Wallet Recovery](#wallet-recovery).
+`build_create_order_pset` includes a 40-byte zero-value OP_RETURN recovery hint (masked derivation index, market txid, compressed price/side/direction/min_fill/min_remainder). The `masked_index` parameter is computed by the caller via `derive_order_params`. See [Wallet Recovery](#wallet-recovery) and [chain-only-recovery.md](chain-only-recovery.md).
 
 ### Trade PSET Builder
 
@@ -1737,6 +1731,8 @@ pub trait ChainSource {
         -> Result<Vec<ChainTransaction>, Self::Error>;
     fn spending_transaction(&self, outpoint: &OutPoint)
         -> Result<Option<ChainTransaction>, Self::Error>;
+    fn issuance_transaction(&self, asset_id: &AssetId)
+        -> Result<Option<ChainTransaction>, Self::Error>;
 
     // Steady-state (push registration + drain)
     fn register_scripts(&mut self, scripts: &[Script], from_height: u32) -> Result<(), Self::Error>;
@@ -1747,9 +1743,9 @@ pub trait ChainSource {
 }
 ```
 
-**8 methods, split into two groups:**
+**9 methods, split into two groups:**
 
-The **catch-up** methods are synchronous pull queries. `tip_height` returns the current chain tip. `transactions_by_scripts` returns confirmed transactions *involving* any of the given scripts from `from_height` onwards, in chain order. Each transaction appears at most once in the result, even if it involves multiple scripts from the input set. "Involving" means both transactions that create outputs paying to those scripts AND transactions that spend outputs from those scripts — the engine needs both for catch-up (creation of covenant UTXOs and their subsequent spends). This matches the standard behavior of Electrum's `blockchain.scripthash.get_history` and Esplora's `/scripthash/:hash/txs`. **Important**: the `limit` parameter bounds total results, but the implementation must return ALL matching transactions from the `from_height` block even if that alone exceeds `limit`. The engine advances `from_height` by block after each batch — incomplete blocks would cause skipped transactions. `spending_transaction` returns the transaction that spent a given outpoint, or `None` if unspent.
+The **catch-up** methods are synchronous pull queries. `tip_height` returns the current chain tip. `transactions_by_scripts` returns confirmed transactions *involving* any of the given scripts from `from_height` onwards, in chain order. Each transaction appears at most once in the result, even if it involves multiple scripts from the input set. `issuance_transaction` returns the transaction that first issued a given asset ID — used for token holder recovery (see [chain-only-recovery.md](chain-only-recovery.md)). For Esplora backends, this maps to `GET /asset/:asset_id` → `issuance_txin.txid`. Works despite blinded reissuance token outputs because the issuance entropy is always explicit in the transaction's input data. "Involving" means both transactions that create outputs paying to those scripts AND transactions that spend outputs from those scripts — the engine needs both for catch-up (creation of covenant UTXOs and their subsequent spends). This matches the standard behavior of Electrum's `blockchain.scripthash.get_history` and Esplora's `/scripthash/:hash/txs`. **Important**: the `limit` parameter bounds total results, but the implementation must return ALL matching transactions from the `from_height` block even if that alone exceeds `limit`. The engine advances `from_height` by block after each batch — incomplete blocks would cause skipped transactions. `spending_transaction` returns the transaction that spent a given outpoint, or `None` if unspent.
 
 The **steady-state** methods manage a notification registration system. `register_scripts` and `register_spends` tell the chain source to watch for activity. `drain_notifications` returns any confirmed transactions that matched since the last drain. `unregister_scripts` and `unregister_spends` clean up when contracts reach terminal states or are untracked.
 
@@ -1808,10 +1804,10 @@ The root cause of the split: pool scripts encode the `s_index`, which changes on
 
 1. `chain.drain_notifications()` → process any matching transactions
 2. For pool transitions: `chain.unregister_spends(old_outpoints)`, `chain.register_spends(new_outpoints)`
-3. For contracts reaching terminal states (Settled, Closed, Consumed, Cancelled): `chain.unregister_scripts(scripts)` for markets/orders, `chain.unregister_spends(outpoints)` for pools. Prevents stale subscriptions from producing irrelevant notifications.
+3. For contracts reaching terminal states (markets: ResolvedYes/ResolvedNo/Expired with outstanding_pairs == 0; pools: Closed; orders: Consumed/Cancelled): `chain.unregister_scripts(scripts)` for markets/orders, `chain.unregister_spends(outpoints)` for pools. Prevents stale subscriptions from producing irrelevant notifications.
 4. `chain.tip_height()` → advance `synced_to` for all contracts (even if no notifications — the scan/subscription covered everything)
 
-**Subscription state invalidation**: Ingesting a contract, untracking a contract, or calling `rollback_to_height` invalidates the engine's internal subscription state. The next `step` re-initializes (re-reads from store, re-registers subscriptions). Invalidation is rare — ingestion and untracking are infrequent, rollbacks are exceptional on Liquid.
+**Subscription state invalidation**: Ingesting a contract, untracking a contract, or calling `rollback_to_height` invalidates the engine's internal subscription state. The engine tracks internally whether subscriptions are initialized; these operations reset the flag, causing the next `step` to re-initialize (re-reads from store, re-registers subscriptions). Invalidation is rare — ingestion and untracking are infrequent, rollbacks are exceptional on Liquid.
 
 ### `synced_to` Tracking
 
@@ -1917,6 +1913,8 @@ Types: `LmsrTradeKind` (BuyYes, SellYes, BuyNo, SellNo), `LmsrQuote` (full trade
 
 These have zero dependencies beyond basic math — no wallet, chain, or state.
 
+**Point evaluation vs full table**: The quoting hot path (`quote_trade`) does NOT need the full 65K-entry F-value table. It evaluates the cost function at specific points (~1us per evaluation, ~16us for a binary search over the table index range). The full table is only needed for Merkle proof generation (`build_trade_pset`, `build_lmsr_bootstrap_pset`) and pool ingestion verification — infrequent, user-initiated operations where ~80ms generation time is acceptable. This means `quote_trade` evaluating 5 candidate pools costs ~80us total, not ~400ms. No table caching is needed for the quoting path.
+
 **Note for implementors**: After the move to `deadcat-core`, this section should be updated with the final type definitions and full function signatures. The `generate_lmsr_table` function must use a deterministic integer-only algorithm (no floating point) to ensure bit-identical F-values across all platforms — the specific algorithm is defined in the implementation. The SDK path above will no longer be valid post-migration.
 
 ## Sync Patterns and Discovery
@@ -1979,28 +1977,25 @@ This is useful when a trader initially ingested a pool for quick trading (non-in
 
 ## Wallet Recovery
 
-When a wallet is restored from a mnemonic, Deadcat positions need to be rediscovered. Fund recovery is **fully mnemonic-driven and stateless** — all three contract creation transactions (markets, pools, orders) embed OP_RETURN recovery hints that, combined with the mnemonic and chain data, enable complete reconstruction of contract params without any external services. Only human-readable contract metadata (e.g., "Will BTC hit $200k by 2027?") requires the discovery layer — the cryptographic parameters that control funds are all recoverable from the chain.
+When a wallet is restored from a mnemonic, Deadcat positions need to be rediscovered. Fund recovery is **fully mnemonic-driven and stateless** — all three contract creation transactions (markets, pools, orders) embed OP_RETURN recovery hints that, combined with the mnemonic and chain data, enable complete reconstruction of contract params without any external services. Pure token holders (takers who only traded through existing pools) recover via Elements asset issuance indexing — tracing the token's asset ID back to the market creation transaction. Only human-readable contract metadata (e.g., "Will BTC hit $200k by 2027?") requires the discovery layer — the cryptographic parameters that control funds are all recoverable from the chain.
 
-**Wallet-funded prerequisite**: The OP_RETURN recovery hints are found by scanning wallet-funded transactions (transactions where the wallet spent a UTXO as input). This means recovery only works for contracts the wallet itself funded. If a third party funded the creation transaction on the user's behalf, the wallet's rescan would not find it and the hint would be invisible. In practice, self-funded creation is the standard case.
+**Convention enforcement**: `ingest_market` rejects markets whose parameters don't conform to the recovery conventions (denomination, expiry, collateral asset). This ensures that any market tracked by the engine — and therefore any child contracts (orders, pools) created on it — supports chain-only recovery. The covenants accept wider ranges; the conventions exist for recovery, not consensus. See [chain-only-recovery.md](chain-only-recovery.md) for the full recovery specification.
 
-**OP_RETURN properties**: All recovery hints use zero-value OP_RETURN outputs, which are both consensus-valid and relay-standard on Elements (OP_RETURN scripts are classified as unspendable, so `GetDustThreshold` returns 0). Each hint adds ~59 bytes to the transaction — negligible fee impact (~6 sats at typical Liquid rates). The hints are always included; there is no opt-out. No new information is leaked — everything in the hints is already derivable from the covenant scripts by anyone with the relevant params.
+**Wallet-funded prerequisite**: OP_RETURN recovery hints are found by scanning wallet-funded transactions. Token holder recovery uses `ChainSource::issuance_transaction` to trace asset IDs back to their creation transactions. Both paths are chain-only — no external services.
+
+**OP_RETURN properties**: All recovery hints use zero-value OP_RETURN outputs, which are both consensus-valid and relay-standard on Elements. Hints use compressed encodings (standard denomination conventions, well-known asset indices, hybrid time encoding) to minimize size. The hints are always included; there is no opt-out. Derivation indices are XOR-masked for privacy. See [chain-only-recovery.md](chain-only-recovery.md) for encoding details.
 
 ### YES/NO Token Positions
 
 Token recovery is automatic. YES and NO tokens are standard Elements confidential assets held at the wallet's own addresses. The wallet's normal mnemonic-based rescan (gap-limit scan over derived scriptpubkeys) finds them the same way it finds L-BTC UTXOs. No deadcat-specific recovery logic is needed.
 
-**Labeling** requires market ingestion. The wallet discovers it holds a UTXO with an unfamiliar asset ID, but doesn't know it's a "YES token for market X" until the market's `PredictionMarketParams` are available and the market is ingested. At that point, `identify_asset` provides the label. The market params can be reconstructed from the market creation transaction's OP_RETURN hint (see below) — no discovery needed.
+**Labeling and redemption** require market ingestion. The wallet discovers it holds a UTXO with an unfamiliar asset ID, but doesn't know it's a "YES token for market X" until the market's `PredictionMarketParams` are available and the market is ingested. The recovery path: `asset_id` → `ChainSource::issuance_transaction(asset_id)` → market creation tx → read OP_RETURN → reconstruct market params → `ingest_market` → `identify_asset` for labeling, `build_redemption_pset` for redemption. One chain query per unique asset ID. This works for **all** token holders, including pure takers who only traded through existing pools and never created any contracts. See [chain-only-recovery.md](chain-only-recovery.md) for details.
 
 ### Prediction Market Positions
 
-Markets have no on-chain "owner" — the taproot internal key is NUMS. However, `build_creation_pset` includes an OP_RETURN recovery hint in the market creation transaction. This serves two purposes: (1) enabling the market creator to re-discover and re-announce their market, and (2) providing the anchor for chain-only pool and order recovery — pool and order hints point to the market creation transaction by txid.
+Markets have no on-chain "owner" — the taproot internal key is NUMS. However, `build_creation_pset` includes an OP_RETURN recovery hint in the market creation transaction. This serves two purposes: (1) enabling the market creator to re-discover and re-announce their market, and (2) providing the anchor for chain-only pool and order recovery — pool and order hints point to the market creation transaction by txid. It also enables token holder recovery: `issuance_transaction(asset_id)` traces any YES/NO token back to this transaction.
 
-```
-OP_RETURN <type_tag: u8> <oracle_public_key: [u8; 32]> <collateral_asset_id: [u8; 32]>
-          <collateral_per_pair: u64> <expiry_time: u32>
-```
-
-**77 bytes** — fits in a single OP_RETURN. Only 4 of 8 `PredictionMarketParams` fields are included: the other 4 (YES/NO token asset IDs and YES/NO reissuance token asset IDs) are deterministically derived from the creation transaction's input outpoints via Elements issuance entropy. The recovery code reconstructs the full params by reading the non-derivable fields from the OP_RETURN and computing the derivable fields from the same transaction's inputs.
+**36 bytes** (known collateral asset) / **68 bytes** (exotic collateral). Uses compressed encoding: 4-bit well-known collateral asset index (L-BTC=0, USDt=1, escape=15), 4-bit 1-2-5 denomination convention for `collateral_per_pair`, and hybrid hour/day delta encoding for `expiry_time`. The builder snaps `expiry_time` to the nearest hour (or day for long-dated markets) boundary — the covenant uses the snapped value, making the encoding lossless. Only 4 of 8 `PredictionMarketParams` fields need encoding — the other 4 (token and RT asset IDs) are derivable from the creation transaction's issuance entropy. See [chain-only-recovery.md](chain-only-recovery.md) for the exact byte layout and per-field justification.
 
 ### Maker Order Positions
 
@@ -2008,47 +2003,15 @@ Maker order UTXOs are NOT at wallet addresses — they're at covenant addresses 
 
 Maker orders are the only contract type directly "owned" by regular end users (as opposed to markets and pools, which are created by operators in managerial roles). This makes mnemonic-only recovery especially important — regular users should not be expected to maintain stateful backups.
 
-`build_create_order_pset` includes a zero-value OP_RETURN output containing:
+**40 bytes**. Includes: XOR-masked derivation index (for O(1) key recovery + observer privacy), market creation txid (chain-only market param recovery), price (u24, bounded by `collateral_per_pair`), min_fill_lots and min_remainder_lots (u8 each, range 1-255), and side + direction packed into the type tag byte. The `derive_order_params` function encapsulates the deterministic nonce derivation — callers pass `order_secret_key` + `order_index`, and the canonical nonce is computed internally, eliminating the foot-gun of non-deterministic nonces.
 
-```
-OP_RETURN <type_tag: u8> <order_index: u32> <market_creation_txid: [u8; 32]>
-          <price: u8> <direction: u8>
-```
-
-**39 bytes** — fits in a single OP_RETURN with substantial headroom. The `market_creation_txid` points to the parent market's creation transaction, enabling chain-only recovery without a market catalog from Nostr.
-
-**Chain-only recovery flow** (given mnemonic + chain connection):
-
-1. Wallet rescan finds all wallet-funded transactions (standard mnemonic recovery)
-2. Scan those transactions for OP_RETURN outputs matching the order hint format
-3. For each hint: extract `order_index`, `market_creation_txid`, `price`, `direction`
-4. Fetch the market creation transaction from the chain by txid
-5. Read the market's OP_RETURN hint → reconstruct `PredictionMarketParams` (non-derivable fields from hint + derivable asset IDs from the market tx's input outpoints)
-6. Derive the maker keypair at `order_index` from the mnemonic
-7. Reconstruct the full `MakerOrderParams` (deterministic nonce derived from mnemonic + extracted fields)
-8. Verify by compiling the covenant and checking the script matches a creation transaction output
-9. Ingest the recovered order via `ingest_order`
-
-Without the OP_RETURN hint, recovery requires brute-forcing `order_index × market × price × direction` — each candidate requiring Simplicity compilation (~10-100ms). With the hint, recovery requires one compilation per order to verify. The difference is minutes of scanning vs instant recovery.
+The builder validates: `price <= 2^24`, `min_fill_lots` and `min_remainder_lots` in range 1-255, `order_index <= 65535`, and parent market conforms to conventions. See [chain-only-recovery.md](chain-only-recovery.md) for the exact byte layout, per-field inclusion/compression justification, recovery flow, and XOR masking specification.
 
 ### LMSR Pool Positions
 
 Like maker orders, pool reserve UTXOs are at covenant addresses — the wallet's standard rescan does not find them. The operator derives their admin key from the mnemonic, but the admin pubkey alone is insufficient to find the pool on-chain — the covenant scripts also depend on liquidity parameters and the s_index (which changes on every swap, making script enumeration impractical).
 
-`build_lmsr_bootstrap_pset` includes a zero-value OP_RETURN output containing:
-
-```
-OP_RETURN <type_tag: u8>                         --  1 byte
-          <market_creation_txid: [u8; 32]>       -- 32 bytes
-          <max_loss_sats: u64>                   --  8 bytes
-          <half_payout_sats: u64>                --  8 bytes
-          <fee_bps: u16>                         --  2 bytes
-                                          Total: 51 bytes
-```
-
-**51 bytes** — fits in a single OP_RETURN with 29 bytes of headroom. The hint includes only the non-derivable creator-specified parameters. All other covenant params are derived: `b` from `max_loss_sats`, `q_step_lots` from `b` and `half_payout_sats`, `lmsr_table_root` from deterministic F-value generation (see [lmsr-pool-design.md](lmsr-pool-design.md)), token asset IDs from the parent market, admin pubkey from the mnemonic. Protocol constants (`table_depth`, `s_bias`, `s_max_index`, `min_r_*`) require no encoding. `fee_bps` is compressed to `u16` (validated < 10,000) from its `u64` covenant representation — the Simplicity covenant uses `u64` because its arithmetic jets require fixed-width operands with no implicit type widening.
-
-**Chain-only recovery flow**: Read `max_loss_sats`, `half_payout_sats`, `fee_bps` from hint → derive `b`, `q_step_lots` → generate F-value table deterministically → compute `lmsr_table_root` → fetch market creation tx by `market_creation_txid` → read market OP_RETURN → reconstruct market params → derive admin key from mnemonic → reconstruct full `LmsrPoolParams` → compile → verify → ingest.
+**39 bytes**. Uses compressed encoding: `max_loss_sats` and `half_payout_sats` as 9-bit 26-value mantissa x 10^exponent (supports non-L-BTC collateral assets like USDT), `fee_bps` as u12 (0.01% granularity, max 40.95%), plus XOR-masked pool operator derivation index. All other covenant params are derived: `b` from `max_loss_sats`, `q_step_lots` from `b` and `half_payout_sats`, `lmsr_table_root` from deterministic F-value generation, token asset IDs from the parent market, admin pubkey from the mnemonic at `pool_index`. Protocol constants (`TABLE_DEPTH`, `S_BIAS`, `S_MAX_INDEX`, `MIN_POOL_RESERVE`) require no encoding. See [chain-only-recovery.md](chain-only-recovery.md) for the exact byte layout, per-field justification, and recovery flow.
 
 ### Oracle Market Discovery
 
@@ -2060,15 +2023,16 @@ Market and pool creations are infrequent lifecycle events — the ~6-sat OP_RETU
 
 ### Recovery Summary
 
-| Position | Recovery hint | Hint size | Chain-only recovery? | Discovery needed? |
-|---|---|---|---|---|
-| YES/NO tokens | N/A (standard wallet rescan) | — | Yes | For labeling only |
-| Prediction markets | Non-derivable covenant params | 77 bytes | Yes | No |
-| Maker orders | Index + market txid + price + direction | 39 bytes | Yes (via market hint) | No |
-| LMSR pools | Market txid + max_loss + denomination + fee | 51 bytes | Yes (via market hint + deterministic table generation) | No |
-| Oracle markets | N/A (managerial role) | — | Via market hint if self-created | Nostr or backup |
+| Position | Recovery mechanism | Hint size | Chain-only? |
+|---|---|---|---|
+| YES/NO tokens | Standard wallet rescan + `issuance_transaction` for labeling/redemption | — | Yes |
+| Prediction markets | OP_RETURN in creation tx | 36 bytes (known asset) / 68 bytes (exotic) | Yes |
+| Maker orders | OP_RETURN in creation tx → market hint chain | 40 bytes | Yes |
+| LMSR pools | OP_RETURN in creation tx → market hint chain | 39 bytes | Yes |
 
-**Core's role in recovery**: Core provides the building blocks — `identify_asset` for token labeling, `contract_cmr` for CMR matching, Simplicity compilation for contract verification, and `ingest_*` methods for re-tracking recovered contracts. The OP_RETURN recovery hints in all three contract creation builders are proactive recovery mechanisms core embeds in the transaction structure, enabling fully stateless fund recovery from a mnemonic and chain connection alone.
+All user types — market creators, order makers, pool operators, and pure token holders — achieve chain-only recovery. Discovery (Nostr) is only needed for human-readable metadata, not fund recovery.
+
+**Core's role in recovery**: Core provides `identify_asset` for token labeling, `derive_order_params` for deterministic order param reconstruction (encapsulating canonical nonce derivation), `derive_pool_params` for pool param reconstruction, Simplicity compilation for contract verification, `ingest_*` for re-tracking, and convention enforcement (builder validation + ingestion rejection of non-conforming markets). The `ChainSource::issuance_transaction` method enables token holder recovery. See [chain-only-recovery.md](chain-only-recovery.md) for the complete specification.
 
 ## Example Integration: Aqua Wallet
 
@@ -2273,7 +2237,7 @@ aqua_chain.broadcast(signed)?;
 
 **Chosen**: Use the detection method best suited to each contract type's structural characteristics. Markets: script pubkey matching (8 bounded, pre-storable scripts). Orders: taproot structural check (key-spend vs script-spend element count). Pools: witness-based path and s_index extraction via `RedeemNode::decode` for all transitions. Dormant market terminals: witness-based path detection for the three-way ambiguity.
 **Rejected**: (a) Pattern-match transaction structure (input/output counts). (b) Uniform witness decoding on all transitions for all contract types. (c) Output-only detection for all transitions (no witness inspection). (d) Reserve-based s_index derivation for pool swap/admin transitions.
-**Why**: Each contract type has a naturally fitting detection method. Markets have 8 bounded phase scripts — byte comparison is O(1) and trivially airtight for all non-dormant transitions. Orders have a taproot-level key-spend/script-spend split — element count is the simplest possible check. Pools have unbounded s_index (scripts can't be pre-stored), and the engine needs the s_index value on every transition — the witness is the only reliable source, since reserve-based derivation (option d) is fragile after admin adjustments (reserves change without moving along the LMSR curve). Dormant market terminals produce no covenant outputs, creating a three-way ambiguity (resolution YES/NO vs expiry) only resolvable from the witness. Uniform witness decoding (option b) was rejected because markets and orders have simpler, equally correct methods — adding `RedeemNode::decode` overhead to script matching or element counting would be strictly worse. Pure output-based detection (option c) was rejected because pool s_index derivation from reserves is unreliable and dormant terminal ambiguities produce wrong `MarketOutcome` values. `RedeemNode::decode` takes raw bytes from the transaction — no `CompiledProgram` or compilation needed, no storage needed. See [Detection Strategy and Robustness](#detection-strategy-and-robustness) for the full analysis.
+**Why**: Each contract type has a naturally fitting detection method. Markets have 8 bounded phase scripts — byte comparison is O(1) and trivially airtight for all non-dormant transitions. Orders have a taproot-level key-spend/script-spend split — element count is the simplest possible check. Pools have unbounded s_index (scripts can't be pre-stored), and the engine needs the s_index value on every transition — the witness is the only reliable source, since reserve-based derivation (option d) is fragile after admin adjustments (reserves change without moving along the LMSR curve). Dormant market terminals produce no covenant outputs, creating a three-way ambiguity (resolution YES/NO vs expiry) only resolvable from the witness. Uniform witness decoding (option b) was rejected because markets and orders have simpler, equally correct methods — adding `RedeemNode::decode` overhead to script matching or element counting would be strictly worse. Pure output-based detection (option c) was rejected because pool s_index derivation from reserves is unreliable and dormant terminal ambiguities produce wrong state variants (e.g., `Expired` when the market actually resolved YES). `RedeemNode::decode` takes raw bytes from the transaction — no `CompiledProgram` or compilation needed, no storage needed. See [Detection Strategy and Robustness](#detection-strategy-and-robustness) for the full analysis.
 
 ### Output Identification via Script Pubkey Matching
 
@@ -2477,13 +2441,13 @@ Note: Covenant scripts are used internally by `step` for catch-up scanning and s
 An LMSR pool operator could create a pool, manipulate its price privately (no one can arbitrage because no one knows about it), then announce it on Nostr. The historical price data looks legitimate (all real on-chain transactions) but wasn't subject to market pressure during the private period. The same attack extends to markets: an undiscoverable market + discoverable pool means only the operator can issue tokens and trade.
 The ideal solution: embed full contract params in an OP_RETURN output in the creation transaction, making the contract provably discoverable from the chain from the moment of creation. However, `LmsrPoolParams` is 228 bytes and `PredictionMarketParams` is 204 bytes — both exceed Liquid's default 80-byte OP_RETURN relay policy. This is a policy limit (configurable by federation, not a consensus constraint), and Bitcoin Core has recently removed it entirely. When Elements merges this change, OP_RETURN-based discoverability becomes viable. Deferred until then.
 
-Note: The recovery hints described in [Wallet Recovery](#wallet-recovery) are distinct from the full-params discoverability discussed here. Recovery hints are smaller than full params because they omit derivable fields and compress numeric types — they enable fund recovery (reconstructing params when combined with a mnemonic and chain data), not public discoverability (making params available to anyone scanning the chain). Full discoverability requires embedding complete params, which exceeds the current OP_RETURN policy limit.
+Note: The recovery hints described in [Wallet Recovery](#wallet-recovery) and [chain-only-recovery.md](chain-only-recovery.md) are distinct from the full-params discoverability discussed here. Recovery hints use compressed encodings (standard denomination conventions, well-known asset indices, hybrid time encoding) and omit derivable fields — they enable fund recovery (reconstructing params when combined with a mnemonic and chain data), not public discoverability (making params available to anyone scanning the chain). Full discoverability requires embedding complete params, which exceeds the current OP_RETURN policy limit.
 
-### Flat MarketState (Dormant/Unresolved Hidden)
+### Flat MarketState (Dormant/Unresolved Hidden, No Settled Variant)
 
-**Chosen**: The public `MarketState` does not distinguish between Dormant (0 outstanding pairs) and Unresolved (>0 outstanding pairs). Both are `Trading`.
-**Rejected**: Exposing `CovenantPhase` with Dormant/Unresolved in the public API.
-**Why**: The Dormant/Unresolved distinction is a covenant implementation detail (whether a collateral UTXO exists). From the user's perspective, a market with 0 pairs is simply "a market where no one has issued yet" or "a fully cancelled market." The engine hides this distinction in the same way it already hides the initial-vs-subsequent issuance distinction (`build_issuance_pset` handles both). `CovenantPhase` and `SlotType` remain as internal types for script matching and PSET routing.
+**Chosen**: The public `MarketState` has 4 variants (`Trading`, `ResolvedYes`, `ResolvedNo`, `Expired`). Dormant (0 pairs) and Unresolved (>0 pairs) are both `Trading`. Terminal state = `outstanding_pairs == 0` on any non-Trading variant. No `Settled` variant.
+**Rejected**: (a) Exposing `CovenantPhase` with Dormant/Unresolved. (b) Separate `Settled { final_txid, outcome }` terminal variant with `MarketOutcome` type.
+**Why**: The Dormant/Unresolved distinction is a covenant implementation detail. The `Settled` variant was removed because it created a routing ambiguity: resolution from non-dormant markets produced intermediate `ResolvedYes/ResolvedNo` states, while resolution from dormant markets had to route directly to `Settled` — a special case an implementor could miss. Without `Settled`, resolution/expiry always produce the corresponding variant regardless of outstanding pairs, and `outstanding_pairs` naturally reaches 0 through redemption (or starts at 0 for dormant terminals). See the "Flat MarketState (No Settled Variant)" entry below for the full rationale.
 
 ### Pool Closure via Simplicity Script Path
 
@@ -2493,7 +2457,7 @@ Note: The recovery hints described in [Wallet Recovery](#wallet-recovery) are di
 
 ### Dormant Terminal Paths
 
-**Chosen**: Oracle resolution and timelock expiry are available from zero-pair state (both RT UTXOs consumed, market reaches Settled).
+**Chosen**: Oracle resolution and timelock expiry are available from zero-pair state (both RT UTXOs consumed, market reaches terminal state with outstanding_pairs: 0).
 **Rejected**: Only allowing resolution/expiry from non-zero-pair state.
 **Why**: The same terminal states should be reachable regardless of outstanding pairs. Without this, abandoned or fully-cancelled markets have RT UTXOs that sit on-chain forever. The existing PSET builders (`build_oracle_resolve_pset`, `build_expire_transition_pset`) branch internally based on outstanding pairs — no new builder methods needed. See [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md).
 
@@ -2509,9 +2473,9 @@ Order makers should use a fresh nonce for each order, ensuring unique `maker_rec
 
 ### OP_RETURN Recovery Hints in All Contract Creation Transactions
 
-**Chosen**: All three creation builders (`build_creation_pset`, `build_create_order_pset`, `build_lmsr_bootstrap_pset`) always include a zero-value OP_RETURN output with a compact recovery hint. Markets: 77 bytes (non-derivable covenant params). Orders: 39 bytes (order index, market creation txid, price, direction). Pools: 51 bytes (market creation txid, max_loss_sats, half_payout_sats, fee_bps — all other params derived via deterministic table generation). No opt-out. All fit within a single 80-byte OP_RETURN.
-**Rejected**: (a) No on-chain hints — orders require brute-force scanning (slow); pools require Nostr announcements or backup (fragile); markets are irrecoverable from chain alone. (b) Optional hint via builder flag (risk of users opting out without understanding the recovery consequence). (c) Storing full uncompressed params (exceeds 80-byte limit for pools). (d) Hints for orders and pools only, not markets (breaks chain-only recovery — pool/order hints need to reference the market's on-chain data).
-**Why**: Order, pool, and market UTXOs are at covenant addresses — standard mnemonic recovery cannot find them. Pool and order hints include the parent market's creation txid, enabling **chain-only recovery**: hint → fetch market creation tx → read market's OP_RETURN → reconstruct market params → reconstruct pool/order params → verify → ingest. No Nostr or external discovery needed for fund recovery. Maker orders are the only contract type directly "owned" by regular end users (not operators or oracles), making mnemonic-only recovery especially important — regular users should not be expected to maintain stateful backups. Pool OP_RETURN data uses compressed numeric types (e.g., `fee_bps: u16` instead of `u64`) because the Simplicity covenant's arithmetic jets require fixed-width `u64` operands (no implicit type widening), but the OP_RETURN encoding is not bound by this constraint — it compresses to actual value ranges and widens back losslessly during reconstruction. Market and pool creation costs (~6 sats per OP_RETURN) are infrequent lifecycle events amortized over the contract's entire lifetime. Order creation is the most frequent user-facing OP_RETURN cost, but ~6 sats is negligible relative to order value and trade fees. The OP_RETURN cost is never paid by market takers or regular traders — only by contract creators.
+**Chosen**: All three creation builders always include a zero-value OP_RETURN output with a compact recovery hint. Markets: 36 bytes (compressed non-derivable params using well-known asset index, 1-2-5 denomination, hybrid hour/day expiry). Orders: 40 bytes (XOR-masked index, market txid, u24 price, u8 min_fill/remainder, side+direction in type tag). Pools: 39 bytes (market txid, 9-bit mantissa x exponent for max_loss/half_payout, u12 fee_bps, XOR-masked index). No opt-out. All fit within a single 80-byte OP_RETURN.
+**Rejected**: (a) No on-chain hints (orders require brute-force scanning, tokens require Nostr for labeling/redemption). (b) Optional hint via builder flag (risk of users opting out). (c) Uncompressed params (wastes bytes). (d) Hints for orders and pools only, not markets (breaks the recovery chain for all user types including pure token holders).
+**Why**: Chain-only recovery for ALL user types — market creators, order makers, pool operators, and pure token holders (via `issuance_transaction` → market creation tx → OP_RETURN). Maker orders are the only contract type directly "owned" by regular end users, making compression especially important. The OP_RETURN encoding uses standard denomination conventions (1-2-5 for markets, 26-value mantissa for pools), well-known collateral asset indices, and XOR-masked derivation indices for privacy. Convention compliance is enforced at builder + ingestion level. See [chain-only-recovery.md](chain-only-recovery.md) for the complete encoding specification and recovery flows.
 
 ### Taker Order Fills Via Trade Router
 
@@ -2539,7 +2503,7 @@ Order makers should use a fresh nonce for each order, ensuring unique `maker_rec
 
 ### ChainSource as a Read-Only Data Source
 
-**Chosen**: `ChainSource` has 8 methods: 3 pull queries (catch-up), 4 registration methods (steady-state), and 1 drain method (notification retrieval). The trait is sync, stateless (from the engine's perspective), and read-only.
+**Chosen**: `ChainSource` has 9 methods: 4 pull queries (catch-up + asset issuance lookup), 4 registration methods (steady-state), and 1 drain method (notification retrieval). The trait is sync, stateless (from the engine's perspective), and read-only.
 **Rejected**: (a) Full chain backend trait with broadcasting, fee estimation, mempool queries. (b) Async trait. (c) Fewer methods with combined register/unregister semantics.
 **Why**: The engine needs exactly two capabilities: historical data retrieval and change notification. Broadcasting, fee estimation, and mempool access vary wildly across backends and belong to the caller. Sync keeps core simple and embeddable. Separate register/unregister methods are more efficient than replace-all semantics for the common case (pool advances change 3 outpoints out of thousands of registrations).
 
@@ -2584,3 +2548,45 @@ Order makers should use a fresh nonce for each order, ensuring unique `maker_rec
 **Chosen**: `PoolSnapshot::Current` and `OrderSnapshot::Current` include a `ChainPosition` field. `track_contract` takes `InitialContractState` which groups outpoints and position. Rollback treats all contracts uniformly — if initial position is above rollback height, the contract is removed.
 **Rejected**: (a) Separate `known_at_height` field (over-aggressive — uses ingestion time, not outpoint confirmation time). (b) Caller responsible for post-rollback cleanup (latent-bug surface if caller forgets).
 **Why**: The `ChainPosition` in the snapshot represents when the outpoints were confirmed — precise, not over-aggressive. Rollback becomes uniform: creation-tx contracts and snapshot contracts are both removed if their initial position is above the rollback height. The engine's tracked outpoints are always correct after rollback.
+
+### Cosigner Removal and Admin Key Rename
+
+**Chosen**: Remove the optional cosigner check from the maker order fill path. Rename `COSIGNER_PUBKEY` to `ADMIN_PUBKEY` in the LMSR pool covenant.
+**Rejected**: Keeping the cosigner mechanism on orders (speculative complexity) and the misleading "cosigner" name on pools.
+**Why**: The order cosigner was a no-op in practice (NUMS bypass was the expected default). On Liquid, there's no anti-MEV or batch-matching reason to gate-keep fills. The pool rename aligns with the actual role: `ADMIN_PUBKEY` is the sole authorization for admin/close operations, not a co-signature. See [maker-order-remove-cosigner.md](maker-order-remove-cosigner.md).
+
+### Flat MarketState (No Settled Variant)
+
+**Chosen**: `MarketState` has 4 variants: `Trading`, `ResolvedYes`, `ResolvedNo`, `Expired`. Terminal state = `outstanding_pairs == 0` on any non-Trading variant. No `Settled` variant, no `MarketOutcome` type.
+**Rejected**: 5-variant enum with explicit `Settled { final_txid, outcome }`.
+**Why**: Resolution and expiry always produce the same variant regardless of outstanding pairs. The uniform progression (`ResolvedYes(1000)` → redeem → `ResolvedYes(0)`) eliminates a routing ambiguity: without `Settled`, there is no special case for dormant terminals (0-pair markets resolved/expired directly to a different variant). Terminal detection is `outstanding_pairs == 0 && !Trading` — slightly more code than `matches!(Settled)` but eliminates an entire class of state-routing bugs. The `final_txid` (previously on `Settled`) is available from transition history.
+
+### Chain-Only Recovery via Issuance Indexing
+
+**Chosen**: `ChainSource::issuance_transaction(asset_id)` enables pure token holders (takers who only traded, never created contracts) to recover by tracing token asset IDs back to the market creation transaction.
+**Rejected**: Token holder recovery only via Nostr discovery.
+**Why**: Token holders are the most common user type. Requiring Nostr for fund recovery (labeling + redemption) would make the most common recovery scenario depend on an external service. Elements chain backends (Esplora, Electrs) natively support asset issuance indexing. One chain query per unique asset ID — simple and sufficient.
+
+### Convention Enforcement at Ingestion
+
+**Chosen**: `ingest_market` rejects markets whose parameters don't conform to the recovery conventions (denomination, expiry, collateral asset).
+**Rejected**: (a) Accept all markets, reject only at child-contract creation. (b) Accept all markets, warn but don't reject.
+**Why**: With `issuance_transaction` recovery, market convention conformity matters for ALL users — even pure token holders trace back to the market creation tx. "I won't trade on your market unless it's mnemonic-recoverable" creates the right ecosystem incentive. If `deadcat-core` is the primary tool, virtually all markets will be conforming. Non-conforming markets created by custom tools are their problem — they can use `deadcat-core` and get conformity for free.
+
+### Standard Denomination Conventions
+
+**Chosen**: `collateral_per_pair` constrained to 16-value 1-2-5 table (4 bits). Pool `max_loss_sats` and `half_payout_sats` constrained to 26-value mantissa x 10^exponent encoding (9 bits each). Well-known collateral asset index (4 bits: L-BTC=0, USDt=1, escape=15).
+**Rejected**: (a) Uncompressed u64 values in OP_RETURN (wastes bytes). (b) Single-digit mantissa (too coarse — 100K to 200K is a 100% jump). (c) Full two-digit mantissa (90 values x 16 exponents = too many combinations, limited practical benefit over the 26-value set).
+**Why**: The conventions compress OP_RETURN hints (market: 77→36 bytes, pool: 51→39 bytes) while constraining parameters to "round numbers" that market creators naturally pick. The 26-value mantissa set (10-20 step 1, 25-95 step 5) balances precision and simplicity. The 4-bit exponent supports non-L-BTC assets (USDT needs exponent 8+). See [chain-only-recovery.md](chain-only-recovery.md).
+
+### XOR Index Masking for Privacy
+
+**Chosen**: Derivation indices (`order_index`, `pool_index`) are XOR-masked in the OP_RETURN using `HMAC(secret_key, tag || context)[0..2]`. The mask context includes all other OP_RETURN fields.
+**Rejected**: (a) Unmasked indices (reveals derivation order and contract count to observers). (b) No index in OP_RETURN (forces gap-limit scanning during recovery).
+**Why**: The mask is deterministic from the mnemonic + public OP_RETURN data, so recovery is still O(1). Observers see random-looking u16 values. The privacy cost of unmasked indices is small (only meaningful if an observer can link two transactions to the same wallet), but the masking cost is zero (one HMAC computation). Known property: identical-param orders on the same market share a mask — a negligible concern in an already-pathological scenario. See [chain-only-recovery.md](chain-only-recovery.md).
+
+### Deterministic Order Nonce via `derive_order_params`
+
+**Chosen**: `derive_order_params` takes `order_secret_key` + `order_index` and derives the nonce internally using the canonical formula `HMAC(order_secret_key, "deadcat/order_nonce" || order_index)`.
+**Rejected**: (a) Caller passes a pre-derived nonce (foot-gun — non-deterministic nonces break recovery silently). (b) Caller passes a random nonce (current SDK pattern — not recovery-compatible).
+**Why**: The nonce MUST be deterministic from the mnemonic for chain-only recovery. Exposing it as "pass any 32 bytes" makes it too easy to get wrong. Encapsulating the derivation eliminates the foot-gun while keeping private key material (the `order_secret_key`) transient — the function is standalone, not an engine method.
