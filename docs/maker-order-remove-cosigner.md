@@ -52,9 +52,9 @@ fn main() {
     let i_rem: u32 = safe_add_32(i, 1);
     let out_spk_hash: u256 = get_output_script_hash(i);
     assert!(jet::eq_256(out_spk_hash, param::MAKER_RECEIVE_SPK_HASH));
-    match param::IS_SELL_BASE {
-        true => validate_sell_base_fill(i, i_rem),
-        false => validate_sell_quote_fill(i, i_rem),
+    match param::DIRECTION {
+        SellBase => validate_sell_base_fill(i, i_rem),
+        SellQuote => validate_sell_quote_fill(i, i_rem),
     };
 }
 ```

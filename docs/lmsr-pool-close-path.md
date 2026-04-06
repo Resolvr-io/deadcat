@@ -7,7 +7,7 @@ The LMSR pool covenant currently has no mechanism to close a pool and return all
 - **Swap path**: changes s_index, produces 3 new reserve outputs
 - **Admin path**: preserves s_index, adjusts reserves, produces 3 new reserve outputs
 
-The taproot internal key is NUMS (Nothing Up My Sleeve) — the key-spend path is unspendable by design, consistent with the prediction market contract. This means once a pool is created, its reserve UTXOs can never be fully consumed. The operator can drain reserves to the minimums (`min_r_yes`, `min_r_no`, `min_r_collateral`) via the admin path, but cannot reclaim the dust locked at those floors.
+The taproot internal key is NUMS (Nothing Up My Sleeve) — the key-spend path is unspendable by design, consistent with the prediction market contract. This means once a pool is created, its reserve UTXOs can never be fully consumed. The operator can drain reserves to the minimums (`MIN_POOL_RESERVE` — a protocol constant, 1,000 sats per reserve) via the admin path, but cannot reclaim the dust locked at those floors.
 
 ## Proposed Change
 
@@ -59,7 +59,6 @@ The close script path must enforce:
 ```rust
 pub enum LmsrPoolState {
     Active {
-        outpoints: BTreeMap<ReserveSlot, OutPoint>,
         s_index: u64,
         reserves: PoolReserves,
     },
@@ -70,10 +69,12 @@ pub enum LmsrPoolState {
 
 pub enum PoolTransition {
     Swapped { old_s_index: u64, new_s_index: u64, old_reserves: PoolReserves, new_reserves: PoolReserves },
-    Adjusted { old_reserves: PoolReserves, new_reserves: PoolReserves },
+    Adjusted { s_index: u64, old_reserves: PoolReserves, new_reserves: PoolReserves },
     Closed { final_reserves: PoolReserves },
 }
 ```
+
+Note: Outpoints are internal to the engine and not exposed in the public state. `PoolTransition::Adjusted` includes `s_index` (frozen on the admin path) for completeness — see the main design doc for details.
 
 ### New PSET Builder
 
@@ -101,7 +102,7 @@ Takes only the contract ID and wallet funding. The engine reads the current rese
 |---|---|---|---|
 | Prediction Market | NUMS | No | Redemption / cancellation (existing script paths) |
 | LMSR Pool | NUMS | No | Close script path (this proposal) |
-| Maker Order | `maker_base_pubkey` | Yes (cancellation) | Key-spend by maker, fill script path only |
+| Maker Order | `maker_pubkey` | Yes (cancellation) | Key-spend by maker, fill script path only |
 
 Maker orders intentionally use a real internal key — the maker's ability to key-spend is the sole cancellation mechanism. The Simplicity program handles fills only; cancellation is exclusively via key-spend. See [maker-order-remove-script-cancel.md](maker-order-remove-script-cancel.md). Markets and pools use NUMS because their lifecycle is governed by covenant logic, not a single party's key.
 

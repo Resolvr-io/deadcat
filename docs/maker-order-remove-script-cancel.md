@@ -4,7 +4,7 @@
 
 The maker order covenant (`maker_order.simf`) currently has two cancellation mechanisms:
 
-1. **Key-spend**: The maker's real key (`maker_base_pubkey`) is the taproot internal key. The maker can key-spend to reclaim funds with no covenant constraints.
+1. **Key-spend**: The maker's real key (`maker_pubkey`) is the taproot internal key. The maker can key-spend to reclaim funds with no covenant constraints.
 2. **Script cancel path**: A Simplicity spend path (`witness::PATH = Right`) that verifies a maker signature on `SHA256(prev_outpoint)` with no output constraints.
 
 These are functionally identical — both allow the maker to reclaim funds with no output restrictions. The script cancel path is strictly heavier (script-spend witness vs key-spend witness) with no additional capability.
@@ -41,17 +41,15 @@ fn main() {
     };
 }
 
-// After
+// After (reflects both script-cancel removal and cosigner removal per maker-order-remove-cosigner.md)
 fn main() {
     let i: u32 = jet::current_index();
-    let cosigner_sig: Signature = witness::COSIGNER_SIGNATURE;
     let i_rem: u32 = safe_add_32(i, 1);
-    check_cosigner(i, cosigner_sig);
     let out_spk_hash: u256 = get_output_script_hash(i);
     assert!(jet::eq_256(out_spk_hash, param::MAKER_RECEIVE_SPK_HASH));
-    match param::IS_SELL_BASE {
-        true => validate_sell_base_fill(i, i_rem),
-        false => validate_sell_quote_fill(i, i_rem),
+    match param::DIRECTION {
+        SellBase => validate_sell_base_fill(i, i_rem),
+        SellQuote => validate_sell_quote_fill(i, i_rem),
     };
 }
 ```
@@ -83,7 +81,7 @@ Key-spend vs script-spend is trivially distinguishable from the witness stack st
 |---|---|---|---|
 | Prediction Market | NUMS | No | Issuance, resolution, redemption, cancellation, expiry |
 | LMSR Pool | NUMS | No | Swap, admin adjust, close |
-| Maker Order | `maker_base_pubkey` | Yes (cancellation) | Fill only |
+| Maker Order | `maker_pubkey` | Yes (cancellation) | Fill only |
 
 Maker orders intentionally use a real internal key — the maker's ability to key-spend is the sole cancellation mechanism. Markets and pools use NUMS because their lifecycle is governed by covenant logic, not a single party's key.
 

@@ -17,13 +17,13 @@ pub struct PredictionMarketParams {
     pub yes_reissuance_token_id: AssetId,       // derivable from creation tx issuance entropy
     pub no_reissuance_token_id: AssetId,        // derivable from creation tx issuance entropy
     pub collateral_per_pair: u64,               // total collateral for one YES+NO pair (convention: 1-2-5 table)
-    pub expiry_time: u32,                       // block height deadline (convention: snapped to hour/day boundary)
+    pub expiry_time: u32,                       // block height deadline (convention: snapped to 60-block boundary)
 }
 ```
 
 4 of 8 fields are derivable from the creation transaction's issuance entropy. The remaining 4 are stored in the OP_RETURN recovery hint. See [chain-only-recovery.md](chain-only-recovery.md).
 
-Builder validates: `collateral_per_pair` in 1-2-5 table, `expiry_time` on hour/day boundary, `collateral_asset_id` in well-known set or exotic-escape-compatible.
+Builder validates: `collateral_per_pair` in 1-2-5 table, `expiry_time` on 60-block boundary, `collateral_asset_id` in well-known set or exotic-escape-compatible.
 
 ### Covenant Structure
 
@@ -106,7 +106,7 @@ pub struct LmsrPoolParams {
 
 ### Covenant Structure
 
-3 reserve UTXOs (YES, NO, Collateral) sharing a script pubkey that encodes the current `s_index`. The taproot internal key is NUMS (key-spend unspendable).
+3 reserve UTXOs (YES, NO, Collateral) sharing a script pubkey that encodes the current `s_index`. The taproot internal key is NUMS (key-spend unspendable). The taproot tree has constant Simplicity program leaves (same CMR regardless of `s_index`) and a variable `tapdata_leaf = TaggedHash("TapData", s_index.to_be_bytes())`. When `s_index` changes (swap), only the tapdata leaf changes — the Simplicity programs and their CMRs are constant for given pool params. This means computing a pool's script pubkey for a given `s_index` requires one Simplicity compilation (to get the constant program CMRs) plus lightweight hashing and an EC scalar multiplication (for the taproot tweak).
 
 ### Spend Paths
 
@@ -153,7 +153,7 @@ pub struct MakerOrderParams {
 
 8 fields (down from 9 in current SDK). **Removed**: `cosigner_pubkey`. See [maker-order-remove-cosigner.md](maker-order-remove-cosigner.md).
 
-`maker_receive_spk_hash` is derived from a deterministic nonce chain: `order_secret_key` + `order_index` → `order_nonce` → `order_uid` → `tweak` → `P_order` → scriptPubKey → SHA256. See [chain-only-recovery.md](chain-only-recovery.md) for the full derivation.
+`maker_receive_spk_hash` is derived from a deterministic nonce chain: `deadcat_secret_key` + `order_index` → `order_nonce` → `order_uid` → `tweak` → `P_order` → scriptPubKey → SHA256. See [chain-only-recovery.md](chain-only-recovery.md) for the full derivation.
 
 ### Covenant Structure
 
@@ -199,7 +199,9 @@ These changes are specified in satellite docs but not yet applied to the `.simf`
 | Remove order script-cancel path | [maker-order-remove-script-cancel.md](maker-order-remove-script-cancel.md) | Pending | Order contract |
 | Add pool close script path | [lmsr-pool-close-path.md](lmsr-pool-close-path.md) | Pending | Pool contract |
 | Pool params → protocol constants | [lmsr-pool-design.md](lmsr-pool-design.md) | Pending | Pool contract |
-| Deterministic integer table generation | [lmsr-pool-design.md](lmsr-pool-design.md) | Pending | Pool math |
+| Deterministic integer table generation | [lmsr-pool-design.md](lmsr-pool-design.md) | Pending — requires formal specification document (exact constants, algorithms, Merkle format, test vectors) | Pool math |
+| Covenant-enforced deterministic RT blinding | [deterministic-rt-blinding.md](deterministic-rt-blinding.md) | Pending | Market contract (ABF enforcement, CBF pass-through, `verify_token_commitment` refactor) |
+| Dormant terminal paths (resolution + expiry from zero pairs) | [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md) | Pending | Market contract (DormantYesRt and DormantNoRt slot programs) |
 
 **Implementation order**: The `.simf` refactors should be applied before implementing `deadcat-core`. The core implementation is specified against the planned end state.
 

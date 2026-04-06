@@ -49,7 +49,7 @@ A partial fill (filled_amount < requested_amount) is returned to the caller via 
 
 With P active pools for a market, full subset enumeration costs 2^P. To bound this:
 
-1. For each pool, compute the **estimated average fill price** for the full requested amount using `quote_exact_input_from_manifest`. This is one LMSR computation per pool — O(1).
+1. For each pool, compute the **estimated average fill price** for the full requested amount using point evaluation of the LMSR cost function. This is one computation per pool — O(1), ~1-16μs.
 2. Rank pools by this estimate (lower = better).
 3. Take the top N pools (N = 5 constant). Discard the rest.
 
@@ -120,11 +120,11 @@ In practice, the fee-aware pricing limits leg count long before the weight cap �
 
 ## Integer Precision
 
-All fill amounts and costs computed by the router must use the **exact same integer LMSR functions** (`quote_from_table`, `quote_exact_input_from_manifest`) that the covenant verifies on-chain. The LMSR table is an integer lookup structure — the covenant checks proofs against it. If the router uses floating-point approximations or independent LMSR reimplementations, the quoted amounts may differ from what the covenant enforces, causing on-chain transaction failure.
+All fill amounts and costs computed by the router must use the **exact same deterministic integer-only LMSR algorithm** that the covenant verifies on-chain. The router uses **point evaluation** — computing `F(s_index)` at specific points using the same integer algorithm as the full table generator, without materializing all 65K entries. This produces bit-identical values to a table lookup at ~1μs per evaluation (~16μs for a binary search), compared to ~80ms to generate the full table. The full table is only needed later by `build_trade_pset` for Merkle proof construction. If the router uses floating-point approximations or independent LMSR reimplementations, the quoted amounts may differ from what the covenant enforces, causing on-chain transaction failure.
 
 This applies to:
-- **Pool fill computation**: tokens received for a given input amount
-- **Crossover binary search**: finding the s_index where a pool's marginal price exceeds the next alternative (binary search over the LMSR table using exact integer lookups)
+- **Pool fill computation**: tokens received for a given input amount (point evaluation of `F(new_s) - F(old_s)`)
+- **Crossover binary search**: finding the s_index where a pool's marginal price exceeds the next alternative (binary search over s_index range using point evaluation at each candidate)
 
 ## Full Algorithm
 
@@ -132,11 +132,12 @@ This applies to:
 function quote_trade(market_id, spec, fee_rate):
     // 1. Load candidates
     all_pools = store.pools_for_market(market_id, ActiveOnly)
-    orders = store.best_orders_for_market(market_id, matching_direction, ascending, min_remaining, K=50)
+    orders = store.best_orders_for_market(market_id, spec.side, matching_direction, ascending, min_remaining, K=50)
+    // orders are filtered by side + direction, sorted by (price, creation_position) — FIFO within same price
 
-    // 2. Pre-select top-N pools by average fill price
+    // 2. Pre-select top-N pools by average fill price (point evaluation, ~1-16μs per pool)
     for each pool in all_pools:
-        pool.estimated_cost = lmsr_quote_exact_input(pool, requested_amount)
+        pool.estimated_cost = lmsr_point_eval_exact_input(pool, requested_amount)
     candidate_pools = top_n_by_estimated_cost(all_pools, N=5)
 
     // 3. Enumerate pool subsets × fee-aware greedy
@@ -169,10 +170,11 @@ function fee_aware_greedy(pools, orders, requested_amount, fee_rate):
             marginal_w = if pool already in legs { 0 } else { POOL_WEIGHT }
             if weight + marginal_w > MAX_TX_WEIGHT: continue
 
-            // Use exact LMSR math: fill pool up to crossover point
+            // Use exact LMSR point evaluation: fill pool up to crossover point
             // Crossover = s_index where pool marginal price exceeds next best alternative
+            // Binary search over s_index range using point evaluation (~16μs)
             next_best_price = best_alternative_price(orders, order_cursor, fee_rate)
-            (fill_amt, fill_cost) = lmsr_fill_to_crossover(pool, remaining, next_best_price)
+            (fill_amt, fill_cost) = lmsr_point_eval_fill_to_crossover(pool, remaining, next_best_price)
             if fill_amt == 0: continue
 
             eff_price = (fill_cost + marginal_w × fee_rate) / fill_amt
@@ -216,9 +218,9 @@ function fee_aware_greedy(pools, orders, requested_amount, fee_rate):
 - N = candidate pool cap (5) → 2^N = 32 subset iterations
 - K = candidate order limit (50) → greedy loop iterations
 - P = pools in subset (≤5) → per-iteration pool evaluations
-- log S = LMSR table binary search depth (~16 for 16-bit tables)
+- log S = LMSR point evaluation binary search depth (~16 for 16-bit s_index range)
 
-For typical values: 32 × 50 × (5 + 16) ≈ 33,600 LMSR table lookups. Sub-millisecond.
+For typical values: 32 × 50 × (5 + 16) ≈ 33,600 point evaluations at ~1μs each ≈ ~34ms worst case, typically sub-millisecond (most greedy iterations terminate early).
 
 **Space**: O(K + P) for the candidate lists.
 

@@ -8,7 +8,7 @@ This means:
 - An abandoned market (created but never used) has RT UTXOs that sit on-chain forever
 - A fully cancelled market (all pairs burned, returned to zero outstanding) cannot be cleaned up
 - The oracle cannot attest on a market with no outstanding pairs
-- The market can never reach the `Settled` terminal state without first issuing tokens
+- The market can never reach a terminal state without first issuing tokens
 
 The design principle: **the same terminal states should be reachable whether or not there are outstanding token pairs.** A market with 1000 pairs and a market with 0 pairs should both be resolvable by the oracle and expirable by timelock.
 
@@ -25,9 +25,9 @@ Add two new spend paths to the Dormant RT slot covenant programs, mirroring the 
 - No new covenant outputs produced (both RTs extinguished)
 - Oracle signature verified against `oracle_public_key` from market params
 
-**Result**: Market transitions directly to `Settled { outcome: ResolvedYes }` or `Settled { outcome: ResolvedNo }` depending on the attestation.
+**Result**: Market transitions directly to `ResolvedYes { outstanding_pairs: 0 }` or `ResolvedNo { outstanding_pairs: 0 }` depending on the attestation — immediately terminal.
 
-**Why this is safe**: There are no outstanding tokens, so there is nothing to redeem. The oracle attestation is recorded in the market's terminal state for historical reference — "this market resolved YES even though no one had open positions."
+**Why this is safe**: There are no outstanding tokens, so there is nothing to redeem. The outcome is recorded in the market's state variant for historical reference — "this market resolved YES even though no one had open positions."
 
 ### 2. Expiry from Zero-Pair State
 
@@ -38,7 +38,7 @@ Add two new spend paths to the Dormant RT slot covenant programs, mirroring the 
 - No new covenant outputs produced (both RTs extinguished)
 - Timelock validated against `expiry_time` parameter
 
-**Result**: Market transitions directly to `Settled { outcome: Expired }`.
+**Result**: Market transitions directly to `Expired { outstanding_pairs: 0 }` — immediately terminal.
 
 **Why this is safe**: The expiry time has passed, no tokens are outstanding, and no collateral is locked. The market is dead — this just formalizes it on-chain.
 
@@ -50,11 +50,11 @@ The market state machine gains two new transitions:
 
 | From | To | Trigger | Condition |
 |---|---|---|---|
-| Active (0 pairs) | Settled (ResolvedYes) | Oracle YES attestation | outstanding_pairs == 0 |
-| Active (0 pairs) | Settled (ResolvedNo) | Oracle NO attestation | outstanding_pairs == 0 |
-| Active (0 pairs) | Settled (Expired) | Timelock passed | outstanding_pairs == 0 |
+| Trading (0 pairs) | ResolvedYes (0 pairs) | Oracle YES attestation | outstanding_pairs == 0 |
+| Trading (0 pairs) | ResolvedNo (0 pairs) | Oracle NO attestation | outstanding_pairs == 0 |
+| Trading (0 pairs) | Expired (0 pairs) | Timelock passed | outstanding_pairs == 0 |
 
-These are in addition to the existing transitions from Active with outstanding pairs (which go through ResolvedYes/ResolvedNo/Expired phases with collateral).
+These are in addition to the existing transitions from Trading with outstanding pairs (which go through ResolvedYes/ResolvedNo/Expired phases with collateral, becoming terminal when outstanding_pairs reaches 0 through redemption).
 
 ### PSET Builders
 
@@ -91,7 +91,7 @@ Both paths require atomic consumption of BOTH RT UTXOs (co-membership enforcemen
 
 ### Signature Domain Strings
 
-The oracle resolution from zero-pair state uses the same oracle signature as resolution from Unresolved — the oracle signs the same message (`SHA256(market_id || outcome_byte)`) regardless of the market's pair count. No new domain string needed.
+The oracle resolution from zero-pair state uses the same oracle signature as resolution from Unresolved — the oracle signs the same BIP-340 tagged hash message (`tagged_hash("deadcat/oracle_attestation", market_id || outcome_byte)`) regardless of the market's pair count. No new domain string needed. See [oracle-bip340-tagged-hash.md](oracle-bip340-tagged-hash.md).
 
 ### Key Files
 

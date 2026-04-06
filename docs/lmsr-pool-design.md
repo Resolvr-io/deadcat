@@ -142,7 +142,7 @@ This matters because the F-values are committed to via a Merkle root. If two imp
 
 `deadcat-core` defines a canonical integer-only algorithm for generating F-values. The algorithm uses only operations with guaranteed deterministic results (addition, subtraction, multiplication, division, bit shifts) at sufficient precision (128-bit or higher intermediates) to produce bit-identical F-values on any platform.
 
-The specific algorithm (fixed-point arithmetic with defined precision, or series expansion with a fixed number of terms) is an implementation detail specified in the code. The key property is: **given the same `(b, half_payout_sats, q_step_lots)`, every implementation produces the identical `Vec<u64>` of F-values and thus the identical Merkle root.**
+The specific algorithm (fixed-point arithmetic with defined precision, or series expansion with a fixed number of terms) requires a formal specification document. The key property is: **given the same `(b, half_payout_sats, q_step_lots)`, every implementation produces the identical `Vec<u64>` of F-values and thus the identical Merkle root.** The derivation chain involves transcendental constants (`1/ln(2)` for computing `b` from `max_loss_sats`, `ln(999) ≈ 6.9` for `q_step_lots`) and the cost function `b × ln(exp(s/b) + exp(-s/b))` — all of which must use exact rational approximations and defined-precision fixed-point arithmetic for cross-implementation determinism. The specification must also define the Merkle tree construction (hash function, leaf encoding) to match the `.simf` covenant's verification code. A separate satellite document with exact constants, algorithms, and test vectors is required before implementation.
 
 ### Implications
 
@@ -167,8 +167,8 @@ The pool creator:
 1. Specifies `max_loss_sats`, `fee_bps`, `half_payout_sats`, `starting_price_bps`
 2. Calls `estimate_bootstrap(...)` to see the required reserves (YES tokens, NO tokens, collateral) — lightweight, called on every slider change
 3. Obtains the required YES and NO tokens by issuing pairs on the parent prediction market
-4. Calls `derive_pool_params(...)` to construct the full `LmsrPoolParams` with all derived fields (table root, q_step_lots, asset IDs) — heavier, called once when the user commits to creating
-5. Calls `build_lmsr_bootstrap_pset(&params, starting_price_bps, &funding)` to build the transaction
+4. Calls `derive_pool_params(deadcat_xprv, market_params, pool_index, ...)` to construct the full `LmsrPoolParams` with all derived fields (admin pubkey, table root, q_step_lots, asset IDs) and the XOR-masked pool index — heavier, called once when the user commits to creating
+5. Calls `build_lmsr_bootstrap_pset(&params, starting_price_bps, masked_index, &funding)` to build the transaction
 6. Signs and broadcasts
 
 `derive_pool_params` is a standalone pure function that takes the parent market's `PredictionMarketParams` (for asset IDs), the creator's four params, and the admin pubkey (from mnemonic). It derives `b`, `q_step_lots`, generates the F-value table deterministically, computes the Merkle root, and returns a fully-formed `LmsrPoolParams`. The builder then compiles the Simplicity covenant from these params and constructs the creation transaction with three reserve outputs (YES, NO, Collateral) and an OP_RETURN recovery hint.
@@ -188,33 +188,31 @@ pub fn estimate_bootstrap(
 ) -> BootstrapEstimate;
 
 pub struct BootstrapEstimate {
-    pub s_index: u64,
-    pub implied_price_bps: u16,
-    pub yes_tokens_needed: u64,
-    pub no_tokens_needed: u64,
-    pub collateral_needed: u64,
-    pub total_capital_needed: u64,
-    pub max_loss_sats: u64,
+    pub initial_yes_reserve: u64,
+    pub initial_no_reserve: u64,
+    pub initial_collateral_reserve: u64,
+    pub initial_s_index: u64,
 }
 ```
 
-A standalone pure function (no engine needed). The UI calls this on every slider change for live feedback — sub-millisecond, just LMSR math. `implied_price_bps` shows the actual price at the nearest valid s_index (may differ slightly from the requested price due to discretization).
+A standalone pure function (no engine needed). The UI calls this on every slider change for live feedback — sub-millisecond, just LMSR math. The three reserves tell the operator exactly how many tokens and how much collateral to provide. `initial_s_index` corresponds to the nearest valid LMSR curve point for the requested starting price (may differ slightly due to discretization). `starting_price_bps` must be in (0, 10000) exclusive — 0% and 100% are rejected (infinite reserve ratios).
 
-The `yes_tokens_needed` and `no_tokens_needed` are determined by the pool's capacity in each direction from the starting price. At 50/50, they're roughly equal. At 70/30, more NO tokens are needed (more room to move toward 0%) and fewer YES tokens (less room toward 100%). The balanced allocation ensures equal trading depth in both directions.
+The `initial_yes_reserve` and `initial_no_reserve` are determined by the pool's capacity in each direction from the starting price. At 50/50, they're roughly equal. At 70/30, more NO tokens are needed (more room to move toward 0%) and fewer YES tokens (less room toward 100%). The balanced allocation ensures equal trading depth in both directions.
 
 ### Param Derivation
 
 ```rust
 pub fn derive_pool_params(
+    deadcat_xprv: &Xpriv,
     market_params: &PredictionMarketParams,
+    pool_index: u16,
     max_loss_sats: u64,
     half_payout_sats: u64,
     fee_bps: u16,
-    admin_pubkey: XOnlyPublicKey,
-) -> LmsrPoolParams;
+) -> Result<(LmsrPoolParams, u16 /* masked_index */), ConventionError>;
 ```
 
-A standalone pure function that constructs the full `LmsrPoolParams` with all derived fields. Called once when the user commits to creating a pool — heavier than `estimate_bootstrap` because it generates the full 65K-entry F-value table and computes the Merkle root (~80ms). The resulting `LmsrPoolParams` is passed directly to `build_lmsr_bootstrap_pset`.
+A standalone pure function that constructs the full `LmsrPoolParams` with all derived fields. Returns `ConventionError` if inputs violate OP_RETURN encoding conventions (`max_loss_sats` and `half_payout_sats` not in the 26-value mantissa set, `fee_bps > 4095`). Called once when the user commits to creating a pool — heavier than `estimate_bootstrap` because it generates the full 65K-entry F-value table and computes the Merkle root (~80ms). The resulting `LmsrPoolParams` is passed directly to `build_lmsr_bootstrap_pset`.
 
 ### Trading (Swaps)
 
@@ -286,7 +284,7 @@ The pool's net P&L = cumulative fee revenue - trading losses from directional mo
 
 ### Capital Efficiency
 
-The total capital needed (`total_capital_needed` from `BootstrapEstimate`) is the YES tokens + NO tokens + collateral for the balanced allocation. This is larger than `max_loss_sats` because the pool must hold token inventory, not just collateral to cover losses.
+The total capital needed (sum of `initial_yes_reserve` + `initial_no_reserve` + `initial_collateral_reserve` from `BootstrapEstimate`, converted to collateral terms via the market's `collateral_per_pair`) is larger than `max_loss_sats` because the pool must hold token inventory, not just collateral to cover losses.
 
 ## On-Chain Covenant Parameters
 
@@ -309,7 +307,7 @@ With the simplifications above, the on-chain `LmsrPoolParams` contains:
 
 ## OP_RETURN Recovery Hint
 
-The pool creation transaction includes a **39-byte** zero-value OP_RETURN output for mnemonic-based recovery. The hint uses compressed encoding: `max_loss_sats` and `half_payout_sats` as 9-bit values (26-value mantissa x 10^exponent, supporting non-L-BTC assets), `fee_bps` as u12 (0.01% granularity), plus an XOR-masked pool operator derivation index.
+The pool creation transaction includes a **41-byte** zero-value OP_RETURN output for mnemonic-based recovery. The hint uses compressed encoding: `max_loss_sats` and `half_payout_sats` as 9-bit values (26-value mantissa x 10^exponent, supporting non-L-BTC assets), `fee_bps` as u12 (0.01% granularity), `initial_s_index` as u16 (the starting table index, enabling direct script verification during creation-tx recovery), plus an XOR-masked pool operator derivation index.
 
 All other covenant params are derived: `b` from `max_loss_sats`, `q_step_lots` from `b` and `half_payout_sats`, `lmsr_table_root` from deterministic F-value generation, token asset IDs from the parent market, admin pubkey from the mnemonic at `pool_index`. Protocol constants require no encoding.
 
