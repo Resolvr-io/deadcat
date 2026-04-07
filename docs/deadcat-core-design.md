@@ -150,7 +150,7 @@ impl<S: ContractStore> ContractEngine<S> {
     pub fn build_trade_pset(&self, quote: &TradeQuote, funding: &WalletFunding) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 
     // Transaction interpretation (reads — &self)
-    pub fn interpret_transaction(&self, tx: &Transaction) -> Result<Vec<Transition>, CoreError<S::Error>>;
+    pub fn interpret_transaction(&self, tx: &Transaction) -> Result<InterpretedTransaction, CoreError<S::Error>>;
     pub fn identify_asset(&self, asset_id: &AssetId) -> Result<Option<AssetInfo>, CoreError<S::Error>>;
 
     // Oracle attestation
@@ -341,7 +341,11 @@ The caller's sync loop is:
 ```rust
 loop {
     let report = engine.step(&mut chain)?;
-    // handle report.transitions
+    for tx in &report.transactions {
+        for t in &tx.interpretation.transitions {
+            update_ui(&t.details);
+        }
+    }
     sleep(Duration::from_secs(60)); // or wait for block notification
 }
 ```
@@ -355,18 +359,18 @@ loop {
 `interpret_transaction` is the primary read method for wallet integration. It uses the same script matching and output value logic as `process_transaction` but does not modify state:
 
 ```rust
-pub fn interpret_transaction(&self, tx: &Transaction) -> Result<Vec<Transition>, CoreError<S::Error>>;
+pub fn interpret_transaction(&self, tx: &Transaction) -> Result<InterpretedTransaction, CoreError<S::Error>>;
 ```
 
 **Works for confirmed and unconfirmed transactions**: `interpret_transaction` accepts any transaction — confirmed or unconfirmed. It works as long as the transaction spends outpoints the engine currently tracks in its durable state. This enables "pending transaction" UX: a wallet can interpret an unconfirmed mempool transaction to display "Pending issuance" or "Pending trade" before the transaction confirms. Confirmed state updates happen through `step`, which uses the internal `process_transaction` — `interpret_transaction` is for read-only inspection, not durable state changes.
 
 **Known limitation — chained unconfirmed transactions**: If two unconfirmed transactions form a chain (tx2 spends an output created by tx1), only tx1 is interpretable. Tx2 spends outpoints that the engine hasn't durably recorded (tx1 was never processed), so the engine doesn't recognize them. Once both confirm and `step` processes them, both are handled normally. This is rare in practice — Liquid has ~1-minute blocks, and chained unconfirmed covenant transactions require dependent operations within that window.
 
-**No chain position metadata**: `interpret_transaction` takes a raw `elements::Transaction` without block height or tx index. Its return type (`Vec<Transition>` inside `Result`) omits chain position fields. See [Transition and ConfirmedTransition](#transition-and-confirmedtransition).
+**No chain position metadata**: `interpret_transaction` takes a raw `elements::Transaction` without block height or tx index. The returned `InterpretedTransaction` omits chain position fields — contrast with `ProcessedTransaction` (returned by `step`) which includes `ChainPosition`. See [Transaction-Level Types](#transaction-level-types).
 
 **Point-in-time query**: The results reflect what the engine currently knows. If a transaction spends UTXOs from a contract the engine hasn't ingested yet, those contracts are simply absent from the results. After ingesting the contract and catching it up, calling `interpret_transaction` on the same transaction returns additional results.
 
-**Partial knowledge grows over time**: A trade transaction that spends a known limit order and an unknown pool would initially return only the order fill. After the pool is ingested, the same call would also return the pool swap. The caller should be prepared to re-interpret transactions as new contracts are ingested.
+**Partial knowledge grows over time**: A trade transaction that spends a known limit order and an unknown pool would initially return only the order fill transition. After the pool is ingested, the same call would also include the pool swap transition. The caller should be prepared to re-interpret transactions as new contracts are ingested.
 
 ### contract
 
@@ -457,7 +461,7 @@ pub struct ChainPosition {
 }
 ```
 
-Used by `ChainTransaction`, `ConfirmedTransition`, `StateUpdate`, and `TypedStateUpdate`. Groups the two fields that are always known or unknown together — a confirmed transaction always has both; an unconfirmed transaction has neither.
+Used by `ChainTransaction`, `ProcessedTransaction`, `StateUpdate`, and `TypedStateUpdate`. Groups the two fields that are always known or unknown together — a confirmed transaction always has both; an unconfirmed transaction has neither.
 
 ### ChainTransaction
 
@@ -747,15 +751,15 @@ pub struct UnblindedUtxo {
 
 ### StepReport
 
-Result of a `step` call, containing any transitions that were processed:
+Result of a `step` call, containing any transactions that were processed:
 
 ```rust
 pub struct StepReport {
-    pub transitions: Vec<ConfirmedTransition>,
+    pub transactions: Vec<ProcessedTransaction>,
 }
 ```
 
-Empty `transitions` means no contracts were affected — either the engine was already current, or new blocks contained no relevant transactions. The caller uses `transitions` for UI updates (e.g., "Your order was filled").
+Empty `transactions` means no contracts were affected — either the engine was already current, or new blocks contained no relevant transactions. The caller iterates over transactions, then over each transaction's transitions, for UI updates (e.g., "Your order was filled").
 
 ### ContractEntry
 
@@ -943,29 +947,35 @@ pub struct ContractMatch {
 }
 ```
 
-### Transition and ConfirmedTransition
+### Transaction-Level Types
 
-The core transition data, split into two types based on whether chain position is known:
+Transaction interpretation and processing results are grouped at the **transaction level**, not the per-contract level. A single transaction can affect multiple contracts (e.g., a trade routing through a pool and filling an order), and its non-covenant outputs are a property of the transaction, not of any individual contract's transition.
 
 ```rust
 pub struct Transition {
     pub contract_id: ContractId,
-    pub txid: Txid,
     pub details: TransitionDetails,
-    pub external_outputs: Vec<ExternalOutput>, // non-covenant outputs with roles
 }
 
-pub struct ConfirmedTransition {
-    pub transition: Transition,
+pub struct InterpretedTransaction {
+    pub txid: Txid,
+    pub transitions: Vec<Transition>,
+    pub external_outputs: Vec<ExternalOutput>,
+}
+
+pub struct ProcessedTransaction {
+    pub interpretation: InterpretedTransaction,
     pub position: ChainPosition,
 }
 ```
 
-The internal `process_transaction` returns `Vec<ConfirmedTransition>` — always has chain position (confirmed transactions only). `interpret_transaction` returns `Vec<Transition>` — no chain position (works for both confirmed and unconfirmed). `StepReport` contains `Vec<ConfirmedTransition>` for transitions processed during the step.
+`Transition` is the per-contract view — which contract was affected and what happened. It carries no transaction-level data (txid, outputs, position). `InterpretedTransaction` groups all transitions from a single transaction with the transaction's non-covenant outputs. `ProcessedTransaction` wraps `InterpretedTransaction` with `ChainPosition` for confirmed transactions.
 
-Outpoints are intentionally omitted from both types — they are internal to the engine's UTXO-following state machine. The `txid` provides sufficient correlation for block explorer lookups and transaction graph traversal.
+`interpret_transaction` returns `InterpretedTransaction` (works for confirmed and unconfirmed). `step` returns `StepReport { transactions: Vec<ProcessedTransaction> }` (always confirmed). The composition avoids `Option<ChainPosition>` — `step` callers never unwrap a field that's always `Some`.
 
-**Why two types instead of one with `Option<ChainPosition>`**: The internal `process_transaction` always has chain position; `interpret_transaction` never does. Using `Option` would force callers to unwrap a field that's always `Some`. The composition approach gives each method a return type that's fully precise — no optionals, no sentinel values.
+Outpoints are intentionally omitted — they are internal to the engine's UTXO-following state machine. The `txid` provides sufficient correlation for block explorer lookups and transaction graph traversal.
+
+**Why `external_outputs` is transaction-level, not per-transition**: A key invariant of the Deadcat protocol is that while a transaction can compose multiple contracts (co-spending pool reserves and order UTXOs), each non-covenant output is associated with at most one contract. A `MakerReceive` output belongs to a specific order (positional at `current_index()`). A `TradeReceive` output is the taker's consolidated receive. A `Fee` output is transaction-global. No output serves dual roles for two different contracts. This means output classification never conflicts across contracts — an output is either `Unknown` from a contract's perspective or has exactly one role, and when multiple contracts can classify the same output they always agree (e.g., both the pool and order classify the taker receive as `TradeReceive`). The engine exploits this by computing a single merged classification at the transaction level, eliminating per-contract duplication and the merge boilerplate every wallet integrator would otherwise need. When a wallet needs to attribute a `MakerReceive` output to a specific order (e.g., two orders filled in the same trade produce two `MakerReceive` outputs), it matches the output's `script_pubkey` against the filled orders' `maker_receive_spk_hash` from their params.
 
 ### StateUpdate
 
@@ -982,7 +992,7 @@ pub struct StateUpdate {
 }
 ```
 
-**Why two types**: `ConfirmedTransition` is the caller-facing view (full data, including ephemeral computed fields). `StateUpdate` is the storage-facing view (only what needs to be persisted). The engine converts between them internally. This prevents store implementors from accidentally persisting wallet-specific data (output roles, classifications) alongside contract state, while ensuring callers always get the full picture.
+**Why two types**: `ProcessedTransaction` (and its inner `InterpretedTransaction`) is the caller-facing view (full data, including ephemeral computed fields like output roles). `StateUpdate` is the storage-facing view (only what needs to be persisted). The engine converts between them internally. This prevents store implementors from accidentally persisting wallet-specific data (output roles, classifications) alongside contract state, while ensuring callers always get the full picture.
 
 ### TypedStateUpdate
 
@@ -1201,7 +1211,7 @@ When `process_transaction` is called (internally by `step`):
 4. Derive transition details from the current state, new state, and output values
 5. Compute external output roles for non-covenant outputs
 6. Durably persist the state updates
-7. Return the full `ConfirmedTransition`s
+7. Return the full `ProcessedTransaction`
 
 **Important**: A single transaction can affect multiple contracts. For example, a routed trade can spend LMSR pool reserves AND fill a limit order. Each contract advances independently based on its own outpoints — they don't need to know about each other.
 
@@ -1375,8 +1385,10 @@ engine.step(&mut chain)?;
 // 3. Ongoing sync loop
 loop {
     let report = engine.step(&mut chain)?;
-    for ct in &report.transitions {
-        update_ui(&ct.transition.details);
+    for tx in &report.transactions {
+        for t in &tx.interpretation.transitions {
+            update_ui(&t.details);
+        }
     }
     sleep(Duration::from_secs(60)); // or wait for block notification
 }
@@ -1489,7 +1501,7 @@ Every consumer must implement this. Read methods take `&self`, write methods tak
 
 **Discovery dedup**: Discovery payloads always include `creation_txid`, so the caller can construct the full `ContractId` and use `engine.contract(&contract_id)` to check if a contract is already tracked. No CMR-only lookup is needed — full `ContractId` dedup is both correct and efficient. CMR-only dedup would be incorrect in the rare case of two legitimate instances sharing params (same CMR, different `creation_txid`).
 
-**Processing log**: The store must persist enough rollback metadata during `apply_transitions` for `rollback_to_height` to reverse transitions. At minimum: the contract ID, old outpoints, new outpoints, and block height for each processed transition. `prune_finalized` removes this metadata for transitions below the finality threshold. This processing log is separate from `ContractHistory`'s transition history — it exists for rollback, not for user-facing queries. `rollback_to_height` must also clean up derived data (asset ID index, covenant scripts) for contracts removed during rollback.
+**Processing log**: The store must persist enough rollback metadata during `apply_transitions` for `rollback_to_height` to reverse transitions. At minimum: the contract ID, old outpoints, new outpoints, old contract state, and block height for each processed transition. The old contract state (the `MarketState`, `LmsrPoolState`, or `OrderState` value before the transition) is required because several transitions are not reversible from `TransitionDetails` alone — e.g., `PoolTransition::Closed` doesn't carry the old `s_index`, `OrderTransition::Cancelled` doesn't carry the old `total_filled`. Persisting the old state makes rollback mechanical (restore old state + old outpoints) regardless of transition type. `prune_finalized` removes this metadata for transitions below the finality threshold. This processing log is separate from `ContractHistory`'s transition history — it exists for rollback, not for user-facing queries. `rollback_to_height` must also clean up derived data (asset ID index, covenant scripts) for contracts removed during rollback.
 
 **Atomicity requirements**: Contract-level atomicity is a hard requirement — a single contract's state update (old outpoints -> new outpoints + state change) must be all-or-nothing. A half-updated contract is corrupted state. Transaction-level atomicity (all contracts updated together for a multi-contract transaction) is recommended but not strictly required for correctness. A "jagged" state where one contract has processed a transaction but another hasn't is indistinguishable from staggered ingestion — which is already a normal condition when contracts are discovered at different times. The system self-heals: re-processing the transaction advances the remaining contracts while already-processed contracts are a no-op (idempotency). Transaction-level atomicity is recommended because it's typically not much extra burden on top of the already-required contract-level atomicity (e.g., a single SQLite transaction) and avoids the jagged-view window.
 
@@ -1508,7 +1520,7 @@ pub trait ContractHistory: ContractStore {
 
 `ContractHistory` is a supertrait of `ContractStore` — implementing it requires also implementing `ContractStore`. This means `Self::Error` is the same associated type from `ContractStore`, eliminating any error type mismatch. The engine's history methods can wrap the error in `CoreError::Store(e)` without ambiguity.
 
-Only implement if the consumer wants price charts, audit trails, etc. Core never depends on history for processing — it only needs current state. History returns `StateUpdate` (the persisted form), not `ConfirmedTransition` (which includes ephemeral computed fields). To get full output classification for a historical transaction, the caller can call `interpret_transaction`.
+Only implement if the consumer wants price charts, audit trails, etc. Core never depends on history for processing — it only needs current state. History returns `StateUpdate` (the persisted form), not `ProcessedTransaction` (which includes ephemeral computed fields). To get full output classification for a historical transaction, the caller can call `interpret_transaction`.
 
 The engine exposes history through typed convenience methods (`market_history`, `pool_history`, `order_history`) that are only available when the store implements `ContractHistory`. The store trait itself has a single unified `transition_history` method — the typed unwrapping happens in the engine. See [History Methods](#history-methods).
 
@@ -2157,31 +2169,31 @@ engine.step(&mut chain)?;
 // 5. Ongoing sync loop — call step periodically or on block notifications.
 loop {
     let report = engine.step(&mut chain)?;
-    for ct in &report.transitions {
-        log::info!("Contract {:?} transitioned at block {}", ct.transition.contract_id, ct.position.block_height);
+    for tx in &report.transactions {
+        for t in &tx.interpretation.transitions {
+            log::info!("Contract {:?} transitioned at block {}", t.contract_id, tx.position.block_height);
+        }
     }
     sleep(Duration::from_secs(60));
 }
 
 // 6. Pending UX: interpret unconfirmed mempool transactions (read-only)
 if let Some(mempool_tx) = aqua_chain.get_mempool_tx(txid) {
-    let interpretations = engine.interpret_transaction(&mempool_tx)?;
-    for interp in &interpretations {
-        render_pending_label(&interp.details);
+    let result = engine.interpret_transaction(&mempool_tx)?;
+    for t in &result.transitions {
+        render_pending_label(&t.details);
     }
 }
 
 // 7. Label wallet history (read-only, can be called anytime)
 for wallet_tx in wallet_history {
-    let interpretations = engine.interpret_transaction(&wallet_tx)?;
-    for interp in &interpretations {
-        for output in &interp.external_outputs {
-            match output {
-                ExternalOutput::Explicit { index, role, .. } if *index == my_utxo_index => {
-                    render_label(role);
-                }
-                _ => {}
+    let result = engine.interpret_transaction(&wallet_tx)?;
+    for output in &result.external_outputs {
+        match output {
+            ExternalOutput::Explicit { index, role, .. } if *index == my_utxo_index => {
+                render_label(role);
             }
+            _ => {}
         }
     }
 }
@@ -2422,11 +2434,11 @@ Trade transactions co-spend multiple covenant inputs (LMSR pools + maker orders)
 **Rejected**: Unified method that handles both creation and state transitions.
 **Why**: Contract creation and state transition are fundamentally different operations. Creation scans transaction **outputs** to find initial covenant UTXOs (there are no prior outpoints to track). State transitions scan transaction **inputs** to find spent tracked outpoints. A unified method would need to handle both paths, muddying the clean UTXO-following model. Separating them keeps each method focused on its actual semantics.
 
-### Separate Return Types for Processing and Interpretation
+### Transaction-Level Grouping with Composition
 
-**Chosen**: `process_transaction` returns `Vec<ConfirmedTransition>` (with `ChainPosition`). `interpret_transaction` returns `Vec<Transition>` (without chain position). Core transition data is defined once in `Transition`; `ConfirmedTransition` wraps it with position metadata.
-**Rejected**: Single `TransitionResult` type with `Option<ChainPosition>`.
-**Why**: `process_transaction` always has chain position; `interpret_transaction` never does. Using `Option` would force `process_transaction` callers to unwrap a field that's guaranteed `Some`. The composition approach gives each method a return type that's fully precise — no optionals, no sentinel values, no impossible states. The core transition data is defined once, so there's no duplication.
+**Chosen**: Results are grouped at the transaction level. `interpret_transaction` returns `InterpretedTransaction` (txid + transitions + external_outputs). `step` returns `StepReport { transactions: Vec<ProcessedTransaction> }` where `ProcessedTransaction` wraps `InterpretedTransaction` with `ChainPosition`. Per-contract `Transition` carries only `contract_id` and `details`.
+**Rejected**: (a) Flat list of per-contract transitions, each carrying its own txid, external_outputs, and optional chain position. (b) Per-contract external_outputs requiring wallet-side merge.
+**Why**: A transaction can compose multiple contracts (e.g., a trade routing through a pool and filling an order), but each non-covenant output is associated with at most one contract — no output serves dual roles for two different contracts. This means output classification never conflicts across contracts, so the engine computes a single merged classification at the transaction level. Grouping at the transaction level eliminates three kinds of wallet boilerplate: grouping transitions by txid, merging output classifications across transitions, and handling the `Option<ChainPosition>` that a flat list would require (processing always has position, interpretation never does). The composition approach (`ProcessedTransaction` wraps `InterpretedTransaction` + `ChainPosition`) gives each method a return type that's fully precise — no optionals, no sentinel values.
 
 ### Store Trait with Optional History (Supertrait)
 
