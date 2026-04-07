@@ -207,6 +207,7 @@ These changes are specified in satellite docs but not yet applied to the `.simf`
 | Deterministic integer table generation | [lmsr-pool-design.md](lmsr-pool-design.md) | Pending — requires formal specification document (exact constants, algorithms, Merkle format, test vectors) | Pool math |
 | Covenant-enforced deterministic RT blinding | [deterministic-rt-blinding.md](deterministic-rt-blinding.md) | Pending | Market contract (ABF enforcement, CBF pass-through, `verify_token_commitment` refactor) |
 | Dormant terminal paths (resolution + expiry from zero pairs) | [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md) | Pending | Market contract (DormantYesRt and DormantNoRt slot programs) |
+| Order remainder witness-parameterization | [transaction-composability-model.md](transaction-composability-model.md) | Pending | Order contract (`remainder_idx` from witness instead of `current_index() + 1`) |
 
 **Implementation order**: The `.simf` refactors should be applied before implementing `deadcat-core`. The core implementation is specified against the planned end state.
 
