@@ -48,7 +48,7 @@ Each swap transaction provides two Merkle proofs — `F(old_s_index)` and `F(new
 
 This approach avoids on-chain exp/ln computation entirely — the covenant only performs hash verification and integer arithmetic. The full curve is committed at creation; each trade reveals exactly two points with logarithmic-sized proofs.
 
-**Curve well-formedness is caveat emptor at the covenant level**: the covenant verifies trades are *consistent with* the committed curve, not that the curve itself is well-formed (convex, monotonic, etc.). However, `deadcat-core` generates all curves deterministically from high-level parameters (see [Deterministic Table Generation](#deterministic-table-generation)), so traders can verify well-formedness by regenerating the table from the pool's parameters and checking the Merkle root matches.
+**Curve well-formedness is caveat emptor at the covenant level**: the covenant verifies trades are *consistent with* the committed curve, not that the curve itself is well-formed (convex, monotonic, etc.). However, `deadcat-core` generates all curves deterministically from high-level parameters (see [Deterministic Table Generation](#deterministic-table-generation)), and `ingest_pool` with `PoolSnapshot::Creation` automatically verifies well-formedness: the engine derives `b` from the stored `max_loss_sats`, recomputes the table, and checks the Merkle root matches. Pools ingested via `PoolSnapshot::Current` skip this verification.
 
 ## Parameter Design
 
@@ -164,8 +164,8 @@ The generation cost (~80ms for depth 16) is acceptable for one-time operations a
 
 The pool creator:
 
-1. Specifies `max_loss_sats`, `fee_bps`, `half_payout_sats`, `starting_price_bps`
-2. Calls `estimate_bootstrap(...)` to see the required reserves (YES tokens, NO tokens, collateral) — lightweight, called on every slider change
+1. Specifies `max_loss_sats`, `half_payout_sats`, `fee_bps`, `starting_price_bps`
+2. Calls `estimate_bootstrap(max_loss_sats, half_payout_sats, starting_price_bps)` to see the required reserves (YES tokens, NO tokens, collateral) — lightweight, called on every slider change (note: `fee_bps` does not affect reserves)
 3. Obtains the required YES and NO tokens by issuing pairs on the parent prediction market
 4. Calls `derive_pool_params(deadcat_xprv, market_params, pool_index, ...)` to construct the full `LmsrPoolParams` with all derived fields (admin pubkey, table root, q_step_lots, asset IDs) and the XOR-masked pool index — heavier, called once when the user commits to creating
 5. Calls `build_lmsr_bootstrap_pset(&params, starting_price_bps, masked_index, &funding)` to build the transaction
@@ -183,7 +183,6 @@ The starting `s_index` is computed from `starting_price_bps` — the engine maps
 pub fn estimate_bootstrap(
     max_loss_sats: u64,
     half_payout_sats: u64,
-    fee_bps: u16,
     starting_price_bps: u16,
 ) -> BootstrapEstimate;
 
@@ -288,7 +287,7 @@ The total capital needed (sum of `initial_yes_reserve` + `initial_no_reserve` + 
 
 ## On-Chain Covenant Parameters
 
-With the simplifications above, the on-chain `LmsrPoolParams` contains:
+With the simplifications above, `LmsrPoolParams` contains:
 
 | Field | Size | Source |
 |---|---|---|
@@ -300,10 +299,13 @@ With the simplifications above, the on-chain `LmsrPoolParams` contains:
 | `half_payout_sats` | u64 | Creator-specified |
 | `fee_bps` | u64 | Creator-specified (u64 for Simplicity arithmetic jets; validated < 10,000) |
 | `admin_pubkey` | 32 bytes | From mnemonic |
+| `max_loss_sats` | u64 | Creator-specified — NOT a covenant param (see below) |
+
+The first 8 fields are covenant parameters (compiled into the Simplicity program). `max_loss_sats` is not a covenant parameter — the covenant only verifies Merkle proofs, never evaluates the cost function. It is included in the struct because all off-chain LMSR computation (point evaluation for quoting, table generation for Merkle proofs, spot price calculation) requires the liquidity parameter `b = max_loss_sats / ln(2)`, and `b` is not recoverable from the covenant params alone (the `ceil()` in the `max_loss_sats → q_step_lots` derivation is lossy). `q_step_lots` and `lmsr_table_root` are retained alongside `max_loss_sats` as compilation caches — recomputing `lmsr_table_root` requires ~80ms of table generation.
 
 **Removed from params** (now constants in the `.simf`): `table_depth`, `s_bias`, `s_max_index`, `min_r_yes`, `min_r_no`, `min_r_collateral`.
 
-**Not in params** (used for generation only): `b`, `max_loss_sats`. These are communicated via discovery payloads and OP_RETURN recovery hints.
+**Not in params** (derived on demand from `max_loss_sats`): `b`. Unlike `q_step_lots` and `lmsr_table_root` (covenant params and compilation caches), `b` is only used transiently during LMSR math — deriving it from `max_loss_sats` is trivial.
 
 ## OP_RETURN Recovery Hint
 

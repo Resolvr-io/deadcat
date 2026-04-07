@@ -139,7 +139,7 @@ Where:
 - `context` is all other OP_RETURN fields (available before unmasking during recovery)
 
 For orders: `context = market_creation_txid || price || side || direction || min_fill_lots || min_remainder_lots`
-For pools: `context = market_creation_txid || max_loss_sats || half_payout_sats || fee_bps`
+For pools: `context = market_creation_txid || max_loss_sats || half_payout_sats || fee_bps || initial_s_index`
 
 Including contract-specific params in the context ensures different contracts get different masks. The recovery code recomputes the same mask from the OP_RETURN data.
 

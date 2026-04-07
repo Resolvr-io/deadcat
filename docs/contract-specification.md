@@ -91,10 +91,11 @@ pub struct LmsrPoolParams {
     pub half_payout_sats: u64,              // creator-specified (convention: 26-value mantissa x 10^exp)
     pub fee_bps: u64,                       // creator-specified (u64 for Simplicity; validated < 10,000; convention: <= 4,095)
     pub admin_pubkey: XOnlyPublicKey,       // from mnemonic at pool_index
+    pub max_loss_sats: u64,                 // NOT a covenant param — needed for off-chain LMSR math (b derivation, point evaluation, table generation)
 }
 ```
 
-8 fields (down from 14 in current SDK). See [lmsr-pool-design.md](lmsr-pool-design.md) for the full parameter design, derivation formulas, and protocol constants.
+9 fields (down from 14 in current SDK). See [lmsr-pool-design.md](lmsr-pool-design.md) for the full parameter design, derivation formulas, and protocol constants. Note: `max_loss_sats` is not a covenant parameter (the covenant only verifies Merkle proofs, never evaluates the cost function). It is included in the struct because all off-chain LMSR computation requires `b = max_loss_sats / ln(2)`, and `b` is not recoverable from the covenant params alone. The other two derived fields (`q_step_lots`, `lmsr_table_root`) are retained as compilation caches.
 
 **Removed from params** (now protocol constants in the `.simf`):
 - `table_depth` → `TABLE_DEPTH = 16`
@@ -102,11 +103,15 @@ pub struct LmsrPoolParams {
 - `s_max_index` → `S_MAX_INDEX = 65,535`
 - `min_r_yes`, `min_r_no`, `min_r_collateral` → `MIN_POOL_RESERVE = 1,000` sats each
 
+**Not in params** (derived on demand from `max_loss_sats`): `b`. Unlike `q_step_lots` and `lmsr_table_root` (which are covenant params and compilation caches), `b` is only used transiently during LMSR math and table generation — deriving it from `max_loss_sats` is trivial.
+
 **Renamed**: `cosigner_pubkey` → `admin_pubkey`. See [maker-order-remove-cosigner.md](maker-order-remove-cosigner.md).
 
 ### Covenant Structure
 
 3 reserve UTXOs (YES, NO, Collateral) sharing a script pubkey that encodes the current `s_index`. The taproot internal key is NUMS (key-spend unspendable). The taproot tree has constant Simplicity program leaves (same CMR regardless of `s_index`) and a variable `tapdata_leaf = TaggedHash("TapData", s_index.to_be_bytes())`. When `s_index` changes (swap), only the tapdata leaf changes — the Simplicity programs and their CMRs are constant for given pool params. This means computing a pool's script pubkey for a given `s_index` requires one Simplicity compilation (to get the constant program CMRs) plus lightweight hashing and an EC scalar multiplication (for the taproot tweak).
+
+Swap and admin paths produce three consecutive reserve outputs in fixed order, as enforced by the covenant: YES (index N), NO (index N+1), Collateral (index N+2), all sharing the same script pubkey encoding the current/new `s_index`.
 
 ### Spend Paths
 

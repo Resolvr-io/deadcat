@@ -42,13 +42,11 @@ The close script path must enforce:
 
 2. **All three reserve inputs present**: The transaction must spend all three reserve UTXOs (YES, NO, Collateral). This is the atomic guarantee — no partial closure.
 
-3. **No new covenant outputs**: None of the transaction's outputs may match any covenant script pubkey for this pool (at any s_index). This ensures the pool is fully extinguished.
-
-4. **Co-membership**: All three inputs must share the same script pubkey (same s_index), proving they belong to the same pool state. This reuses the existing co-membership verification pattern from the admin path.
+3. **Co-membership**: All three inputs must share the same script pubkey (same s_index), proving they belong to the same pool state. This reuses the existing co-membership verification pattern from the admin path.
 
 ### What the Close Path Does NOT Enforce
 
-- **Destination of funds**: The reserves can go anywhere — the operator's wallet, another contract, multiple outputs. The covenant doesn't restrict where funds flow after closure, only that they leave the covenant.
+- **Output destinations**: The close path imposes no output constraints. Reserves can go anywhere — the operator's wallet, another contract, multiple outputs. In practice, no new covenant outputs are produced (the operator has no reason to re-lock funds), so the pool is effectively extinguished.
 - **Reserve minimums**: Unlike the admin path, the close path has no floor constraints. All reserves are consumed entirely.
 - **s_index preservation**: Irrelevant — there are no new covenant outputs to carry an s_index.
 
@@ -90,7 +88,7 @@ Takes only the contract ID and wallet funding. The engine reads the current rese
 
 ### State Advancement
 
-`process_transaction` identifies closure by: all pool outpoints spent + no new outputs match any pool covenant script. Produces `PoolTransition::Closed { final_reserves }` and sets state to `LmsrPoolState::Closed { final_txid }`.
+`process_transaction` identifies closure via witness-based path detection: the close spend path is confirmed by `RedeemNode::decode` on the spending transaction's witness. Produces `PoolTransition::Closed { final_reserves }` and sets state to `LmsrPoolState::Closed { final_txid }`. See the main design doc's [Detection Strategy and Robustness](deadcat-core-design.md#detection-strategy-and-robustness) section.
 
 ### StateFilter
 
