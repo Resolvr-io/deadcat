@@ -47,18 +47,22 @@ Each slot has a unique script pubkey derived from the contract params + slot ide
 | Transition | From slots | To slots | Authorization | Covenant enforces |
 |---|---|---|---|---|
 | Initial issuance | 0, 1 | 2, 3, 4 | RT spend | Collateral = pairs x collateral_per_pair |
-| Subsequent issuance | 2, 3, 4 | 2, 3, 4 | RT spend | Collateral increased by pairs x collateral_per_pair |
-| Partial cancellation | 2, 3, 4 | 2, 3, 4 | RT spend + token burn | Collateral decreased, tokens burned |
-| Full cancellation | 2, 3, 4 | 0, 1 | RT spend + token burn | All collateral returned, all tokens burned |
-| Resolution (YES) | 2, 3, 4 | 5 | Oracle BIP-340 signature | Oracle signs tagged hash of market_id + outcome |
+| Subsequent issuance | 2, 3, 4 | 2, 3, 4 | RT spend | Collateral increased by pairs x collateral_per_pair; sibling UTXO check |
+| Partial cancellation | 2, 3, 4 | 2, 3, 4 | RT spend + token burn | Collateral decreased, tokens burned; sibling UTXO check |
+| Full cancellation | 2, 3, 4 | 0, 1 | RT spend + token burn | All collateral returned, all tokens burned; sibling UTXO check |
+| Resolution (YES) | 2, 3, 4 | 5 | Oracle BIP-340 signature | Oracle signs tagged hash of market_id + outcome; RT burn outputs verified at unspendable script with correct commitment; sibling UTXO check |
 | Resolution (NO) | 2, 3, 4 | 6 | Oracle BIP-340 signature | Same |
 | Redemption (post-YES) | 5 | none | Token burn | YES tokens burned, collateral released at full value |
 | Redemption (post-NO) | 6 | none | Token burn | NO tokens burned, collateral released at full value |
 | Redemption (expired) | 7 | none | Token burn | Any tokens burned, collateral released at half value |
-| Expiry | 2, 3, 4 | 7 | Timelock >= expiry_time | No signature required |
+| Expiry | 2, 3, 4 | 7 | Timelock >= expiry_time | No signature required; RT burn outputs verified at unspendable script with correct commitment; sibling UTXO check |
 | Dormant resolution (YES) | 0, 1 | none | Oracle BIP-340 signature | Both RTs consumed, no outputs |
 | Dormant resolution (NO) | 0, 1 | none | Oracle BIP-340 signature | Both RTs consumed, no outputs |
 | Dormant expiry | 0, 1 | none | Timelock >= expiry_time | Both RTs consumed, no outputs |
+
+**Sibling UTXO check**: All transitions that co-spend RTs and collateral verify that the three covenant inputs were created in the same transaction (`input_prev_outpoint` txid match across all three). This prevents collateral substitution — an attacker cannot create a fake collateral UTXO at the covenant script address and swap it in for the real one, because the fake UTXO's `prev_txid` won't match the RTs'. See [enforcement-layers.md](enforcement-layers.md) for the full attack analysis.
+
+This is a pending refactor with two parts: (1) add the `prev_txid` check to all paths that co-spend RTs and collateral, and (2) change partial cancellation to co-spend RTs. Part 2 is required because the current partial cancellation only spends the collateral slot — after such a cancellation, the collateral's `prev_txid` would differ from the RTs' (it was created in the cancellation tx, while the RTs were last created in the prior issuance tx). Co-spending the RTs during partial cancellation ensures all three outputs are always born in the same transaction.
 
 ### Oracle Attestation
 
@@ -208,6 +212,7 @@ These changes are specified in satellite docs but not yet applied to the `.simf`
 | Covenant-enforced deterministic RT blinding | [deterministic-rt-blinding.md](deterministic-rt-blinding.md) | Pending | Market contract (ABF enforcement, CBF pass-through, `verify_token_commitment` refactor) |
 | Dormant terminal paths (resolution + expiry from zero pairs) | [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md) | Pending | Market contract (DormantYesRt and DormantNoRt slot programs) |
 | Order remainder witness-parameterization | [transaction-composability-model.md](transaction-composability-model.md) | Pending | Order contract (`remainder_idx` from witness instead of `current_index() + 1`) |
+| Sibling UTXO check + partial cancellation RT co-spend | [enforcement-layers.md](enforcement-layers.md) | Pending | Market contract (add `prev_txid` match on all RT+collateral co-spend paths; partial cancellation must co-spend RTs to maintain sibling invariant) |
 
 **Implementation order**: The `.simf` refactors should be applied before implementing `deadcat-core`. The core implementation is specified against the planned end state.
 

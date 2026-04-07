@@ -174,18 +174,25 @@ The `BlindingQuad` type `(in_abf, in_vbf, out_abf, out_vbf)` shrinks. Output bli
 
 ### Affected Spend Paths
 
-Only transitions that produce new RT outputs need the enforcement:
+**Transitions producing new RT continuation outputs** (covenant enforces deterministic ABFs + CBF pass-through on the continuation outputs):
 - **Initial issuance** (Dormant → Unresolved)
 - **Subsequent issuance** (Unresolved → Unresolved)
 - **Partial cancellation** (Unresolved → Unresolved)
 - **Full cancellation** (Unresolved → Dormant)
 
-Transitions that consume RT inputs without creating new RT outputs (resolution, expiry, dormant terminals) do NOT need output blinding enforcement — they only need the input ABF/CBF as witness data for commitment verification.
+**Transitions consuming RTs without continuation** (covenant enforces RT burn outputs at the unspendable burn script with verified commitment):
+- **Resolution** (Unresolved → ResolvedYes/ResolvedNo)
+- **Expiry** (Unresolved → Expired)
+
+These transitions use `ensure_blinded_reissuance_burn_output`, which verifies the output commitment matches the expected RT asset (same `verify_token_commitment` pattern) AND verifies the output script is the burn script. This is security-critical: deterministic blinding makes ABFs public, so the traditional Elements safeguard (ABF secrecy prevents unauthorized reissuance) is absent. Without covenant-enforced burns, a malicious transaction builder could redirect RT tokens to a wallet address and use the Elements consensus-level reissuance mechanism to mint unbacked tokens — bypassing the Simplicity covenant entirely.
+
+**Dormant terminal transitions** (resolution/expiry from zero outstanding pairs) consume both DormantRT slots with no outputs. These are specified in [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md) and will also require burn output enforcement — to be added when those paths are implemented.
 
 ### What the Covenant Does NOT Enforce
 
 - **Creation-time blinding**: The covenant doesn't run during creation (the creation transaction CREATES the covenant UTXOs; the covenant first executes when those UTXOs are spent). Creation-time blinding is the market creator's responsibility via `deadcat-core`. A market creator who uses non-deterministic blinding breaks their own market — the threat model protects honest creators from malicious third parties, not creators from themselves.
-- **Wallet output blinding**: Non-RT outputs are outside the covenant's scope. The wallet handles its own blinding independently.
+- **Wallet output blinding**: Non-RT outputs (wallet change, fee, collateral, token destinations) are outside the covenant's scope. The wallet handles its own blinding independently.
+- **Burn output blinding factor choice**: The covenant verifies burn output commitments using witness-provided ABF/VBF (same `verify_token_commitment` pattern), but the specific blinding factors on burn outputs are not required to follow the CBF pass-through scheme. Any valid commitment that matches the expected RT asset and value is accepted. In practice, `deadcat-core` uses CBF pass-through for burn outputs (same mechanism as continuation outputs) because it self-balances the Pedersen commitment equation without requiring a blinded wallet output — but this is an implementation choice, not a covenant constraint.
 
 ## Implementation: Hand-Rolled Confidential Outputs
 
