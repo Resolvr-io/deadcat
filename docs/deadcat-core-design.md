@@ -2337,6 +2337,45 @@ aqua_chain.broadcast(signed)?;
 
 **Total: ~300+ tests in under 3 minutes**, with the bulk of correctness confidence coming from Tiers 1-4 (no external processes, <1 minute). Regtest tests are a safety net, not the primary correctness mechanism.
 
+## Security Model
+
+### Trust Assumptions
+
+The protocol has two external trust points. Integrators should understand these before building on `deadcat-core`.
+
+| Assumption | Impact if violated | Mitigation |
+|---|---|---|
+| **Oracle honesty** | A compromised oracle can resolve markets incorrectly — winning token holders lose their full-value redemption. | Token holders can wait for expiry (half-value redemption) as a fallback. Multi-oracle schemes (M-of-N signatures) would reduce single-point-of-failure risk but are out of scope for v1. |
+| **Liquid federation honest block production** | Federation members could front-run trades (insert own transactions before user transactions), censor specific transactions, or reorder transactions within a block. | Standard Liquid trust model — not Deadcat-specific. No public mempool reduces the front-running surface compared to Bitcoin. |
+
+Everything else is covenant-enforced — a malicious actor who modifies `deadcat-core` (or builds transactions manually) cannot violate the properties below.
+
+### Covenant-Enforced Properties
+
+Each row is a property the Simplicity covenants enforce on-chain. These also serve as the **negative test case spec for Tier 4 covenant execution tests** — each row should have a corresponding test that constructs the attack transaction and verifies the covenant rejects it.
+
+| Property | Attack prevented | Enforced by |
+|---|---|---|
+| Collateral conservation on issuance | Issue tokens without providing sufficient collateral | Market covenant checks `collateral = pairs × collateral_per_pair` |
+| Oracle-only resolution | Resolve a market without the oracle's signature | Market covenant verifies BIP-340 signature against `ORACLE_PUBLIC_KEY` |
+| Correct redemption rates | Redeem at full value on an expired market (should be half) | Market covenant enforces half-value for Expired, full-value for ResolvedYes/ResolvedNo |
+| Deterministic RT blinding | Grief a market by using non-deterministic blinding on RT outputs, locking it for all other participants | Market covenant enforces deterministic ABFs + CBF pass-through (see [deterministic-rt-blinding.md](deterministic-rt-blinding.md)) |
+| Swap pricing integrity | Get more tokens from a pool than the LMSR curve allows | Pool covenant verifies Merkle proofs for F(old_s) and F(new_s), enforces conservation equation with fee inequality |
+| Pool reserve minimums | Drain a pool below minimum reserves via swap or admin adjustment | Pool covenant enforces `MIN_POOL_RESERVE` on all 3 reserves for swap and admin paths |
+| Correct trade direction | Buy YES tokens while moving s_index down (getting a better price) | Pool covenant enforces `new_s_index > old_s_index` for buys, `<` for sells |
+| Maker payment on order fill | Fill an order without paying the maker the correct amount in the correct asset | Order covenant checks `output[i].value >= fill_amount × PRICE` with asset verified against `QUOTE_ASSET_ID` (SellBase) or `BASE_ASSET_ID` (SellQuote) |
+| Order remainder integrity | Steal the remainder of a partially-filled order | Order covenant checks remainder output has the order's covenant script and correct asset, with `min_remainder_lots` floor |
+| Asset identity on all covenant outputs | Substitute one asset for another at the same value (e.g., replace YES tokens in a pool reserve with L-BTC) | All three covenants verify output asset IDs — pool: all 3 reserves, market: all paths, order: maker receive + remainder |
+| Admin-only pool operations | Adjust or close a pool without the operator's key | Pool covenant requires BIP-340 signature from `ADMIN_PUBKEY` for admin and close paths |
+| Maker-only order cancellation | Cancel someone else's order to steal their locked tokens | Order cancellation is taproot key-spend only — requires maker's private key |
+| No double resolution | Resolve a market twice (once YES, once NO) to profit from both sides | Resolution consumes the RT UTXOs — no spend path exists from resolved state back to unresolved |
+| Timelock-enforced expiry | Expire a market before the deadline to force half-value redemptions on winning token holders | Covenant checks `nLockTime >= expiry_time` (consensus-enforced — transaction cannot be included in a block before this height) |
+| Correct issuance amounts | Mint more tokens than the collateral covers via the reissuance mechanism | Market covenant introspects `issuance_asset_amount` and validates against collateral |
+
+### Transaction Composability
+
+Trade transactions co-spend multiple covenant inputs (LMSR pools + maker orders). Output aliasing — where two covenants both claim the same output — is prevented by two mechanisms: script uniqueness (different contracts produce different scripts) and structural separation (positional output references tied to input index). See [transaction-composability-model.md](transaction-composability-model.md) for the full analysis, output layout algorithm, and the proposed order covenant change that enables flexible multi-source trade transactions.
+
 ## Design Decisions Log
 
 ### UTXO-following vs Transaction Classification
