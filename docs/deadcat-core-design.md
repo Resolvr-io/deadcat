@@ -881,8 +881,8 @@ pub struct TradeQuote {
     pub direction: TradeDirection,
     pub requested_amount: u64,
     pub filled_amount: u64,    // same units as requested_amount (input units for ExactInput, output units for future ExactOutput)
-    pub total_input: u64,      // Buy: collateral (L-BTC sats) spent. Sell: tokens sent.
-    pub total_output: u64,     // Buy: tokens received. Sell: collateral (L-BTC sats) received.
+    pub total_input: u64,      // Buy: collateral spent. Sell: tokens sent.
+    pub total_output: u64,     // Buy: tokens received. Sell: collateral received.
     pub estimated_fee: u64,    // Estimated transaction fee in sats, based on the route's weight model. Actual fee (computed at build time from real coin selection) may differ — see Trade PSET Builder.
     pub effective_price: f64,  // Display-only approximation. Do not use for computation. Use total_input/total_output for exact amounts.
     pub legs: Vec<RouteLeg>,
@@ -1590,7 +1590,7 @@ PSET builders accept `UnblindedUtxo` (via `WalletFunding`) — a UTXO with unbli
 
 ### Output Consolidation
 
-PSET builders consolidate outputs that share the same destination script and asset into a single output. For example, a redemption payout (L-BTC collateral returned) and fee change (excess L-BTC from the fee input) both go to `funding.return_script` — the builder merges them into one output. This reduces transaction size (~4.3 KB per confidential output on Liquid), lowers fees, reduces UTXO bloat in the wallet, and improves privacy (fewer outputs = less structural fingerprinting).
+PSET builders consolidate outputs that share the same destination script and asset into a single output. For example, a redemption payout (collateral returned) and fee change (excess L-BTC from the fee input) both go to `funding.return_script` — the builder merges them into one output. This reduces transaction size (~4.3 KB per confidential output on Liquid), lowers fees, reduces UTXO bloat in the wallet, and improves privacy (fewer outputs = less structural fingerprinting).
 
 Because consolidated outputs may include fee change alongside their primary purpose, `OutputRole` identifies *which* output serves a purpose, but `TransitionDetails` is authoritative for *exact semantic amounts* (payout, tokens burned, collateral locked, etc.). The wallet should always use `TransitionDetails` for display amounts.
 
@@ -2647,7 +2647,7 @@ Trade transactions co-spend multiple covenant inputs (LMSR pools + maker orders)
 
 ### Single Return Script for All Non-Covenant Outputs
 
-**Chosen**: `WalletFunding.return_script` is the sole destination for all non-covenant, non-fee outputs: L-BTC change, collateral refunds, redemption payouts, trade proceeds, order refunds, etc. No separate `payout_script` or `refund_script` parameters.
+**Chosen**: `WalletFunding.return_script` is the sole destination for all non-covenant, non-fee outputs: change, collateral refunds, redemption payouts, trade proceeds, order refunds, etc. No separate `payout_script` or `refund_script` parameters.
 **Rejected**: Per-builder destination scripts (e.g., `refund_script` for cancellation, `payout_script` for redemption).
 **Why**: In practice, wallets send all funds to the same set of addresses. Separate destination scripts add API surface without changing behavior for the common case. Using a single `return_script` simplifies every builder signature and enables output consolidation (same script + same asset → merge). Named `return_script` rather than `change_script` to reflect its broader purpose. If a future use case requires separate destinations (e.g., institutional custody with per-purpose addresses), this can be added as an optional override without breaking the API.
 **Exception**: `build_issuance_pset` takes `yes_dest: &Script` and `no_dest: &Script` for newly minted token delivery. These are justified because the caller is creating two distinct assets that may need separate destinations (e.g., YES tokens to a pool, NO tokens to cold storage). This is fundamentally different from L-BTC fund flows where a single destination suffices.

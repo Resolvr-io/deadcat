@@ -2,7 +2,7 @@
 
 ## Overview
 
-LMSR (Logarithmic Market Scoring Rule) pools are automated market makers for binary prediction markets on Liquid/Elements. A pool holds YES tokens, NO tokens, and L-BTC collateral, and traders swap against it. The pool's pricing is governed by a mathematical cost function committed to at creation time via a Merkle root in the Simplicity covenant.
+LMSR (Logarithmic Market Scoring Rule) pools are automated market makers for binary prediction markets on Liquid/Elements. A pool holds YES tokens, NO tokens, and collateral (the market's collateral asset, e.g., L-BTC), and traders swap against it. The pool's pricing is governed by a mathematical cost function committed to at creation time via a Merkle root in the Simplicity covenant.
 
 This document specifies the pool's conceptual model, parameter design, on-chain mechanics, and wallet-layer API. It is a satellite document referenced by [deadcat-core-design.md](deadcat-core-design.md).
 
@@ -29,7 +29,7 @@ The implied YES price at state s is the logistic function: `p = 1 / (1 + exp(-2s
 The pool holds three reserves:
 - **YES tokens** — sold to traders who buy YES (s_index increases)
 - **NO tokens** — sold to traders who buy NO (s_index decreases)
-- **Collateral (L-BTC)** — flows in when traders buy, flows out when traders sell
+- **Collateral** (the market's collateral asset) — flows in when traders buy, flows out when traders sell
 
 When a trader buys YES tokens, they pay collateral and receive YES tokens from the pool. The cost is `C(s2) - C(s1)` (plus fees), where s1 → s2 is the state movement. The pool's YES reserve decreases and collateral increases. The reverse for sells.
 
