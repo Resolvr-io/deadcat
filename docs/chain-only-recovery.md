@@ -138,10 +138,30 @@ Where:
 - `tag` is `"deadcat/order_mask"` or `"deadcat/pool_mask"`
 - `context` is all other OP_RETURN fields (available before unmasking during recovery)
 
-For orders: `context = market_creation_txid || price || side || direction || min_fill_lots || min_remainder_lots`
-For pools: `context = market_creation_txid || max_loss_sats || half_payout_sats || fee_bps || initial_s_index`
+The context uses raw field values in standard big-endian encoding, independent of the compact OP_RETURN bit-packing. This makes the mask computation encoding-agnostic — a future OP_RETURN V2 format change would not affect mask computation for the same logical values.
 
-Including contract-specific params in the context ensures different contracts get different masks. The recovery code recomputes the same mask from the OP_RETURN data.
+**Order mask context (44 bytes):**
+```
+market_creation_txid  (32 bytes, raw)
+price                 (8 bytes, u64 big-endian)
+side                  (1 byte: 0x00 = Yes, 0x01 = No)
+direction             (1 byte: 0x00 = SellBase, 0x01 = SellQuote)
+min_fill_lots         (1 byte, u8)
+min_remainder_lots    (1 byte, u8)
+```
+
+**Pool mask context (52 bytes):**
+```
+market_creation_txid  (32 bytes, raw)
+max_loss_sats         (8 bytes, u64 big-endian)
+half_payout_sats      (8 bytes, u64 big-endian)
+fee_bps               (2 bytes, u16 big-endian)
+initial_s_index       (2 bytes, u16 big-endian)
+```
+
+At recovery time, the decoder reads the OP_RETURN, decodes each field to its raw value (e.g., 9-bit mantissa×exponent → u64 for `max_loss_sats`), then serializes in this format for the HMAC. The context length does not affect on-chain size — only the 2-byte mask output appears in the OP_RETURN.
+
+Including contract-specific params in the context ensures different contracts get different masks. The recovery code recomputes the same mask from the decoded OP_RETURN data.
 
 **Known property**: Two orders with completely identical params on the same market share the same mask (leaking the XOR of their indices). This is a negligible concern — identical params already imply a CMR collision scenario the spec warns against, and the leaked information (index difference, not absolute values) requires the observer to already have linked the two transactions to the same wallet.
 

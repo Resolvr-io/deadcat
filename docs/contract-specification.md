@@ -23,6 +23,8 @@ pub struct PredictionMarketParams {
 
 4 of 8 fields are derivable from the creation transaction's issuance entropy. The remaining 4 are stored in the OP_RETURN recovery hint. See [chain-only-recovery.md](chain-only-recovery.md).
 
+**Unit convention**: All amounts (`collateral_per_pair`, `max_loss_sats`, `half_payout_sats`, token counts, reserve values) are denominated in the **smallest indivisible unit** of the respective asset — satoshis for L-BTC (10^-8 BTC), 10^-8 for USDt on Liquid, etc. The `_sats` suffix on some fields reflects the L-BTC-as-canonical-example convention, not an L-BTC-only restriction. Protocol constants like `MIN_POOL_RESERVE = 1,000` are in smallest units regardless of asset.
+
 Builder validates: `collateral_per_pair` in 1-2-5 table, `expiry_time` on 60-block boundary, `collateral_asset_id` in well-known set or exotic-escape-compatible.
 
 ### Covenant Structure
@@ -193,7 +195,9 @@ Order detection uses **taproot structural checks**, not Simplicity witness decod
 | `S_BIAS` | 32,768 | `lmsr_pool.simf` |
 | `S_MAX_INDEX` | 65,535 | `lmsr_pool.simf` |
 | `MIN_POOL_RESERVE` | 1,000 sats | `lmsr_pool.simf` (applied to all 3 reserves) |
-| NUMS key | `0x50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0` | All contracts |
+| NUMS key | `0x50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0` | All contracts (markets, pools) |
+
+**NUMS key**: "Nothing Up My Sleeve" — a point on the secp256k1 curve with no known discrete logarithm, derived by hashing a fixed string to a curve point. This is the standard NUMS point used across the Bitcoin/Liquid ecosystem (same value used by BIP-341 for the unspendable internal key). Key-spend with this internal key is cryptographically infeasible, forcing all spends through the script path (Simplicity covenant). Maker orders use the maker's real public key instead — key-spend is their cancellation mechanism.
 
 ## Pending Refactors
 
