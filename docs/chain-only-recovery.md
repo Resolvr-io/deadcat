@@ -151,16 +151,16 @@ Including contract-specific params in the context ensures different contracts ge
 
 `collateral_per_pair` is constrained to 16 values in the 1-2-5 series:
 
-| Index | Value | ~USD (L-BTC) | Index | Value | ~USD (L-BTC) |
-|---|---|---|---|---|---|
-| 0 | 100 | $0.10 | 8 | 50,000 | $50 |
-| 1 | 200 | $0.20 | 9 | 100,000 | $100 |
-| 2 | 500 | $0.50 | 10 | 200,000 | $200 |
-| 3 | 1,000 | $1 | 11 | 500,000 | $500 |
-| 4 | 2,000 | $2 | 12 | 1,000,000 | $1,000 |
-| 5 | 5,000 | $5 | 13 | 2,000,000 | $2,000 |
-| 6 | 10,000 | $10 | 14 | 5,000,000 | $5,000 |
-| 7 | 20,000 | $20 | 15 | 10,000,000 | $10,000 |
+| Index | Value (sats) | Index | Value (sats) |
+|---|---|---|---|
+| 0 | 100 | 8 | 50,000 |
+| 1 | 200 | 9 | 100,000 |
+| 2 | 500 | 10 | 200,000 |
+| 3 | 1,000 | 11 | 500,000 |
+| 4 | 2,000 | 12 | 1,000,000 |
+| 5 | 5,000 | 13 | 2,000,000 |
+| 6 | 10,000 | 14 | 5,000,000 |
+| 7 | 20,000 | 15 | 10,000,000 |
 
 This determines order price resolution: `PRICE` is an integer bounded by `collateral_per_pair`, so the number of distinct expressible probability values equals `collateral_per_pair`. At 100: 1% increments (coarse). At 10,000: 0.01% increments (fine). Markets below 1,000 have limited price resolution for limit orders but work fine for LMSR pool trading (pools use their own pricing curve).
 

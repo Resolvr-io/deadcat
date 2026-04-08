@@ -96,7 +96,7 @@ The table depth determines the number of discrete price points (2^depth) and aff
 | 18 | 262,144 | ~1,168 B | 2 MB | ~300ms |
 | 20 | 1,048,576 | ~1,296 B | 8 MB | ~1s |
 
-Depth 16 ensures `q_step_lots = 1` for pools up to ~33M sats max loss (~$33K risk), at a negligible cost of ~26 extra sats per swap compared to depth 12. The pricing granularity near 50% is determined by `max_loss_sats`, not the table depth — when `q_step_lots = 1`, all depths produce identical pricing. The depth only matters for how large a pool can be before `q_step_lots` bumps above 1 (coarsening the minimum trade size). The 512 KB table is trivial to hold in memory.
+Depth 16 ensures `q_step_lots = 1` for pools up to ~33M sats max loss, at a negligible cost of ~26 extra sats per swap compared to depth 12. The pricing granularity near 50% is determined by `max_loss_sats`, not the table depth — when `q_step_lots = 1`, all depths produce identical pricing. The depth only matters for how large a pool can be before `q_step_lots` bumps above 1 (coarsening the minimum trade size). The 512 KB table is trivial to hold in memory.
 
 A fixed depth means:
 - Single `.simf` file with no metaprogramming or template-based code generation
@@ -114,13 +114,13 @@ The conversion is trivial: `b = max_loss_sats / ln(2)`. The creator thinks "I'm 
 
 The pricing granularity near 50% (where each discrete s_index step has the largest price impact) is determined entirely by `max_loss_sats` and `half_payout_sats`:
 
-| `max_loss_sats` | Approx. risk | Price step near 50% |
-|---|---|---|
-| 10,000 | ~$10 | ~17% |
-| 50,000 | ~$50 | ~3.5% |
-| 100,000 | ~$100 | ~1.7% |
-| 1,000,000 | ~$1K | ~0.17% |
-| 10,000,000 | ~$10K | ~0.017% |
+| `max_loss_sats` | Price step near 50% |
+|---|---|
+| 10,000 | ~17% |
+| 50,000 | ~3.5% |
+| 100,000 | ~1.7% |
+| 1,000,000 | ~0.17% |
+| 10,000,000 | ~0.017% |
 
 (Assumes `half_payout_sats = 5,000`. Steps are finer near the extremes due to the logistic curve shape.)
 
