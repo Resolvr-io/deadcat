@@ -77,7 +77,7 @@ Pool reserve UTXOs are at covenant addresses — standard wallet rescan cannot f
 3. Derive mask: `HMAC(deadcat_secret_key, "deadcat/pool_mask" || context)[0..2]` (context = all fields from step 2 except masked_index)
 4. Unmask: `pool_index = masked_index ^ mask`
 5. Fetch market creation tx → reconstruct market params
-6. Call `derive_pool_params(deadcat_xprv, market_params, pool_index, max_loss_sats, half_payout_sats, fee_bps)` to reconstruct full `LmsrPoolParams` (derives admin pubkey, Merkle root, and everything else internally)
+6. Call `derive_pool_params(deadcat_xprv, market_params, pool_index, max_loss_sats, half_payout_sats, fee_bps, starting_price_bps)` to reconstruct full `LmsrPoolParams` (derives admin pubkey, Merkle root, and everything else internally). The `starting_price_bps` is derived from `initial_s_index` (extracted in step 2) via the inverse logistic function.
 7. Compile the covenant for `initial_s_index`, verify the script matches a creation tx output
 8. `ingest_pool`
 

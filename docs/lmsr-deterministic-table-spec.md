@@ -142,10 +142,12 @@ Each of the following must be specified with exact precision, rounding mode, and
    - Rounding: specified (e.g., round-to-nearest, truncate)
 
 2. **Computation of `q_step_lots` from `b` and `half_payout_sats`**
-   - Mathematical: `q_step_lots = ceil(half_payout_sats / b)`
-   - Equivalent: `q_step_lots = ceil(half_payout_sats × ln(2) / max_loss_sats)`
+   - Mathematical: `q_step_lots = max(1, ceil(ln(999) × b / (65536 × half_payout_sats)))`
+   - Equivalent: `q_step_lots = max(1, ceil(ln(999) × max_loss_sats / (65536 × ln(2) × half_payout_sats)))`
    - Output: u64
-   - Rounding: ceiling (specified in `lmsr-pool-design.md`)
+   - Rounding: ceiling, floored at 1
+   - `ln(999) ≈ 6.9078` is a **protocol-fixed derivation constant** encoding the 0.1%-99.9% price range target. The table's edge indices (`i = 0` and `i = S_MAX_INDEX`) correspond to implied YES prices of approximately 0.1% and 99.9% when `q_step_lots` equals this formula's result. The exact rational approximation of `ln(999)` is part of the deterministic integer algorithm specification.
+   - For most practical pool parameters, `q_step_lots = 1`. The formula only produces values > 1 for very deep pools (approximately `max_loss_sats > 6,583 × half_payout_sats`).
 
 3. **Evaluation of `F(i)` for each `i` in `[0, 2^TABLE_DEPTH)`**
    - Mathematical: `F(i) = floor(b × ln(exp(s/b) + exp(-s/b)))` where `s = (i - S_BIAS) × q_step_lots × half_payout_sats`
@@ -181,7 +183,7 @@ Input:      max_loss_sats (u64), half_payout_sats (u64)
 Step 1:     b = max_loss_sats / ln(2)           [fixed-point, precision TBD]
                 │
                 ▼
-Step 2:     q_step_lots = ceil(half_payout_sats / b)   [u64, ceiling]
+Step 2:     q_step_lots = max(1, ceil(ln(999) × b / (65536 × half_payout_sats)))   [u64]
                 │
                 ▼
 Step 3:     For i in 0..65536:                   [fixed-point, precision TBD]

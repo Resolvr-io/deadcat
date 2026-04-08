@@ -98,6 +98,15 @@ if (!issuance.nInflationKeys.IsNull()) {
 
 This means: **the total supply of reissuance tokens for an asset is permanently fixed at initial issuance time.** No additional RTs can ever be created through any transaction. The only way to reduce RT supply is to burn them (send to an unspendable script).
 
+### Burn Script: OP_RETURN Over P2WSH
+
+Burn outputs use bare OP_RETURN (`0x6a`) rather than the alternative P2WSH-with-all-zero-hash approach. Both are unspendable, but OP_RETURN is superior for two reasons:
+
+1. **Consensus-level unspendability**: OP_RETURN is unspendable by consensus rule — absolute, not dependent on computational assumptions. P2WSH(0x00...00) relies on SHA256 preimage resistance (computationally secure but not consensus-enforced).
+2. **UTXO set hygiene**: Nodes prune OP_RETURN outputs from the UTXO set (they're known-unspendable). P2WSH burn outputs remain in the UTXO set forever because nodes can't determine they're unspendable.
+
+**Blinded OP_RETURN is supported on Elements.** RT burn outputs must be blinded (the covenant verifies deterministic blinding factors). Elements handles this correctly: `blind.cpp` sets `min_value = 0` for unspendable scripts, `blind_tests.cpp` explicitly tests blinded OP_RETURN outputs, and `VerifyAmounts` processes blinded OP_RETURN identically to other blinded outputs. The fee mechanism already depends on explicit non-zero-value OP_RETURN (every transaction's fee output is an OP_RETURN with the fee amount).
+
 ### Implications for Deadcat
 
 1. **A market creator who creates exactly 1 YES RT and 1 NO RT in the creation transaction has permanently fixed the RT supply.** No covenant enforcement is needed to prevent additional RT creation — Elements consensus handles it.

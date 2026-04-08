@@ -213,6 +213,7 @@ These changes are specified in satellite docs but not yet applied to the `.simf`
 | Dormant terminal paths (resolution + expiry from zero pairs) | [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md) | Pending | Market contract (DormantYesRt and DormantNoRt slot programs) |
 | Order remainder witness-parameterization | [transaction-composability-model.md](transaction-composability-model.md) | Pending | Order contract (`remainder_idx` from witness instead of `current_index() + 1`) |
 | Sibling UTXO check + partial cancellation RT co-spend | [enforcement-layers.md](enforcement-layers.md) | Pending | Market contract (add `prev_txid` match on all RT+collateral co-spend paths; partial cancellation must co-spend RTs to maintain sibling invariant) |
+| Burn script: P2WSH → OP_RETURN | [enforcement-layers.md](enforcement-layers.md) | Pending | Market contract (`ensure_blinded_reissuance_burn_output` checks bare OP_RETURN script hash instead of P2WSH hash). Rationale: consensus-level unspendability, UTXO set pruning. Blinded OP_RETURN confirmed supported on Elements. |
 
 **Implementation order**: The `.simf` refactors should be applied before implementing `deadcat-core`. The core implementation is specified against the planned end state.
 

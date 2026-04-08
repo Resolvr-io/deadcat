@@ -161,7 +161,7 @@ impl<S: ContractStore> ContractEngine<S> {
 pub fn contract_cmr(params: &ContractParams, network: Network) -> Cmr;  // requires Simplicity compilation
 pub fn oracle_attestation_message(yes_asset_id: &AssetId, no_asset_id: &AssetId, outcome_yes: bool) -> [u8; 32];
 pub fn estimate_bootstrap(max_loss_sats: u64, half_payout_sats: u64, starting_price_bps: u16) -> BootstrapEstimate;
-pub fn derive_pool_params(deadcat_xprv: &Xpriv, market_params: &PredictionMarketParams, pool_index: u16, max_loss_sats: u64, half_payout_sats: u64, fee_bps: u16) -> Result<(LmsrPoolParams, u16 /* masked_index */), ConventionError>;
+pub fn derive_pool_params(deadcat_xprv: &Xpriv, market_params: &PredictionMarketParams, pool_index: u16, max_loss_sats: u64, half_payout_sats: u64, fee_bps: u16, starting_price_bps: u16) -> Result<(LmsrPoolParams, u16 /* masked_index */), ConventionError>;
 pub fn derive_order_params(deadcat_xprv: &Xpriv, market_params: &PredictionMarketParams, order_index: u16, side: Side, direction: OrderDirection, price: u64, min_fill_lots: u8, min_remainder_lots: u8) -> Result<(MakerOrderParams, u16 /* masked_index */), ConventionError>;
 
 // History methods — only available when the store implements ContractHistory
@@ -171,21 +171,21 @@ impl<S: ContractHistory> ContractEngine<S> {
         contract_id: &ContractId,
         after: Option<ChainPosition>,
         limit: u32,
-    ) -> Result<Vec<TypedStateUpdate<MarketTransition>>, CoreError<S::Error>>;
+    ) -> Result<Vec<MarketHistoryEntry>, CoreError<S::Error>>;
 
     pub fn pool_history(
         &self,
         contract_id: &ContractId,
         after: Option<ChainPosition>,
         limit: u32,
-    ) -> Result<Vec<TypedStateUpdate<PoolTransition>>, CoreError<S::Error>>;
+    ) -> Result<Vec<PoolHistoryEntry>, CoreError<S::Error>>;
 
     pub fn order_history(
         &self,
         contract_id: &ContractId,
         after: Option<ChainPosition>,
         limit: u32,
-    ) -> Result<Vec<TypedStateUpdate<OrderTransition>>, CoreError<S::Error>>;
+    ) -> Result<Vec<OrderHistoryEntry>, CoreError<S::Error>>;
 }
 ```
 
@@ -419,14 +419,14 @@ The three typed history methods (`market_history`, `pool_history`, `order_histor
 
 ```rust
 // Engine calls store's unified method, then unwraps per-contract type
-pub fn market_history(&self, contract_id: &ContractId, after: Option<ChainPosition>, limit: u32) -> Result<Vec<TypedStateUpdate<MarketTransition>>, ...> {
-    let raw = self.store.transition_history(contract_id, after, limit)?;
+pub fn market_history(&self, contract_id: &ContractId, after: Option<ChainPosition>, limit: u32) -> Result<Vec<MarketHistoryEntry>, ...> {
+    let raw: Vec<HistoryEntry> = self.store.transition_history(contract_id, after, limit)?;
     raw.into_iter().map(|u| {
         let TransitionDetails::Market(details) = u.details else {
             debug_assert!(false, "store returned non-market transition for market contract");
             // filter out mismatched entries
         };
-        TypedStateUpdate { contract_id: u.contract_id, txid: u.txid, /* ... */ details }
+        MarketHistoryEntry { contract_id: u.contract_id, txid: u.txid, /* ... */ details }
     }).collect()
 }
 ```
@@ -979,7 +979,7 @@ Outpoints are intentionally omitted — they are internal to the engine's UTXO-f
 
 ### StateUpdate
 
-The stripped-down form passed to the store internally by the engine. Does not include the computed output classification (`external_outputs`) since those are derived from the transaction at query time and do not need to be persisted:
+The write-path type passed to the store via `apply_transitions`. Contains outpoints needed for state advancement and rollback, but NOT used on the read path (history queries return `HistoryEntry` which omits outpoints). Does not include the computed output classification (`external_outputs`) since those are derived from the transaction at query time and do not need to be persisted:
 
 ```rust
 pub struct StateUpdate {
@@ -996,7 +996,7 @@ pub struct StateUpdate {
 
 ### TypedStateUpdate
 
-Generic wrapper used by the engine's typed history methods. Same fields as `StateUpdate` but with the `TransitionDetails` enum unwrapped to the concrete transition type:
+Generic transition record carrying the caller-facing fields from a state transition (omitting internal outpoint data). Used in two contexts: the store returns `HistoryEntry` (`TypedStateUpdate<TransitionDetails>`) from `transition_history`, and the engine unwraps to typed aliases (`MarketHistoryEntry`, etc.) for caller convenience:
 
 ```rust
 pub struct TypedStateUpdate<D> {
@@ -1007,7 +1007,16 @@ pub struct TypedStateUpdate<D> {
 }
 ```
 
-Used as `TypedStateUpdate<MarketTransition>`, `TypedStateUpdate<PoolTransition>`, `TypedStateUpdate<OrderTransition>` by the history methods.
+Type aliases for ergonomic use:
+
+```rust
+pub type HistoryEntry = TypedStateUpdate<TransitionDetails>;
+pub type MarketHistoryEntry = TypedStateUpdate<MarketTransition>;
+pub type PoolHistoryEntry = TypedStateUpdate<PoolTransition>;
+pub type OrderHistoryEntry = TypedStateUpdate<OrderTransition>;
+```
+
+`HistoryEntry` is used by the store's `transition_history` method. The typed aliases are used by the engine's convenience methods (`market_history`, `pool_history`, `order_history`).
 
 ### TransitionDetails
 
@@ -1048,29 +1057,30 @@ pub enum OrderTransition {
 
 ### ExternalOutput
 
-Non-covenant outputs in a transaction. Split into two variants based on whether core can read the output's asset and value:
+Non-covenant outputs in a transaction. Each output carries shared fields (index, script, role) directly, with asset and value available only when the output is explicit (unblinded):
 
 ```rust
-pub enum ExternalOutput {
-    Explicit {
-        index: u32,
-        script_pubkey: Script,
-        asset: AssetId,
-        value: u64,
-        role: OutputRole,
-    },
-    Confidential {
-        index: u32,
-        script_pubkey: Script,
-    },
+pub struct ExternalOutput {
+    pub index: u32,
+    pub script_pubkey: Script,
+    pub role: OutputRole,
+    pub explicit: Option<ExplicitValues>,
+}
+
+pub struct ExplicitValues {
+    pub asset: AssetId,
+    pub value: u64,
+}
+
+impl ExternalOutput {
+    pub fn is_explicit(&self) -> bool { self.explicit.is_some() }
+    pub fn is_confidential(&self) -> bool { self.explicit.is_none() }
 }
 ```
 
-**Why an enum, not a struct with `Option` fields**: When core can identify an output (explicit), the asset, value, and role are always known together. When core can't (confidential/blinded), none of them are known. A flat struct with `asset: Option<AssetId>, value: Option<u64>` would allow impossible states like "asset known but value unknown." The enum makes the invariant unrepresentable.
+**Why a struct with `Option<ExplicitValues>`**: Asset and value are bundled in `Option<ExplicitValues>` so they're always known together or not at all — the impossible state "asset known but value unknown" is unrepresentable. Shared fields (`index`, `script_pubkey`, `role`) live on the struct directly, accessible without matching on blinding status. `role` is an independent axis from asset/value observability — the engine can sometimes determine an output's purpose from the script alone (e.g., burn outputs at the known unspendable OP_RETURN script) even when asset and value are blinded. An output that core can see but can't classify gets `role: OutputRole::Unknown`.
 
-`Explicit` / `Confidential` are the standard Elements terms for unblinded / blinded outputs. An explicit output that core can see but can't classify gets `role: OutputRole::Unknown` — "I know the asset and value, but I don't know this output's purpose in the transaction."
-
-For `Confidential` outputs, the wallet uses its own blinding keys to determine asset and value. Core provides the output index and script pubkey so the wallet can correlate.
+For confidential outputs (`explicit: None`), the wallet uses its own blinding keys to determine asset and value. Core provides the output index, script pubkey, and role so the wallet can correlate and label.
 
 ```rust
 pub enum OutputRole {
@@ -1086,7 +1096,7 @@ pub enum OutputRole {
 }
 ```
 
-`OutputRole` is purely semantic — it labels what the output represents in the transaction, not its asset or value. The asset and value are already available on `ExternalOutput::Explicit`, so the role does not duplicate them. No variant carries asset or value data — the wallet uses `identify_asset` when it needs to distinguish assets (e.g., YES vs NO tokens) within a role.
+`OutputRole` is purely semantic — it labels what the output represents in the transaction, not its asset or value. The asset and value are already available via `ExplicitValues` when the output is explicit, so the role does not duplicate them. No role variant carries asset or value data — the wallet uses `identify_asset` when it needs to distinguish assets (e.g., YES vs NO tokens) within a role.
 
 | Role | Meaning | Appears in |
 | ---- | ------- | ---------- |
@@ -1096,9 +1106,11 @@ pub enum OutputRole {
 | `MakerReceive` | Payment sent to the maker | Fill order, trade |
 | `OrderReturn` | Order's locked asset returned to maker | Cancel order |
 | `PoolReturn` | Pool reserves returned to operator | Pool closure |
-| `Burn` | Tokens or RTs destroyed (OP_RETURN) | Cancellation, redemption, resolve, expire |
+| `Burn` | Tokens or RTs destroyed (unspendable OP_RETURN script) | Cancellation, resolve, expire |
 | `Fee` | Transaction fee | All |
 | `Unknown` | Core can see asset/value but can't classify | Any (wallet labels via key ownership) |
+
+**Burn outputs** use bare OP_RETURN (`0x6a`) — an unspendable script by consensus rule. The engine recognizes the burn script (a known constant) and assigns `OutputRole::Burn` regardless of whether the output is explicit or confidential. For explicit burns (YES/NO tokens during cancellation), the engine provides full `ExplicitValues`. For blinded burns (RT destruction during resolution/expiry), the output is confidential (`explicit: None`) but the engine still assigns `Burn` from the script match. See [enforcement-layers.md](enforcement-layers.md) for the rationale behind OP_RETURN over P2WSH for burns.
 
 **Output consolidation**: PSET builders consolidate outputs that share the same script and asset into a single output for efficiency and privacy (see [Output Consolidation](#output-consolidation)). A `CollateralReturn` output may therefore include fee change. When exact amounts matter, use `TransitionDetails` — it is authoritative for semantic amounts (payout, tokens burned, collateral locked, etc.). `OutputRole` identifies *which* output serves a purpose; `TransitionDetails` provides *the precise numbers*.
 
@@ -1221,7 +1233,7 @@ Core identifies which outputs belong to which contract by matching `script_pubke
 
 - **Explicit covenant outputs** (collateral, reserves): script pubkey is the covenant address derived from contract params + state. Asset and value are readable.
 - **Reissuance token outputs**: `Asset::Null` and `Value::Null` on-chain, but `script_pubkey` is set to the covenant address for the target slot. Core matches by script pubkey alone.
-- **Confidential wallet outputs** (change, payouts): script pubkey is readable but asset/value are confidential. Core identifies these as "not covenant" and reports them as `ExternalOutput::Confidential` with the output index and script pubkey.
+- **Confidential wallet outputs** (change, payouts): script pubkey is readable but asset/value are confidential. Core identifies these as "not covenant" and reports them as `ExternalOutput` with `explicit: None`, the output index, script pubkey, and `role: OutputRole::Unknown`.
 
 Core relies on the caller providing consensus-valid transactions. Since Liquid consensus has already verified reissuance token validity, confidential proofs, and Simplicity covenant witnesses, core does not need to re-verify — it only interprets.
 
@@ -1514,13 +1526,13 @@ pub trait ContractHistory: ContractStore {
         contract_id: &ContractId,
         after: Option<ChainPosition>,
         limit: u32,
-    ) -> Result<Vec<StateUpdate>, Self::Error>;
+    ) -> Result<Vec<HistoryEntry>, Self::Error>;
 }
 ```
 
 `ContractHistory` is a supertrait of `ContractStore` — implementing it requires also implementing `ContractStore`. This means `Self::Error` is the same associated type from `ContractStore`, eliminating any error type mismatch. The engine's history methods can wrap the error in `CoreError::Store(e)` without ambiguity.
 
-Only implement if the consumer wants price charts, audit trails, etc. Core never depends on history for processing — it only needs current state. History returns `StateUpdate` (the persisted form), not `ProcessedTransaction` (which includes ephemeral computed fields). To get full output classification for a historical transaction, the caller can call `interpret_transaction`.
+Only implement if the consumer wants price charts, audit trails, etc. Core never depends on history for processing — it only needs current state. History returns `HistoryEntry` (a type alias for `TypedStateUpdate<TransitionDetails>`) — the caller-facing fields without internal outpoints. To get full output classification for a historical transaction, the caller can call `interpret_transaction`.
 
 The engine exposes history through typed convenience methods (`market_history`, `pool_history`, `order_history`) that are only available when the store implements `ContractHistory`. The store trait itself has a single unified `transition_history` method — the typed unwrapping happens in the engine. See [History Methods](#history-methods).
 
@@ -1808,7 +1820,7 @@ pub trait ChainSource {
 
 **9 methods, split into two groups:**
 
-The **catch-up** methods are synchronous pull queries. `tip_height` returns the current chain tip. `transactions_by_scripts` returns confirmed transactions *involving* any of the given scripts from `from_height` onwards, in chain order. Each transaction appears at most once in the result, even if it involves multiple scripts from the input set. `issuance_transaction` returns the transaction that first issued a given asset ID — used for token holder recovery (see [chain-only-recovery.md](chain-only-recovery.md)). For Esplora backends, this maps to `GET /asset/:asset_id` → `issuance_txin.txid`. Works despite blinded reissuance token outputs because the issuance entropy is always explicit in the transaction's input data. "Involving" means both transactions that create outputs paying to those scripts AND transactions that spend outputs from those scripts — the engine needs both for catch-up (creation of covenant UTXOs and their subsequent spends). This matches the standard behavior of Electrum's `blockchain.scripthash.get_history` and Esplora's `/scripthash/:hash/txs`. **Important**: the `limit` parameter bounds total results, but the implementation must return ALL matching transactions from the `from_height` block even if that alone exceeds `limit`. The engine advances `from_height` by block after each batch — incomplete blocks would cause skipped transactions. `spending_transaction` returns the transaction that spent a given outpoint, or `None` if unspent.
+The **catch-up** methods are synchronous pull queries. `tip_height` returns the current chain tip. `transactions_by_scripts` returns confirmed transactions *involving* any of the given scripts from `from_height` onwards, in chain order. Each transaction appears at most once in the result, even if it involves multiple scripts from the input set. `issuance_transaction` returns the transaction that first issued a given asset ID — used for token holder recovery (see [chain-only-recovery.md](chain-only-recovery.md)). For Esplora backends, this maps to `GET /asset/:asset_id` → `issuance_txin.txid`. Works despite blinded reissuance token outputs because the issuance entropy is always explicit in the transaction's input data. "Involving" means both transactions that create outputs paying to those scripts AND transactions that spend outputs from those scripts — the engine needs both for catch-up (creation of covenant UTXOs and their subsequent spends). This matches the standard behavior of Electrum's `blockchain.scripthash.get_history` and Esplora's `/scripthash/:hash/txs`. `limit` sets a target result count. The implementation **MUST** return results as complete blocks — it is never valid to return a partial block. If the `limit`-th result falls within a block, the implementation **MUST** include all remaining matching transactions from that block before stopping. Results **MUST** be in chain order (ascending by `ChainPosition`). The actual result count may exceed `limit` by up to the number of matching transactions in the final block. `spending_transaction` returns the transaction that spent a given outpoint, or `None` if unspent.
 
 The **steady-state** methods manage a notification registration system. `register_scripts` and `register_spends` tell the chain source to watch for activity. `drain_notifications` returns any confirmed transactions that matched since the last drain. `unregister_scripts` and `unregister_spends` clean up when contracts reach terminal states or are untracked.
 
@@ -1858,7 +1870,7 @@ The root cause of the split: pool scripts encode the `s_index`, which changes on
 
 1. `chain.tip_height()` to determine the target
 2. Read stale contracts from the store (contracts with `synced_to < tip`)
-3. **Script-based catch-up** (markets + orders): Batch all stale contracts' scripts into one `chain.transactions_by_scripts(all_scripts, from_height, BATCH_SIZE)` call (initial `from_height = min_synced_to`). Process results via `process_transaction` (internal). Advance `from_height` to `max_block_height_in_batch + 1` after each batch. Loop until the scan returns fewer than `BATCH_SIZE` results (indicating no more data). **`ChainSource` implementation requirement**: `transactions_by_scripts` must return ALL matching transactions from the starting block (`from_height`) even if the total exceeds `limit`. The `limit` parameter bounds the result count for blocks *after* the starting block, but the starting block must be returned in full. This prevents the engine from skipping intra-block transactions when advancing `from_height`. In practice, Liquid blocks rarely contain more than a handful of matching transactions for a given script set.
+3. **Script-based catch-up** (markets + orders): Batch all stale contracts' scripts into one `chain.transactions_by_scripts(all_scripts, from_height, BATCH_SIZE)` call (initial `from_height = min_synced_to`). Process results via `process_transaction` (internal). Advance `from_height` to `max_block_height_in_batch + 1` after each batch. Loop until the scan returns fewer than `BATCH_SIZE` results (indicating no more data). The complete-block guarantee (see `ChainSource`) ensures no transactions are skipped at block boundaries.
 4. **Outpoint-based catch-up** (pools): For each stale pool, forward-chain via `chain.spending_transaction(outpoint)` until `None` (unspent = caught up). The engine picks one representative outpoint per pool (the covenant guarantees all 3 are spent together).
 5. **Set up subscriptions**: `chain.register_scripts(scripts, synced_to)` for markets/orders. `chain.register_spends(outpoints)` for pools.
 6. **Advance `synced_to`** for all contracts to tip.
@@ -2000,10 +2012,13 @@ pub fn derive_pool_params(
     market_params: &PredictionMarketParams,
     pool_index: u16,
     max_loss_sats: u64, half_payout_sats: u64, fee_bps: u16,
+    starting_price_bps: u16,
 ) -> Result<(LmsrPoolParams, u16 /* masked_index */), ConventionError>;
 ```
 
-Both functions validate OP_RETURN convention constraints before deriving parameters, returning `ConventionError` if the inputs cannot be losslessly encoded in the recovery hint. `derive_order_params` validates: `price <= 0xFFFFFF` (u24), `min_fill_lots >= 1`, `min_remainder_lots >= 1`. `derive_pool_params` validates: `max_loss_sats` and `half_payout_sats` in the 26-value mantissa × 10^exponent set, `fee_bps <= 4095` (u12). `ConventionError` is a simple error type (separate from `CoreError`) with a descriptive message indicating which constraint was violated. The PSET builders also validate these constraints (defense in depth for manually-constructed params), but the derive functions are the natural first line — catching violations at the point where the caller is making the decision.
+Both functions validate OP_RETURN convention constraints before deriving parameters, returning `ConventionError` if the inputs cannot be losslessly encoded in the recovery hint. `derive_order_params` validates: `price <= 0xFFFFFF` (u24), `min_fill_lots >= 1`, `min_remainder_lots >= 1`. `derive_pool_params` validates: `max_loss_sats` and `half_payout_sats` in the 26-value mantissa × 10^exponent set, `fee_bps <= 4095` (u12), `starting_price_bps` in (0, 10000) exclusive. The `starting_price_bps` parameter is needed to compute `initial_s_index` for the XOR mask context (see [chain-only-recovery.md](chain-only-recovery.md)) — the mask includes `initial_s_index`, which is derived from `starting_price_bps` via the inverse logistic function. `ConventionError` is a simple error type (separate from `CoreError`) with a descriptive message indicating which constraint was violated.
+
+**`initial_s_index` coupling**: Three functions compute `initial_s_index` from `starting_price_bps`: `estimate_bootstrap` (for UI display), `derive_pool_params` (for the mask context), and `build_lmsr_bootstrap_pset` (for the covenant script and OP_RETURN). All three **must** use a single canonical internal function to guarantee bit-identical results. A divergence would cause silent recovery failure (mask mismatch between creation and recovery). The PSET builders also validate these constraints (defense in depth for manually-constructed params), but the derive functions are the natural first line — catching violations at the point where the caller is making the decision.
 
 Internally, each function derives from the xprv:
 - **`deadcat_secret_key`** at `m/purpose'/deadcat'/secret'` — a single key used for all HMAC operations (nonce derivation, index masking). Different HMAC tags (`"deadcat/order_nonce"`, `"deadcat/order_mask"`, `"deadcat/pool_mask"`) provide full domain separation.
@@ -2189,11 +2204,8 @@ if let Some(mempool_tx) = aqua_chain.get_mempool_tx(txid) {
 for wallet_tx in wallet_history {
     let result = engine.interpret_transaction(&wallet_tx)?;
     for output in &result.external_outputs {
-        match output {
-            ExternalOutput::Explicit { index, role, .. } if *index == my_utxo_index => {
-                render_label(role);
-            }
-            _ => {}
+        if output.index == my_utxo_index {
+            render_label(&output.role);
         }
     }
 }
@@ -2326,6 +2338,7 @@ aqua_chain.broadcast(signed)?;
 - One pool lifecycle: bootstrap → swap → admin adjust → close
 - One order lifecycle: create → partial fill → complete fill (or cancel)
 - RT blinding round-trip: create with deterministic blinding → issue → verify reissuance works with derived ABFs
+- OP_RETURN RT burn: create market → resolve → verify blinded OP_RETURN RT burn output is consensus-valid and accepted by the node
 
 **Speed**: ~10-30 seconds per test (node startup, block mining, electrum sync with retry). ~60-90 seconds total for the minimal set.
 
@@ -2506,17 +2519,17 @@ Trade transactions co-spend multiple covenant inputs (LMSR pools + maker orders)
 **Rejected**: Core validates Simplicity witnesses, confidential proofs, and reissuance token derivation internally.
 **Why**: The caller's chain backend only provides consensus-valid data. Liquid consensus has already verified everything — Simplicity covenant witnesses satisfy the script, confidential range proofs are valid, reissuance tokens match their issuance entropy. Re-verifying would duplicate work the network already did. This assumption is what allows core to identify reissuance token outputs (which have `Asset::Null, Value::Null` on-chain) purely by script pubkey matching, and to classify confidential outputs as "not covenant" without needing to unblind them.
 
-### Explicit/Confidential Output Split
+### ExternalOutput as Struct with Optional ExplicitValues
 
-**Chosen**: `ExternalOutput` is an enum with `Explicit` (asset, value, and role known) and `Confidential` (only index and script pubkey known) variants.
-**Rejected**: Flat struct with `Option<AssetId>` and `Option<u64>` fields.
-**Why**: When core can read an output, asset, value, and role are always known together. When it can't (confidential), none are known. The flat struct allows impossible states ("asset known but value unknown"). The enum makes the invariant unrepresentable. The variant names use standard Elements terminology.
+**Chosen**: `ExternalOutput` is a struct with shared fields (`index`, `script_pubkey`, `role`) directly accessible, and `explicit: Option<ExplicitValues>` bundling asset and value.
+**Rejected**: (a) Enum with `Explicit` and `Confidential` variants (duplicates shared fields, couples role to asset/value observability). (b) Flat struct with separate `Option<AssetId>` and `Option<u64>` (allows "asset known but value unknown").
+**Why**: Asset and value are always known together or not at all — `Option<ExplicitValues>` preserves this invariant. `role` is an independent axis: the engine can determine purpose from the script alone (e.g., burn outputs at the unspendable OP_RETURN script) even when asset and value are blinded. The struct makes shared fields (`index`, `script_pubkey`, `role`) directly accessible without matching — the common case ("what role is this output?") is `output.role` regardless of blinding. `is_explicit()` and `is_confidential()` convenience methods provide the blinding check when needed.
 
 ### OutputRole as Pure Semantic Label
 
-**Chosen**: `OutputRole` variants carry only semantic information (e.g., `Side` for token outputs). Asset and value are NOT duplicated from `ExternalOutput::Explicit`.
+**Chosen**: `OutputRole` variants carry only semantic information (e.g., `Side` for token outputs). Asset and value are NOT duplicated from `ExplicitValues`.
 **Rejected**: `OutputRole` variants with `amount: u64` and `asset: AssetId` fields.
-**Why**: In Elements, the output `value` field IS the raw unit count — token count for YES/NO tokens, satoshis for L-BTC. There is no denomination layer. Since `ExternalOutput::Explicit` already carries `asset` and `value`, duplicating them in `OutputRole` would be pure redundancy, with the risk of inconsistency between the two copies.
+**Why**: In Elements, the output `value` field IS the raw unit count — token count for YES/NO tokens, satoshis for L-BTC. There is no denomination layer. Since `ExplicitValues` already carries `asset` and `value`, duplicating them in `OutputRole` would be pure redundancy, with the risk of inconsistency between the two copies.
 
 ### Self-Sufficient Tip State
 
@@ -2836,8 +2849,8 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 
 ### Deterministic Derivation via `derive_order_params` and `derive_pool_params`
 
-**Chosen**: Both `derive_order_params` and `derive_pool_params` take `deadcat_xprv` (the xprv at `m/purpose'/deadcat'`) + an index and derive all keys, nonces, and masks internally. Both return `Result<(Params, u16 /* masked_index */), ConventionError>` — validating OP_RETURN convention constraints before deriving. A single `deadcat_secret_key` (derived from the xprv) is used for all HMAC operations (nonce derivation, index masking) with different HMAC tags providing domain separation.
-**Rejected**: (a) Caller passes a pre-derived nonce or separate secret key + pubkey (foot-gun — non-deterministic nonces break recovery; separate keys require callers to manage multiple HD paths). (b) Separate `order_secret_key` and `pool_secret_key` at different HD paths (HMAC tags already provide full domain separation; a second secret key adds an HD path with no security benefit).
+**Chosen**: Both `derive_order_params` and `derive_pool_params` take `deadcat_xprv` (the xprv at `m/purpose'/deadcat'`) + an index and derive all keys, nonces, and masks internally. Both return `Result<(Params, u16 /* masked_index */), ConventionError>` — validating OP_RETURN convention constraints before deriving. A single `deadcat_secret_key` (derived from the xprv) is used for all HMAC operations (nonce derivation, index masking) with different HMAC tags providing domain separation. `derive_pool_params` additionally takes `starting_price_bps` — needed to compute `initial_s_index` for the XOR mask context (the mask includes `initial_s_index`, which is derived from `starting_price_bps` via the inverse logistic function). This parameter does not affect `LmsrPoolParams` (the primary output), only the masked index (the secondary output).
+**Rejected**: (a) Caller passes a pre-derived nonce or separate secret key + pubkey (foot-gun — non-deterministic nonces break recovery; separate keys require callers to manage multiple HD paths). (b) Separate `order_secret_key` and `pool_secret_key` at different HD paths (HMAC tags already provide full domain separation; a second secret key adds an HD path with no security benefit). (c) Omit `initial_s_index` from the pool mask context (weaker mask, and two pools with identical params but different starting prices would share the same mask).
 **Why**: The nonce and mask MUST be deterministic from the mnemonic for chain-only recovery. Encapsulating all derivation in these functions eliminates foot-guns (wrong key, non-deterministic nonce, mismatched pubkey). The unified `deadcat_secret_key` simplifies the HD path table from 4 paths to 3. See [Key Derivation Convenience Functions](#key-derivation-convenience-functions) and [chain-only-recovery.md](chain-only-recovery.md).
 
 ### Convenience Derive Functions Accept Private Key Material
@@ -2856,7 +2869,7 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 
 **Chosen**: `OutputRole` variants carry no asset or value data. Every variant is a simple label (`IssuedTokens`, `CollateralReturn`, `PoolReturn`, etc.). The wallet uses `identify_asset` when it needs to distinguish assets within a role.
 **Rejected**: (a) `IssuedTokens { side: Side }` with a discriminant (saves an asset lookup but breaks the "roles don't carry asset/value data" principle; if one variant carries data, the others should too for consistency). (b) All variants carry full context data (forces artificial padding on variants with no natural non-duplicate data).
-**Why**: Asset and value are already available on `ExternalOutput::Explicit`. Duplicating them in the role creates inconsistency risk and muddies the type's purpose. One consistent principle (roles label purpose, the parent carries data) eliminates the need for case-by-case decisions about which variants deserve extra fields.
+**Why**: Asset and value are already available via `ExplicitValues` on the parent struct. Duplicating them in the role creates inconsistency risk and muddies the type's purpose. One consistent principle (roles label purpose, the parent carries data) eliminates the need for case-by-case decisions about which variants deserve extra fields.
 
 ### FIFO Order Tie-Breaking
 

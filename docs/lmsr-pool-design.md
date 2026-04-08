@@ -70,7 +70,7 @@ Everything else is either derived or a protocol constant.
 | Parameter | Derived from | Formula / Logic |
 |---|---|---|
 | `b` | `max_loss_sats` | `b = max_loss_sats / ln(2)` (deterministic integer math) |
-| `q_step_lots` | `b`, `half_payout_sats` | Minimum value such that the 0.1%-99.9% price range fits in 32,768 steps from center: `max(1, ceil(6.9 × b / (32768 × half_payout_sats)))` |
+| `q_step_lots` | `b`, `half_payout_sats` | Derived to ensure the 0.1%-99.9% price range fits within the table. For most pools, `q_step_lots = 1`. See [lmsr-deterministic-table-spec.md](lmsr-deterministic-table-spec.md) for the canonical formula. |
 | `s_index` (initial) | `starting_price_bps` | Nearest valid s_index for the requested price, derived from the inverse logistic function |
 | `lmsr_table_root` | `b`, `half_payout_sats`, `q_step_lots` | Merkle root of the deterministically generated F-value table |
 | Initial reserves | `b`, `starting_price_bps`, `half_payout_sats` | Balanced allocation — equal trading depth in both directions from starting price |
@@ -96,7 +96,7 @@ The table depth determines the number of discrete price points (2^depth) and aff
 | 18 | 262,144 | ~1,168 B | 2 MB | ~300ms |
 | 20 | 1,048,576 | ~1,296 B | 8 MB | ~1s |
 
-Depth 16 provides 65K price points — far more than any practical market needs. A typical pool uses ~1,000-2,000 of these for the 0.1%-99.9% range. The proof size difference from depth 12 to 16 is only 256 bytes per swap (~25 extra sats in fees on Liquid). The 512 KB table is trivial to hold in memory.
+Depth 16 ensures `q_step_lots = 1` for pools up to ~33M sats max loss (~$33K risk), at a negligible cost of ~26 extra sats per swap compared to depth 12. The pricing granularity near 50% is determined by `max_loss_sats`, not the table depth — when `q_step_lots = 1`, all depths produce identical pricing. The depth only matters for how large a pool can be before `q_step_lots` bumps above 1 (coarsening the minimum trade size). The 512 KB table is trivial to hold in memory.
 
 A fixed depth means:
 - Single `.simf` file with no metaprogramming or template-based code generation
@@ -112,17 +112,27 @@ Variable depth would require either code generation (producing `.simf` source wi
 
 The conversion is trivial: `b = max_loss_sats / ln(2)`. The creator thinks "I'm willing to risk up to 100,000 sats" and gets a pool with the corresponding depth. `b` never appears in any public API — it's an internal implementation detail of the LMSR math.
 
-For context: `max_loss_sats = 100,000` creates a pool where a 10,000-sat trade near 50/50 moves the price by roughly 500 basis points. `max_loss_sats = 1,000,000` creates a pool where the same trade moves the price by ~50 basis points. Deeper pools require more capital but provide better trading experiences.
+The pricing granularity near 50% (where each discrete s_index step has the largest price impact) is determined entirely by `max_loss_sats` and `half_payout_sats`:
+
+| `max_loss_sats` | Approx. risk | Price step near 50% |
+|---|---|---|
+| 10,000 | ~$10 | ~17% |
+| 50,000 | ~$50 | ~3.5% |
+| 100,000 | ~$100 | ~1.7% |
+| 1,000,000 | ~$1K | ~0.17% |
+| 10,000,000 | ~$10K | ~0.017% |
+
+(Assumes `half_payout_sats = 5,000`. Steps are finer near the extremes due to the logistic curve shape.)
+
+Deeper pools require more capital but provide better trading experiences — finer pricing, smaller minimum trades, less slippage.
 
 ### Why `q_step_lots` Is Derived
 
-With fixed depth 16 (65,536 entries), `q_step_lots` determines how many of those entries span the useful price range. The formula ensures the 0.1%-99.9% range fits in half the table (32,768 steps from center to edge):
+With fixed depth 16 (65,536 entries), `q_step_lots` determines how many of those entries span the useful price range. The formula (defined in [lmsr-deterministic-table-spec.md](lmsr-deterministic-table-spec.md)) ensures the 0.1%-99.9% price range fits within the table. For most pools, `q_step_lots = 1`. Only very deep pools (approximately `max_loss_sats > 6,583 × half_payout_sats`) need larger values.
 
-```
-q_step_lots = max(1, ceil(6.9 × b / (32768 × half_payout_sats)))
-```
+When `q_step_lots` bumps above 1, the minimum trade size increases proportionally (`q_step_lots × half_payout_sats` sats per index step) and the price step per trade becomes coarser. However, pools deep enough to trigger `q_step_lots > 1` already have extremely fine pricing from their depth — the coarsening is imperceptible in practice.
 
-For most pools (b up to ~5M sats), `q_step_lots = 1`. Only very deep pools need larger values. The pool creator has no meaningful reason to override this — it's purely a consequence of the depth and denomination choices.
+The pool creator has no meaningful reason to override this — it's purely a consequence of the depth and denomination choices.
 
 ### Why `min_r_*` Are Constants
 
@@ -208,10 +218,11 @@ pub fn derive_pool_params(
     max_loss_sats: u64,
     half_payout_sats: u64,
     fee_bps: u16,
+    starting_price_bps: u16,
 ) -> Result<(LmsrPoolParams, u16 /* masked_index */), ConventionError>;
 ```
 
-A standalone pure function that constructs the full `LmsrPoolParams` with all derived fields. Returns `ConventionError` if inputs violate OP_RETURN encoding conventions (`max_loss_sats` and `half_payout_sats` not in the 26-value mantissa set, `fee_bps > 4095`). Called once when the user commits to creating a pool — heavier than `estimate_bootstrap` because it generates the full 65K-entry F-value table and computes the Merkle root (~80ms). The resulting `LmsrPoolParams` is passed directly to `build_lmsr_bootstrap_pset`.
+A standalone pure function that constructs the full `LmsrPoolParams` with all derived fields. Returns `ConventionError` if inputs violate OP_RETURN encoding conventions (`max_loss_sats` and `half_payout_sats` not in the 26-value mantissa set, `fee_bps > 4095`, `starting_price_bps` outside (0, 10000) exclusive). Called once when the user commits to creating a pool — heavier than `estimate_bootstrap` because it generates the full 65K-entry F-value table and computes the Merkle root (~80ms). The `starting_price_bps` parameter is needed to compute `initial_s_index` for the XOR mask context (see [chain-only-recovery.md](chain-only-recovery.md)). The resulting `LmsrPoolParams` is passed directly to `build_lmsr_bootstrap_pset`.
 
 ### Trading (Swaps)
 
