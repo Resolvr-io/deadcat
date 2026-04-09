@@ -480,8 +480,16 @@ export async function handleClick(
   }
 
   if (action === "onboarding-create-wallet") {
-    if (!state.onboardingWalletPassword) {
-      state.onboardingError = "Password is required.";
+    if (
+      !state.onboardingWalletPassword ||
+      state.onboardingWalletPassword !==
+        state.onboardingWalletPasswordConfirm
+    ) {
+      state.onboardingError = !state.onboardingWalletPassword
+        ? "Password is required."
+        : "Passwords do not match.";
+      state.onboardingWalletPassword = "";
+      state.onboardingWalletPasswordConfirm = "";
       render();
       return;
     }
@@ -529,9 +537,17 @@ export async function handleClick(
   if (action === "onboarding-restore-wallet") {
     if (
       !state.onboardingWalletMnemonic.trim() ||
-      !state.onboardingWalletPassword
+      !state.onboardingWalletPassword ||
+      state.onboardingWalletPassword !==
+        state.onboardingWalletPasswordConfirm
     ) {
-      state.onboardingError = "Recovery phrase and password are required.";
+      state.onboardingError =
+        !state.onboardingWalletMnemonic.trim() ||
+        !state.onboardingWalletPassword
+          ? "Recovery phrase and password are required."
+          : "Passwords do not match.";
+      state.onboardingWalletPassword = "";
+      state.onboardingWalletPasswordConfirm = "";
       render();
       return;
     }
@@ -562,8 +578,16 @@ export async function handleClick(
   }
 
   if (action === "onboarding-nostr-restore-wallet") {
-    if (!state.onboardingWalletPassword) {
-      state.onboardingError = "Password is required.";
+    if (
+      !state.onboardingWalletPassword ||
+      state.onboardingWalletPassword !==
+        state.onboardingWalletPasswordConfirm
+    ) {
+      state.onboardingError = !state.onboardingWalletPassword
+        ? "Password is required."
+        : "Passwords do not match.";
+      state.onboardingWalletPassword = "";
+      state.onboardingWalletPasswordConfirm = "";
       render();
       return;
     }
@@ -892,20 +916,35 @@ export async function handleClick(
         } catch (_) {
           /* no wallet is fine */
         }
+        await fetchWalletStatus();
         state.nostrPubkey = null;
         state.nostrNpub = null;
         state.nostrNsecRevealed = null;
+        resetWalletStoredState();
         state.walletData = null;
         state.walletPassword = "";
+        state.walletPasswordConfirm = "";
         state.walletMnemonic = "";
         state.walletError = "";
         state.walletStatus = "not_created";
+        state.onboardingNostrNsec = "";
+        state.onboardingNostrGeneratedNsec = "";
+        state.onboardingNsecRevealed = false;
+        state.onboardingNostrDone = false;
+        state.onboardingNostrMode = "generate";
+        state.onboardingWalletPassword = "";
+        state.onboardingWalletPasswordConfirm = "";
+        state.onboardingWalletMnemonic = "";
+        state.onboardingWalletMode = "create";
         state.onboardingError = "";
+        state.onboardingLoading = false;
+        state.onboardingBackupFound = false;
+        state.onboardingBackupScanning = false;
         state.settingsOpen = false;
         state.devResetPrompt = false;
         state.devResetConfirm = "";
-        await fetchWalletStatus();
         state.onboardingStep = "nostr";
+        state.view = "home";
         render();
         showToast("App data erased", "success");
       } catch (e) {
@@ -1159,10 +1198,15 @@ export async function handleClick(
         state.onboardingNostrGeneratedNsec = "";
         state.onboardingNsecRevealed = false;
         state.onboardingNostrDone = false;
+        state.onboardingNostrMode = "generate";
         state.onboardingWalletPassword = "";
         state.onboardingWalletPasswordConfirm = "";
         state.onboardingWalletMnemonic = "";
+        state.onboardingWalletMode = "create";
         state.onboardingError = "";
+        state.onboardingLoading = false;
+        state.onboardingBackupFound = false;
+        state.onboardingBackupScanning = false;
         state.onboardingStep = "nostr";
         state.view = "home";
         showToast("Logged out - keys removed", "success");
@@ -1218,8 +1262,15 @@ export async function handleClick(
   }
 
   if (action === "create-wallet") {
-    if (!state.walletPassword) {
-      state.walletError = "Password is required.";
+    if (
+      !state.walletPassword ||
+      state.walletPassword !== state.walletPasswordConfirm
+    ) {
+      state.walletError = !state.walletPassword
+        ? "Password is required."
+        : "Passwords do not match.";
+      state.walletPassword = "";
+      state.walletPasswordConfirm = "";
       render();
       return;
     }
@@ -1262,8 +1313,17 @@ export async function handleClick(
   }
 
   if (action === "restore-wallet") {
-    if (!state.walletRestoreMnemonic.trim() || !state.walletPassword) {
-      state.walletError = "Recovery phrase and password are required.";
+    if (
+      !state.walletRestoreMnemonic.trim() ||
+      !state.walletPassword ||
+      state.walletPassword !== state.walletPasswordConfirm
+    ) {
+      state.walletError =
+        !state.walletRestoreMnemonic.trim() || !state.walletPassword
+          ? "Recovery phrase and password are required."
+          : "Passwords do not match.";
+      state.walletPassword = "";
+      state.walletPasswordConfirm = "";
       render();
       return;
     }
