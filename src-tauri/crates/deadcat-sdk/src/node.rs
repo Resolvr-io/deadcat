@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use lwk_wollet::elements::{AssetId, Transaction, Txid};
@@ -112,6 +113,9 @@ pub struct MarketCreationResult {
 /// `tokio::task::spawn_blocking`.
 pub struct DeadcatNode<S: DiscoveryStore = NoopStore> {
     sdk: Arc<Mutex<Option<DeadcatSdk>>>,
+    /// Set to `true` by `lock_wallet` to signal background tasks to bail out.
+    /// Checked by `with_sdk` before acquiring the SDK mutex.
+    wallet_locked_flag: Arc<AtomicBool>,
     snapshot_tx: watch::Sender<Option<WalletSnapshot>>,
     snapshot_rx: watch::Receiver<Option<WalletSnapshot>>,
     discovery: DiscoveryService<S>,
@@ -135,6 +139,7 @@ impl DeadcatNode<NoopStore> {
         (
             Self {
                 sdk: Arc::new(Mutex::new(None)),
+                wallet_locked_flag: Arc::new(AtomicBool::new(true)),
                 snapshot_tx,
                 snapshot_rx,
                 discovery,
@@ -161,6 +166,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         (
             Self {
                 sdk: Arc::new(Mutex::new(None)),
+                wallet_locked_flag: Arc::new(AtomicBool::new(true)),
                 snapshot_tx,
                 snapshot_rx,
                 discovery,
@@ -175,16 +181,43 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     // ── Wallet lifecycle ────────────────────────────────────────────────
 
     /// Unlock the wallet by initializing the SDK with the given mnemonic.
+    /// Non-blocking variant: returns Err if the SDK mutex is held.
+    pub fn try_unlock_wallet(
+        &self,
+        mnemonic: &str,
+        electrum_url: &str,
+        datadir: &Path,
+    ) -> Result<(), NodeError> {
+        self.wallet_locked_flag.store(false, Ordering::SeqCst);
+        let mut guard = self.sdk.try_lock().map_err(|_| NodeError::WalletLocked)?;
+        *guard = None;
+        let sdk = DeadcatSdk::new(mnemonic, self.network, electrum_url, datadir)
+            .map_err(NodeError::Sdk)?;
+        let snapshot = WalletSnapshot {
+            balance: sdk.balance().unwrap_or_default(),
+            utxos: sdk.utxos().unwrap_or_default(),
+            transactions: sdk.transactions().unwrap_or_default(),
+            address: sdk.address(None).ok(),
+        };
+        let _ = self.snapshot_tx.send(Some(snapshot));
+        *guard = Some(sdk);
+        Ok(())
+    }
+
+    /// Blocking variant: waits for the SDK mutex if a sync holds it.
     pub fn unlock_wallet(
         &self,
         mnemonic: &str,
         electrum_url: &str,
         datadir: &Path,
     ) -> Result<(), NodeError> {
+        self.wallet_locked_flag.store(false, Ordering::SeqCst);
+
+        // Acquire the SDK mutex. This runs inside spawn_blocking so a
+        // brief wait for a finishing background sync won't freeze the UI.
         let mut guard = self.sdk.lock().map_err(|_| NodeError::MutexPoisoned)?;
-        if guard.is_some() {
-            return Err(NodeError::WalletAlreadyUnlocked);
-        }
+        // Replace any stale SDK left over from lock during in-flight sync.
+        *guard = None;
         let sdk = DeadcatSdk::new(mnemonic, self.network, electrum_url, datadir)
             .map_err(NodeError::Sdk)?;
         // Seed the snapshot so balance/utxos/transactions/address are available
@@ -200,12 +233,23 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         Ok(())
     }
 
-    /// Lock the wallet, dropping the SDK instance.
+    /// Lock the wallet. Sets the locked flag immediately so background syncs
+    /// bail out, and clears the snapshot. If no sync is in-flight, also drops
+    /// the SDK instance. Otherwise the stale SDK is replaced on next unlock.
+    /// Returns instantly — never blocks.
     pub fn lock_wallet(&self) {
-        if let Ok(mut guard) = self.sdk.lock() {
+        self.wallet_locked_flag.store(true, Ordering::SeqCst);
+        let _ = self.snapshot_tx.send(None);
+        // Try to drop SDK without blocking — if a sync holds the mutex,
+        // skip it; unlock_wallet will replace the stale SDK.
+        if let Ok(mut guard) = self.sdk.try_lock() {
             *guard = None;
         }
-        let _ = self.snapshot_tx.send(None);
+    }
+
+    /// Returns `true` if the SDK mutex can be acquired without blocking.
+    pub fn is_sdk_mutex_free(&self) -> bool {
+        self.sdk.try_lock().is_ok()
     }
 
     /// Returns `true` if the wallet is currently unlocked.
@@ -228,25 +272,41 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     {
         let sdk = self.sdk.clone();
         let snapshot_tx = self.snapshot_tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut guard = sdk.lock().map_err(|_| NodeError::MutexPoisoned)?;
-            let sdk = guard.as_mut().ok_or(NodeError::WalletLocked)?;
-            let result = f(sdk);
-            // Capture snapshot while still holding the lock — reads cached state, no I/O
-            let snapshot = WalletSnapshot {
-                balance: sdk.balance().unwrap_or_default(),
-                utxos: sdk.utxos().unwrap_or_default(),
-                transactions: sdk.transactions().unwrap_or_default(),
-                address: sdk.address(None).ok(),
-            };
-            let _ = snapshot_tx.send(Some(snapshot));
-            result.map_err(NodeError::Sdk)
-        })
-        .await
-        .map_err(|e| NodeError::Task(e.to_string()))?
+        let locked_flag = self.wallet_locked_flag.clone();
+        // Use a dedicated OS thread instead of tokio::spawn_blocking so
+        // long-running Electrum scans don't exhaust the tokio blocking pool
+        // and starve short-lived commands (get_app_state, get_wallet_status, etc.).
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let result = (|| {
+                if locked_flag.load(Ordering::SeqCst) {
+                    return Err(NodeError::WalletLocked);
+                }
+                let mut guard = sdk.lock().map_err(|_| NodeError::MutexPoisoned)?;
+                if locked_flag.load(Ordering::SeqCst) {
+                    return Err(NodeError::WalletLocked);
+                }
+                let sdk = guard.as_mut().ok_or(NodeError::WalletLocked)?;
+                let result = f(sdk);
+                let snapshot = WalletSnapshot {
+                    balance: sdk.balance().unwrap_or_default(),
+                    utxos: sdk.utxos().unwrap_or_default(),
+                    transactions: sdk.transactions().unwrap_or_default(),
+                    address: sdk.address(None).ok(),
+                };
+                let _ = snapshot_tx.send(Some(snapshot));
+                result.map_err(NodeError::Sdk)
+            })();
+            let _ = tx.send(result);
+        });
+        rx.await
+            .map_err(|_| NodeError::Task("with_sdk thread dropped".to_string()))?
     }
 
-    /// Run a closure against the shared store on a blocking thread.
+    /// Run a closure against the shared store on a dedicated OS thread.
+    /// Uses std::thread (not spawn_blocking) so long-running store operations
+    /// with Electrum I/O don't starve the tokio blocking pool or contend
+    /// with sync Tauri commands on the main thread.
     async fn with_store_blocking<F, R>(&self, f: F) -> Result<R, NodeError>
     where
         F: FnOnce(&mut S) -> Result<R, String> + Send + 'static,
@@ -257,12 +317,16 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             .as_ref()
             .cloned()
             .ok_or_else(|| NodeError::Watcher("store is not configured".to_string()))?;
-        tokio::task::spawn_blocking(move || {
-            let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
-            f(&mut *guard).map_err(NodeError::Watcher)
-        })
-        .await
-        .map_err(|e| NodeError::Task(e.to_string()))?
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let mut guard = store.lock().map_err(|_| NodeError::MutexPoisoned)?;
+                f(&mut *guard).map_err(NodeError::Watcher)
+            })();
+            let _ = tx.send(result);
+        });
+        rx.await
+            .map_err(|_| NodeError::Task("with_store thread dropped".to_string()))?
     }
 
     // ── Internal: store persistence helpers ──────────────────────────────
@@ -1606,9 +1670,9 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         self.with_sdk(move |sdk| sdk.fetch_transaction(&txid)).await
     }
 
-    /// Return the L-BTC policy asset ID for this network.
-    pub async fn policy_asset(&self) -> Result<AssetId, NodeError> {
-        self.with_sdk(|sdk| Ok(sdk.policy_asset())).await
+    /// Return the L-BTC policy asset ID for this network (lock-free).
+    pub fn policy_asset(&self) -> AssetId {
+        self.network.into_lwk().policy_asset()
     }
 
     /// Walk the canonical market lineage from the proof-carrying dormant anchor and return the

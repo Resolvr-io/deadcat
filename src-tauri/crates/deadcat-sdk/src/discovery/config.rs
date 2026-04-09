@@ -18,7 +18,7 @@ impl Default for DiscoveryConfig {
         Self {
             relays: DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect(),
             network_tag: super::NETWORK_TAG.to_string(),
-            fetch_timeout: Duration::from_secs(15),
+            fetch_timeout: Duration::from_secs(5),
         }
     }
 }

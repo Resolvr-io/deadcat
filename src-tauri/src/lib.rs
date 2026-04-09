@@ -142,8 +142,9 @@ async fn set_network(network: Network, app: AppHandle) -> Result<AppState, Strin
 
 #[tauri::command]
 async fn get_app_state(app: AppHandle) -> Result<AppState, String> {
+    let app_ref = app.clone();
     tokio::task::spawn_blocking(move || {
-        let manager = app.state::<Mutex<AppStateManager>>();
+        let manager = app_ref.state::<Mutex<AppStateManager>>();
         let mgr = manager
             .lock()
             .map_err(|_| "state lock failed".to_string())?;
@@ -162,20 +163,12 @@ async fn get_app_state(app: AppHandle) -> Result<AppState, String> {
 
 #[tauri::command]
 async fn get_wallet_status(app: AppHandle) -> Result<wallet::types::WalletStatus, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let is_unlocked = guard
-        .as_ref()
-        .map(|n| n.is_wallet_unlocked())
-        .unwrap_or(false);
-    drop(guard);
-
     tokio::task::spawn_blocking(move || {
         let manager = app.state::<Mutex<AppStateManager>>();
         let mgr = manager
             .lock()
             .map_err(|_| "state lock failed".to_string())?;
-        Ok(mgr.wallet_status_with_unlock(is_unlocked))
+        Ok(mgr.wallet_status())
     })
     .await
     .map_err(|e| format!("wallet_status task failed: {e}"))?
@@ -216,12 +209,22 @@ async fn restore_wallet(
     password: String,
     app: AppHandle,
 ) -> Result<AppState, String> {
+    let _t0 = std::time::Instant::now();
+    log::info!("[restore-trace] restore_wallet: start");
     let app_handle = app.clone();
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
+        log::info!(
+            "[restore-trace] restore_wallet: spawn_blocking entered at {:?}",
+            _t0.elapsed()
+        );
         let manager = app_handle.state::<Mutex<AppStateManager>>();
         let mut mgr = manager
             .lock()
             .map_err(|_| "state lock failed".to_string())?;
+        log::info!(
+            "[restore-trace] restore_wallet: got AppStateManager lock at {:?}",
+            _t0.elapsed()
+        );
 
         // Validate mnemonic
         let _: bip39::Mnemonic = mnemonic
@@ -232,35 +235,66 @@ async fn restore_wallet(
         persister
             .save(&mnemonic, &password)
             .map_err(|e| e.to_string())?;
+        log::info!(
+            "[restore-trace] restore_wallet: persister.save done at {:?}",
+            _t0.elapsed()
+        );
 
         mgr.bump_revision();
         let state = mgr.snapshot();
         emit_state(&app_handle, &state);
+        log::info!(
+            "[restore-trace] restore_wallet: emit_state done at {:?}",
+            _t0.elapsed()
+        );
         Ok(state)
     })
     .await
-    .map_err(|e| format!("restore_wallet task failed: {e}"))?
+    .map_err(|e| format!("restore_wallet task failed: {e}"))?;
+    log::info!(
+        "[restore-trace] restore_wallet: complete in {:?}",
+        _t0.elapsed()
+    );
+    result
 }
 
 #[tauri::command]
 async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, String> {
+    let _t0 = std::time::Instant::now();
+    log::info!("[restore-trace] unlock_wallet: start");
     let app_handle = app.clone();
 
-    // 1. Decrypt mnemonic (blocking — Argon2 KDF)
+    // 1. Decrypt mnemonic (blocking — Argon2 KDF). This is fast if cached.
     let (mnemonic, network, data_dir) = tokio::task::spawn_blocking({
         let app_ref = app_handle.clone();
+        let t0 = _t0;
         move || {
+            log::info!(
+                "[restore-trace] unlock_wallet: spawn_blocking entered at {:?}",
+                t0.elapsed()
+            );
             let manager = app_ref.state::<Mutex<AppStateManager>>();
             let mut mgr = manager
                 .lock()
                 .map_err(|_| "state lock failed".to_string())?;
+            log::info!(
+                "[restore-trace] unlock_wallet: got AppStateManager lock at {:?}",
+                t0.elapsed()
+            );
             let network = mgr.network().ok_or("Network not initialized")?;
 
             let persister = mgr.persister_mut().ok_or("Persister not initialized")?;
             let mnemonic = if let Some(cached) = persister.cached() {
+                log::info!("[restore-trace] unlock_wallet: using cached mnemonic");
                 cached.to_string()
             } else {
-                persister.load(&password).map_err(|e| e.to_string())?
+                log::info!("[restore-trace] unlock_wallet: decrypting mnemonic (Argon2)...");
+                let m = persister.load(&password).map_err(|e| e.to_string())?;
+                log::info!(
+                    "[restore-trace] unlock_wallet: Argon2 done at {:?}",
+                    t0.elapsed()
+                );
+                m
             };
 
             let data_dir = mgr.app_data_dir.clone();
@@ -269,21 +303,63 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
     })
     .await
     .map_err(|e| format!("unlock task failed: {e}"))??;
+    log::info!(
+        "[restore-trace] unlock_wallet: mnemonic ready at {:?}",
+        _t0.elapsed()
+    );
 
-    // 2. Unlock the wallet via the node (needs node lock)
-    let node_state = app_handle.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard
-        .as_ref()
-        .ok_or("Node not initialized — call init_nostr_identity first")?;
+    // 2. Always return optimistic unlocked state immediately and run the
+    //    heavy SDK initialization (Wollet DB open, electrum backend) on a
+    //    dedicated OS thread so we never block tokio workers or the UI.
+    let node = {
+        let node_state = app_handle.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or("Node not initialized — call init_nostr_identity first")?
+    };
+    log::info!(
+        "[restore-trace] unlock_wallet: got node at {:?}",
+        _t0.elapsed()
+    );
 
     let sdk_network = state::to_sdk_network(network);
-    let electrum_url = sdk_network.default_electrum_url();
-    node.unlock_wallet(&mnemonic, electrum_url, &data_dir)
-        .map_err(|e| format!("{e}"))?;
-    drop(guard);
+    let electrum_url = sdk_network.default_electrum_url().to_string();
 
-    // 3. Update app state
+    // Fire SDK initialization on a dedicated OS thread (not spawn_blocking)
+    let bg_app = app_handle.clone();
+    std::thread::spawn(move || {
+        log::info!("[restore-trace] unlock_wallet: bg thread — starting SDK init");
+        let bg_t0 = std::time::Instant::now();
+        if let Err(e) = node.unlock_wallet(&mnemonic, &electrum_url, &data_dir) {
+            log::warn!("[restore-trace] unlock_wallet: bg thread — failed: {e}");
+            return;
+        }
+        log::info!(
+            "[restore-trace] unlock_wallet: bg thread — SDK init done in {:?}",
+            bg_t0.elapsed()
+        );
+        let wb: Option<std::collections::HashMap<String, u64>> = node.balance().ok().map(|m| {
+            m.into_iter()
+                .filter(|(_, v)| *v > 0)
+                .map(|(k, v)| (k.to_string(), v))
+                .collect()
+        });
+        let manager = bg_app.state::<Mutex<AppStateManager>>();
+        let mut mgr = match manager.lock() {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        mgr.set_wallet_unlocked(true);
+        mgr.purge_stale_swaps();
+        mgr.touch_activity();
+        mgr.bump_revision();
+        let state = mgr.snapshot_with_balance(wb);
+        emit_state(&bg_app, &state);
+    });
+
+    // Return optimistic unlocked state immediately
     let state = tokio::task::spawn_blocking({
         let app_ref = app_handle.clone();
         move || {
@@ -292,8 +368,6 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
                 .lock()
                 .map_err(|_| "state lock failed".to_string())?;
             mgr.set_wallet_unlocked(true);
-            mgr.purge_stale_swaps();
-            mgr.touch_activity();
             mgr.bump_revision();
             let state = mgr.snapshot();
             let _ = app_ref.emit(APP_STATE_UPDATED_EVENT, &state);
@@ -308,9 +382,9 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
 
 #[tauri::command]
 async fn lock_wallet(app: AppHandle) -> Result<AppState, String> {
-    // Lock the node's wallet
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
+
     if let Some(node) = guard.as_ref() {
         node.lock_wallet();
     }
@@ -354,6 +428,16 @@ async fn delete_wallet(app: AppHandle) -> Result<AppState, String> {
         mgr.set_wallet_unlocked(false);
         if let Some(persister) = mgr.persister_mut() {
             persister.delete().map_err(|e| e.to_string())?;
+        }
+        // Remove the LWK wallet database so a fresh restore doesn't reopen
+        // stale data from a previous wallet (different descriptor).
+        if let Some(network) = mgr.network() {
+            let wallet_db_dir = mgr.app_data_dir.join(network.as_str()).join("wallet_db");
+            if wallet_db_dir.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&wallet_db_dir) {
+                    log::warn!("failed to remove wallet_db: {e}");
+                }
+            }
         }
         mgr.clear_payment_swaps();
         let state = mgr.snapshot();
@@ -489,15 +573,20 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
                     .collect()
             });
 
-        // Store sync + state emission in a single blocking task
-        let _ = tokio::task::spawn_blocking(move || {
+        // Run store candidate sync on a dedicated OS thread (not spawn_blocking)
+        // to avoid occupying a tokio blocking thread during slow electrum I/O.
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        std::thread::spawn(move || {
             let manager = bg_app.state::<Mutex<AppStateManager>>();
 
             // Sync store candidates against the chain
             let store_arc = {
                 let mgr = match manager.lock() {
                     Ok(m) => m,
-                    Err(_) => return,
+                    Err(_) => {
+                        let _ = done_tx.send(());
+                        return;
+                    }
                 };
                 mgr.store().cloned()
             };
@@ -508,13 +597,17 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
             // Emit final state with updated balance
             let mut mgr = match manager.lock() {
                 Ok(m) => m,
-                Err(_) => return,
+                Err(_) => {
+                    let _ = done_tx.send(());
+                    return;
+                }
             };
             mgr.bump_revision();
             let state = mgr.snapshot_with_balance(fresh_balance);
             emit_state(&bg_app, &state);
-        })
-        .await;
+            let _ = done_tx.send(());
+        });
+        let _ = done_rx.await;
     });
 
     Ok(state)
@@ -522,9 +615,11 @@ async fn sync_wallet(app: AppHandle) -> Result<AppState, String> {
 
 #[tauri::command]
 async fn get_wallet_balance(app: AppHandle) -> Result<wallet::types::WalletBalance, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let node = {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        guard.as_ref().cloned().ok_or("Node not initialized")?
+    };
     let balance_map = node.balance().map_err(|e| format!("{e}"))?;
 
     let mut assets = std::collections::HashMap::new();
@@ -557,10 +652,12 @@ async fn get_wallet_address(
 async fn get_wallet_transactions(
     app: AppHandle,
 ) -> Result<Vec<wallet::types::WalletTransaction>, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
-    let policy_asset = node.policy_asset().await.map_err(|e| format!("{e}"))?;
+    let node = {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        guard.as_ref().cloned().ok_or("Node not initialized")?
+    };
+    let policy_asset = node.policy_asset();
     let txs = node.transactions().map_err(|e| format!("{e}"))?;
     Ok(txs
         .iter()
