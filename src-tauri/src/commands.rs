@@ -790,7 +790,7 @@ pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredM
         });
     }
 
-    Ok(result?)
+    result
 }
 
 #[tauri::command]
