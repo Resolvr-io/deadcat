@@ -482,8 +482,7 @@ export async function handleClick(
   if (action === "onboarding-create-wallet") {
     if (
       !state.onboardingWalletPassword ||
-      state.onboardingWalletPassword !==
-        state.onboardingWalletPasswordConfirm
+      state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
     ) {
       state.onboardingError = !state.onboardingWalletPassword
         ? "Password is required."
@@ -538,8 +537,7 @@ export async function handleClick(
     if (
       !state.onboardingWalletMnemonic.trim() ||
       !state.onboardingWalletPassword ||
-      state.onboardingWalletPassword !==
-        state.onboardingWalletPasswordConfirm
+      state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
     ) {
       state.onboardingError =
         !state.onboardingWalletMnemonic.trim() ||
@@ -580,8 +578,7 @@ export async function handleClick(
   if (action === "onboarding-nostr-restore-wallet") {
     if (
       !state.onboardingWalletPassword ||
-      state.onboardingWalletPassword !==
-        state.onboardingWalletPasswordConfirm
+      state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
     ) {
       state.onboardingError = !state.onboardingWalletPassword
         ? "Password is required."

@@ -213,12 +213,18 @@ async fn restore_wallet(
     log::info!("[restore-trace] restore_wallet: start");
     let app_handle = app.clone();
     let result = tokio::task::spawn_blocking(move || {
-        log::info!("[restore-trace] restore_wallet: spawn_blocking entered at {:?}", _t0.elapsed());
+        log::info!(
+            "[restore-trace] restore_wallet: spawn_blocking entered at {:?}",
+            _t0.elapsed()
+        );
         let manager = app_handle.state::<Mutex<AppStateManager>>();
         let mut mgr = manager
             .lock()
             .map_err(|_| "state lock failed".to_string())?;
-        log::info!("[restore-trace] restore_wallet: got AppStateManager lock at {:?}", _t0.elapsed());
+        log::info!(
+            "[restore-trace] restore_wallet: got AppStateManager lock at {:?}",
+            _t0.elapsed()
+        );
 
         // Validate mnemonic
         let _: bip39::Mnemonic = mnemonic
@@ -229,17 +235,26 @@ async fn restore_wallet(
         persister
             .save(&mnemonic, &password)
             .map_err(|e| e.to_string())?;
-        log::info!("[restore-trace] restore_wallet: persister.save done at {:?}", _t0.elapsed());
+        log::info!(
+            "[restore-trace] restore_wallet: persister.save done at {:?}",
+            _t0.elapsed()
+        );
 
         mgr.bump_revision();
         let state = mgr.snapshot();
         emit_state(&app_handle, &state);
-        log::info!("[restore-trace] restore_wallet: emit_state done at {:?}", _t0.elapsed());
+        log::info!(
+            "[restore-trace] restore_wallet: emit_state done at {:?}",
+            _t0.elapsed()
+        );
         Ok(state)
     })
     .await
     .map_err(|e| format!("restore_wallet task failed: {e}"))?;
-    log::info!("[restore-trace] restore_wallet: complete in {:?}", _t0.elapsed());
+    log::info!(
+        "[restore-trace] restore_wallet: complete in {:?}",
+        _t0.elapsed()
+    );
     result
 }
 
@@ -254,12 +269,18 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
         let app_ref = app_handle.clone();
         let t0 = _t0;
         move || {
-            log::info!("[restore-trace] unlock_wallet: spawn_blocking entered at {:?}", t0.elapsed());
+            log::info!(
+                "[restore-trace] unlock_wallet: spawn_blocking entered at {:?}",
+                t0.elapsed()
+            );
             let manager = app_ref.state::<Mutex<AppStateManager>>();
             let mut mgr = manager
                 .lock()
                 .map_err(|_| "state lock failed".to_string())?;
-            log::info!("[restore-trace] unlock_wallet: got AppStateManager lock at {:?}", t0.elapsed());
+            log::info!(
+                "[restore-trace] unlock_wallet: got AppStateManager lock at {:?}",
+                t0.elapsed()
+            );
             let network = mgr.network().ok_or("Network not initialized")?;
 
             let persister = mgr.persister_mut().ok_or("Persister not initialized")?;
@@ -269,7 +290,10 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
             } else {
                 log::info!("[restore-trace] unlock_wallet: decrypting mnemonic (Argon2)...");
                 let m = persister.load(&password).map_err(|e| e.to_string())?;
-                log::info!("[restore-trace] unlock_wallet: Argon2 done at {:?}", t0.elapsed());
+                log::info!(
+                    "[restore-trace] unlock_wallet: Argon2 done at {:?}",
+                    t0.elapsed()
+                );
                 m
             };
 
@@ -279,7 +303,10 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
     })
     .await
     .map_err(|e| format!("unlock task failed: {e}"))??;
-    log::info!("[restore-trace] unlock_wallet: mnemonic ready at {:?}", _t0.elapsed());
+    log::info!(
+        "[restore-trace] unlock_wallet: mnemonic ready at {:?}",
+        _t0.elapsed()
+    );
 
     // 2. Always return optimistic unlocked state immediately and run the
     //    heavy SDK initialization (Wollet DB open, electrum backend) on a
@@ -292,7 +319,10 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
             .cloned()
             .ok_or("Node not initialized — call init_nostr_identity first")?
     };
-    log::info!("[restore-trace] unlock_wallet: got node at {:?}", _t0.elapsed());
+    log::info!(
+        "[restore-trace] unlock_wallet: got node at {:?}",
+        _t0.elapsed()
+    );
 
     let sdk_network = state::to_sdk_network(network);
     let electrum_url = sdk_network.default_electrum_url().to_string();
@@ -306,7 +336,10 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
             log::warn!("[restore-trace] unlock_wallet: bg thread — failed: {e}");
             return;
         }
-        log::info!("[restore-trace] unlock_wallet: bg thread — SDK init done in {:?}", bg_t0.elapsed());
+        log::info!(
+            "[restore-trace] unlock_wallet: bg thread — SDK init done in {:?}",
+            bg_t0.elapsed()
+        );
         let wb: Option<std::collections::HashMap<String, u64>> = node.balance().ok().map(|m| {
             m.into_iter()
                 .filter(|(_, v)| *v > 0)

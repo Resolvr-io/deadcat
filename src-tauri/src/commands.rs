@@ -91,7 +91,10 @@ async fn get_keys_and_client(app: &tauri::AppHandle) -> Result<(Keys, nostr_sdk:
     log::info!("[restore-trace] get_keys_and_client: acquiring NodeState lock...");
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
-    log::info!("[restore-trace] get_keys_and_client: got NodeState lock at {:?}", _t0.elapsed());
+    log::info!(
+        "[restore-trace] get_keys_and_client: got NodeState lock at {:?}",
+        _t0.elapsed()
+    );
     let node = guard
         .as_ref()
         .ok_or("Node not initialized — call init_nostr_identity first")?;
@@ -112,9 +115,15 @@ async fn get_keys_and_client(app: &tauri::AppHandle) -> Result<(Keys, nostr_sdk:
             let _ = client.add_relay(url.as_str()).await;
         }
         client.connect_with_timeout(Duration::from_secs(5)).await;
-        log::info!("[restore-trace] get_keys_and_client: relay connect done at {:?}", _t0.elapsed());
+        log::info!(
+            "[restore-trace] get_keys_and_client: relay connect done at {:?}",
+            _t0.elapsed()
+        );
     } else {
-        log::info!("[restore-trace] get_keys_and_client: relays already connected at {:?}", _t0.elapsed());
+        log::info!(
+            "[restore-trace] get_keys_and_client: relays already connected at {:?}",
+            _t0.elapsed()
+        );
     }
 
     Ok((keys, client))
@@ -174,7 +183,10 @@ async fn construct_and_store_node(
         guard.as_ref().cloned()
     };
 
-    log::info!("[restore-trace] construct_and_store_node: node stored, starting subscription at {:?}", _t0.elapsed());
+    log::info!(
+        "[restore-trace] construct_and_store_node: node stored, starting subscription at {:?}",
+        _t0.elapsed()
+    );
 
     // Start the background Nostr subscription loop (guard is released)
     if let Some(node) = node_arc.as_ref() {
@@ -182,7 +194,10 @@ async fn construct_and_store_node(
             log::warn!("failed to start discovery subscription: {e}");
         }
     }
-    log::info!("[restore-trace] construct_and_store_node: subscription started at {:?}", _t0.elapsed());
+    log::info!(
+        "[restore-trace] construct_and_store_node: subscription started at {:?}",
+        _t0.elapsed()
+    );
 
     // Forward discovery events to the frontend
     let app_handle = app.clone();
@@ -216,8 +231,7 @@ async fn construct_and_store_node(
     let app_snapshot = app.clone();
     let policy_asset = sdk_network.into_lwk().policy_asset();
     tokio::spawn(async move {
-        let mut last_emit = std::time::Instant::now()
-            - std::time::Duration::from_secs(1);
+        let mut last_emit = std::time::Instant::now() - std::time::Duration::from_secs(1);
         let min_interval = std::time::Duration::from_millis(500);
 
         while snapshot_rx.changed().await.is_ok() {
@@ -243,10 +257,7 @@ async fn construct_and_store_node(
                 let payload = {
                     let snap = snapshot_rx.borrow();
                     snap.as_ref().map(|s| {
-                        crate::wallet::types::WalletSnapshotEvent::from_snapshot(
-                            s,
-                            &policy_asset,
-                        )
+                        crate::wallet::types::WalletSnapshotEvent::from_snapshot(s, &policy_asset)
                     })
                 };
                 let _ = app_snapshot.emit("wallet_snapshot", &payload);
@@ -464,7 +475,10 @@ pub async fn restore_mnemonic_from_nostr(app: tauri::AppHandle) -> Result<String
     let _t0 = std::time::Instant::now();
     log::info!("[restore-trace] restore_mnemonic_from_nostr: start");
     let (keys, client) = get_keys_and_client(&app).await?;
-    log::info!("[restore-trace] restore_mnemonic_from_nostr: got keys+client in {:?}", _t0.elapsed());
+    log::info!(
+        "[restore-trace] restore_mnemonic_from_nostr: got keys+client in {:?}",
+        _t0.elapsed()
+    );
 
     let filter = discovery::build_backup_query_filter(&keys.public_key());
     log::info!("[restore-trace] restore_mnemonic_from_nostr: fetching events...");
@@ -472,7 +486,11 @@ pub async fn restore_mnemonic_from_nostr(app: tauri::AppHandle) -> Result<String
         .fetch_events(vec![filter], Duration::from_secs(8))
         .await
         .map_err(|e| format!("failed to fetch backup: {e}"))?;
-    log::info!("[restore-trace] restore_mnemonic_from_nostr: fetched {} events in {:?}", events.len(), _t0.elapsed());
+    log::info!(
+        "[restore-trace] restore_mnemonic_from_nostr: fetched {} events in {:?}",
+        events.len(),
+        _t0.elapsed()
+    );
 
     if events.is_empty() {
         return Err("No wallet backup found on relays".to_string());
@@ -492,7 +510,10 @@ pub async fn restore_mnemonic_from_nostr(app: tauri::AppHandle) -> Result<String
 
     for event in candidates {
         if let Ok(mnemonic) = discovery::nip44_decrypt_from_self(&keys, &event.content) {
-            log::info!("[restore-trace] restore_mnemonic_from_nostr: done in {:?}", _t0.elapsed());
+            log::info!(
+                "[restore-trace] restore_mnemonic_from_nostr: done in {:?}",
+                _t0.elapsed()
+            );
             return Ok(mnemonic);
         }
     }

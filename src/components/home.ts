@@ -54,8 +54,8 @@ function marketCard(market: Market, idx: number): string {
             ? `<span class="w-48 rounded-full ${market.state === 2 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"} px-3 py-1 text-center text-sm font-medium">${market.state === 2 ? "Resolved YES" : "Resolved NO"}</span>`
             : market.state === 4
               ? `<span class="w-48 rounded-full bg-amber-500/20 px-3 py-1 text-center text-sm font-medium text-amber-300">Expired</span>`
-              : `<button data-open-market="${escapeAttr(market.id)}" data-open-side="yes" data-open-intent="buy" class="w-24 rounded-full bg-emerald-500 px-3 py-1 text-center text-sm font-medium text-white transition hover:bg-emerald-400">${yesPct != null ? "Yes " + yesPct + "%" : "Buy Yes"}</button>
-              <button data-open-market="${escapeAttr(market.id)}" data-open-side="no" data-open-intent="buy" class="w-24 rounded-full bg-rose-500 px-3 py-1 text-center text-sm font-medium text-white transition hover:bg-rose-400">${noPct != null ? "No " + noPct + "%" : "Buy No"}</button>`
+              : `<button data-open-market="${escapeAttr(market.id)}" data-open-side="yes" data-open-intent="buy" class="w-24 rounded-full bg-emerald-500 px-3 py-1 text-center text-sm font-medium text-white transition hover:bg-emerald-400">${yesPct != null ? `Yes ${yesPct}%` : "Buy Yes"}</button>
+              <button data-open-market="${escapeAttr(market.id)}" data-open-side="no" data-open-intent="buy" class="w-24 rounded-full bg-rose-500 px-3 py-1 text-center text-sm font-medium text-white transition hover:bg-rose-400">${noPct != null ? `No ${noPct}%` : "Buy No"}</button>`
         }
         <span class="ml-auto text-xs">${trendIndicator(market.change24h)}</span>
       </div>
@@ -217,8 +217,8 @@ export function renderHome(): string {
                   ? `<span class="w-40 rounded-full ${featured.state === 2 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"} px-4 py-2 text-center text-base font-semibold">${featured.state === 2 ? "Resolved YES" : "Resolved NO"}</span>`
                   : featured.state === 4
                     ? `<span class="w-40 rounded-full bg-amber-500/20 px-4 py-2 text-center text-base font-semibold text-amber-300">Expired</span>`
-                    : `<button data-open-market="${escapeAttr(featured.id)}" data-open-side="yes" data-open-intent="buy" class="w-32 rounded-full bg-emerald-500 px-4 py-2 text-center text-base font-semibold text-white transition hover:bg-emerald-400">${featuredYesPct != null ? "Yes " + featuredYesPct + "%" : "Buy Yes"}</button>
-              <button data-open-market="${escapeAttr(featured.id)}" data-open-side="no" data-open-intent="buy" class="w-32 rounded-full bg-rose-500 px-4 py-2 text-center text-base font-semibold text-white transition hover:bg-rose-400">${featuredNoPct != null ? "No " + featuredNoPct + "%" : "Buy No"}</button>`
+                    : `<button data-open-market="${escapeAttr(featured.id)}" data-open-side="yes" data-open-intent="buy" class="w-32 rounded-full bg-emerald-500 px-4 py-2 text-center text-base font-semibold text-white transition hover:bg-emerald-400">${featuredYesPct != null ? `Yes ${featuredYesPct}%` : "Buy Yes"}</button>
+              <button data-open-market="${escapeAttr(featured.id)}" data-open-side="no" data-open-intent="buy" class="w-32 rounded-full bg-rose-500 px-4 py-2 text-center text-base font-semibold text-white transition hover:bg-rose-400">${featuredNoPct != null ? `No ${featuredNoPct}%` : "Buy No"}</button>`
               }
               <span class="text-xs text-slate-500">${formatVolumeBtc(featured.volumeBtc)} vol · ${featuredTimeLeft} · ${trendIndicator(featured.change24h)}</span>
             </div>
@@ -265,8 +265,8 @@ export function renderHome(): string {
                             ? `<span class="rounded-full ${market.state === 2 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"} px-2.5 py-0.5 text-xs font-medium">${market.state === 2 ? "Resolved YES" : "Resolved NO"}</span>`
                             : market.state === 4
                               ? `<span class="rounded-full bg-amber-500/20 px-2.5 py-0.5 text-xs font-medium text-amber-300">Expired</span>`
-                              : `<button data-open-market="${escapeAttr(market.id)}" data-open-side="yes" data-open-intent="buy" class="rounded-full bg-emerald-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-emerald-400">${yesPct != null ? "Yes " + yesPct + "%" : "Buy Yes"}</button>
-                        <button data-open-market="${escapeAttr(market.id)}" data-open-side="no" data-open-intent="buy" class="rounded-full bg-rose-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-rose-400">${noPct != null ? "No " + noPct + "%" : "Buy No"}</button>`
+                              : `<button data-open-market="${escapeAttr(market.id)}" data-open-side="yes" data-open-intent="buy" class="rounded-full bg-emerald-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-emerald-400">${yesPct != null ? `Yes ${yesPct}%` : "Buy Yes"}</button>
+                        <button data-open-market="${escapeAttr(market.id)}" data-open-side="no" data-open-intent="buy" class="rounded-full bg-rose-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-rose-400">${noPct != null ? `No ${noPct}%` : "Buy No"}</button>`
                         }
                         <span class="ml-auto text-xs">${trendIndicator(market.change24h)}</span>
                       </div>
@@ -301,8 +301,8 @@ export function renderHome(): string {
                             ? `<span class="rounded-full ${market.state === 2 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"} px-2.5 py-0.5 text-xs font-medium">${market.state === 2 ? "Resolved YES" : "Resolved NO"}</span>`
                             : market.state === 4
                               ? `<span class="rounded-full bg-amber-500/20 px-2.5 py-0.5 text-xs font-medium text-amber-300">Expired</span>`
-                              : `<button data-open-market="${escapeAttr(market.id)}" data-open-side="yes" data-open-intent="buy" class="rounded-full bg-emerald-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-emerald-400">${yesPct != null ? "Yes " + yesPct + "%" : "Buy Yes"}</button>
-                        <button data-open-market="${escapeAttr(market.id)}" data-open-side="no" data-open-intent="buy" class="rounded-full bg-rose-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-rose-400">${noPct != null ? "No " + noPct + "%" : "Buy No"}</button>`
+                              : `<button data-open-market="${escapeAttr(market.id)}" data-open-side="yes" data-open-intent="buy" class="rounded-full bg-emerald-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-emerald-400">${yesPct != null ? `Yes ${yesPct}%` : "Buy Yes"}</button>
+                        <button data-open-market="${escapeAttr(market.id)}" data-open-side="no" data-open-intent="buy" class="rounded-full bg-rose-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-rose-400">${noPct != null ? `No ${noPct}%` : "Buy No"}</button>`
                         }
                         <span class="ml-auto text-xs">${trendIndicator(market.change24h)}</span>
                       </div>
@@ -369,8 +369,8 @@ export function renderMyMarkets(): string {
         </div>
         <p class="mb-3 text-base font-normal text-slate-200">${escapeHtml(market.question)}</p>
         <div class="flex items-center justify-between text-sm">
-          <span class="text-emerald-300">${market.yesPrice != null ? "Yes " + formatProbabilityWithPercent(market.yesPrice) : "Buy Yes"}</span>
-          <span class="text-rose-300">${no != null ? "No " + formatProbabilityWithPercent(no) : "Buy No"}</span>
+          <span class="text-emerald-300">${market.yesPrice != null ? `Yes ${formatProbabilityWithPercent(market.yesPrice)}` : "Buy Yes"}</span>
+          <span class="text-rose-300">${no != null ? `No ${formatProbabilityWithPercent(no)}` : "Buy No"}</span>
         </div>
       </button>
     `;
