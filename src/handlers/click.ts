@@ -316,6 +316,11 @@ export async function handleClick(
       render();
       return;
     }
+    if (!nsecInput.startsWith("nsec1")) {
+      state.onboardingError = "Invalid secret key. It should start with nsec1.";
+      render();
+      return;
+    }
     state.onboardingLoading = true;
     state.onboardingError = "";
     render();
@@ -326,23 +331,19 @@ export async function handleClick(
         });
         state.nostrPubkey = identity.pubkey_hex;
         state.nostrNpub = identity.npub;
+        // Show confirmation screen — user stays on nostr step to review their identity
         state.onboardingNostrDone = true;
-        state.onboardingStep = "wallet";
-        // Auto-scan relays for existing wallet backup
-        state.onboardingBackupScanning = true;
         state.onboardingLoading = false;
         render();
-        try {
-          const status = await invoke<NostrBackupStatus>("check_nostr_backup");
-          if (status.has_backup) {
-            state.onboardingBackupFound = true;
-            state.onboardingWalletMode = "nostr-restore";
-          }
-        } catch (_) {
-          /* scan failed silently */
-        }
-        state.onboardingBackupScanning = false;
-        render();
+        // Fetch profile in background to populate photo/name on confirmation screen
+        invoke<{ picture?: string; name?: string; display_name?: string } | null>("fetch_nostr_profile")
+          .then((profile) => {
+            if (profile) {
+              state.nostrProfile = profile;
+              render();
+            }
+          })
+          .catch(() => {});
         return;
       } catch (e) {
         state.onboardingError = String(e);
@@ -370,17 +371,147 @@ export async function handleClick(
   if (action === "onboarding-copy-nsec") {
     if (state.onboardingNostrGeneratedNsec) {
       void navigator.clipboard.writeText(state.onboardingNostrGeneratedNsec);
-      state.onboardingNsecRevealed = false;
-      state.onboardingNostrGeneratedNsec = "";
       showToast("Copied nsec to clipboard");
-      render();
     }
     return;
   }
 
   if (action === "onboarding-nostr-continue") {
     state.onboardingStep = "wallet";
+    state.onboardingNostrNsec = "";
     state.onboardingError = "";
+    if (state.onboardingNostrMode === "import") {
+      // Only scan for backups when importing an existing identity
+      state.onboardingBackupScanning = true;
+      render();
+      (async () => {
+        try {
+          const status = await invoke<NostrBackupStatus>("check_nostr_backup");
+          if (status.has_backup) {
+            state.onboardingBackupFound = true;
+            state.onboardingWalletMode = "nostr-restore";
+          }
+        } catch (_) {
+          /* scan failed silently */
+        }
+        state.onboardingBackupScanning = false;
+        render();
+      })();
+    } else {
+      render();
+    }
+    return;
+  }
+
+  if (action === "onboarding-wallet-continue") {
+    if (state.onboardingWalletMode === "restore" && !state.onboardingWalletMnemonic.trim()) {
+      state.onboardingError = "Please enter your recovery phrase.";
+      render();
+      return;
+    }
+    if (state.onboardingWalletMode === "create") {
+      // Generate mnemonic first, then show backup screen before password
+      state.onboardingLoading = true;
+      state.onboardingError = "";
+      showOverlayLoader("Generating wallet...");
+      render();
+      (async () => {
+        try {
+          const mnemonic = await invoke<string>("generate_mnemonic");
+          state.onboardingWalletMnemonic = mnemonic;
+          const wordCount = mnemonic.trim().split(/\s+/).length;
+          const pool = Array.from({ length: wordCount }, (_, i) => i);
+          for (let i = pool.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [pool[i], pool[j]] = [pool[j], pool[i]];
+          }
+          state.onboardingMnemonicVerifyIndices = pool.slice(0, 3).sort((a, b) => a - b);
+          state.onboardingMnemonicVerifyInputs = ["", "", ""];
+        } catch (e) {
+          state.onboardingError = String(e);
+        }
+        state.onboardingLoading = false;
+        hideOverlayLoader();
+        render();
+      })();
+      return;
+    }
+    state.onboardingWalletPasswordStep = true;
+    state.onboardingError = "";
+    render();
+    return;
+  }
+
+  if (action === "onboarding-back") {
+    state.onboardingPasswordRevealed = false;
+    if (state.onboardingStep === "wallet") {
+      if (
+        state.onboardingWalletPasswordStep &&
+        state.onboardingWalletMode === "create"
+      ) {
+        // Back from password page (create) → verify step
+        state.onboardingWalletPasswordStep = false;
+        state.onboardingWalletPassword = "";
+        state.onboardingWalletPasswordConfirm = "";
+        state.onboardingMnemonicVerifyStep = true;
+        state.onboardingError = "";
+      } else if (
+        state.onboardingWalletPasswordStep &&
+        (state.onboardingWalletMode === "restore" || state.onboardingWalletMode === "nostr-restore")
+      ) {
+        // Back from password page (restore/nostr-restore) → respective sub-page
+        state.onboardingWalletPasswordStep = false;
+        state.onboardingWalletPassword = "";
+        state.onboardingWalletPasswordConfirm = "";
+        state.onboardingError = "";
+      } else if (state.onboardingWalletMode === "nostr-restore") {
+        // Back from nostr-restore sub-page → "Set up your identity"
+        state.onboardingStep = "nostr";
+        state.onboardingNostrDone = true;
+        state.onboardingWalletMode = "create";
+        state.onboardingBackupFound = false;
+        state.onboardingError = "";
+      } else {
+        const onSubPage =
+          state.onboardingWalletPasswordStep ||
+          state.onboardingMnemonicVerifyStep ||
+          !!state.onboardingWalletMnemonic ||
+          state.onboardingWalletMode === "restore";
+        if (onSubPage) {
+          // Back from any other wallet sub-page → "Set up your wallet"
+          state.onboardingWalletMode = "create";
+          state.onboardingWalletMnemonic = "";
+          state.onboardingWalletPassword = "";
+          state.onboardingWalletPasswordConfirm = "";
+          state.onboardingWalletPasswordStep = false;
+          state.onboardingMnemonicVerifyStep = false;
+          state.onboardingMnemonicVerifyIndices = [];
+          state.onboardingMnemonicVerifyInputs = [];
+          state.onboardingBackupFound = false;
+          state.onboardingError = "";
+        } else {
+          // Back from "Set up your wallet" → "Set up your identity"
+          state.onboardingStep = "nostr";
+          state.onboardingNostrDone = false;
+          state.onboardingNostrMode = "generate";
+          state.onboardingError = "";
+        }
+      }
+    } else if (state.onboardingStep === "nostr") {
+      // Back from any nostr sub-page → "Set up your identity"
+      state.onboardingNostrMode = "generate";
+      state.onboardingNostrDone = false;
+      state.onboardingNostrGeneratedNsec = "";
+      state.onboardingNsecRevealed = false;
+      state.onboardingNsecAcknowledged = false;
+      state.onboardingError = "";
+    }
+    render();
+    return;
+  }
+
+  if (action === "onboarding-toggle-password-reveal") {
+    state.onboardingPasswordRevealed = !state.onboardingPasswordRevealed;
     render();
     return;
   }
@@ -399,22 +530,42 @@ export async function handleClick(
       render();
       return;
     }
+    if (state.onboardingWalletPassword.length < 8) {
+      state.onboardingError = "Password must be at least 8 characters.";
+      render();
+      return;
+    }
+    if (state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm) {
+      state.onboardingError = "Passwords do not match.";
+      render();
+      return;
+    }
     state.onboardingLoading = true;
     state.onboardingError = "";
     showOverlayLoader("Creating wallet...");
     render();
     (async () => {
       try {
-        const mnemonic = await invoke<string>("create_wallet", {
+        await invoke("restore_wallet", {
+          mnemonic: state.onboardingWalletMnemonic.trim(),
           password: state.onboardingWalletPassword,
         });
-        state.onboardingWalletMnemonic = mnemonic;
+        updateOverlayMessage("Unlocking wallet...");
+        await invoke("unlock_wallet", {
+          password: state.onboardingWalletPassword,
+        });
+        updateOverlayMessage("Scanning blockchain...");
+        await invoke("sync_wallet");
+        updateOverlayMessage("Loading markets...");
+        showToast("Wallet created!", "success");
+        await finishOnboarding();
+        hideOverlayLoader();
       } catch (e) {
         state.onboardingError = String(e);
+        state.onboardingLoading = false;
+        hideOverlayLoader();
+        render();
       }
-      state.onboardingLoading = false;
-      hideOverlayLoader();
-      render();
     })();
     return;
   }
@@ -428,11 +579,28 @@ export async function handleClick(
   }
 
   if (action === "onboarding-wallet-done") {
-    showOverlayLoader("Loading markets...");
-    (async () => {
-      await finishOnboarding();
-      hideOverlayLoader();
-    })();
+    state.onboardingMnemonicVerifyStep = true;
+    state.onboardingError = "";
+    render();
+    return;
+  }
+
+  if (action === "onboarding-verify-mnemonic") {
+    const words = state.onboardingWalletMnemonic.trim().split(/\s+/);
+    const allVerified = state.onboardingMnemonicVerifyIndices.length === 3 &&
+      state.onboardingMnemonicVerifyIndices.every(
+        (wordIdx, i) => (state.onboardingMnemonicVerifyInputs[i] ?? "").trim().toLowerCase() === words[wordIdx]
+      );
+    if (!allVerified) {
+      state.onboardingError = "One or more words are incorrect. Check your recovery phrase and try again.";
+      render();
+      return;
+    }
+    // Words confirmed — now collect password
+    state.onboardingWalletPasswordStep = true;
+    state.onboardingMnemonicVerifyStep = false;
+    state.onboardingError = "";
+    render();
     return;
   }
 
@@ -442,6 +610,16 @@ export async function handleClick(
       !state.onboardingWalletPassword
     ) {
       state.onboardingError = "Recovery phrase and password are required.";
+      render();
+      return;
+    }
+    if (state.onboardingWalletPassword.length < 8) {
+      state.onboardingError = "Password must be at least 8 characters.";
+      render();
+      return;
+    }
+    if (state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm) {
+      state.onboardingError = "Passwords do not match.";
       render();
       return;
     }
@@ -478,6 +656,16 @@ export async function handleClick(
   if (action === "onboarding-nostr-restore-wallet") {
     if (!state.onboardingWalletPassword) {
       state.onboardingError = "Password is required.";
+      render();
+      return;
+    }
+    if (state.onboardingWalletPassword.length < 8) {
+      state.onboardingError = "Password must be at least 8 characters.";
+      render();
+      return;
+    }
+    if (state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm) {
+      state.onboardingError = "Passwords do not match.";
       render();
       return;
     }
@@ -1043,17 +1231,41 @@ export async function handleClick(
     state.logoutOpen = false;
     (async () => {
       try {
-        await invoke("lock_wallet");
-        await fetchWalletStatus();
+        await invoke("delete_nostr_identity");
+        state.nostrPubkey = null;
+        state.nostrNpub = null;
+        state.nostrNsecRevealed = null;
+        state.nostrProfile = null;
         state.walletData = null;
         state.walletPassword = "";
+        state.walletMnemonic = "";
         state.walletError = "";
         state.walletModal = "none";
+        state.walletStatus = "not_created";
         resetReceiveState();
         resetSendState();
-        state.view = "home";
+        state.onboardingStep = "nostr";
+        state.onboardingNostrMode = "generate";
+        state.onboardingNostrNsec = "";
+        state.onboardingNostrGeneratedNsec = "";
+        state.onboardingNsecRevealed = false;
+        state.onboardingNsecAcknowledged = false;
+        state.onboardingNostrDone = false;
+        state.onboardingWalletMode = "create";
+        state.onboardingWalletPasswordStep = false;
+        state.onboardingWalletPassword = "";
+        state.onboardingWalletPasswordConfirm = "";
+        state.onboardingWalletMnemonic = "";
+        state.onboardingMnemonicVerifyStep = false;
+        state.onboardingMnemonicVerifyIndices = [];
+        state.onboardingMnemonicVerifyInputs = [];
+        state.onboardingPasswordRevealed = false;
+        state.onboardingBackupFound = false;
+        state.onboardingBackupScanning = false;
+        state.onboardingLoading = false;
+        state.onboardingError = "";
       } catch (e) {
-        console.warn("Failed to lock wallet:", e);
+        showToast(`Logout failed: ${String(e)}`, "error");
       }
       render();
     })();

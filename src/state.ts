@@ -251,15 +251,24 @@ export const state: {
   onboardingNostrNsec: string;
   onboardingNostrGeneratedNsec: string;
   onboardingNsecRevealed: boolean;
+  onboardingNsecAcknowledged: boolean;
   onboardingNostrDone: boolean;
   onboardingWalletMode: "create" | "restore" | "nostr-restore";
+  onboardingWalletPasswordStep: boolean;
   onboardingWalletPassword: string;
   onboardingWalletPasswordConfirm: string;
   onboardingWalletMnemonic: string;
+  onboardingMnemonicVerifyStep: boolean;
+  onboardingMnemonicVerifyIndices: number[];
+  onboardingMnemonicVerifyInputs: string[];
   onboardingError: string;
   onboardingLoading: boolean;
   onboardingBackupFound: boolean;
   onboardingBackupScanning: boolean;
+  onboardingPasswordRevealed: boolean;
+  walletRecovering: boolean;
+  walletRecoveryPhase: number;
+  walletRecoverySummary: { markets: number; positions: number; orders: number; pools: number; estimatedSats: number } | null;
   marketCreating: boolean;
   marketsLoading: boolean;
   recentTxLabels: Map<string, { label: string; marketId: string }>;
@@ -411,15 +420,24 @@ export const state: {
   onboardingNostrNsec: "",
   onboardingNostrGeneratedNsec: "",
   onboardingNsecRevealed: false,
+  onboardingNsecAcknowledged: false,
   onboardingNostrDone: false,
   onboardingWalletMode: "create",
+  onboardingWalletPasswordStep: false,
   onboardingWalletPassword: "",
   onboardingWalletPasswordConfirm: "",
   onboardingWalletMnemonic: "",
+  onboardingMnemonicVerifyStep: false,
+  onboardingMnemonicVerifyIndices: [],
+  onboardingMnemonicVerifyInputs: [],
   onboardingError: "",
   onboardingLoading: false,
   onboardingBackupFound: false,
   onboardingBackupScanning: false,
+  onboardingPasswordRevealed: false,
+  walletRecovering: false,
+  walletRecoveryPhase: 0,
+  walletRecoverySummary: null,
   marketsLoading: true,
   recentTxLabels: new Map(),
   attestationLoading: false,

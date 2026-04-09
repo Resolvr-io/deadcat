@@ -9,11 +9,15 @@ export const ONBOARDING_ACTION_LIST = [
   "onboarding-copy-nsec",
   "onboarding-nostr-continue",
   "onboarding-set-wallet-mode",
+  "onboarding-wallet-continue",
   "onboarding-create-wallet",
   "onboarding-copy-mnemonic",
   "onboarding-wallet-done",
+  "onboarding-verify-mnemonic",
   "onboarding-restore-wallet",
   "onboarding-nostr-restore-wallet",
+  "onboarding-back",
+  "onboarding-toggle-password-reveal",
 ] as const;
 
 export const APP_ACTION_LIST = [

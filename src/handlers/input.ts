@@ -3,6 +3,12 @@ import { state } from "../state.ts";
 export function handleInput(e: Event, render: () => void): void {
   const target = e.target as HTMLInputElement;
 
+  if (target.id === "onboarding-nsec-ack") {
+    state.onboardingNsecAcknowledged = (target as HTMLInputElement).checked;
+    render();
+    return;
+  }
+
   if (target.id === "onboarding-nostr-nsec") {
     state.onboardingNostrNsec = target.value;
     return;
@@ -10,6 +16,21 @@ export function handleInput(e: Event, render: () => void): void {
 
   if (target.id === "onboarding-wallet-password") {
     state.onboardingWalletPassword = target.value;
+    return;
+  }
+
+  if (target.id === "onboarding-wallet-password-confirm") {
+    state.onboardingWalletPasswordConfirm = target.value;
+    return;
+  }
+
+  if (target.id.startsWith("onboarding-verify-word-")) {
+    const idx = parseInt(target.id.slice(-1));
+    if (!isNaN(idx)) {
+      const inputs = [...state.onboardingMnemonicVerifyInputs];
+      inputs[idx] = target.value;
+      state.onboardingMnemonicVerifyInputs = inputs;
+    }
     return;
   }
 
@@ -76,6 +97,11 @@ export function handleInput(e: Event, render: () => void): void {
 
   if (target.id === "wallet-password") {
     state.walletPassword = target.value;
+    return;
+  }
+
+  if (target.id === "wallet-password-confirm") {
+    state.walletPasswordConfirm = target.value;
     return;
   }
 
