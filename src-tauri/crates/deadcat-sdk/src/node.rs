@@ -72,6 +72,8 @@ pub struct WalletSnapshot {
     pub balance: HashMap<AssetId, u64>,
     pub utxos: Vec<WalletTxOut>,
     pub transactions: Vec<WalletTx>,
+    /// Cached default address (index = None), derived without network I/O.
+    pub address: Option<AddressResult>,
 }
 
 #[derive(Clone, Debug)]
@@ -185,12 +187,13 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         }
         let sdk = DeadcatSdk::new(mnemonic, self.network, electrum_url, datadir)
             .map_err(NodeError::Sdk)?;
-        // Seed the snapshot so balance/utxos/transactions are available
+        // Seed the snapshot so balance/utxos/transactions/address are available
         // immediately, without waiting for the first with_sdk call.
         let snapshot = WalletSnapshot {
             balance: sdk.balance().unwrap_or_default(),
             utxos: sdk.utxos().unwrap_or_default(),
             transactions: sdk.transactions().unwrap_or_default(),
+            address: sdk.address(None).ok(),
         };
         let _ = self.snapshot_tx.send(Some(snapshot));
         *guard = Some(sdk);
@@ -234,6 +237,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                 balance: sdk.balance().unwrap_or_default(),
                 utxos: sdk.utxos().unwrap_or_default(),
                 transactions: sdk.transactions().unwrap_or_default(),
+                address: sdk.address(None).ok(),
             };
             let _ = snapshot_tx.send(Some(snapshot));
             result.map_err(NodeError::Sdk)
@@ -1592,9 +1596,31 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             .ok_or(NodeError::WalletLocked)
     }
 
-    /// Get a wallet address.
+    /// Get the default wallet address (from cached snapshot — lock-free).
+    pub fn cached_address(&self) -> Result<AddressResult, NodeError> {
+        self.snapshot_rx
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.address.clone())
+            .ok_or(NodeError::WalletLocked)
+    }
+
+    /// Get a wallet address. For `index: None`, prefers the lock-free cached
+    /// snapshot so it never blocks on an in-progress Electrum sync.
     pub async fn address(&self, index: Option<u32>) -> Result<AddressResult, NodeError> {
-        self.with_sdk(move |sdk| sdk.address(index)).await
+        if index.is_none()
+            && let Ok(addr) = self.cached_address()
+        {
+            return Ok(addr);
+        }
+        let sdk = self.sdk.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = sdk.lock().map_err(|_| NodeError::MutexPoisoned)?;
+            let sdk = guard.as_mut().ok_or(NodeError::WalletLocked)?;
+            sdk.address(index).map_err(NodeError::Sdk)
+        })
+        .await
+        .map_err(|e| NodeError::Task(e.to_string()))?
     }
 
     /// Get unspent wallet outputs (from cached snapshot — lock-free).
@@ -1718,14 +1744,27 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     /// Derive the Boltz submarine swap refund public key (hex-encoded).
     pub async fn boltz_submarine_refund_pubkey_hex(&self) -> Result<String, NodeError> {
-        self.with_sdk(|sdk| sdk.boltz_submarine_refund_pubkey_hex())
-            .await
+        let sdk = self.sdk.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = sdk.lock().map_err(|_| NodeError::MutexPoisoned)?;
+            let sdk = guard.as_mut().ok_or(NodeError::WalletLocked)?;
+            sdk.boltz_submarine_refund_pubkey_hex()
+                .map_err(NodeError::Sdk)
+        })
+        .await
+        .map_err(|e| NodeError::Task(e.to_string()))?
     }
 
     /// Derive the Boltz reverse swap claim public key (hex-encoded).
     pub async fn boltz_reverse_claim_pubkey_hex(&self) -> Result<String, NodeError> {
-        self.with_sdk(|sdk| sdk.boltz_reverse_claim_pubkey_hex())
-            .await
+        let sdk = self.sdk.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = sdk.lock().map_err(|_| NodeError::MutexPoisoned)?;
+            let sdk = guard.as_mut().ok_or(NodeError::WalletLocked)?;
+            sdk.boltz_reverse_claim_pubkey_hex().map_err(NodeError::Sdk)
+        })
+        .await
+        .map_err(|e| NodeError::Task(e.to_string()))?
     }
 
     // ── Electrum URL accessors ──────────────────────────────────────────

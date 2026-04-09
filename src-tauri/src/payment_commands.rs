@@ -5,12 +5,12 @@ use tauri::{AppHandle, Manager};
 use crate::state::{AppStateManager, PaymentSwap};
 use crate::{emit_state, NodeState};
 
-fn current_network(app: &AppHandle) -> Result<crate::Network, String> {
+fn get_boltz(app: &AppHandle) -> Result<std::sync::Arc<crate::payments::boltz::BoltzService>, String> {
     let manager = app.state::<Mutex<AppStateManager>>();
     let mgr = manager
         .lock()
         .map_err(|_| "state lock failed".to_string())?;
-    mgr.network()
+    mgr.boltz_service()
         .ok_or("Not initialized - select a network first".to_string())
 }
 
@@ -40,16 +40,17 @@ pub async fn pay_lightning_invoice(
     invoice: String,
     app: AppHandle,
 ) -> Result<crate::payments::boltz::BoltzSubmarineSwapCreated, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let node = {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        guard.as_ref().cloned().ok_or("Node not initialized")?
+    };
     let refund_pubkey_hex = node
         .boltz_submarine_refund_pubkey_hex()
         .await
         .map_err(|e| format!("Wallet must be unlocked to initiate swap: {e}"))?;
-    drop(guard);
 
-    let boltz = crate::payments::boltz::BoltzService::new(current_network(&app)?, None);
+    let boltz = get_boltz(&app)?;
     let created = boltz
         .create_submarine_swap(&invoice, &refund_pubkey_hex)
         .await
@@ -83,16 +84,17 @@ pub async fn create_lightning_receive(
     amount_sat: u64,
     app: AppHandle,
 ) -> Result<crate::payments::boltz::BoltzLightningReceiveCreated, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let node = {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        guard.as_ref().cloned().ok_or("Node not initialized")?
+    };
     let claim_pubkey_hex = node
         .boltz_reverse_claim_pubkey_hex()
         .await
         .map_err(|e| format!("Wallet must be unlocked to initiate swap: {e}"))?;
-    drop(guard);
 
-    let boltz = crate::payments::boltz::BoltzService::new(current_network(&app)?, None);
+    let boltz = get_boltz(&app)?;
     let created = boltz
         .create_lightning_receive(amount_sat, &claim_pubkey_hex)
         .await
@@ -126,9 +128,11 @@ pub async fn create_bitcoin_receive(
     amount_sat: u64,
     app: AppHandle,
 ) -> Result<crate::payments::boltz::BoltzChainSwapCreated, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let node = {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        guard.as_ref().cloned().ok_or("Node not initialized")?
+    };
     let claim_pubkey_hex = node
         .boltz_reverse_claim_pubkey_hex()
         .await
@@ -137,9 +141,8 @@ pub async fn create_bitcoin_receive(
         .boltz_submarine_refund_pubkey_hex()
         .await
         .map_err(|e| format!("Wallet must be unlocked to initiate swap: {e}"))?;
-    drop(guard);
 
-    let boltz = crate::payments::boltz::BoltzService::new(current_network(&app)?, None);
+    let boltz = get_boltz(&app)?;
     let created = boltz
         .create_chain_swap_btc_to_lbtc(amount_sat, &claim_pubkey_hex, &refund_pubkey_hex)
         .await
@@ -173,9 +176,11 @@ pub async fn create_bitcoin_send(
     amount_sat: u64,
     app: AppHandle,
 ) -> Result<crate::payments::boltz::BoltzChainSwapCreated, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let node = {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        guard.as_ref().cloned().ok_or("Node not initialized")?
+    };
     let claim_pubkey_hex = node
         .boltz_reverse_claim_pubkey_hex()
         .await
@@ -184,9 +189,8 @@ pub async fn create_bitcoin_send(
         .boltz_submarine_refund_pubkey_hex()
         .await
         .map_err(|e| format!("Wallet must be unlocked to initiate swap: {e}"))?;
-    drop(guard);
 
-    let boltz = crate::payments::boltz::BoltzService::new(current_network(&app)?, None);
+    let boltz = get_boltz(&app)?;
     let created = boltz
         .create_chain_swap_lbtc_to_btc(amount_sat, &claim_pubkey_hex, &refund_pubkey_hex)
         .await
@@ -219,7 +223,7 @@ pub async fn create_bitcoin_send(
 pub async fn get_chain_swap_pairs(
     app: AppHandle,
 ) -> Result<crate::payments::boltz::BoltzChainSwapPairsInfo, String> {
-    let boltz = crate::payments::boltz::BoltzService::new(current_network(&app)?, None);
+    let boltz = get_boltz(&app)?;
     boltz
         .get_chain_swap_pairs_info()
         .await
@@ -245,7 +249,7 @@ pub async fn refresh_payment_swap_status(
     app: AppHandle,
 ) -> Result<PaymentSwap, String> {
     let swap_id_clone = swap_id.clone();
-    let boltz = crate::payments::boltz::BoltzService::new(current_network(&app)?, None);
+    let boltz = get_boltz(&app)?;
     let status = boltz
         .get_swap_status(&swap_id_clone)
         .await

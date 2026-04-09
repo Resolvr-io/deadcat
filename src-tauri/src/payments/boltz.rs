@@ -14,6 +14,8 @@ use thiserror::Error;
 
 use crate::Network;
 
+const BOLTZ_API_TIMEOUT: Duration = Duration::from_secs(20);
+
 #[derive(Error, Debug)]
 pub enum PaymentError {
     #[error("Invalid parameters: {0}")]
@@ -117,7 +119,7 @@ pub struct BoltzSwapStatusResponse {
 impl BoltzService {
     pub fn new(network: Network, boltz_api_url_override: Option<String>) -> Self {
         let boltz_api_url = boltz_api_url_override.unwrap_or_else(|| default_api_url(network));
-        let client = BoltzApiClientV2::new(boltz_api_url.clone(), Some(Duration::from_secs(8)));
+        let client = BoltzApiClientV2::new(boltz_api_url.clone(), Some(BOLTZ_API_TIMEOUT));
         Self {
             client,
             network,
@@ -205,19 +207,6 @@ impl BoltzService {
         })?;
         let preimage = BoltzPreimage::new();
 
-        let pairs = self
-            .client
-            .get_reverse_pairs()
-            .await
-            .map_err(map_boltz_err)?;
-        let pair = pairs.get_btc_to_lbtc_pair().ok_or_else(|| {
-            PaymentError::Network(
-                "Boltz did not return a BTC -> L-BTC reverse pair for this network".to_string(),
-            )
-        })?;
-        pair.limits.within(amount_sat).map_err(map_boltz_err)?;
-        let pair_hash = pair.hash.clone();
-
         let req = CreateReverseRequest {
             from: "BTC".to_string(),
             to: "L-BTC".to_string(),
@@ -260,7 +249,7 @@ impl BoltzService {
             expected_onchain_amount_sat: response.onchain_amount,
             lockup_address: response.lockup_address,
             timeout_block_height: u64::from(response.timeout_block_height),
-            pair_hash,
+            pair_hash: String::new(),
             invoice,
             invoice_expiry_seconds,
             invoice_expires_at,
@@ -485,7 +474,14 @@ fn map_chain_pair_info(pair: &boltz_client::swaps::boltz::ChainPair) -> BoltzCha
 }
 
 fn map_boltz_err(err: boltz_client::error::Error) -> PaymentError {
-    PaymentError::Network(format!("Boltz API error: {}", err))
+    let message = err.to_string();
+    if message.to_ascii_lowercase().contains("timed out") {
+        return PaymentError::Network(format!(
+            "Boltz API request timed out after {} seconds. Please try again.",
+            BOLTZ_API_TIMEOUT.as_secs()
+        ));
+    }
+    PaymentError::Network(format!("Boltz API error: {}", message))
 }
 
 fn parse_invoice_amount_sat(invoice: &str) -> Result<u64, PaymentError> {

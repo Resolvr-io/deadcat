@@ -13,20 +13,20 @@ pub enum ChainAdapterError {
 }
 
 /// Adapter that implements `deadcat_store::ChainSource` using the `electrum-client` crate.
+/// The Electrum connection is created once and reused across all method calls.
 pub struct ElectrumChainAdapter {
-    electrum_url: String,
+    client: electrum_client::Client,
 }
 
 impl ElectrumChainAdapter {
-    pub fn new(electrum_url: &str) -> Self {
-        Self {
-            electrum_url: electrum_url.to_string(),
-        }
+    pub fn new(electrum_url: &str) -> Result<Self, ChainAdapterError> {
+        let client = electrum_client::Client::new(electrum_url)
+            .map_err(|e| ChainAdapterError::Electrum(e.to_string()))?;
+        Ok(Self { client })
     }
 
-    fn client(&self) -> Result<electrum_client::Client, ChainAdapterError> {
-        electrum_client::Client::new(&self.electrum_url)
-            .map_err(|e| ChainAdapterError::Electrum(e.to_string()))
+    fn client(&self) -> Result<&electrum_client::Client, ChainAdapterError> {
+        Ok(&self.client)
     }
 
     fn script_hash_hex(script_pubkey: &[u8]) -> String {
@@ -53,7 +53,7 @@ impl ElectrumChainAdapter {
     ) -> Result<Option<(u32, [u8; 32])>, ChainAdapterError> {
         let client = self.client()?;
 
-        let height = match get_tx_confirmed_height(&client, self, txid)? {
+        let height = match get_tx_confirmed_height(client, self, txid)? {
             Some(h) => h,
             None => return Ok(None),
         };
@@ -67,7 +67,7 @@ impl ElectrumChainAdapter {
             return Ok(None);
         }
 
-        let block_hash = get_block_hash(&client, height)?;
+        let block_hash = get_block_hash(client, height)?;
         Ok(Some((height, block_hash)))
     }
 }
@@ -406,7 +406,7 @@ impl ChainSource for ElectrumChainAdapter {
     fn get_transaction(&self, txid: &[u8; 32]) -> Result<Option<Vec<u8>>, Self::Error> {
         let client = self.client()?;
         let txid_hex = txid_to_display_hex(txid);
-        let Some(resp) = transaction_get_response(&client, &txid_hex, false)? else {
+        let Some(resp) = transaction_get_response(client, &txid_hex, false)? else {
             return Ok(None);
         };
         let hex_str = resp

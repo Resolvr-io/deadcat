@@ -324,6 +324,7 @@ export type WalletData = {
   backedUp: boolean;
   showBackup: boolean;
   backupPassword: string;
+  backupCopied: boolean;
 };
 
 export type BaseCurrency =
