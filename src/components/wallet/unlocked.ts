@@ -66,6 +66,11 @@ export function renderWalletUnlocked(params: {
     }
   }
 
+  // Well-known Liquid testnet assets (display-order hex).
+  const KNOWN_ASSETS: Record<string, string> = {
+    "38fca2d939696061a8f76d4e6b5eecd54e3b4221c846f24a6b279e79952850a5": "TEST",
+  };
+
   // Map token asset IDs to labels for display.
   // Market asset IDs are internal byte order; wallet balance keys are display order (reversed).
   const assetLabel = new Map<string, WalletAssetLabel>();
@@ -155,6 +160,7 @@ export function renderWalletUnlocked(params: {
   return `
     <div class="phi-container py-8">
       <div class="mx-auto max-w-2xl space-y-6">
+        ${state.previousView ? `<button data-action="go-back" class="mb-2 flex items-center gap-1 text-sm text-slate-400 transition hover:text-slate-200"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>Back to ${state.previousView === "detail" ? "market" : "markets"}</button>` : ""}
         <div class="flex items-center justify-between">
           <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Wallet ${networkBadge}</h2>
           <div class="flex gap-2">
@@ -267,11 +273,24 @@ export function renderWalletUnlocked(params: {
                   "</div>"
                 );
               }
+              const knownName = KNOWN_ASSETS[tp.assetId];
+              const label = knownName ?? shortAsset;
+              const badge = knownName ?? "TOKEN";
               return (
                 '<div class="flex items-center justify-between border-b border-slate-800 py-3 text-sm">' +
-                '<span class="mono text-slate-400">' +
-                escapeHtml(shortAsset) +
+                '<div class="flex items-center gap-2">' +
+                '<span class="rounded bg-slate-600/30 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">' +
+                escapeHtml(badge) +
                 "</span>" +
+                '<button data-action="open-explorer-asset" data-asset="' +
+                escapeAttr(tp.assetId) +
+                '" class="' +
+                (knownName
+                  ? "text-slate-300 hover:text-slate-100"
+                  : "mono text-xs text-slate-500 hover:text-slate-300") +
+                ' transition cursor-pointer">' +
+                escapeHtml(label) +
+                "</button></div>" +
                 (state.walletBalanceHidden
                   ? '<span class="inline-flex gap-0.5 text-slate-500">' +
                     PAW_ICON +

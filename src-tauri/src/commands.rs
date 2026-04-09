@@ -88,8 +88,14 @@ async fn bump_revision_and_emit<R: tauri::Runtime>(
 
 /// Get Nostr keys and a connected client from the node.
 async fn get_keys_and_client(app: &tauri::AppHandle) -> Result<(Keys, nostr_sdk::Client), String> {
+    let _t0 = std::time::Instant::now();
+    log::info!("[restore-trace] get_keys_and_client: acquiring NodeState lock...");
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
+    log::info!(
+        "[restore-trace] get_keys_and_client: got NodeState lock at {:?}",
+        _t0.elapsed()
+    );
     let node = guard
         .as_ref()
         .ok_or("Node not initialized — call init_nostr_identity first")?;
@@ -99,6 +105,7 @@ async fn get_keys_and_client(app: &tauri::AppHandle) -> Result<(Keys, nostr_sdk:
 
     // Ensure client has relays connected
     if client.relays().await.is_empty() {
+        log::info!("[restore-trace] get_keys_and_client: no relays, connecting...");
         let nostr_state = app.state::<NostrAppState>();
         let relays = nostr_state
             .relay_list
@@ -109,6 +116,15 @@ async fn get_keys_and_client(app: &tauri::AppHandle) -> Result<(Keys, nostr_sdk:
             let _ = client.add_relay(url.as_str()).await;
         }
         client.connect_with_timeout(Duration::from_secs(5)).await;
+        log::info!(
+            "[restore-trace] get_keys_and_client: relay connect done at {:?}",
+            _t0.elapsed()
+        );
+    } else {
+        log::info!(
+            "[restore-trace] get_keys_and_client: relays already connected at {:?}",
+            _t0.elapsed()
+        );
     }
 
     Ok((keys, client))
@@ -120,6 +136,8 @@ async fn construct_and_store_node(
     app: &tauri::AppHandle,
     keys: nostr_sdk::Keys,
 ) -> Result<(), String> {
+    let _t0 = std::time::Instant::now();
+    log::info!("[restore-trace] construct_and_store_node: start");
     let (sdk_network, store_arc) = {
         let manager = app.state::<Mutex<AppStateManager>>();
         let mut mgr = manager
@@ -153,18 +171,34 @@ async fn construct_and_store_node(
     let (node, mut rx) = deadcat_sdk::DeadcatNode::with_store(keys, sdk_network, store_arc, config);
     let mut snapshot_rx = node.subscribe_snapshot();
 
-    // Replace any existing node (drops old node if any)
+    // Shut down the old node's wallet so its background sync stops ASAP
+    // and its forwarding tasks exit once the Arc is dropped.
     let node_state = app.state::<NodeState>();
-    let mut guard = node_state.node.lock().await;
-    *guard = Some(std::sync::Arc::new(node));
+    let node_arc = {
+        let mut guard = node_state.node.lock().await;
+        if let Some(old_node) = guard.as_ref() {
+            old_node.lock_wallet();
+            log::info!("[restore-trace] construct_and_store_node: locked old node wallet");
+        }
+        *guard = Some(std::sync::Arc::new(node));
+        guard.as_ref().cloned()
+    };
 
-    // Start the background Nostr subscription loop
-    if let Some(node) = guard.as_ref() {
+    log::info!(
+        "[restore-trace] construct_and_store_node: node stored, starting subscription at {:?}",
+        _t0.elapsed()
+    );
+
+    // Start the background Nostr subscription loop (guard is released)
+    if let Some(node) = node_arc.as_ref() {
         if let Err(e) = node.start_subscription().await {
             log::warn!("failed to start discovery subscription: {e}");
         }
     }
-    drop(guard);
+    log::info!(
+        "[restore-trace] construct_and_store_node: subscription started at {:?}",
+        _t0.elapsed()
+    );
 
     // Forward discovery events to the frontend
     let app_handle = app.clone();
@@ -193,10 +227,14 @@ async fn construct_and_store_node(
         log::info!("discovery event forwarding loop ended");
     });
 
-    // Forward wallet snapshot changes to the frontend
+    // Forward wallet snapshot changes to the frontend, throttled to avoid
+    // flooding the main thread with large serialized payloads during sync.
     let app_snapshot = app.clone();
     let policy_asset = sdk_network.into_lwk().policy_asset();
     tokio::spawn(async move {
+        let mut last_emit = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let min_interval = std::time::Duration::from_millis(500);
+
         while snapshot_rx.changed().await.is_ok() {
             let payload = {
                 let snap = snapshot_rx.borrow_and_update();
@@ -204,7 +242,30 @@ async fn construct_and_store_node(
                     crate::wallet::types::WalletSnapshotEvent::from_snapshot(s, &policy_asset)
                 })
             };
-            let _ = app_snapshot.emit("wallet_snapshot", &payload);
+
+            // Always emit null (lock) events immediately
+            if payload.is_none() {
+                let _ = app_snapshot.emit("wallet_snapshot", &payload);
+                last_emit = std::time::Instant::now();
+                continue;
+            }
+
+            let elapsed = last_emit.elapsed();
+            if elapsed < min_interval {
+                // Defer so the latest snapshot is still emitted
+                tokio::time::sleep(min_interval - elapsed).await;
+                // Re-read the latest value (may have been updated during sleep)
+                let payload = {
+                    let snap = snapshot_rx.borrow();
+                    snap.as_ref().map(|s| {
+                        crate::wallet::types::WalletSnapshotEvent::from_snapshot(s, &policy_asset)
+                    })
+                };
+                let _ = app_snapshot.emit("wallet_snapshot", &payload);
+            } else {
+                let _ = app_snapshot.emit("wallet_snapshot", &payload);
+            }
+            last_emit = std::time::Instant::now();
         }
         log::info!("wallet snapshot forwarding loop ended");
     });
@@ -412,13 +473,25 @@ pub async fn backup_mnemonic_to_nostr(
 /// Fetch and decrypt wallet mnemonic backup from relays.
 #[tauri::command]
 pub async fn restore_mnemonic_from_nostr(app: tauri::AppHandle) -> Result<String, String> {
+    let _t0 = std::time::Instant::now();
+    log::info!("[restore-trace] restore_mnemonic_from_nostr: start");
     let (keys, client) = get_keys_and_client(&app).await?;
+    log::info!(
+        "[restore-trace] restore_mnemonic_from_nostr: got keys+client in {:?}",
+        _t0.elapsed()
+    );
 
     let filter = discovery::build_backup_query_filter(&keys.public_key());
+    log::info!("[restore-trace] restore_mnemonic_from_nostr: fetching events...");
     let events = client
         .fetch_events(vec![filter], Duration::from_secs(8))
         .await
         .map_err(|e| format!("failed to fetch backup: {e}"))?;
+    log::info!(
+        "[restore-trace] restore_mnemonic_from_nostr: fetched {} events in {:?}",
+        events.len(),
+        _t0.elapsed()
+    );
 
     if events.is_empty() {
         return Err("No wallet backup found on relays".to_string());
@@ -438,6 +511,10 @@ pub async fn restore_mnemonic_from_nostr(app: tauri::AppHandle) -> Result<String
 
     for event in candidates {
         if let Ok(mnemonic) = discovery::nip44_decrypt_from_self(&keys, &event.content) {
+            log::info!(
+                "[restore-trace] restore_mnemonic_from_nostr: done in {:?}",
+                _t0.elapsed()
+            );
             return Ok(mnemonic);
         }
     }
@@ -696,19 +773,25 @@ pub async fn fetch_nostr_profile(
 
 #[tauri::command]
 pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
-    // Fetch from Nostr (persists to store as side-effect)
-    {
-        let node = {
-            let node_state = app.state::<NodeState>();
-            let guard = node_state.node.lock().await;
-            guard.as_ref().cloned().ok_or("Node not initialized")?
-        };
-        if let Err(e) = node.fetch_markets().await {
-            log::warn!("Nostr fetch failed (serving from store): {e}");
-        }
+    // Return cached store data immediately so the UI is responsive.
+    let result = list_contracts(app.clone());
+
+    // Fetch fresh data from Nostr relays in the background.
+    // New markets will appear on next render/sync cycle.
+    let node = {
+        let node_state = app.state::<NodeState>();
+        let guard = node_state.node.lock().await;
+        guard.as_ref().cloned()
+    };
+    if let Some(node) = node {
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = node.fetch_markets().await {
+                log::warn!("Background Nostr fetch failed: {e}");
+            }
+        });
     }
-    // Return from store — single source of truth
-    list_contracts(app)
+
+    result
 }
 
 #[tauri::command]

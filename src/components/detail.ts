@@ -3,9 +3,10 @@ import type { Market } from "../types.ts";
 import { hexToNpub } from "../utils/crypto.ts";
 import {
   formatBlockHeight,
-  formatProbabilityWithPercent,
   formatSats,
   formatSettlementDateTime,
+  formatTimeRemaining,
+  formatVolumeBtc,
 } from "../utils/format.ts";
 import {
   clampContractPriceSats,
@@ -552,8 +553,6 @@ export function renderActionTicket(market: Market): string {
     : "";
   return `
     <aside class="rounded-[21px] border border-slate-800 bg-slate-900/80 p-[21px]">
-      <p class="panel-subtitle">Contract Action Ticket</p>
-      <p class="mb-3 mt-1 text-sm text-slate-300">Buy or sell with a cleaner ticket flow. Advanced covenant actions are below.</p>
       <div class="mb-3 flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
         <div class="flex items-center gap-4">
           <button data-trade-intent="open" class="border-b-2 pb-1 text-xl font-medium ${state.tradeIntent === "open" ? "border-slate-100 text-slate-100" : "border-transparent text-slate-500"}">Buy</button>
@@ -913,7 +912,6 @@ export function renderDetail(): string {
   const paths = getPathAvailability(market);
   const expired = isExpired(market);
   const estimatedSettlementDate = getEstimatedSettlementDate(market);
-  const fc = fullContractSats(market);
   const collateralPoolSats = market.collateralUtxos.reduce(
     (sum, utxo) => sum + utxo.amountSats,
     0,
@@ -926,34 +924,40 @@ export function renderDetail(): string {
           ? `<div class="mb-4 rounded-xl border border-slate-600 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">Market expired unresolved at height ${market.expiryHeight}. Redeem will auto-finalize to EXPIRED first, then execute expiry redemption (can be two transactions and two fees).</div>`
           : ""
       }
-      <div class="grid gap-[21px] xl:grid-cols-[1.618fr_1fr]">
+      <div class="grid gap-[21px] lg:grid-cols-[1.618fr_1fr]">
         <section class="space-y-[21px]">
           <div class="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
-            <button data-action="go-home" class="mb-3 flex items-center gap-1 text-sm text-slate-400 transition hover:text-slate-200">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-              Markets
-            </button>
-            <div class="mb-3 flex flex-wrap items-center gap-2">
-              <span class="rounded-full bg-slate-800 px-2.5 py-0.5 text-xs text-slate-300">${market.category}</span>
-              ${stateBadge(market.state)}
-              ${market.anchor ? `<button data-action="refresh-market-state" class="rounded p-0.5 text-slate-500 transition hover:text-slate-300" title="Refresh state"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>` : ""}
-              <span class="h-3.5 w-px bg-slate-700"></span>
-              <button data-action="open-nostr-event" data-market-id="${market.id}" data-nevent="${market.nevent}" class="text-xs text-slate-400 transition hover:text-slate-200">Nostr Event</button>
-              ${market.creationTxid ? `<button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-xs text-slate-400 transition hover:text-slate-200">Creation TX</button>` : ""}
+            <div class="mb-3 flex items-center justify-between">
+              <button data-action="go-home" class="flex items-center gap-1 text-sm text-slate-400 transition hover:text-slate-200">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                Markets
+              </button>
+              <div class="flex items-center gap-2">
+                <span class="rounded-full bg-slate-800 px-2.5 py-0.5 text-xs text-slate-300">${market.category}</span>
+                ${stateBadge(market.state)}
+                ${market.anchor ? `<button data-action="refresh-market-state" class="rounded p-0.5 text-slate-500 transition hover:text-slate-300" title="Refresh state"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>` : ""}
+                <span class="h-3.5 w-px bg-slate-700"></span>
+                <button data-action="open-nostr-event" data-market-id="${market.id}" data-nevent="${market.nevent}" class="text-xs text-slate-400 transition hover:text-slate-200">Nostr Event</button>
+                ${market.creationTxid ? `<button data-action="open-explorer-tx" data-txid="${market.creationTxid}" class="text-xs text-slate-400 transition hover:text-slate-200">Creation TX</button>` : ""}
+              </div>
             </div>
-            <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${market.question}</h1>
-            <p class="mb-3 text-base text-slate-400">${market.description}</p>
 
-            <div class="mb-4 grid gap-3 sm:grid-cols-3">
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Yes price<br/><span class="text-lg font-medium text-emerald-400">${market.yesPrice != null ? formatProbabilityWithPercent(market.yesPrice, fc) : "\u2014"}</span></div>
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">No price<br/><span class="text-lg font-medium text-rose-400">${noPrice != null ? formatProbabilityWithPercent(noPrice, fc) : "\u2014"}</span></div>
-              <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">Settlement deadline<br/><span class="text-slate-100">Est. by ${formatSettlementDateTime(estimatedSettlementDate)}</span></div>
+            <h1 class="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">${market.question}</h1>
+            <p class="mb-4 text-sm text-slate-400">${market.description}</p>
+
+            ${market.yesPrice != null ? `<p class="mb-2 text-5xl font-bold text-emerald-400">${Math.round(market.yesPrice * 100)}<span class="text-2xl text-slate-400">%</span> <span class="text-lg font-normal text-slate-500">chance</span></p>` : ""}
+
+            <div class="mb-4 flex items-center gap-3">
+              <button data-action="side" data-side="yes" class="w-36 rounded-full bg-emerald-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-emerald-400">${market.yesPrice != null ? "Yes " + Math.round(market.yesPrice * 100) + "%" : "Buy Yes"}</button>
+              <button data-action="side" data-side="no" class="w-36 rounded-full bg-rose-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-rose-400">${noPrice != null ? "No " + Math.round(noPrice * 100) + "%" : "Buy No"}</button>
             </div>
+
+            <p class="mb-4 text-xs text-slate-500">${formatVolumeBtc(market.volumeBtc)} vol · Est. by ${formatSettlementDateTime(estimatedSettlementDate)} · ${formatTimeRemaining(market.expiryHeight - market.currentHeight)}</p>
 
             ${(() => {
               const pos = getPositionContracts(market);
               if (pos.yes === 0 && pos.no === 0) return "";
-              return `<div class="mb-4 flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/40 px-4 py-3 text-sm">
+              return `<div class="mb-4 flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/40 px-4 py-2 text-sm">
                 <span class="text-slate-400">Your position</span>
                 ${pos.yes > 0 ? `<span class="rounded bg-emerald-500/20 px-2 py-0.5 font-medium text-emerald-300">YES ${pos.yes.toLocaleString()}</span>` : ""}
                 ${pos.no > 0 ? `<span class="rounded bg-red-500/20 px-2 py-0.5 font-medium text-red-300">NO ${pos.no.toLocaleString()}</span>` : ""}

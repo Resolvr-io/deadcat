@@ -27,6 +27,8 @@ const STORE_CUTOVER_MARKER_FILE: &str = "deadcat_store_cutover_v3.marker";
 struct LocalState {
     #[serde(default)]
     payment_swaps: Vec<PaymentSwap>,
+    #[serde(default)]
+    cached_balance: Option<HashMap<String, u64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,16 +271,30 @@ impl AppStateManager {
     }
 
     pub fn snapshot(&self) -> AppState {
-        self.snapshot_with_balance(None)
-    }
-
-    /// Build an `AppState` snapshot, optionally including wallet balance.
-    pub fn snapshot_with_balance(&self, wallet_balance: Option<HashMap<String, u64>>) -> AppState {
         AppState {
             revision: self.revision,
             network_status: self.network_status(),
             wallet_status: self.wallet_status(),
-            wallet_balance,
+            wallet_balance: self.local_state.cached_balance.clone(),
+            payment_swaps: self.local_state.payment_swaps.clone(),
+        }
+    }
+
+    /// Build an `AppState` snapshot with a fresh wallet balance.
+    /// Persists the balance to disk for subsequent snapshots and app restarts.
+    pub fn snapshot_with_balance(
+        &mut self,
+        wallet_balance: Option<HashMap<String, u64>>,
+    ) -> AppState {
+        if wallet_balance.is_some() {
+            self.local_state.cached_balance = wallet_balance.clone();
+            self.save_local_state();
+        }
+        AppState {
+            revision: self.revision,
+            network_status: self.network_status(),
+            wallet_status: self.wallet_status(),
+            wallet_balance: wallet_balance.or_else(|| self.local_state.cached_balance.clone()),
             payment_swaps: self.local_state.payment_swaps.clone(),
         }
     }

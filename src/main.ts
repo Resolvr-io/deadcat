@@ -193,6 +193,7 @@ async function finishOnboarding(): Promise<void> {
   state.onboardingBackupScanning = false;
 
   await fetchWalletStatus();
+  state.view = "wallet";
   render();
 
   if (state.walletStatus === "unlocked") {
@@ -263,8 +264,8 @@ function dismissSplash(): void {
 
 async function initApp(): Promise<void> {
   render();
-  // Track when the minimum loader animation time has elapsed (2 full cycles = 4.8s)
-  const splashReady = new Promise<void>((r) => setTimeout(r, 4800));
+  // Brief splash while bootstrap runs (1 animation cycle)
+  const splashReady = new Promise<void>((r) => setTimeout(r, 1500));
 
   // 1. Try to load existing Nostr identity (no auto-generation)
   let hasNostrIdentity = false;
@@ -370,11 +371,15 @@ async function initApp(): Promise<void> {
       .catch(() => {});
   }
 
-  await Promise.all([loadMarkets(), splashReady]);
+  // Dismiss splash after minimum time — don't wait for slow relay queries.
+  // Markets load in background; skeleton cards show until ready.
   loadPersistedTxLabels();
-  state.marketsLoading = false;
-  render();
+  await splashReady;
   dismissSplash();
+  void loadMarkets().then(() => {
+    state.marketsLoading = false;
+    render();
+  });
 
   // Fetch limit orders for all markets in the background
   for (const m of markets) {
