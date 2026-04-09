@@ -1,6 +1,5 @@
 import { state } from "../state.ts";
 import { escapeAttr, escapeHtml } from "../utils/html.ts";
-import { renderMnemonicGrid } from "./wallet-modals.ts";
 
 export function renderOnboarding(): string {
   const step = state.onboardingStep as "nostr" | "wallet";
@@ -100,26 +99,6 @@ export function renderOnboarding(): string {
     `;
   }
 
-  // Step 2: Wallet
-  if (
-    state.onboardingWalletMnemonic &&
-    state.onboardingWalletMode === "create"
-  ) {
-    // Show mnemonic backup after creation
-    return `
-      <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-8">
-        ${stepIndicator}
-        <h2 class="text-xl font-medium text-slate-100">Wallet Created</h2>
-        <p class="mt-2 text-sm text-slate-400">Back up your recovery phrase in a safe place.</p>
-        <div class="mt-4 rounded-lg border border-slate-600 bg-slate-900/40 p-4 space-y-3">
-          ${renderMnemonicGrid(state.onboardingWalletMnemonic)}
-          <button data-action="onboarding-copy-mnemonic" class="w-full rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">Copy to clipboard</button>
-        </div>
-        <button data-action="onboarding-wallet-done" class="mt-5 w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300">I've saved my recovery phrase</button>
-      </div>
-    `;
-  }
-
   const wMode = state.onboardingWalletMode;
   const modeCreate = wMode === "create";
   const modeRestore = wMode === "restore";
@@ -183,7 +162,7 @@ export function renderOnboarding(): string {
     <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-8">
       ${stepIndicator}
       <h2 class="text-xl font-medium text-slate-100">Set Up Your Wallet</h2>
-      <p class="mt-2 text-sm text-slate-400">Create a new wallet or restore from an existing recovery phrase.</p>
+      <p class="mt-2 text-sm text-slate-400">Create a new wallet or restore from an existing recovery phrase. You can back up a new wallet after onboarding.</p>
       ${errorHtml}
       ${scanningHtml}
       ${backupFoundHtml}
@@ -192,6 +171,7 @@ export function renderOnboarding(): string {
         <button data-action="${modeRestore || loading ? "" : "onboarding-set-wallet-mode"}" data-mode="restore" class="flex-1 rounded-lg border px-4 py-2 text-sm transition ${modeRestore ? "border-emerald-400 bg-emerald-400/10 text-emerald-300" : "border-slate-700 text-slate-400 hover:bg-slate-800"} ${loading ? "opacity-50 cursor-not-allowed" : ""}" ${loading ? "disabled" : ""}>Restore from seed</button>
       </div>
       ${formHtml}
+      <button data-action="onboarding-back-to-nostr" class="mt-4 w-full rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-400 transition hover:bg-slate-800 hover:text-slate-200 ${loading ? "opacity-50 cursor-not-allowed" : ""}" ${loading ? "disabled" : ""}>Back to Nostr setup</button>
     </div>
   `;
 }

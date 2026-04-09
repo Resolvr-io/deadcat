@@ -210,9 +210,10 @@ async function finishOnboarding(): Promise<void> {
       })
       .catch(() => {});
   }
-  await loadMarkets();
-  state.marketsLoading = false;
-  render();
+  void loadMarkets().then(() => {
+    state.marketsLoading = false;
+    render();
+  });
   void syncCurrentHeightFromLwk("liquid-testnet", render);
 
   // Fetch relay list + backup status in background
@@ -412,6 +413,10 @@ app.addEventListener("click", (event) => {
 });
 
 app.addEventListener("input", (e) => {
+  handleInput(e, render);
+});
+
+app.addEventListener("change", (e) => {
   handleInput(e, render);
 });
 

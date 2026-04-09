@@ -7,7 +7,6 @@ import type {
   WalletNetwork,
   WalletTransaction,
 } from "../types";
-import { hideOverlayLoader, showOverlayLoader } from "../ui/loader";
 import { getPriceHistory } from "./pools.ts";
 
 export type WalletSnapshot = {
@@ -105,7 +104,6 @@ export async function restoreWalletAndSync(params: {
 export async function refreshWallet(render: () => void): Promise<void> {
   state.walletLoading = true;
   state.walletError = "";
-  showOverlayLoader("Syncing wallet...");
   render();
   try {
     await tauriApi.syncWallet();
@@ -126,8 +124,8 @@ export async function refreshWallet(render: () => void): Promise<void> {
   } catch (e) {
     state.walletError = String(e);
   }
+  await new Promise((r) => setTimeout(r, 1000));
   state.walletLoading = false;
-  hideOverlayLoader();
   render();
 }
 
@@ -171,9 +169,9 @@ export async function generateQr(value: string): Promise<void> {
 export function resetReceiveState(): void {
   state.receiveAmount = "";
   state.receiveCreating = false;
+  state.receiveLiquidLoading = false;
   state.receiveError = "";
   state.receiveLightningSwap = null;
-  state.receiveLiquidAddress = "";
   state.receiveBitcoinSwap = null;
   state.modalQr = "";
 }
@@ -198,6 +196,7 @@ export function resetWalletSessionState(): void {
   state.walletError = "";
   state.walletModal = "none";
   resetReceiveState();
+  state.receiveLiquidAddress = "";
   resetSendState();
 }
 

@@ -368,6 +368,8 @@ pub struct DeadcatSdk {
     wollet: Wollet,
     network: Network,
     chain: ElectrumBackend,
+    /// Cached Electrum client, created lazily on first sync and reused.
+    electrum_client: Option<ElectrumClient>,
     /// Genesis hash for the Simplicity C runtime.
     ///
     /// For Liquid/Testnet, this is the hardcoded constant.
@@ -442,6 +444,7 @@ impl DeadcatSdk {
             wollet,
             network,
             chain: ElectrumBackend::new(electrum_url),
+            electrum_client: None,
             chain_genesis_override: None,
         })
     }
@@ -455,13 +458,17 @@ impl DeadcatSdk {
     // ── Wallet queries ───────────────────────────────────────────────────
 
     pub fn sync(&mut self) -> Result<()> {
-        let url: ElectrumUrl = self
-            .chain
-            .electrum_url()
-            .parse()
-            .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
-        let mut client = ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?;
-        lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, &mut client)
+        if self.electrum_client.is_none() {
+            let url: ElectrumUrl = self
+                .chain
+                .electrum_url()
+                .parse()
+                .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
+            self.electrum_client =
+                Some(ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?);
+        }
+        let client = self.electrum_client.as_mut().unwrap();
+        lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, client)
             .map_err(|e| Error::Electrum(e.to_string()))?;
         Ok(())
     }

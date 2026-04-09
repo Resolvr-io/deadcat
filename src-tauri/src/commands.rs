@@ -155,7 +155,7 @@ async fn construct_and_store_node(
     // Replace any existing node (drops old node if any)
     let node_state = app.state::<NodeState>();
     let mut guard = node_state.node.lock().await;
-    *guard = Some(node);
+    *guard = Some(std::sync::Arc::new(node));
 
     // Start the background Nostr subscription loop
     if let Some(node) = guard.as_ref() {
@@ -346,7 +346,7 @@ pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> 
         *guard = None;
     }
 
-    // Clear wallet state
+    // Clear wallet state and payment swaps
     {
         let manager = app.state::<Mutex<AppStateManager>>();
         let mut mgr = manager
@@ -356,6 +356,7 @@ pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> 
         if let Some(persister) = mgr.persister_mut() {
             persister.clear_cache();
         }
+        mgr.clear_payment_swaps();
     }
 
     // Delete key file
@@ -418,15 +419,32 @@ pub async fn restore_mnemonic_from_nostr(app: tauri::AppHandle) -> Result<String
         .await
         .map_err(|e| format!("failed to fetch backup: {e}"))?;
 
-    let encrypted_content = {
-        let mut iter = events.iter();
-        let event = iter
-            .next()
-            .ok_or_else(|| "No wallet backup found on relays".to_string())?;
-        event.content.clone()
-    };
+    if events.is_empty() {
+        return Err("No wallet backup found on relays".to_string());
+    }
 
-    discovery::nip44_decrypt_from_self(&keys, &encrypted_content)
+    let candidates: Vec<_> = events
+        .iter()
+        .filter(|event| discovery::is_wallet_backup_candidate(event))
+        .collect();
+
+    if candidates.is_empty() {
+        return Err(
+            "Found backup events on relays, but none contain a valid encrypted wallet backup"
+                .to_string(),
+        );
+    }
+
+    for event in candidates {
+        if let Ok(mnemonic) = discovery::nip44_decrypt_from_self(&keys, &event.content) {
+            return Ok(mnemonic);
+        }
+    }
+
+    Err(
+        "Found encrypted wallet backup events, but none could be decrypted with this Nostr identity"
+            .to_string(),
+    )
 }
 
 #[tauri::command]
@@ -453,20 +471,25 @@ pub async fn check_nostr_backup(
     let mut tasks = tokio::task::JoinSet::new();
     for url in relays {
         let f = filter.clone();
+        let keys = keys.clone();
         tasks.spawn(async move {
-            let found =
-                match discovery::connect_multi_relay_client(std::slice::from_ref(&url)).await {
-                    Ok(per_relay_client) => {
-                        match per_relay_client
-                            .fetch_events(vec![f], Duration::from_secs(8))
-                            .await
-                        {
-                            Ok(events) => events.iter().next().is_some(),
-                            Err(_) => false,
-                        }
+            let found = match discovery::connect_multi_relay_client(std::slice::from_ref(&url))
+                .await
+            {
+                Ok(per_relay_client) => {
+                    match per_relay_client
+                        .fetch_events(vec![f], Duration::from_secs(8))
+                        .await
+                    {
+                        Ok(events) => events.iter().any(|event| {
+                            discovery::is_wallet_backup_candidate(event)
+                                && discovery::nip44_decrypt_from_self(&keys, &event.content).is_ok()
+                        }),
+                        Err(_) => false,
                     }
-                    Err(_) => false,
-                };
+                }
+                Err(_) => false,
+            };
             discovery::RelayBackupResult {
                 url,
                 has_backup: found,
@@ -674,9 +697,11 @@ pub async fn fetch_nostr_profile(
 pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
     // Fetch from Nostr (persists to store as side-effect)
     {
-        let node_state = app.state::<NodeState>();
-        let guard = node_state.node.lock().await;
-        let node = guard.as_ref().ok_or("Node not initialized")?;
+        let node = {
+            let node_state = app.state::<NodeState>();
+            let guard = node_state.node.lock().await;
+            guard.as_ref().cloned().ok_or("Node not initialized")?
+        };
         if let Err(e) = node.fetch_markets().await {
             log::warn!("Nostr fetch failed (serving from store): {e}");
         }
@@ -1628,7 +1653,7 @@ mod trade_command_tests {
         {
             let node_state = app.state::<NodeState>();
             let mut guard = node_state.node.lock().await;
-            *guard = Some(node);
+            *guard = Some(std::sync::Arc::new(node));
         }
 
         let announcement = deadcat_sdk::testing::test_lmsr_pool_announcement(
