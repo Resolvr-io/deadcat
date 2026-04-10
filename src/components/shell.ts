@@ -1,7 +1,8 @@
+import { renderNostrBackupSection } from "../components/wallet/nostr-backup.ts";
 import { renderBackupModal } from "../components/wallet-modals.ts";
 import { btcLabel, formatCompactSats } from "../services/wallet.ts";
 import { baseCurrencyOptions, categories, DEV_MODE, state } from "../state.ts";
-import type { RelayBackupResult, RelayEntry } from "../types.ts";
+import type { RelayEntry } from "../types.ts";
 import { escapeAttr, escapeHtml } from "../utils/html.ts";
 
 function iconAttrs(size: string): string {
@@ -63,7 +64,7 @@ export function renderTopShell(): string {
             <button class="hover:text-slate-200">Social</button>
           </nav>
           <div class="ml-auto flex shrink-0 items-center gap-2 pb-[5px]">
-            <input id="global-search" value="${escapeAttr(state.search)}" class="hidden h-9 w-[280px] rounded-full border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-300 transition focus:ring-2 lg:block xl:w-[380px]" placeholder="Trade on anything" />
+            <input id="global-search" value="${escapeAttr(state.search)}" class="hidden h-9 w-48 min-w-[160px] max-w-[320px] flex-1 rounded-full border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-300 transition focus:ring-2 lg:block" placeholder="Search" />
             <button data-action="open-search" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 lg:hidden">
               <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </button>
@@ -95,12 +96,6 @@ export function renderTopShell(): string {
                               <span class="mono min-w-0 truncate text-xs text-slate-300">${escapeHtml(state.nostrNpub)}</span>
                               <svg class="h-3.5 w-3.5 shrink-0 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                             </button>
-                          </div>
-                          <div class="px-3 pb-1 pt-1 border-t border-slate-800">
-                            <div class="mb-1.5 text-[11px] text-slate-500">Display currency</div>
-                            <div class="grid grid-cols-3 gap-1">
-                              ${baseCurrencyOptions.map((c) => `<button data-action="set-currency" data-currency="${c}" class="rounded-md px-2 py-1 text-xs transition ${c === state.baseCurrency ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"}">${c}</button>`).join("")}
-                            </div>
                           </div>
                           <div class="mt-1 border-t border-slate-800 py-1">
                             <button data-action="user-settings" class="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-800 hover:text-slate-100">
@@ -153,7 +148,7 @@ export function renderTopShell(): string {
       state.searchOpen
         ? `<div class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm lg:hidden">
       <div class="flex items-center gap-3 border-b border-slate-800 bg-slate-950 px-4 py-3">
-        <input id="global-search-mobile" value="${escapeAttr(state.search)}" class="h-10 flex-1 rounded-full border border-slate-700 bg-slate-900 px-4 text-sm text-slate-200 outline-none ring-emerald-300 transition focus:ring-2" placeholder="Trade on anything" autofocus />
+        <input id="global-search-mobile" value="${escapeAttr(state.search)}" class="h-10 flex-1 rounded-full border border-slate-700 bg-slate-900 px-4 text-sm text-slate-200 outline-none ring-emerald-300 transition focus:ring-2" placeholder="Search" autofocus />
         <button data-action="close-search" class="shrink-0 text-sm text-slate-400 hover:text-slate-200">Cancel</button>
       </div>
     </div>`
@@ -313,6 +308,13 @@ export function renderTopShell(): string {
                     <span class="absolute top-0.5 ${state.showLbtcLabel ? "left-[18px]" : "left-0.5"} h-4 w-4 rounded-full bg-white shadow transition-all"></span>
                   </button>
                 </div>
+                <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">
+                  <p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Display Currency</p>
+                  <p class="text-[10px] text-slate-500">Show fiat equivalents for BTC amounts</p>
+                  <div class="grid grid-cols-3 gap-1">
+                    ${baseCurrencyOptions.map((c) => `<button data-action="set-currency" data-currency="${c}" class="rounded-md px-2 py-1 text-xs transition ${c === state.baseCurrency ? "bg-emerald-400/15 border border-emerald-400/40 text-emerald-300" : "border border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-200"}">${c}</button>`).join("")}
+                  </div>
+                </div>
                 <div class="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2.5">
                   <div>
                     <p class="text-xs text-slate-300">Market Maker mode</p>
@@ -322,76 +324,7 @@ export function renderTopShell(): string {
                     <span class="absolute top-0.5 ${state.marketMakerMode ? "left-[18px]" : "left-0.5"} h-4 w-4 rounded-full bg-white shadow transition-all"></span>
                   </button>
                 </div>
-                <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">
-                  <p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Display Currency</p>
-                  <p class="text-[10px] text-slate-500">Show fiat equivalents for BTC amounts</p>
-                  <div class="grid grid-cols-3 gap-1">
-                    ${baseCurrencyOptions.map((c) => `<button data-action="set-currency" data-currency="${c}" class="rounded-md px-2 py-1 text-xs transition ${c === state.baseCurrency ? "bg-emerald-400/15 border border-emerald-400/40 text-emerald-300" : "border border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-200"}">${c}</button>`).join("")}
-                  </div>
-                </div>
-                ${
-                  state.nostrNpub
-                    ? `<div class="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">
-                  <p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Nostr Relay Backup</p>
-                  ${
-                    state.nostrBackupStatus?.has_backup
-                      ? `<div class="flex items-center gap-2">
-                        <svg class="h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
-                        <p class="text-xs text-emerald-400">Encrypted backup on ${state.nostrBackupStatus.relay_results.filter((r: RelayBackupResult) => r.has_backup).length} of ${state.nostrBackupStatus.relay_results.length} relays</p>
-                      </div>
-                      <div class="space-y-1">
-                        ${state.nostrBackupStatus.relay_results
-                          .map(
-                            (
-                              r: RelayBackupResult,
-                            ) => `<div class="flex items-center gap-2 text-xs">
-                          <span class="h-1.5 w-1.5 rounded-full ${r.has_backup ? "bg-emerald-400" : "bg-slate-600"}"></span>
-                          <span class="mono text-slate-400">${escapeHtml(r.url)}</span>
-                        </div>`,
-                          )
-                          .join("")}
-                      </div>
-                      ${
-                        state.nostrBackupPrompt &&
-                        state.walletStatus !== "unlocked"
-                          ? `<div class="space-y-2">
-                            <input id="settings-backup-password" type="password" maxlength="32" value="${escapeAttr(state.nostrBackupPassword)}" placeholder="Wallet password" class="h-9 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2" />
-                            <div class="flex gap-2">
-                              <button data-action="settings-backup-wallet" class="flex-1 rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition" ${state.nostrBackupLoading ? "disabled" : ""}>${state.nostrBackupLoading ? "Uploading..." : "Upload"}</button>
-                              <button data-action="cancel-backup-prompt" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 transition">Cancel</button>
-                            </div>
-                          </div>`
-                          : `<div class="flex gap-2">
-                            <button data-action="settings-backup-wallet" class="flex-1 rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 transition" ${state.nostrBackupLoading ? "disabled" : ""}>${state.nostrBackupLoading ? "Uploading..." : "Re-upload to Relays"}</button>
-                            <button data-action="delete-nostr-backup" class="shrink-0 rounded-lg border border-rose-700/40 px-3 py-2 text-xs text-rose-400 hover:bg-rose-900/20 transition" ${state.nostrBackupLoading ? "disabled" : ""}>${state.nostrBackupLoading ? "Deleting..." : "Delete"}</button>
-                          </div>`
-                      }`
-                      : `<p class="text-xs text-slate-400">Encrypt your recovery phrase with NIP-44 and store it on your Nostr relays. Only your nsec can decrypt it.</p>
-                      ${
-                        state.nostrBackupPrompt &&
-                        state.walletStatus !== "unlocked"
-                          ? `<div class="space-y-2">
-                            <input id="settings-backup-password" type="password" maxlength="32" value="${escapeAttr(state.nostrBackupPassword)}" placeholder="Wallet password" class="h-9 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2" />
-                            <div class="flex gap-2">
-                              <button data-action="settings-backup-wallet" class="flex-1 rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition" ${state.nostrBackupLoading ? "disabled" : ""}>${state.nostrBackupLoading ? "Encrypting..." : "Upload"}</button>
-                              <button data-action="cancel-backup-prompt" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 transition">Cancel</button>
-                            </div>
-                          </div>`
-                          : `<button data-action="settings-backup-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition" ${state.nostrBackupLoading ? "disabled" : ""}>${state.nostrBackupLoading ? "Encrypting..." : "Encrypt & Upload to Relays"}</button>`
-                      }`
-                  }
-                  <details class="group">
-                    <summary class="cursor-pointer text-[11px] text-slate-500 hover:text-slate-400 transition select-none">Why is this secure?</summary>
-                    <div class="mt-2 space-y-1.5 text-[11px] text-slate-500">
-                      <p><strong class="text-slate-400">NIP-44 encryption</strong> — Recovery phrase is encrypted using XChaCha20 + secp256k1 ECDH. Only your nsec can decrypt it.</p>
-                      <p><strong class="text-slate-400">Self-encrypted</strong> — Encrypted to your own public key. Relay operators see only ciphertext.</p>
-                      <p><strong class="text-slate-400">NIP-78 storage</strong> — Published as a kind 30078 addressable event, retrievable from any relay that has it.</p>
-                      <p><strong class="text-slate-400">Relay redundancy</strong> — Sent to all your configured relays for resilience.</p>
-                    </div>
-                  </details>
-                </div>`
-                    : ""
-                }
+                ${renderNostrBackupSection({ action: "settings", showPasswordPrompt: state.nostrBackupPrompt && state.walletStatus !== "unlocked" })}
                   <p class="text-xs text-slate-500">Remove the current wallet from this device. You can restore from a recovery phrase${state.nostrNpub ? " or Nostr backup" : ""}.</p>
                   ${
                     state.walletDeletePrompt
