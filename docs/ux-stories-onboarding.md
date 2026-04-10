@@ -2,45 +2,56 @@
 
 Cross-cutting stories that apply to all personas. See [ux-design.md](ux-design.md) for persona definitions.
 
+**Important**: Identity and wallet setup are **not** forced on first launch. The app opens directly to the home view in guest mode. Setup is triggered when the user attempts an action that requires it. See [ux-first-use.md](ux-first-use.md) for the guest mode specification and deferred setup triggers.
+
 ---
 
-## US-OB1: First Launch — Nostr Identity Setup
+## US-OB1: Nostr Identity Setup (Deferred)
 
-**As a** new user, **I want to** set up my identity on first launch, **so that** I can discover markets and publish my activity.
+**As a** user who wants to publish content (create markets, place orders, announce pools), **I want to** set up my Nostr identity, **so that** my activity is attributed to me and discoverable by others.
+
+**Trigger**: User attempts an action requiring Nostr publishing (create market, place limit order, create pool, resolve market). NOT triggered on first launch.
 
 **Acceptance criteria**:
-- On first launch, if no Nostr identity exists, the onboarding flow starts at the "Nostr" step
+- Identity setup opens as a **modal overlay** (not a full-page takeover), preserving the user's current context
 - Two options: "Generate new identity" (creates a new keypair) or "Import existing" (paste nsec)
 - Generated identity: show the npub, allow revealing the nsec for backup. User must acknowledge they've saved it.
 - Imported identity: validate the nsec format, derive the npub, display for confirmation
 - After identity setup: fetch NIP-65 relay list and NIP-0 profile metadata in background
-- Advance to wallet setup step (US-OB2)
+- If the triggering action also requires a wallet, advance to wallet setup (US-OB2) before returning to the action
+- After setup completes, the user is returned to exactly where they were with their prior inputs preserved
 
 **Interaction design**:
-- **Two-step progress**: Visual progress indicator showing "1. Identity → 2. Wallet". The user always completes both steps before entering the app.
+- **Modal, not page**: The setup modal overlays the current view. The user can see the market they were looking at behind the modal. This maintains motivation and context.
 - **Generate flow**: Default selection. Show the npub prominently. The nsec is hidden behind a "Reveal" button with a warning: "Save this somewhere safe. It cannot be recovered." Checkbox: "I have saved my secret key" gates the "Continue" button.
 - **Import flow**: Single text input for nsec. On paste, immediately validate and show the derived npub. Error state: "Invalid nsec format."
-- **No skip**: Identity is required. The Nostr identity is used for market discovery, wallet backup, and key derivation.
+- **Context preservation**: `state.selectedMarketId`, `state.selectedSide`, `state.tradeSizeSats`, `state.limitPrice`, and `state.view` are all preserved across the setup flow.
 
 ---
 
-## US-OB2: First Launch — Wallet Setup
+## US-OB2: Wallet Setup (Deferred)
 
-**As a** new user, **I want to** create or restore a Liquid wallet, **so that** I can hold funds and trade.
+**As a** user who wants to trade, send, or receive funds, **I want to** create or restore a Liquid wallet, **so that** I can hold funds and execute transactions.
+
+**Trigger**: User attempts an action requiring a wallet (execute trade, send/receive funds, issue tokens, redeem). NOT triggered on first launch.
 
 **Acceptance criteria**:
-- Three options: "Create new wallet", "Restore from mnemonic", "Restore from Nostr backup"
+- Wallet setup opens as a **modal overlay**, preserving the user's current context
+- Options shown depend on whether user has a Nostr identity:
+  - With identity: "Create new wallet" | "Restore from mnemonic" | "Restore from Nostr backup"
+  - Without identity: "Create new wallet" | "Restore from mnemonic" (no Nostr backup option)
 - Create: generate a new mnemonic, set a password, display backup words
 - Restore from mnemonic: paste 12/24 words, set a password
 - Restore from Nostr backup: if `check_nostr_backup` finds a backup on relays, decrypt with the Nostr key and restore automatically
-- After wallet creation: transition to the main app (home view)
+- After wallet creation: modal closes, user returns to their prior context with the action button now enabled
 - Wallet is encrypted at rest with the user's password
 
 **Interaction design**:
-- **Nostr backup detection**: Before showing options, the app checks relays for an existing encrypted backup. If found, "Restore from Nostr backup" is pre-selected with a note: "We found an existing wallet backup on your Nostr relays."
+- **Nostr backup detection**: If the user has a Nostr identity, the modal checks relays for an existing encrypted backup in the background. If found, "Restore from Nostr backup" is pre-selected with a note: "We found an existing wallet backup on your Nostr relays."
 - **Mnemonic display**: For new wallets, show the 12 words in a numbered grid. "Write these down" warning. Verification step: ask the user to confirm 3 random words.
 - **Password requirements**: Minimum 8 characters. Confirm field. Show strength indicator.
 - **Auto-lock**: After wallet creation, configure auto-lock timeout (default: 15 minutes of inactivity). The wallet locks (requires password to unlock) but the Nostr identity persists.
+- **Return to action**: After wallet creation completes, the modal closes and the trade/send/receive action that triggered it is now available. The user does not need to re-navigate or re-enter parameters.
 
 ---
 

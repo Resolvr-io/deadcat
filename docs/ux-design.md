@@ -194,11 +194,13 @@ Inline SVG icons throughout — no icon font dependency. Feather icon style (24x
 
 | Document | Contents |
 | --- | --- |
+| **First Use** | |
+| [First Use Experience](ux-first-use.md) | Guest mode, browse-first flow, deferred setup triggers, progressive upgrade |
 | **User Stories** | |
 | [Trader & Token Holder](ux-stories-trader.md) | Browse markets, buy/sell tokens, redeem, view history, recover positions |
 | [Market Creator & Oracle](ux-stories-creator.md) | Create markets, issue/cancel pairs, resolve/expire markets |
 | [Pool Operator & Order Maker](ux-stories-operator.md) | Bootstrap/adjust/close pools, place/monitor/cancel limit orders |
-| [Onboarding, Wallet & Recovery](ux-stories-onboarding.md) | First launch, identity setup, wallet create/restore, send/receive, recovery |
+| [Onboarding, Wallet & Recovery](ux-stories-onboarding.md) | Deferred identity/wallet setup, send/receive, recovery |
 | **Specifications** | |
 | [View Specifications](ux-views.md) | View-by-view interaction specs, layout, and core type → UI state mapping |
 | [Design Decisions](ux-design-decisions.md) | Chosen/rejected/why for every significant UX decision |
