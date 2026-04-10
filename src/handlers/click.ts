@@ -760,7 +760,8 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        await invoke<string>("create_wallet", {
+        await invoke("restore_wallet", {
+          mnemonic: state.onboardingWalletMnemonic,
           password: state.onboardingWalletPassword,
         });
         updateOverlayMessage("Unlocking wallet...");
