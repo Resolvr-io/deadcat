@@ -81,8 +81,10 @@ export function setupTauriSubscriptions(render: () => void): () => void {
         state.walletData.transactions = payload.transactions;
         state.walletData.utxos = payload.utxos;
       } else {
-        // A null snapshot means the wallet was locked — render immediately
-        state.walletStatus = "locked";
+        // A null snapshot means the wallet was locked — don't override "not_created"
+        if (state.walletStatus !== "not_created") {
+          state.walletStatus = "locked";
+        }
         state.walletData = null;
         if (snapshotRenderTimer !== null) clearTimeout(snapshotRenderTimer);
         snapshotRenderTimer = null;

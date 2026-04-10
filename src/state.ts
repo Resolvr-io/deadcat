@@ -254,20 +254,36 @@ export const state: {
   relayLoading: boolean;
   nostrProfile: NostrProfile | null;
   profilePicError: boolean;
+  setupModalOpen: boolean;
+  setupRequires: "wallet" | "identity+wallet" | null;
   onboardingStep: "nostr" | "wallet" | null;
   onboardingNostrMode: "generate" | "import";
   onboardingNostrNsec: string;
   onboardingNostrGeneratedNsec: string;
   onboardingNsecRevealed: boolean;
+  onboardingNsecAcknowledged: boolean;
   onboardingNostrDone: boolean;
+  onboardingPendingPubkey: string;
+  onboardingPendingNpub: string;
   onboardingWalletMode: "create" | "restore" | "nostr-restore";
+  onboardingWalletPasswordStep: boolean;
   onboardingWalletPassword: string;
   onboardingWalletPasswordConfirm: string;
   onboardingWalletMnemonic: string;
+  onboardingMnemonicVerifyStep: boolean;
+  onboardingMnemonicVerifyIndices: number[];
+  onboardingMnemonicVerifyInputs: string[];
   onboardingError: string;
   onboardingLoading: boolean;
   onboardingBackupFound: boolean;
   onboardingBackupScanning: boolean;
+  onboardingPasswordRevealed: boolean;
+  onboardingWalletOnly: boolean;
+  onboardingWalletName: string;
+  onboardingSelectedWalletDTag: string;
+  walletRecovering: boolean;
+  walletRecoveryPhase: number;
+  walletRecoverySummary: { markets: number; positions: number; orders: number; pools: number; estimatedSats: number } | null;
   marketCreating: boolean;
   marketsLoading: boolean;
   recentTxLabels: Map<string, { label: string; marketId: string }>;
@@ -419,20 +435,36 @@ export const state: {
   relayLoading: false,
   nostrProfile: null,
   profilePicError: false,
+  setupModalOpen: false,
+  setupRequires: null,
   onboardingStep: null,
   onboardingNostrMode: "generate",
   onboardingNostrNsec: "",
   onboardingNostrGeneratedNsec: "",
   onboardingNsecRevealed: false,
+  onboardingNsecAcknowledged: false,
   onboardingNostrDone: false,
+  onboardingPendingPubkey: "",
+  onboardingPendingNpub: "",
   onboardingWalletMode: "create",
+  onboardingWalletPasswordStep: false,
   onboardingWalletPassword: "",
   onboardingWalletPasswordConfirm: "",
   onboardingWalletMnemonic: "",
+  onboardingMnemonicVerifyStep: false,
+  onboardingMnemonicVerifyIndices: [],
+  onboardingMnemonicVerifyInputs: [],
   onboardingError: "",
   onboardingLoading: false,
   onboardingBackupFound: false,
   onboardingBackupScanning: false,
+  onboardingPasswordRevealed: false,
+  onboardingWalletOnly: false,
+  onboardingWalletName: "My Wallet",
+  onboardingSelectedWalletDTag: "",
+  walletRecovering: false,
+  walletRecoveryPhase: 0,
+  walletRecoverySummary: null,
   marketsLoading: true,
   recentTxLabels: new Map(),
   attestationLoading: false,

@@ -205,7 +205,7 @@ export function renderWalletUnlocked(params: {
         <div class="flex items-center justify-between">
           <h2 class="flex items-center gap-2 text-xl font-medium text-slate-100">${networkBadge}</h2>
           <div class="flex gap-2">
-            <button data-action="sync-wallet" class="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800" ${loading ? "disabled" : ""}>${loading ? '<span class="flex items-center gap-1.5"><svg class="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>Syncing</span>' : "Sync"}</button>
+            <button data-action="sync-wallet" class="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800" ${loading ? "disabled" : ""}>${loading ? '<span class="flex items-center gap-1.5"><span class="h-3.5 w-3.5 rounded-full border-2 border-slate-600 border-t-emerald-400 animate-spin"></span>Syncing</span>' : "Sync"}</button>
             <button data-action="show-backup" class="rounded-lg border px-4 py-2 text-sm transition ${showBackupBadge ? "border-amber-500/40 text-amber-200 hover:bg-amber-500/10" : "border-slate-700 text-slate-300 hover:bg-slate-800"}">
               <span class="flex items-center gap-2">
                 <span>Backup</span>

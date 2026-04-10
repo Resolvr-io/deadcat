@@ -238,9 +238,11 @@ export type IdentityResponse = { pubkey_hex: string; npub: string };
 
 export type RelayEntry = { url: string; has_backup: boolean };
 export type RelayBackupResult = { url: string; has_backup: boolean };
+export type WalletEntry = { name: string; d_tag: string };
 export type NostrBackupStatus = {
   has_backup: boolean;
   relay_results: RelayBackupResult[];
+  wallets: WalletEntry[];
 };
 export type NostrProfile = {
   picture?: string;

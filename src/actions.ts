@@ -10,11 +10,15 @@ export const ONBOARDING_ACTION_LIST = [
   "onboarding-nostr-continue",
   "onboarding-back-to-nostr",
   "onboarding-set-wallet-mode",
+  "onboarding-wallet-continue",
   "onboarding-create-wallet",
   "onboarding-copy-mnemonic",
   "onboarding-wallet-done",
+  "onboarding-verify-mnemonic",
   "onboarding-restore-wallet",
   "onboarding-nostr-restore-wallet",
+  "onboarding-back",
+  "onboarding-toggle-password-reveal",
 ] as const;
 
 export const APP_ACTION_LIST = [
@@ -59,6 +63,10 @@ export const APP_ACTION_LIST = [
   "confirm-logout",
   "open-create-market",
   "open-wallet",
+  "setup-wallet-from-quote",
+  "close-setup-modal",
+  "setup-modal-backdrop",
+  "select-backup-wallet",
 ] as const;
 
 export const WALLET_ACTION_LIST = [

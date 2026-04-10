@@ -4,8 +4,56 @@ use nostr_sdk::{
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-/// d-tag for wallet mnemonic backup events (NIP-78).
+/// d-tag for the default (unnamed) wallet backup event (NIP-78).
 pub const WALLET_BACKUP_D_TAG: &str = "deadcat-wallet-backup";
+
+/// Prefix shared by all wallet backup d-tags. Named wallets use
+/// `deadcat-wallet-backup-{sanitized_name}`.
+pub const WALLET_BACKUP_D_TAG_PREFIX: &str = "deadcat-wallet-backup";
+
+/// Convert a human-readable wallet name to the corresponding d-tag.
+/// "My Wallet" (the default) maps to the bare prefix; everything else
+/// gets a hyphenated suffix derived from the name.
+pub fn wallet_name_to_d_tag(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("my wallet") {
+        return WALLET_BACKUP_D_TAG.to_string();
+    }
+    let sanitized = trimmed
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect::<String>();
+    // collapse runs of hyphens
+    let sanitized = sanitized
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    format!("{}-{}", WALLET_BACKUP_D_TAG, sanitized)
+}
+
+/// Convert a d-tag back to a human-readable wallet name.
+pub fn d_tag_to_wallet_name(d_tag: &str) -> String {
+    if d_tag == WALLET_BACKUP_D_TAG {
+        return "My Wallet".to_string();
+    }
+    let prefix_with_dash = format!("{}-", WALLET_BACKUP_D_TAG);
+    if let Some(suffix) = d_tag.strip_prefix(&prefix_with_dash) {
+        suffix
+            .split('-')
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(first) => first.to_uppercase().to_string() + chars.as_str(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        "Wallet".to_string()
+    }
+}
 
 // Re-export SDK-owned types and functions for use by the app layer.
 pub use deadcat_sdk::{
@@ -66,11 +114,20 @@ pub struct RelayEntry {
     pub has_backup: bool,
 }
 
+/// A single wallet found in a Nostr backup scan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletEntry {
+    pub name: String,
+    pub d_tag: String,
+}
+
 /// Status of wallet backup across relays.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NostrBackupStatus {
     pub has_backup: bool,
     pub relay_results: Vec<RelayBackupResult>,
+    /// Deduplicated list of wallets found across all relays.
+    pub wallets: Vec<WalletEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,9 +171,16 @@ pub async fn connect_multi_relay_client(relays: &[String]) -> Result<Client, Str
 // ---------------------------------------------------------------------------
 
 /// Build a kind 30078 event containing a NIP-44 encrypted wallet mnemonic.
-pub fn build_wallet_backup_event(keys: &Keys, encrypted_content: &str) -> Result<Event, String> {
+/// `wallet_name` determines the d-tag; "My Wallet" (or empty) uses the
+/// default bare d-tag for backwards compatibility.
+pub fn build_wallet_backup_event(
+    keys: &Keys,
+    encrypted_content: &str,
+    wallet_name: &str,
+) -> Result<Event, String> {
+    let d_tag = wallet_name_to_d_tag(wallet_name);
     let tags = vec![
-        Tag::identifier(WALLET_BACKUP_D_TAG),
+        Tag::identifier(d_tag),
         Tag::custom(TagKind::custom("encrypted"), vec!["true".to_string()]),
         Tag::custom(TagKind::custom("encryption"), vec!["nip44".to_string()]),
     ];
@@ -127,12 +191,21 @@ pub fn build_wallet_backup_event(keys: &Keys, encrypted_content: &str) -> Result
         .map_err(|e| format!("failed to build backup event: {e}"))
 }
 
-/// Build a filter to query the wallet backup event for a given pubkey.
+/// Build a filter to query all wallet backup events for a given pubkey.
+/// Does not filter by d-tag so multiple named wallets are all returned;
+/// the caller should filter events by `WALLET_BACKUP_D_TAG_PREFIX` client-side.
 pub fn build_backup_query_filter(pubkey: &PublicKey) -> Filter {
     Filter::new()
         .kind(APP_EVENT_KIND)
         .author(*pubkey)
-        .identifier(WALLET_BACKUP_D_TAG)
+}
+
+/// Build a filter for a specific named wallet backup.
+pub fn build_named_backup_query_filter(pubkey: &PublicKey, wallet_name: &str) -> Filter {
+    Filter::new()
+        .kind(APP_EVENT_KIND)
+        .author(*pubkey)
+        .identifier(wallet_name_to_d_tag(wallet_name))
 }
 
 fn event_has_tag_value(event: &Event, key: &str, expected: &str) -> bool {
