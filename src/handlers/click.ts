@@ -575,12 +575,15 @@ export async function handleClick(
           }
           state.onboardingMnemonicVerifyIndices = pool.slice(0, 3).sort((a, b) => a - b);
           state.onboardingMnemonicVerifyInputs = ["", "", ""];
+          state.onboardingLoading = false;
+          hideOverlayLoader();
+          render();
         } catch (e) {
           state.onboardingError = String(e);
+          state.onboardingLoading = false;
+          hideOverlayLoader();
+          render();
         }
-        state.onboardingLoading = false;
-        hideOverlayLoader();
-        render();
       })();
       return;
     }
@@ -769,6 +772,7 @@ export async function handleClick(
           password: state.onboardingWalletPassword,
         });
         showToast("Wallet created!", "success");
+        state.onboardingLoading = false;
         hideOverlayLoader();
         await finishOnboarding();
       } catch (e) {
