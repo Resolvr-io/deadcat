@@ -17,6 +17,8 @@ export function renderWalletTransactionRows(params: {
   recentTxLabels: Map<string, { label: string; marketId: string }>;
   pawIcon: string;
   walletData: WalletData | null;
+  page?: number;
+  pageSize?: number;
 }): string {
   const {
     creationTxToMarket,
@@ -27,9 +29,16 @@ export function renderWalletTransactionRows(params: {
     recentTxLabels,
     pawIcon,
     walletData,
+    page,
+    pageSize,
   } = params;
 
-  return (walletData?.transactions ?? [])
+  let txs = walletData?.transactions ?? [];
+  if (page != null && pageSize != null) {
+    txs = txs.slice(page * pageSize, (page + 1) * pageSize);
+  }
+
+  return txs
     .map((tx) => {
       const marketId = creationTxToMarket.get(tx.txid);
       const isCreation = !!marketId;

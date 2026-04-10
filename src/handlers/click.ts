@@ -619,8 +619,17 @@ export async function handleClick(
 
   // -- App actions --
 
+  if (action === "close-wallet" || action === "close-wallet-backdrop") {
+    // close-wallet-backdrop only closes when clicking the backdrop itself
+    if (action === "close-wallet-backdrop" && target !== actionEl) return;
+    state.walletOpen = false;
+    render();
+    return;
+  }
+
   if (action === "go-home") {
     state.view = "home";
+    state.activeCategory = "Trending";
     state.previousView = null;
     state.chartHoverMarketId = null;
     state.chartHoverX = null;
@@ -1227,9 +1236,9 @@ export async function handleClick(
     state.walletError = "";
     state.walletPassword = "";
     state.settingsOpen = false;
-    state.previousView =
-      state.view !== "wallet" ? state.view : state.previousView;
-    state.view = "wallet";
+    state.walletOpen = true;
+    state.walletTokenPage = 0;
+    state.walletTxPage = 0;
     render();
     // If already unlocked with cached balance, just do a silent background sync
     if (state.walletStatus === "unlocked" && state.walletData) {
@@ -1495,6 +1504,27 @@ export async function handleClick(
 
   if (action === "toggle-utxos-expanded") {
     state.walletUtxosExpanded = !state.walletUtxosExpanded;
+    render();
+    return;
+  }
+
+  if (action === "wallet-tokens-prev") {
+    state.walletTokenPage = Math.max(0, state.walletTokenPage - 1);
+    render();
+    return;
+  }
+  if (action === "wallet-tokens-next") {
+    state.walletTokenPage += 1;
+    render();
+    return;
+  }
+  if (action === "wallet-tx-prev") {
+    state.walletTxPage = Math.max(0, state.walletTxPage - 1);
+    render();
+    return;
+  }
+  if (action === "wallet-tx-next") {
+    state.walletTxPage += 1;
     render();
     return;
   }

@@ -11,9 +11,9 @@ export function renderWalletSetup(params: {
 
   if (state.walletMnemonic) {
     return `
-      <div class="phi-container py-8">
-        <div class="mx-auto max-w-lg space-y-6">
-          <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Wallet Created ${networkBadge}</h2>
+      <div class="px-6 py-6">
+      <div class="space-y-6">
+          <h2 class="flex items-center gap-2 text-xl font-medium text-slate-100">Wallet Created ${networkBadge}</h2>
           <div class="rounded-lg border border-slate-600 bg-slate-900/40 p-4 space-y-3">
             <p class="text-sm font-medium text-slate-200">Back up your recovery phrase in a safe place.</p>
             ${renderMnemonicGrid(state.walletMnemonic)}
@@ -30,9 +30,9 @@ export function renderWalletSetup(params: {
   const isRestore = state.walletShowRestore;
 
   return `
-    <div class="phi-container py-8">
-      <div class="mx-auto max-w-lg space-y-6">
-        <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Wallet ${networkBadge}</h2>
+    <div class="px-6 py-6">
+      <div class="space-y-6">
+        <h2 class="flex items-center gap-2 text-xl font-medium text-slate-100">Wallet ${networkBadge}</h2>
         <p class="text-sm text-slate-400">Set up a wallet to participate in markets.</p>
         ${errorHtml}
 

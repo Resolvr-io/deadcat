@@ -120,8 +120,9 @@ function render(): void {
   const html = `
     <div class="min-h-screen text-slate-100">
       ${renderTopShell()}
-      <main>${state.view === "wallet" ? renderWallet() : state.view === "home" ? renderHome() : state.view === "detail" ? renderDetail() : renderCreateMarket()}</main>
+      <main>${state.view === "home" ? renderHome() : state.view === "detail" ? renderDetail() : renderCreateMarket()}</main>
     </div>
+    ${state.walletOpen ? renderWallet() : ""}
     ${renderNostrEventModal()}
   `;
   app.innerHTML = html;
@@ -193,7 +194,7 @@ async function finishOnboarding(): Promise<void> {
   state.onboardingBackupScanning = false;
 
   await fetchWalletStatus();
-  state.view = "wallet";
+  state.walletOpen = true;
   render();
 
   if (state.walletStatus === "unlocked") {

@@ -9,10 +9,9 @@ export function renderWalletLocked(params: {
   const { errorHtml, loading, networkBadge } = params;
 
   return `
-    <div class="phi-container py-8">
-      <div class="mx-auto max-w-lg space-y-6">
-        ${state.previousView ? `<button data-action="go-back" class="flex items-center gap-1 text-sm text-slate-400 transition hover:text-slate-200"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>Back to ${state.previousView === "detail" ? "market" : "markets"}</button>` : ""}
-        <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Wallet ${networkBadge}</h2>
+    <div class="px-6 py-6">
+      <div class="space-y-6">
+        <h2 class="flex items-center gap-2 text-xl font-medium text-slate-100">Wallet ${networkBadge}</h2>
         <p class="text-sm text-slate-400">Wallet locked. Enter your password to unlock.</p>
         ${errorHtml}
         <div class="space-y-4 rounded-lg border border-slate-700 bg-slate-900/50 p-6">

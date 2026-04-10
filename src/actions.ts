@@ -19,6 +19,8 @@ export const ONBOARDING_ACTION_LIST = [
 
 export const APP_ACTION_LIST = [
   "go-home",
+  "close-wallet",
+  "close-wallet-backdrop",
   "set-chart-timescale",
   "toggle-user-menu",
   "open-search",
@@ -99,6 +101,10 @@ export const WALLET_ACTION_LIST = [
   "hide-backup",
   "export-backup",
   "copy-backup-mnemonic",
+  "wallet-tokens-prev",
+  "wallet-tokens-next",
+  "wallet-tx-prev",
+  "wallet-tx-next",
 ] as const;
 
 export const MARKET_ACTION_LIST = [

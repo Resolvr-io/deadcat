@@ -14,7 +14,7 @@ export type MarketCategory = Exclude<
   NavCategory,
   "Trending" | "Ending Soon" | "New" | "My Markets" | "Resolved"
 >;
-export type ViewMode = "home" | "detail" | "create" | "wallet";
+export type ViewMode = "home" | "detail" | "create";
 export type Side = "yes" | "no";
 export type OrderType = "market" | "limit";
 export type ActionTab = "trade" | "issue" | "redeem" | "cancel";

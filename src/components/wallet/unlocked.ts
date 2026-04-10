@@ -10,6 +10,45 @@ import {
 } from "./activity.ts";
 import { renderWalletUtxoSection, type WalletAssetLabel } from "./utxos.ts";
 
+const PAGE_SIZE = 10;
+
+function paginationControls(
+  page: number,
+  totalItems: number,
+  prevAction: string,
+  nextAction: string,
+): string {
+  const totalPages = Math.max(1, Math.ceil(totalItems / PAGE_SIZE));
+  if (totalPages <= 1) return "";
+  return (
+    '<div class="mt-3 flex items-center justify-between text-xs text-slate-400">' +
+    "<button " +
+    (page <= 0 ? "disabled " : "") +
+    'data-action="' +
+    prevAction +
+    '" class="rounded-lg border border-slate-700 px-2.5 py-1 transition ' +
+    (page <= 0
+      ? "text-slate-600 cursor-not-allowed"
+      : "text-slate-300 hover:bg-slate-800") +
+    '">&lsaquo; Prev</button>' +
+    "<span>" +
+    (page + 1) +
+    " / " +
+    totalPages +
+    "</span>" +
+    "<button " +
+    (page >= totalPages - 1 ? "disabled " : "") +
+    'data-action="' +
+    nextAction +
+    '" class="rounded-lg border border-slate-700 px-2.5 py-1 transition ' +
+    (page >= totalPages - 1
+      ? "text-slate-600 cursor-not-allowed"
+      : "text-slate-300 hover:bg-slate-800") +
+    '">Next &rsaquo;</button>' +
+    "</div>"
+  );
+}
+
 export function renderWalletUnlocked(params: {
   errorHtml: string;
   loading: boolean;
@@ -136,6 +175,7 @@ export function renderWalletUnlocked(params: {
     }
   }
 
+  const allTxCount = (wd?.transactions ?? []).length;
   const txRows = renderWalletTransactionRows({
     creationTxToMarket,
     orderTxLabel,
@@ -145,6 +185,8 @@ export function renderWalletUnlocked(params: {
     recentTxLabels: state.recentTxLabels,
     pawIcon: PAW_ICON,
     walletData: wd ?? null,
+    page: state.walletTxPage,
+    pageSize: PAGE_SIZE,
   });
 
   const swapRows = renderWalletSwapRows({
@@ -158,11 +200,10 @@ export function renderWalletUnlocked(params: {
   });
 
   return `
-    <div class="phi-container py-8">
-      <div class="mx-auto max-w-2xl space-y-6">
-        ${state.previousView ? `<button data-action="go-back" class="mb-2 flex items-center gap-1 text-sm text-slate-400 transition hover:text-slate-200"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>Back to ${state.previousView === "detail" ? "market" : "markets"}</button>` : ""}
+    <div class="px-6 py-6">
+      <div class="space-y-6">
         <div class="flex items-center justify-between">
-          <h2 class="flex items-center gap-2 text-2xl font-medium text-slate-100">Wallet ${networkBadge}</h2>
+          <h2 class="flex items-center gap-2 text-xl font-medium text-slate-100">${networkBadge}</h2>
           <div class="flex gap-2">
             <button data-action="sync-wallet" class="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800" ${loading ? "disabled" : ""}>${loading ? '<span class="flex items-center gap-1.5"><svg class="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>Syncing</span>' : "Sync"}</button>
             <button data-action="show-backup" class="rounded-lg border px-4 py-2 text-sm transition ${showBackupBadge ? "border-amber-500/40 text-amber-200 hover:bg-amber-500/10" : "border-slate-700 text-slate-300 hover:bg-slate-800"}">
@@ -233,6 +274,7 @@ export function renderWalletUnlocked(params: {
         <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
           <h3 class="mb-3 font-semibold text-slate-100">Token Positions</h3>
           ${tokenPositions
+            .slice(state.walletTokenPage * PAGE_SIZE, (state.walletTokenPage + 1) * PAGE_SIZE)
             .map((tp) => {
               const shortAsset = `${tp.assetId.slice(0, 8)}...${tp.assetId.slice(-4)}`;
               if (tp.info) {
@@ -303,6 +345,7 @@ export function renderWalletUnlocked(params: {
               );
             })
             .join("")}
+          ${paginationControls(state.walletTokenPage, tokenPositions.length, "wallet-tokens-prev", "wallet-tokens-next")}
         </div>
         `
             : ""
@@ -422,9 +465,9 @@ export function renderWalletUnlocked(params: {
         <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
           <h3 class="mb-3 font-semibold text-slate-100">Transactions</h3>
           ${
-            (wd?.transactions ?? []).length === 0
+            allTxCount === 0
               ? `<p class="text-sm text-slate-500">No transactions yet.</p>`
-              : txRows
+              : txRows + paginationControls(state.walletTxPage, allTxCount, "wallet-tx-prev", "wallet-tx-next")
           }
         </div>
 

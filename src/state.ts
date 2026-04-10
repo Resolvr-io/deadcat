@@ -136,6 +136,9 @@ export function defaultSettlementInput(): string {
 export const state: {
   view: ViewMode;
   previousView: ViewMode | null;
+  walletOpen: boolean;
+  walletTokenPage: number;
+  walletTxPage: number;
   activeCategory: NavCategory;
   search: string;
   trendingIndex: number;
@@ -288,6 +291,9 @@ export const state: {
 } = {
   view: "home",
   previousView: null,
+  walletOpen: false,
+  walletTokenPage: 0,
+  walletTxPage: 0,
   activeCategory: "Trending",
   search: "",
   trendingIndex: 0,
