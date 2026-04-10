@@ -17,7 +17,11 @@ export function renderWalletRecovery(params: { networkBadge: string }): string {
 
   if (summary) {
     const formattedSats = summary.estimatedSats.toLocaleString();
-    const hasActivity = summary.markets > 0 || summary.positions > 0 || summary.orders > 0 || summary.pools > 0;
+    const hasActivity =
+      summary.markets > 0 ||
+      summary.positions > 0 ||
+      summary.orders > 0 ||
+      summary.pools > 0;
     const nothingFound = !hasActivity && summary.estimatedSats === 0;
     const isPartial = hasActivity && summary.estimatedSats === 0;
 
@@ -53,9 +57,10 @@ export function renderWalletRecovery(params: { networkBadge: string }): string {
         </div>`;
     }
 
-    const summaryCardClass = nothingFound || isPartial
-      ? "rounded-xl border border-slate-700 bg-slate-900/50 p-5 space-y-4"
-      : "rounded-xl border border-emerald-700/40 bg-emerald-950/20 p-5 space-y-4";
+    const summaryCardClass =
+      nothingFound || isPartial
+        ? "rounded-xl border border-slate-700 bg-slate-900/50 p-5 space-y-4"
+        : "rounded-xl border border-emerald-700/40 bg-emerald-950/20 p-5 space-y-4";
 
     return `
       <div class="phi-container py-8">

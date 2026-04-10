@@ -274,7 +274,10 @@ export function renderWalletUnlocked(params: {
         <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
           <h3 class="mb-3 font-semibold text-slate-100">Token Positions</h3>
           ${tokenPositions
-            .slice(state.walletTokenPage * PAGE_SIZE, (state.walletTokenPage + 1) * PAGE_SIZE)
+            .slice(
+              state.walletTokenPage * PAGE_SIZE,
+              (state.walletTokenPage + 1) * PAGE_SIZE,
+            )
             .map((tp) => {
               const shortAsset = `${tp.assetId.slice(0, 8)}...${tp.assetId.slice(-4)}`;
               if (tp.info) {
@@ -465,7 +468,13 @@ export function renderWalletUnlocked(params: {
           ${
             allTxCount === 0
               ? `<p class="text-sm text-slate-500">No transactions yet.</p>`
-              : txRows + paginationControls(state.walletTxPage, allTxCount, "wallet-tx-prev", "wallet-tx-next")
+              : txRows +
+                paginationControls(
+                  state.walletTxPage,
+                  allTxCount,
+                  "wallet-tx-prev",
+                  "wallet-tx-next",
+                )
           }
         </div>
 

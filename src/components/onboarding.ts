@@ -41,7 +41,9 @@ export function renderOnboarding(): string {
     : "";
 
   const walletOnly = state.onboardingWalletOnly;
-  const stepIndicator = walletOnly ? "" : `
+  const stepIndicator = walletOnly
+    ? ""
+    : `
     <div class="flex items-center gap-3 mb-10">
       <div class="flex items-center gap-2.5">
         <div class="h-7 w-7 rounded-full ${step === "nostr" || state.onboardingNostrDone ? "bg-emerald-400 text-slate-950" : "border border-slate-700 text-slate-500"} flex items-center justify-center text-xs font-semibold shrink-0">
@@ -58,26 +60,32 @@ export function renderOnboarding(): string {
   `;
 
   if (step === "nostr") {
-
     // Nostr backup screen
     if (state.onboardingNostrDone) {
       const isImport = state.onboardingNostrMode === "import";
 
       const eyebrow = isImport ? "Identity imported" : "Identity created";
-      const title = isImport ? "Confirm your identity" : "Back up your secret key";
+      const title = isImport
+        ? "Confirm your identity"
+        : "Back up your secret key";
       const description = isImport
         ? "Your Nostr identity has been imported. Confirm your details below before continuing."
         : "Your nsec is the only way to prove ownership of markets you create. Store it somewhere safe — it cannot be recovered if lost.";
 
-      const identityRows = isImport ? (() => {
-        const profile = state.nostrProfile;
-        const displayName = profile?.display_name || profile?.name || null;
-        const npub = state.onboardingPendingNpub || state.nostrNpub || "";
-        const truncatedNpub = npub.length > 20 ? `${npub.slice(0, 10)}...${npub.slice(-8)}` : npub;
-        const avatarHtml = profile?.picture && !state.profilePicError
-          ? `<img src="${escapeAttr(profile.picture)}" class="h-10 w-10 rounded-full object-cover shrink-0" onerror="this.style.display='none'" />`
-          : `<div class="h-10 w-10 rounded-full bg-slate-800 flex items-center justify-center shrink-0"><svg class="h-5 w-5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/></svg></div>`;
-        return `
+      const identityRows = isImport
+        ? (() => {
+            const profile = state.nostrProfile;
+            const displayName = profile?.display_name || profile?.name || null;
+            const npub = state.onboardingPendingNpub || state.nostrNpub || "";
+            const truncatedNpub =
+              npub.length > 20
+                ? `${npub.slice(0, 10)}...${npub.slice(-8)}`
+                : npub;
+            const avatarHtml =
+              profile?.picture && !state.profilePicError
+                ? `<img src="${escapeAttr(profile.picture)}" class="h-10 w-10 rounded-full object-cover shrink-0" onerror="this.style.display='none'" />`
+                : `<div class="h-10 w-10 rounded-full bg-slate-800 flex items-center justify-center shrink-0"><svg class="h-5 w-5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/></svg></div>`;
+            return `
           <div class="py-4 flex items-center gap-3">
             ${avatarHtml}
             <div class="min-w-0">
@@ -85,7 +93,8 @@ export function renderOnboarding(): string {
               <p class="mt-0.5 text-[11px] text-slate-600 mono truncate">${escapeHtml(truncatedNpub)}</p>
             </div>
           </div>`;
-      })() : `
+          })()
+        : `
         <div class="py-4 flex items-center justify-between gap-3">
           <div class="min-w-0">
             <p class="text-[10px] font-medium uppercase tracking-wide text-slate-500 mb-1">npub — public key</p>
@@ -96,14 +105,16 @@ export function renderOnboarding(): string {
         <div class="py-4 flex items-center justify-between gap-3">
           <div class="min-w-0">
             <p class="text-[10px] font-medium uppercase tracking-wide text-slate-500 mb-1">nsec — secret key</p>
-            ${state.onboardingNsecRevealed
-              ? `<p class="mono truncate text-xs text-rose-300">${escapeHtml(state.onboardingNostrGeneratedNsec)}</p>`
-              : `<p class="text-xs text-slate-500 italic">Hidden for your protection</p>`
+            ${
+              state.onboardingNsecRevealed
+                ? `<p class="mono truncate text-xs text-rose-300">${escapeHtml(state.onboardingNostrGeneratedNsec)}</p>`
+                : `<p class="text-xs text-slate-500 italic">Hidden for your protection</p>`
             }
           </div>
-          ${state.onboardingNsecRevealed
-            ? `<button data-action="onboarding-copy-nsec" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition">Copy</button>`
-            : `<button data-action="onboarding-reveal-nsec" class="shrink-0 rounded-lg border border-amber-700/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-300 hover:bg-amber-900/30 transition">Show</button>`
+          ${
+            state.onboardingNsecRevealed
+              ? `<button data-action="onboarding-copy-nsec" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition">Copy</button>`
+              : `<button data-action="onboarding-reveal-nsec" class="shrink-0 rounded-lg border border-amber-700/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-300 hover:bg-amber-900/30 transition">Show</button>`
           }
         </div>`;
 
@@ -114,19 +125,27 @@ export function renderOnboarding(): string {
           <p class="text-xs font-semibold uppercase tracking-widest text-emerald-400 mb-2">${eyebrow}</p>
           <h2 class="text-2xl font-semibold text-white">${title}</h2>
           <p class="mt-3 text-sm text-slate-400 leading-relaxed">${description}</p>
-          ${!isImport ? `<div class="mt-5 rounded-lg border border-amber-700/30 bg-amber-950/20 px-4 py-3">
+          ${
+            !isImport
+              ? `<div class="mt-5 rounded-lg border border-amber-700/30 bg-amber-950/20 px-4 py-3">
             <p class="text-xs text-amber-300/90 leading-relaxed">Never share your nsec with anyone. Anyone who has it can act as you on Nostr.</p>
-          </div>` : ""}
+          </div>`
+              : ""
+          }
           <div class="mt-4 border-t border-slate-800 divide-y divide-slate-800">
             ${identityRows}
           </div>
-          ${!isImport ? `<label class="mt-4 flex items-start gap-3 cursor-pointer select-none">
+          ${
+            !isImport
+              ? `<label class="mt-4 flex items-start gap-3 cursor-pointer select-none">
             <span class="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded ${state.onboardingNsecAcknowledged ? "bg-emerald-400" : "border border-slate-600 bg-slate-800"}">
               ${state.onboardingNsecAcknowledged ? `<svg class="h-3 w-3 text-slate-950" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,6 5,9 10,3"/></svg>` : ""}
             </span>
             <input type="checkbox" id="onboarding-nsec-ack" ${state.onboardingNsecAcknowledged ? "checked" : ""} class="sr-only" />
             <span class="text-sm text-slate-300 leading-relaxed">I have saved my secret key in a safe place</span>
-          </label>` : ""}
+          </label>`
+              : ""
+          }
           <button data-action="onboarding-nostr-continue" class="mt-6 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-40 disabled:cursor-not-allowed transition" ${!isImport && !state.onboardingNsecAcknowledged ? "disabled" : ""}>Continue to wallet setup</button>
         </div>
       `;
@@ -172,13 +191,16 @@ export function renderOnboarding(): string {
   // Password page — must be checked before mnemonic display since walletMnemonic is still set
   if (state.onboardingWalletPasswordStep) {
     const wMode2 = state.onboardingWalletMode;
-    const submitAction = wMode2 === "create"
-      ? "onboarding-create-wallet"
-      : wMode2 === "restore"
-        ? "onboarding-restore-wallet"
-        : "onboarding-nostr-restore-wallet";
+    const submitAction =
+      wMode2 === "create"
+        ? "onboarding-create-wallet"
+        : wMode2 === "restore"
+          ? "onboarding-restore-wallet"
+          : "onboarding-nostr-restore-wallet";
     const submitLabel = loading
-      ? (wMode2 === "create" ? "Creating..." : "Restoring...")
+      ? wMode2 === "create"
+        ? "Creating..."
+        : "Restoring..."
       : "Create password";
     return `
       <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
@@ -203,13 +225,15 @@ export function renderOnboarding(): string {
     state.onboardingMnemonicVerifyStep
   ) {
     const verifyIndices = state.onboardingMnemonicVerifyIndices;
-    const verifyFieldsHtml = verifyIndices.map((wordIdx, i) => {
-      return `
+    const verifyFieldsHtml = verifyIndices
+      .map((wordIdx, i) => {
+        return `
         <div class="flex items-center gap-4">
           <span class="w-16 shrink-0 text-right text-xs font-medium text-slate-500">Word ${wordIdx + 1}</span>
           <input id="onboarding-verify-word-${i}" type="text" placeholder="type word ${wordIdx + 1}" autocomplete="off" spellcheck="false" class="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 transition focus:ring-2 mono" />
         </div>`;
-    }).join("");
+      })
+      .join("");
     return `
       <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
         ${stepIndicator}
@@ -275,16 +299,27 @@ export function renderOnboarding(): string {
   // Nostr restore sub-page
   if (modeNostrRestore) {
     const wallets = state.nostrBackupStatus?.wallets ?? [];
-    const selectedDTag = state.onboardingSelectedWalletDTag || (wallets[0]?.d_tag ?? "");
-    const backupRelays = state.nostrBackupStatus?.relay_results?.filter(r => r.has_backup) ?? [];
-    const fallbackRelay = state.relays[0]?.url ?? state.nostrBackupStatus?.relay_results?.[0]?.url ?? "";
-    const primaryRelayUrl = backupRelays.length > 0 ? backupRelays[0].url : fallbackRelay;
-    const primaryRelay = primaryRelayUrl.replace(/^wss?:\/\//, "").replace(/\/$/, "");
+    const selectedDTag =
+      state.onboardingSelectedWalletDTag || (wallets[0]?.d_tag ?? "");
+    const backupRelays =
+      state.nostrBackupStatus?.relay_results?.filter((r) => r.has_backup) ?? [];
+    const fallbackRelay =
+      state.relays[0]?.url ??
+      state.nostrBackupStatus?.relay_results?.[0]?.url ??
+      "";
+    const primaryRelayUrl =
+      backupRelays.length > 0 ? backupRelays[0].url : fallbackRelay;
+    const primaryRelay = primaryRelayUrl
+      .replace(/^wss?:\/\//, "")
+      .replace(/\/$/, "");
     const othersCount = backupRelays.length > 1 ? backupRelays.length - 1 : 0;
 
-    const walletCardsHtml = (wallets.length > 0 ? wallets : [{ name: "My Wallet", d_tag: "" }]).map(w => {
-      const isSelected = w.d_tag === selectedDTag || (wallets.length === 1);
-      return `<button data-action="select-backup-wallet" data-dtag="${escapeAttr(w.d_tag)}"
+    const walletCardsHtml = (
+      wallets.length > 0 ? wallets : [{ name: "My Wallet", d_tag: "" }]
+    )
+      .map((w) => {
+        const isSelected = w.d_tag === selectedDTag || wallets.length === 1;
+        return `<button data-action="select-backup-wallet" data-dtag="${escapeAttr(w.d_tag)}"
         class="w-full flex items-center justify-between rounded-xl border ${isSelected ? "border-emerald-600/50 bg-emerald-950/20" : "border-slate-700 bg-slate-900/40 hover:border-slate-600"} px-4 py-3.5 transition text-left">
         <div class="flex items-center gap-3 min-w-0">
           <svg class="h-4 w-4 shrink-0 ${isSelected ? "text-emerald-400" : "text-slate-500"}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 12m18 0v6a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 18v-6m18 0V9M3 12V9m18-3a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 9m18 0V9a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 9"/></svg>
@@ -295,7 +330,8 @@ export function renderOnboarding(): string {
         </div>
         ${isSelected ? `<svg class="h-4 w-4 text-emerald-400 shrink-0 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>` : ""}
       </button>`;
-    }).join("");
+      })
+      .join("");
 
     return `
       <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
@@ -337,9 +373,11 @@ export function renderOnboarding(): string {
           <svg class="h-5 w-5 text-emerald-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/></svg>
           <div>
             <p class="text-sm font-medium text-emerald-300">
-              ${backupFoundWallets.length === 1
-                ? escapeHtml(backupFoundWallets[0].name)
-                : `${backupFoundWallets.length} wallet backup${backupFoundWallets.length !== 1 ? "s" : ""} found`}
+              ${
+                backupFoundWallets.length === 1
+                  ? escapeHtml(backupFoundWallets[0].name)
+                  : `${backupFoundWallets.length} wallet backup${backupFoundWallets.length !== 1 ? "s" : ""} found`
+              }
             </p>
             <p class="mt-1 text-xs text-emerald-400/60 leading-relaxed">Restore your existing wallet from an encrypted Nostr backup</p>
           </div>

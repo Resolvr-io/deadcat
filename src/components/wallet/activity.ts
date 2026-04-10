@@ -120,7 +120,8 @@ export function renderWalletTransactionRows(params: {
         : "unconfirmed";
       const shortTxid = `${tx.txid.slice(0, 10)}...${tx.txid.slice(-6)}`;
       const feeStr = formatLbtc(tx.fee);
-      const confirmations = tx.height != null ? "Block " + tx.height : "Unconfirmed";
+      const confirmations =
+        tx.height != null ? `Block ${tx.height}` : "Unconfirmed";
       return (
         '<details class="border-b border-slate-800 text-sm select-none group">' +
         '<summary class="flex items-center justify-between py-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden">' +

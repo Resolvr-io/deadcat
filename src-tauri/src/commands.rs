@@ -557,7 +557,6 @@ pub async fn check_nostr_backup(
     let mut tasks = tokio::task::JoinSet::new();
     for url in relays {
         let f = filter.clone();
-        let keys = keys.clone();
         tasks.spawn(async move {
             let wallet_d_tags: Vec<String> =
                 match discovery::connect_multi_relay_client(std::slice::from_ref(&url)).await {

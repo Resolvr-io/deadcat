@@ -283,7 +283,13 @@ export const state: {
   onboardingSelectedWalletDTag: string;
   walletRecovering: boolean;
   walletRecoveryPhase: number;
-  walletRecoverySummary: { markets: number; positions: number; orders: number; pools: number; estimatedSats: number } | null;
+  walletRecoverySummary: {
+    markets: number;
+    positions: number;
+    orders: number;
+    pools: number;
+    estimatedSats: number;
+  } | null;
   marketCreating: boolean;
   marketsLoading: boolean;
   recentTxLabels: Map<string, { label: string; marketId: string }>;

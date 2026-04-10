@@ -25,8 +25,8 @@ export function handleInput(e: Event, render: () => void): void {
   }
 
   if (target.id.startsWith("onboarding-verify-word-")) {
-    const idx = parseInt(target.id.slice(-1));
-    if (!isNaN(idx)) {
+    const idx = parseInt(target.id.slice(-1), 10);
+    if (!Number.isNaN(idx)) {
       const inputs = [...state.onboardingMnemonicVerifyInputs];
       inputs[idx] = target.value;
       state.onboardingMnemonicVerifyInputs = inputs;

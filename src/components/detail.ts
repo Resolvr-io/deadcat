@@ -956,8 +956,8 @@ export function renderDetail(): string {
             ${market.yesPrice != null ? `<p class="mb-2 text-5xl font-bold text-emerald-400">${Math.round(market.yesPrice * 100)}<span class="text-2xl text-slate-400">%</span> <span class="text-lg font-normal text-slate-500">chance</span></p>` : ""}
 
             <div class="mb-4 flex items-center gap-3">
-              <button data-action="side" data-side="yes" class="w-36 rounded-full bg-emerald-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-emerald-400">${market.yesPrice != null ? "Yes " + Math.round(market.yesPrice * 100) + "%" : "Buy Yes"}</button>
-              <button data-action="side" data-side="no" class="w-36 rounded-full bg-rose-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-rose-400">${noPrice != null ? "No " + Math.round(noPrice * 100) + "%" : "Buy No"}</button>
+              <button data-action="side" data-side="yes" class="w-36 rounded-full bg-emerald-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-emerald-400">${market.yesPrice != null ? `Yes ${Math.round(market.yesPrice * 100)}%` : "Buy Yes"}</button>
+              <button data-action="side" data-side="no" class="w-36 rounded-full bg-rose-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-rose-400">${noPrice != null ? `No ${Math.round(noPrice * 100)}%` : "Buy No"}</button>
             </div>
 
             <p class="mb-4 text-xs text-slate-500">${formatVolumeBtc(market.volumeBtc)} vol · Est. by ${formatSettlementDateTime(estimatedSettlementDate)} · ${formatTimeRemaining(market.expiryHeight - market.currentHeight)}</p>

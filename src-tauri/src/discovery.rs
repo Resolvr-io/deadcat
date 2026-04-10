@@ -21,7 +21,13 @@ pub fn wallet_name_to_d_tag(name: &str) -> String {
     }
     let sanitized = trimmed
         .chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>();
     // collapse runs of hyphens
     let sanitized = sanitized
@@ -195,9 +201,7 @@ pub fn build_wallet_backup_event(
 /// Does not filter by d-tag so multiple named wallets are all returned;
 /// the caller should filter events by `WALLET_BACKUP_D_TAG_PREFIX` client-side.
 pub fn build_backup_query_filter(pubkey: &PublicKey) -> Filter {
-    Filter::new()
-        .kind(APP_EVENT_KIND)
-        .author(*pubkey)
+    Filter::new().kind(APP_EVENT_KIND).author(*pubkey)
 }
 
 /// Build a filter for a specific named wallet backup.

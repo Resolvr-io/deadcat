@@ -471,7 +471,11 @@ export async function handleClick(
         state.onboardingLoading = false;
         render();
         // Fetch profile in background to populate photo/name on confirmation screen
-        invoke<{ picture?: string; name?: string; display_name?: string } | null>("fetch_nostr_profile")
+        invoke<{
+          picture?: string;
+          name?: string;
+          display_name?: string;
+        } | null>("fetch_nostr_profile")
           .then((profile) => {
             if (profile) {
               state.nostrProfile = profile;
@@ -552,7 +556,10 @@ export async function handleClick(
   }
 
   if (action === "onboarding-wallet-continue") {
-    if (state.onboardingWalletMode === "restore" && !state.onboardingWalletMnemonic.trim()) {
+    if (
+      state.onboardingWalletMode === "restore" &&
+      !state.onboardingWalletMnemonic.trim()
+    ) {
       state.onboardingError = "Please enter your recovery phrase.";
       render();
       return;
@@ -573,7 +580,9 @@ export async function handleClick(
             const j = Math.floor(Math.random() * (i + 1));
             [pool[i], pool[j]] = [pool[j], pool[i]];
           }
-          state.onboardingMnemonicVerifyIndices = pool.slice(0, 3).sort((a, b) => a - b);
+          state.onboardingMnemonicVerifyIndices = pool
+            .slice(0, 3)
+            .sort((a, b) => a - b);
           state.onboardingMnemonicVerifyInputs = ["", "", ""];
           state.onboardingLoading = false;
           hideOverlayLoader();
@@ -608,7 +617,8 @@ export async function handleClick(
         state.onboardingError = "";
       } else if (
         state.onboardingWalletPasswordStep &&
-        (state.onboardingWalletMode === "restore" || state.onboardingWalletMode === "nostr-restore")
+        (state.onboardingWalletMode === "restore" ||
+          state.onboardingWalletMode === "nostr-restore")
       ) {
         // Back from password page (restore/nostr-restore) → respective sub-page
         state.onboardingWalletPasswordStep = false;
@@ -716,7 +726,10 @@ export async function handleClick(
   }
 
   if (action === "onboarding-set-wallet-mode") {
-    const mode = (actionEl?.getAttribute("data-mode") ?? "create") as "create" | "restore" | "nostr-restore";
+    const mode = (actionEl?.getAttribute("data-mode") ?? "create") as
+      | "create"
+      | "restore"
+      | "nostr-restore";
     state.onboardingWalletMode = mode;
     // When explicitly choosing to create (not restore), clear backup state
     if (mode === "create") {
@@ -752,7 +765,9 @@ export async function handleClick(
       render();
       return;
     }
-    if (state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm) {
+    if (
+      state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
+    ) {
       state.onboardingError = "Passwords do not match.";
       render();
       return;
@@ -802,12 +817,17 @@ export async function handleClick(
 
   if (action === "onboarding-verify-mnemonic") {
     const words = state.onboardingWalletMnemonic.trim().split(/\s+/);
-    const allVerified = state.onboardingMnemonicVerifyIndices.length === 3 &&
+    const allVerified =
+      state.onboardingMnemonicVerifyIndices.length === 3 &&
       state.onboardingMnemonicVerifyIndices.every(
-        (wordIdx, i) => (state.onboardingMnemonicVerifyInputs[i] ?? "").trim().toLowerCase() === words[wordIdx]
+        (wordIdx, i) =>
+          (state.onboardingMnemonicVerifyInputs[i] ?? "")
+            .trim()
+            .toLowerCase() === words[wordIdx],
       );
     if (!allVerified) {
-      state.onboardingError = "One or more words are incorrect. Check your recovery phrase and try again.";
+      state.onboardingError =
+        "One or more words are incorrect. Check your recovery phrase and try again.";
       render();
       return;
     }
@@ -840,7 +860,9 @@ export async function handleClick(
       render();
       return;
     }
-    if (state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm) {
+    if (
+      state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
+    ) {
       state.onboardingError = "Passwords do not match.";
       render();
       return;
@@ -889,7 +911,9 @@ export async function handleClick(
       render();
       return;
     }
-    if (state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm) {
+    if (
+      state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
+    ) {
       state.onboardingError = "Passwords do not match.";
       render();
       return;
@@ -901,7 +925,7 @@ export async function handleClick(
     (async () => {
       try {
         const selectedWallet = state.nostrBackupStatus?.wallets.find(
-          w => w.d_tag === state.onboardingSelectedWalletDTag
+          (w) => w.d_tag === state.onboardingSelectedWalletDTag,
         );
         const mnemonic = await invoke<string>("restore_mnemonic_from_nostr", {
           walletName: selectedWallet?.name ?? "My Wallet",
@@ -1393,7 +1417,10 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        await invoke("backup_mnemonic_to_nostr", { password: "", walletName: state.onboardingWalletName || "My Wallet" });
+        await invoke("backup_mnemonic_to_nostr", {
+          password: "",
+          walletName: state.onboardingWalletName || "My Wallet",
+        });
         // Refresh backup status
         const status = await invoke<NostrBackupStatus>("check_nostr_backup");
         state.nostrBackupStatus = status;
@@ -1442,7 +1469,10 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        await invoke("backup_mnemonic_to_nostr", { password, walletName: "My Wallet" });
+        await invoke("backup_mnemonic_to_nostr", {
+          password,
+          walletName: "My Wallet",
+        });
         const status = await invoke<NostrBackupStatus>("check_nostr_backup");
         state.nostrBackupStatus = status;
         if (status.relay_results) {
@@ -1505,7 +1535,9 @@ export async function handleClick(
     showOverlayLoader("Fetching backup from relays...");
     (async () => {
       try {
-        const mnemonic = await invoke<string>("restore_mnemonic_from_nostr", { walletName: "My Wallet" });
+        const mnemonic = await invoke<string>("restore_mnemonic_from_nostr", {
+          walletName: "My Wallet",
+        });
         hideOverlayLoader();
         // Pre-fill the mnemonic in the restore form
         state.walletShowRestore = true;
