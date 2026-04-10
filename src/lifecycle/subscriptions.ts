@@ -66,6 +66,7 @@ export function setupTauriSubscriptions(render: () => void): () => void {
     }),
   );
 
+  let snapshotRenderTimer: ReturnType<typeof setTimeout> | null = null;
   registerListener(
     listen<{
       balance: { assets: Record<string, number> };
@@ -85,8 +86,18 @@ export function setupTauriSubscriptions(render: () => void): () => void {
           state.walletStatus = "locked";
         }
         state.walletData = null;
+        if (snapshotRenderTimer !== null) clearTimeout(snapshotRenderTimer);
+        snapshotRenderTimer = null;
+        render();
+        return;
       }
-      render();
+      // Debounce renders during sync — each with_sdk call emits a snapshot
+      if (snapshotRenderTimer === null) {
+        snapshotRenderTimer = setTimeout(() => {
+          snapshotRenderTimer = null;
+          if (!disposed) render();
+        }, 250);
+      }
     }),
   );
 

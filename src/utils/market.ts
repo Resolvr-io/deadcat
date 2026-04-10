@@ -31,7 +31,7 @@ export function stateBadge(value: CovenantState): string {
     value === 0
       ? "bg-slate-600/30 text-slate-300"
       : value === 1
-        ? "bg-emerald-500/20 text-emerald-300"
+        ? "bg-sky-500/20 text-sky-300"
         : value === 2
           ? "bg-emerald-500/30 text-emerald-200"
           : value === 3
@@ -440,6 +440,26 @@ export function commitLimitPriceDraft(market: Market): void {
   setLimitPriceSats(market, Math.floor(Number(sanitized)));
 }
 
+/** Markets sorted by nearest expiry (live only, not expired). */
+export function getEndingSoonMarkets(): Market[] {
+  return markets
+    .filter((m) => m.isLive && m.expiryHeight > m.currentHeight)
+    .sort((a, b) => {
+      const aLeft = a.expiryHeight - a.currentHeight;
+      const bLeft = b.expiryHeight - b.currentHeight;
+      return aLeft - bLeft;
+    });
+}
+
+/** All markets sorted by most recently created (newest first). */
+export function getNewMarkets(): Market[] {
+  return [...markets].sort((a, b) => {
+    // Use creation txid presence and id as proxy — markets discovered later have higher IDs
+    // More accurate: sort by expiryHeight descending (newer markets expire later)
+    return b.expiryHeight - a.expiryHeight;
+  });
+}
+
 export function getFilteredMarkets(): Market[] {
   const lowered = state.search.trim().toLowerCase();
   return markets
@@ -457,6 +477,8 @@ export function getFilteredMarkets(): Market[] {
       if (settled) return false;
       const categoryMatch =
         state.activeCategory === "Trending" ||
+        state.activeCategory === "Ending Soon" ||
+        state.activeCategory === "New" ||
         market.category === state.activeCategory;
       const searchMatch =
         lowered.length === 0 ||

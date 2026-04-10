@@ -7,8 +7,8 @@
     <title>Deadcat.Live</title>
   </head>
   <body>
-    <!-- Splash loader — visible immediately, faded out by main.ts -->
-    <div id="splash">
+    <!-- Splash loader — inline styles prevent flash of unstyled SVG before CSS loads -->
+    <div id="splash" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:#020617">
       <div class="deadcat-loader">
         <div class="deadcat-loader-scene">
           <div class="deadcat-loader-clip">

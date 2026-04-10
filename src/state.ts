@@ -38,6 +38,7 @@ export function createWalletData(): WalletData {
     backedUp: false,
     showBackup: false,
     backupPassword: "",
+    backupCopied: false,
   };
 }
 
@@ -81,6 +82,8 @@ export function loadPersistedTxLabels(): void {
 
 export const categories: NavCategory[] = [
   "Trending",
+  "Ending Soon",
+  "New",
   "Politics",
   "Sports",
   "Culture",
@@ -132,6 +135,7 @@ export function defaultSettlementInput(): string {
 
 export const state: {
   view: ViewMode;
+  previousView: ViewMode | null;
   activeCategory: NavCategory;
   search: string;
   trendingIndex: number;
@@ -200,7 +204,7 @@ export const state: {
   receiveError: string;
   receiveLightningSwap: BoltzLightningReceiveCreated | null;
   receiveLiquidAddress: string;
-  receiveLiquidAddressIndex: number;
+  receiveLiquidLoading: boolean;
   receiveBitcoinSwap: BoltzChainSwapCreated | null;
   receiveBtcPairInfo: BoltzChainSwapPairInfo | null;
   sendInvoice: string;
@@ -225,6 +229,7 @@ export const state: {
   settingsOpen: boolean;
   settingsSection: Record<string, boolean>;
   logoutOpen: boolean;
+  logoutBackedUp: boolean;
   nostrPubkey: string | null;
   nostrNpub: string | null;
   nostrNsecRevealed: string | null;
@@ -298,6 +303,7 @@ export const state: {
   chartAspectDetail: number;
 } = {
   view: "home",
+  previousView: null,
   activeCategory: "Trending",
   search: "",
   trendingIndex: 0,
@@ -370,7 +376,7 @@ export const state: {
   receiveError: "",
   receiveLightningSwap: null,
   receiveLiquidAddress: "",
-  receiveLiquidAddressIndex: 0,
+  receiveLiquidLoading: false,
   receiveBitcoinSwap: null,
   receiveBtcPairInfo: null,
   sendInvoice: "",
@@ -401,6 +407,7 @@ export const state: {
     dev: false,
   } as Record<string, boolean>,
   logoutOpen: false,
+  logoutBackedUp: false,
   nostrPubkey: null,
   nostrNpub: null,
   nostrNsecRevealed: null,

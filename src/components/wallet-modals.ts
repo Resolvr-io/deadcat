@@ -51,6 +51,7 @@ export function renderBackupModal(loading: boolean): string {
 
   let body: string;
   if ((state.walletData?.backupWords?.length ?? 0) > 0) {
+    const copied = state.walletData?.backupCopied ?? false;
     const backupStatus = state.nostrBackupStatus;
     const securityInfoHtml =
       '<details class="group">' +
@@ -89,7 +90,13 @@ export function renderBackupModal(loading: boolean): string {
     body =
       renderMnemonicWordsGrid(state.walletData?.backupWords ?? []) +
       '<div class="flex gap-3">' +
-      '<button data-action="copy-backup-mnemonic" class="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100">Copy to clipboard</button>' +
+      '<button data-action="copy-backup-mnemonic" class="flex-1 rounded-xl border py-2.5 text-sm font-medium transition ' +
+      (copied
+        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+        : "border-slate-700 text-slate-300 hover:border-slate-500 hover:text-slate-100") +
+      '">' +
+      (copied ? "Copied" : "Copy to clipboard") +
+      "</button>" +
       '<button data-action="hide-backup" class="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100">Done</button>' +
       "</div>" +
       nostrBackupHtml;
@@ -180,6 +187,7 @@ export function renderModalTabs(): string {
 export function renderReceiveModal(): string {
   const err = state.receiveError;
   const creating = state.receiveCreating;
+  const liquidLoading = state.receiveLiquidLoading;
 
   let content = "";
 
@@ -231,9 +239,7 @@ export function renderReceiveModal(): string {
     if (state.receiveLiquidAddress) {
       content =
         '<div class="space-y-3">' +
-        '<p class="text-sm text-slate-400">Send ' +
-        btcLabel() +
-        " to this address to fund your wallet.</p>" +
+        '<p class="text-sm text-slate-400">Send L-BTC to this address to fund your wallet.</p>' +
         (state.modalQr
           ? '<div class="flex justify-center"><img src="' +
             escapeAttr(state.modalQr) +
@@ -244,17 +250,13 @@ export function renderReceiveModal(): string {
           "Liquid Address",
           "copy-modal-value",
         ) +
-        '<button data-action="generate-liquid-address" class="w-full rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">New Address</button>' +
         "</div>";
     } else {
       content =
         '<div class="flex flex-col items-center gap-4 py-4">' +
-        '<p class="text-sm text-slate-400">Generate a Liquid address to receive ' +
-        btcLabel() +
-        ".</p>" +
-        '<button data-action="generate-liquid-address" class="rounded-lg bg-emerald-400 px-6 py-3 font-medium text-slate-950 hover:bg-emerald-300">' +
-        (creating ? "Generating..." : "Generate Address") +
-        "</button>" +
+        (liquidLoading
+          ? '<p class="text-sm text-slate-400">Generating address...</p>'
+          : '<p class="text-sm text-slate-400">Loading address...</p>') +
         "</div>";
     }
   } else {
@@ -264,6 +266,13 @@ export function renderReceiveModal(): string {
       content =
         '<div class="space-y-3">' +
         '<p class="text-sm font-semibold text-slate-100">Bitcoin Deposit Address Ready</p>' +
+        '<div class="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">' +
+        '<p class="text-xs font-medium uppercase tracking-wider text-amber-200">Send Exactly</p>' +
+        '<p class="mt-1 text-lg font-semibold text-amber-100">' +
+        s.amountSat.toLocaleString() +
+        " sats</p>" +
+        '<p class="mt-1 text-xs text-amber-100/70">Send this exact Bitcoin amount to the lockup address below to complete the swap.</p>' +
+        "</div>" +
         '<p class="text-xs text-slate-400">Swap ' +
         s.id.slice(0, 8) +
         "... | " +

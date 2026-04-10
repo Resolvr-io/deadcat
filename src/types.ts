@@ -1,5 +1,7 @@
 export type NavCategory =
   | "Trending"
+  | "Ending Soon"
+  | "New"
   | "My Markets"
   | "Resolved"
   | "Politics"
@@ -10,7 +12,7 @@ export type NavCategory =
   | "Macro";
 export type MarketCategory = Exclude<
   NavCategory,
-  "Trending" | "My Markets" | "Resolved"
+  "Trending" | "Ending Soon" | "New" | "My Markets" | "Resolved"
 >;
 export type ViewMode = "home" | "detail" | "create" | "wallet";
 export type Side = "yes" | "no";
@@ -326,6 +328,7 @@ export type WalletData = {
   backedUp: boolean;
   showBackup: boolean;
   backupPassword: string;
+  backupCopied: boolean;
 };
 
 export type BaseCurrency =

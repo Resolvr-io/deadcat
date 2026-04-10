@@ -1,6 +1,5 @@
 import { state } from "../state.ts";
 import { escapeAttr, escapeHtml } from "../utils/html.ts";
-import { renderMnemonicGrid } from "./wallet-modals.ts";
 
 const backBtn = `
   <button data-action="onboarding-back" class="mb-8 flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition">

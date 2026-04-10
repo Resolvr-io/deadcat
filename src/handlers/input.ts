@@ -105,6 +105,12 @@ export function handleInput(e: Event, render: () => void): void {
     return;
   }
 
+  if (target.id === "logout-backed-up") {
+    state.logoutBackedUp = target.checked;
+    render();
+    return;
+  }
+
   if (target.id === "wallet-restore-mnemonic") {
     state.walletRestoreMnemonic = (
       target as unknown as HTMLTextAreaElement

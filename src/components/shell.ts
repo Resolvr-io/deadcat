@@ -4,6 +4,38 @@ import { baseCurrencyOptions, categories, DEV_MODE, state } from "../state.ts";
 import type { RelayBackupResult, RelayEntry } from "../types.ts";
 import { escapeAttr, escapeHtml } from "../utils/html.ts";
 
+function iconAttrs(size: string): string {
+  return `class="${size} shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"`;
+}
+
+export function categoryIcon(category: string, size = "h-3.5 w-3.5"): string {
+  const a = iconAttrs(size);
+  switch (category) {
+    case "Trending":
+      return `<svg ${a}><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>`;
+    case "Ending Soon":
+      return `<svg ${a}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`;
+    case "New":
+      return `<svg ${a}><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`;
+    case "Politics":
+      return `<svg class="${size} shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M20 6h3v2h-1v11h1v2H1v-2h1V8H1V6h3V4a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2zm0 2H4v11h3v-7h2v7h2v-7h2v7h2v-7h2v7h3V8zM6 5v1h12V5H6z"/></svg>`;
+    case "Sports":
+      return `<svg ${a}><path d="M6 9H4a2 2 0 0 1-2-2V4h4"/><path d="M18 9h2a2 2 0 0 0 2-2V4h-4"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>`;
+    case "Culture":
+      return `<svg ${a}><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>`;
+    case "Bitcoin":
+      return `<svg class="${size} shrink-0" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M9 2a1 1 0 0 1 2 0v2h2V2a1 1 0 1 1 2 0v2c3.59 0 5.88 2.01 5.88 4.5 0 1.41-.73 2.67-2.02 3.49 1.31.82 2.06 2.08 2.06 3.51 0 2.5-2.3 4.5-5.91 4.5v2a1 1 0 1 1-2 0v-2h-2v2a1 1 0 1 1-2 0v-2H4a1 1 0 1 1 0-2h2V6H4a1 1 0 0 1 0-2h5V2zm6 9c2.91 0 3.88-1.49 3.88-2.5S17.91 6 15 6H8v5h7zM8 13v5h7c2.94 0 3.91-1.5 3.91-2.5S17.94 13 15 13H8z"/></svg>`;
+    case "Weather":
+      return `<svg ${a}><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>`;
+    case "Macro":
+      return `<svg ${a}><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>`;
+    case "My Markets":
+      return `<svg ${a}><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+    default:
+      return "";
+  }
+}
+
 export function settingsAccordion(
   key: string,
   title: string,
@@ -101,11 +133,12 @@ export function renderTopShell(): string {
               )
               .map((category) => {
                 const active = state.activeCategory === category;
-                return `<button data-category="${category}" class="rounded-full px-3 py-1.5 text-sm font-normal transition ${
+                const icon = categoryIcon(category);
+                return `<button data-category="${category}" class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-normal transition ${
                   active
                     ? "bg-slate-800/80 text-slate-100"
                     : "text-slate-500 hover:text-slate-300"
-                }">${category}</button>`;
+                }">${icon}${category}</button>`;
               })
               .join("")}
             <button data-action="open-help" class="ml-auto flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-normal text-slate-500 transition hover:text-slate-300">
@@ -220,7 +253,7 @@ export function renderTopShell(): string {
               ${
                 state.nostrNpub
                   ? `<div class="rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2">
-                <p class="text-[11px] text-amber-300/90">Back up your nsec in a safe place — if lost, you cannot resolve markets you created.</p>
+                <p class="text-[11px] text-amber-300/90">Back up your nsec. You need it to resolve markets you create.</p>
               </div>`
                   : ""
               }
@@ -454,7 +487,7 @@ export function renderTopShell(): string {
         </div>
         <div class="mt-5 space-y-4">
           <div class="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
-            <p class="text-sm font-medium text-slate-200">This will remove your Nostr identity from this device. Before you continue, make sure you have:</p>
+            <p class="text-sm font-medium text-slate-200">Logging out will <strong>remove your Nostr key and wallet</strong> from this device. Make sure you have:</p>
             <ul class="mt-3 space-y-2 text-sm text-slate-400">
               <li class="flex items-start gap-2">
                 <svg class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -464,12 +497,20 @@ export function renderTopShell(): string {
                 <svg class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 <span>Backed up your <strong class="text-slate-200">wallet recovery phrase</strong> — your wallet remains encrypted on this device</span>
               </li>
+              <li class="flex items-start gap-2">
+                <svg class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span>Backed up your <strong class="text-slate-200">Nostr private key</strong> locally so you can restore your identity</span>
+              </li>
             </ul>
           </div>
-          <p class="text-xs text-slate-500"><strong class="text-slate-300">Deadcat.live does not hold user funds.</strong> If you lose your recovery phrase and password, your funds cannot be recovered.</p>
+          <label class="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-300">
+            <input id="logout-backed-up" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-950 text-rose-400 focus:ring-rose-400" ${state.logoutBackedUp ? "checked" : ""} />
+            <span>I backed up my recovery phrase, unlock password, and Nostr key locally before removing them from this device.</span>
+          </label>
+          <p class="text-xs text-slate-500"><strong class="text-slate-300">Deadcat.live does not hold user funds.</strong> Your keys and wallet data will be permanently removed from this device. If you lose your recovery phrase and password, your funds cannot be recovered.</p>
           <div class="flex gap-3">
             <button data-action="close-logout" class="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100">Cancel</button>
-            <button data-action="confirm-logout" class="flex-1 rounded-xl bg-rose-500/20 py-2.5 text-sm font-medium text-rose-300 transition hover:bg-rose-500/30">Log Out</button>
+            <button data-action="confirm-logout" class="flex-1 rounded-xl py-2.5 text-sm font-medium transition ${state.logoutBackedUp ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "cursor-not-allowed border border-slate-800 text-slate-600"}" ${state.logoutBackedUp ? "" : "disabled"}>Log Out</button>
           </div>
         </div>
       </div>

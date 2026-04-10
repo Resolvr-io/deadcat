@@ -368,10 +368,8 @@ pub struct DeadcatSdk {
     wollet: Wollet,
     network: Network,
     chain: ElectrumBackend,
-    /// Cached Electrum client for wallet syncs. Reusing avoids repeated TCP
-    /// handshakes and lets LWK leverage `script_status` caching for faster
-    /// incremental syncs.
-    cached_electrum_client: Option<ElectrumClient>,
+    /// Cached Electrum client, created lazily on first sync and reused.
+    electrum_client: Option<ElectrumClient>,
     /// Genesis hash for the Simplicity C runtime.
     ///
     /// For Liquid/Testnet, this is the hardcoded constant.
@@ -446,7 +444,7 @@ impl DeadcatSdk {
             wollet,
             network,
             chain: ElectrumBackend::new(electrum_url),
-            cached_electrum_client: None,
+            electrum_client: None,
             chain_genesis_override: None,
         })
     }
@@ -464,16 +462,16 @@ impl DeadcatSdk {
 
         // Reuse a cached Electrum client to avoid repeated TCP handshakes.
         // If the connection is stale, drop it and create a fresh one.
-        if self.cached_electrum_client.is_none() {
+        if self.electrum_client.is_none() {
             let url: ElectrumUrl = self
                 .chain
                 .electrum_url()
                 .parse()
                 .map_err(|e| Error::Electrum(format!("{:?}", e)))?;
-            self.cached_electrum_client =
+            self.electrum_client =
                 Some(ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?);
         }
-        let client = self.cached_electrum_client.as_mut().unwrap();
+        let client = self.electrum_client.as_mut().unwrap();
         match lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, client) {
             Ok(()) => {
                 let elapsed = sync_start.elapsed();
@@ -485,7 +483,7 @@ impl DeadcatSdk {
             }
             Err(_e) => {
                 log::warn!("[sync] wallet scan failed, reconnecting...");
-                self.cached_electrum_client = None;
+                self.electrum_client = None;
                 let url: ElectrumUrl = self
                     .chain
                     .electrum_url()
@@ -495,22 +493,10 @@ impl DeadcatSdk {
                     ElectrumClient::new(&url).map_err(|e| Error::Electrum(e.to_string()))?;
                 lwk_wollet::full_scan_with_electrum_client(&mut self.wollet, &mut fresh)
                     .map_err(|e| Error::Electrum(e.to_string()))?;
-                self.cached_electrum_client = Some(fresh);
+                self.electrum_client = Some(fresh);
                 Ok(())
             }
         }
-    }
-
-    /// Check whether a specific outpoint is still in the UTXO set (unspent).
-    pub fn is_outpoint_unspent(&self, txid: &Txid, vout: u32) -> Result<bool> {
-        let tx = self.fetch_transaction(txid)?;
-        let txout = tx
-            .output
-            .get(vout as usize)
-            .ok_or_else(|| Error::Query("outpoint vout out of range".into()))?;
-        let utxos = self.chain.scan_script_utxos(&txout.script_pubkey)?;
-        let target = OutPoint::new(*txid, vout);
-        Ok(utxos.iter().any(|(op, _)| *op == target))
     }
 
     /// Get the genesis block hash for Simplicity operations.

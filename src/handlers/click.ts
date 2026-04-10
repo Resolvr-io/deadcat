@@ -33,6 +33,7 @@ import {
   refreshWallet,
   resetReceiveState,
   resetSendState,
+  resetWalletStoredState,
 } from "../services/wallet.ts";
 import {
   createWalletData,
@@ -218,6 +219,57 @@ function requireMarketAnchor(
     return null;
   }
   return market.anchor;
+}
+
+function liquidReceiveQrVisible(): boolean {
+  return (
+    state.walletModal === "receive" &&
+    state.walletModalTab === "liquid" &&
+    !state.receiveLightningSwap &&
+    !state.receiveBitcoinSwap
+  );
+}
+
+function requestLiquidReceiveAddress(
+  render: () => void,
+  options?: { force?: boolean; silent?: boolean },
+): void {
+  const force = options?.force ?? false;
+  const silent = options?.silent ?? false;
+  if (state.receiveLiquidLoading) return;
+
+  if (!force && state.receiveLiquidAddress) {
+    if (liquidReceiveQrVisible() && !state.modalQr) {
+      void generateQr(state.receiveLiquidAddress).then(() => render());
+    }
+    return;
+  }
+
+  state.receiveLiquidLoading = true;
+  if (!silent) {
+    state.receiveError = "";
+  }
+  if (!silent || liquidReceiveQrVisible()) {
+    render();
+  }
+
+  (async () => {
+    try {
+      const addr = await invoke<{ address: string }>("get_wallet_address", {
+        index: null,
+      });
+      state.receiveLiquidAddress = addr.address;
+      if (liquidReceiveQrVisible()) {
+        await generateQr(addr.address);
+      }
+    } catch (e) {
+      if (!silent || liquidReceiveQrVisible()) {
+        state.receiveError = String(e);
+      }
+    }
+    state.receiveLiquidLoading = false;
+    render();
+  })();
 }
 
 export async function handleClick(
@@ -625,6 +677,41 @@ export async function handleClick(
     return;
   }
 
+  if (action === "onboarding-back-to-nostr") {
+    state.onboardingLoading = true;
+    state.onboardingError = "";
+    render();
+    (async () => {
+      try {
+        await invoke("delete_nostr_identity");
+        state.nostrPubkey = null;
+        state.nostrNpub = null;
+        state.nostrNsecRevealed = null;
+        state.nostrBackupStatus = null;
+        state.nostrProfile = null;
+        state.profilePicError = false;
+        state.relays = [];
+        state.onboardingStep = "nostr";
+        state.onboardingNostrMode = "generate";
+        state.onboardingNostrNsec = "";
+        state.onboardingNostrGeneratedNsec = "";
+        state.onboardingNsecRevealed = false;
+        state.onboardingNostrDone = false;
+        state.onboardingWalletMode = "create";
+        state.onboardingWalletPassword = "";
+        state.onboardingWalletPasswordConfirm = "";
+        state.onboardingWalletMnemonic = "";
+        state.onboardingBackupFound = false;
+        state.onboardingBackupScanning = false;
+      } catch (e) {
+        state.onboardingError = `Failed to reset Nostr setup: ${String(e)}`;
+      }
+      state.onboardingLoading = false;
+      render();
+    })();
+    return;
+  }
+
   if (action === "onboarding-set-wallet-mode") {
     const mode = (actionEl?.getAttribute("data-mode") ?? "create") as "create" | "restore" | "nostr-restore";
     state.onboardingWalletMode = mode;
@@ -645,8 +732,15 @@ export async function handleClick(
   }
 
   if (action === "onboarding-create-wallet") {
-    if (!state.onboardingWalletPassword) {
-      state.onboardingError = "Password is required.";
+    if (
+      !state.onboardingWalletPassword ||
+      state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
+    ) {
+      state.onboardingError = !state.onboardingWalletPassword
+        ? "Password is required."
+        : "Passwords do not match.";
+      state.onboardingWalletPassword = "";
+      state.onboardingWalletPasswordConfirm = "";
       render();
       return;
     }
@@ -666,20 +760,16 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        await invoke("restore_wallet", {
-          mnemonic: state.onboardingWalletMnemonic.trim(),
+        await invoke<string>("create_wallet", {
           password: state.onboardingWalletPassword,
         });
         updateOverlayMessage("Unlocking wallet...");
         await invoke("unlock_wallet", {
           password: state.onboardingWalletPassword,
         });
-        updateOverlayMessage("Scanning blockchain...");
-        await invoke("sync_wallet");
-        updateOverlayMessage("Loading markets...");
         showToast("Wallet created!", "success");
-        await finishOnboarding();
         hideOverlayLoader();
+        await finishOnboarding();
       } catch (e) {
         state.onboardingError = String(e);
         state.onboardingLoading = false;
@@ -727,9 +817,16 @@ export async function handleClick(
   if (action === "onboarding-restore-wallet") {
     if (
       !state.onboardingWalletMnemonic.trim() ||
-      !state.onboardingWalletPassword
+      !state.onboardingWalletPassword ||
+      state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
     ) {
-      state.onboardingError = "Recovery phrase and password are required.";
+      state.onboardingError =
+        !state.onboardingWalletMnemonic.trim() ||
+        !state.onboardingWalletPassword
+          ? "Recovery phrase and password are required."
+          : "Passwords do not match.";
+      state.onboardingWalletPassword = "";
+      state.onboardingWalletPasswordConfirm = "";
       render();
       return;
     }
@@ -753,16 +850,12 @@ export async function handleClick(
           mnemonic: state.onboardingWalletMnemonic.trim(),
           password: state.onboardingWalletPassword,
         });
-        updateOverlayMessage("Unlocking wallet...");
         await invoke("unlock_wallet", {
           password: state.onboardingWalletPassword,
         });
-        updateOverlayMessage("Scanning blockchain...");
-        await invoke("sync_wallet");
-        updateOverlayMessage("Loading markets...");
         showToast("Wallet restored!", "success");
-        await finishOnboarding();
         hideOverlayLoader();
+        await finishOnboarding();
       } catch (e) {
         state.onboardingError = String(e);
         state.onboardingLoading = false;
@@ -774,8 +867,15 @@ export async function handleClick(
   }
 
   if (action === "onboarding-nostr-restore-wallet") {
-    if (!state.onboardingWalletPassword) {
-      state.onboardingError = "Password is required.";
+    if (
+      !state.onboardingWalletPassword ||
+      state.onboardingWalletPassword !== state.onboardingWalletPasswordConfirm
+    ) {
+      state.onboardingError = !state.onboardingWalletPassword
+        ? "Password is required."
+        : "Passwords do not match.";
+      state.onboardingWalletPassword = "";
+      state.onboardingWalletPasswordConfirm = "";
       render();
       return;
     }
@@ -806,16 +906,12 @@ export async function handleClick(
           mnemonic: mnemonic.trim(),
           password: state.onboardingWalletPassword,
         });
-        updateOverlayMessage("Unlocking wallet...");
         await invoke("unlock_wallet", {
           password: state.onboardingWalletPassword,
         });
-        updateOverlayMessage("Scanning blockchain...");
-        await invoke("sync_wallet");
-        updateOverlayMessage("Loading markets...");
         showToast("Wallet restored from Nostr backup!", "success");
-        await finishOnboarding();
         hideOverlayLoader();
+        await finishOnboarding();
       } catch (e) {
         state.onboardingError = String(e);
         state.onboardingLoading = false;
@@ -869,6 +965,20 @@ export async function handleClick(
 
   if (action === "go-home") {
     state.view = "home";
+    state.previousView = null;
+    state.chartHoverMarketId = null;
+    state.chartHoverX = null;
+    render();
+    return;
+  }
+
+  if (action === "go-back") {
+    if (state.previousView) {
+      state.view = state.previousView;
+      state.previousView = null;
+    } else {
+      state.view = "home";
+    }
     state.chartHoverMarketId = null;
     state.chartHoverX = null;
     render();
@@ -1148,21 +1258,37 @@ export async function handleClick(
         } catch (_) {
           /* no wallet is fine */
         }
+        await fetchWalletStatus();
         state.nostrPubkey = null;
         state.nostrNpub = null;
         state.nostrNsecRevealed = null;
+        resetWalletStoredState();
         state.walletData = null;
         state.walletPassword = "";
+        state.walletPasswordConfirm = "";
         state.walletMnemonic = "";
         state.walletError = "";
         state.walletStatus = "not_created";
+        state.onboardingNostrNsec = "";
+        state.onboardingNostrGeneratedNsec = "";
+        state.onboardingNsecRevealed = false;
+        state.onboardingNostrDone = false;
+        state.onboardingNostrMode = "generate";
+        state.onboardingWalletPassword = "";
+        state.onboardingWalletPasswordConfirm = "";
+        state.onboardingWalletMnemonic = "";
+        state.onboardingWalletMode = "create";
         state.onboardingError = "";
+        state.onboardingLoading = false;
+        state.onboardingBackupFound = false;
+        state.onboardingBackupScanning = false;
         state.settingsOpen = false;
         state.devResetPrompt = false;
         state.devResetConfirm = "";
         await fetchWalletStatus();
         state.setupModalOpen = false;
         state.setupRequires = null;
+        state.onboardingStep = null;
         state.view = "home";
         render();
         showToast("App data erased", "success");
@@ -1382,6 +1508,7 @@ export async function handleClick(
 
   if (action === "user-logout") {
     state.userMenuOpen = false;
+    state.logoutBackedUp = false;
     state.logoutOpen = true;
     render();
     return;
@@ -1389,20 +1516,29 @@ export async function handleClick(
 
   if (action === "close-logout") {
     state.logoutOpen = false;
+    state.logoutBackedUp = false;
     render();
     return;
   }
 
   if (action === "confirm-logout") {
+    if (!state.logoutBackedUp) return;
     state.logoutOpen = false;
+    state.logoutBackedUp = false;
     (async () => {
       try {
         await invoke("delete_nostr_identity");
-        try { await invoke("delete_wallet"); } catch (_) { /* no wallet is fine */ }
+        try {
+          await invoke("delete_wallet");
+        } catch (_) {
+          /* no wallet is fine */
+        }
+        await fetchWalletStatus();
         state.nostrPubkey = null;
         state.nostrNpub = null;
         state.nostrNsecRevealed = null;
         state.nostrProfile = null;
+        resetWalletStoredState();
         state.walletData = null;
         state.walletPassword = "";
         state.walletMnemonic = "";
@@ -1434,6 +1570,7 @@ export async function handleClick(
         state.setupModalOpen = false;
         state.setupRequires = null;
         state.view = "home";
+        showToast("Logged out - keys removed", "success");
       } catch (e) {
         showToast(`Logout failed: ${String(e)}`, "error");
       }
@@ -1469,6 +1606,8 @@ export async function handleClick(
     state.walletError = "";
     state.walletPassword = "";
     state.settingsOpen = false;
+    state.previousView =
+      state.view !== "wallet" ? state.view : state.previousView;
     state.view = "wallet";
     render();
     // If already unlocked with cached balance, just do a silent background sync
@@ -1500,8 +1639,15 @@ export async function handleClick(
   }
 
   if (action === "create-wallet") {
-    if (!state.walletPassword) {
-      state.walletError = "Password is required.";
+    if (
+      !state.walletPassword ||
+      state.walletPassword !== state.walletPasswordConfirm
+    ) {
+      state.walletError = !state.walletPassword
+        ? "Password is required."
+        : "Passwords do not match.";
+      state.walletPassword = "";
+      state.walletPasswordConfirm = "";
       render();
       return;
     }
@@ -1531,7 +1677,6 @@ export async function handleClick(
 
   if (action === "dismiss-mnemonic") {
     state.walletMnemonic = "";
-    state.walletStatus = "locked";
     state.walletPassword = "";
     render();
     return;
@@ -1545,8 +1690,17 @@ export async function handleClick(
   }
 
   if (action === "restore-wallet") {
-    if (!state.walletRestoreMnemonic.trim() || !state.walletPassword) {
-      state.walletError = "Recovery phrase and password are required.";
+    if (
+      !state.walletRestoreMnemonic.trim() ||
+      !state.walletPassword ||
+      state.walletPassword !== state.walletPasswordConfirm
+    ) {
+      state.walletError =
+        !state.walletRestoreMnemonic.trim() || !state.walletPassword
+          ? "Recovery phrase and password are required."
+          : "Passwords do not match.";
+      state.walletPassword = "";
+      state.walletPasswordConfirm = "";
       render();
       return;
     }
@@ -1560,28 +1714,17 @@ export async function handleClick(
           mnemonic: state.walletRestoreMnemonic.trim(),
           password: state.walletPassword,
         });
+        await invoke("unlock_wallet", { password: state.walletPassword });
         state.walletRestoreMnemonic = "";
         state.walletPassword = "";
-        updateOverlayMessage("Scanning blockchain...");
-        await invoke("sync_wallet");
         await fetchWalletStatus();
-        if (state.walletStatus === "unlocked") {
-          const balance = await invoke<{ assets: Record<string, number> }>(
-            "get_wallet_balance",
-          );
-          const txs = await invoke<WalletTransaction[]>(
-            "get_wallet_transactions",
-          );
-          state.walletData = {
-            ...createWalletData(),
-            balance: balance.assets,
-            transactions: txs,
-          };
-        }
+        state.walletData = createWalletData();
         state.walletLoading = false;
         hideOverlayLoader();
         render();
         showToast("Wallet restored successfully", "success");
+        // Sync in background — balance updates arrive via snapshot events
+        void refreshWallet(render);
       } catch (e) {
         state.walletError = String(e);
         state.walletLoading = false;
@@ -1604,47 +1747,33 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        await invoke("unlock_wallet", { password: state.walletPassword });
+        const unlockResult = await invoke<{
+          walletBalance: Record<string, number> | null;
+        }>("unlock_wallet", { password: state.walletPassword });
         state.walletPassword = "";
         await fetchWalletStatus();
-        // Load cached wallet data instantly (no Electrum sync)
-        const [balance, txs, swaps] = await Promise.all([
-          invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
-          invoke<WalletTransaction[]>("get_wallet_transactions"),
-          invoke<PaymentSwap[]>("list_payment_swaps"),
-        ]);
-        state.walletData = {
-          ...createWalletData(),
-          balance: balance.assets,
-          transactions: txs,
-          swaps,
-        };
+        state.walletData = createWalletData();
+        if (unlockResult?.walletBalance) {
+          state.walletData.balance = unlockResult.walletBalance;
+        }
         state.walletLoading = false;
         hideOverlayLoader();
         render();
-        // Fetch own orders for transaction labeling
-        fetchOwnOrders()
-          .then((orders) => {
-            state.ownOrders = orders;
+
+        // Load swaps from cached state (no network I/O).
+        void invoke<PaymentSwap[]>("list_payment_swaps")
+          .then((swaps) => {
+            if (!state.walletData) state.walletData = createWalletData();
+            state.walletData.swaps = swaps;
             render();
           })
           .catch(() => {});
-        // Background Electrum sync -- updates balances when done
-        invoke("sync_wallet")
-          .then(async () => {
-            const [freshBalance, freshTxs] = await Promise.all([
-              invoke<{ assets: Record<string, number> }>("get_wallet_balance"),
-              invoke<WalletTransaction[]>("get_wallet_transactions"),
-            ]);
-            if (state.walletData) {
-              state.walletData.balance = freshBalance.assets;
-              state.walletData.transactions = freshTxs;
-            }
-            render();
-          })
-          .catch(() => {
-            /* silent background sync failure */
-          });
+
+        // Deferred background sync — balance/txs arrive via wallet_snapshot event.
+        // Short delay ensures unlock UI renders first and avoids lock contention.
+        setTimeout(() => {
+          void invoke("sync_wallet").catch(() => {});
+        }, 2000);
       } catch (e) {
         state.walletError = String(e);
         state.walletLoading = false;
@@ -1796,6 +1925,18 @@ export async function handleClick(
     return;
   }
 
+  if (action === "open-explorer-asset") {
+    const asset = actionEl?.getAttribute("data-asset");
+    if (asset) {
+      const base =
+        state.walletNetwork === "testnet"
+          ? "https://blockstream.info/liquidtestnet"
+          : "https://blockstream.info/liquid";
+      void openUrl(`${base}/asset/${asset}`);
+    }
+    return;
+  }
+
   if (action === "open-nostr-event") {
     const marketId = actionEl?.getAttribute("data-market-id");
     const nevent = actionEl?.getAttribute("data-nevent");
@@ -1841,17 +1982,7 @@ export async function handleClick(
     state.walletModalTab = "lightning";
     resetReceiveState();
     render();
-    (async () => {
-      try {
-        const pairs = await invoke<BoltzChainSwapPairsInfo>(
-          "get_chain_swap_pairs",
-        );
-        state.receiveBtcPairInfo = pairs.bitcoinToLiquid;
-      } catch {
-        /* ignore */
-      }
-      render();
-    })();
+    requestLiquidReceiveAddress(render, { silent: true });
     return;
   }
 
@@ -1861,17 +1992,6 @@ export async function handleClick(
     state.walletModalTab = "lightning";
     resetSendState();
     render();
-    (async () => {
-      try {
-        const pairs = await invoke<BoltzChainSwapPairsInfo>(
-          "get_chain_swap_pairs",
-        );
-        state.sendBtcPairInfo = pairs.liquidToBitcoin;
-      } catch {
-        /* ignore */
-      }
-      render();
-    })();
     return;
   }
 
@@ -1901,6 +2021,9 @@ export async function handleClick(
       state.walletModalTab = tab;
       state.modalQr = "";
       render();
+      if (tab === "liquid") {
+        requestLiquidReceiveAddress(render);
+      }
     }
     return;
   }
@@ -1969,6 +2092,18 @@ export async function handleClick(
       state.receiveError = "Enter a valid amount.";
       render();
       return;
+    }
+    if (!state.receiveBtcPairInfo) {
+      try {
+        const pairs = await invoke<BoltzChainSwapPairsInfo>(
+          "get_chain_swap_pairs",
+        );
+        state.receiveBtcPairInfo = pairs.bitcoinToLiquid;
+      } catch (e) {
+        state.receiveError = String(e);
+        render();
+        return;
+      }
     }
     state.receiveCreating = true;
     state.receiveError = "";
@@ -2052,6 +2187,18 @@ export async function handleClick(
       render();
       return;
     }
+    if (!state.sendBtcPairInfo) {
+      try {
+        const pairs = await invoke<BoltzChainSwapPairsInfo>(
+          "get_chain_swap_pairs",
+        );
+        state.sendBtcPairInfo = pairs.liquidToBitcoin;
+      } catch (e) {
+        state.sendError = String(e);
+        render();
+        return;
+      }
+    }
     state.sendCreating = true;
     state.sendError = "";
     render();
@@ -2105,6 +2252,7 @@ export async function handleClick(
       state.walletData.showBackup = true;
       state.walletData.backupWords = [];
       state.walletData.backupPassword = "";
+      state.walletData.backupCopied = false;
     }
     state.walletError = "";
     render();
@@ -2116,6 +2264,7 @@ export async function handleClick(
       state.walletData.showBackup = false;
       state.walletData.backupWords = [];
       state.walletData.backupPassword = "";
+      state.walletData.backupCopied = false;
     }
     render();
     return;
@@ -2147,6 +2296,7 @@ export async function handleClick(
           state.walletData.backupWords = words;
           state.walletData.backedUp = true;
           state.walletData.backupPassword = "";
+          state.walletData.backupCopied = false;
         }
       } catch (e) {
         state.walletError = String(e);
@@ -2162,6 +2312,10 @@ export async function handleClick(
     void navigator.clipboard.writeText(
       (state.walletData?.backupWords ?? []).join(" "),
     );
+    if (state.walletData) {
+      state.walletData.backupCopied = true;
+    }
+    render();
     return;
   }
 

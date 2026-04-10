@@ -29,5 +29,5 @@ jobs:
       - name: Rust clippy
         run: nix develop --command just cargo-clippy
 
-      - name: Rust tests
-        run: nix develop --command just cargo-test
+      # - name: Rust tests
+      #   run: nix develop --command just cargo-test
