@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use deadcat_store::MarketFilter;
+use deadcat_store::{LmsrPoolFilter, MarketFilter};
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
@@ -439,9 +440,11 @@ pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> 
 // =========================================================================
 
 /// Encrypt the wallet mnemonic with NIP-44 and publish to relays.
+/// `wallet_name` is used to derive the d-tag; defaults to "My Wallet".
 #[tauri::command]
 pub async fn backup_mnemonic_to_nostr(
     password: String,
+    wallet_name: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     let (keys, client) = get_keys_and_client(&app).await?;
@@ -462,16 +465,21 @@ pub async fn backup_mnemonic_to_nostr(
         }
     };
 
+    let name = wallet_name.unwrap_or_else(|| "My Wallet".to_string());
     let encrypted = discovery::nip44_encrypt_to_self(&keys, &mnemonic)?;
-    let event = discovery::build_wallet_backup_event(&keys, &encrypted)?;
+    let event = discovery::build_wallet_backup_event(&keys, &encrypted, &name)?;
     let event_id = discovery::publish_event(&client, event).await?;
 
     Ok(event_id.to_hex())
 }
 
-/// Fetch and decrypt wallet mnemonic backup from relays.
+/// Fetch and decrypt a wallet mnemonic backup from relays.
+/// `wallet_name` selects which wallet to restore; defaults to "My Wallet".
 #[tauri::command]
-pub async fn restore_mnemonic_from_nostr(app: tauri::AppHandle) -> Result<String, String> {
+pub async fn restore_mnemonic_from_nostr(
+    wallet_name: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
     let _t0 = std::time::Instant::now();
     log::info!("[restore-trace] restore_mnemonic_from_nostr: start");
     let (keys, client) = get_keys_and_client(&app).await?;
@@ -480,7 +488,8 @@ pub async fn restore_mnemonic_from_nostr(app: tauri::AppHandle) -> Result<String
         _t0.elapsed()
     );
 
-    let filter = discovery::build_backup_query_filter(&keys.public_key());
+    let name = wallet_name.unwrap_or_else(|| "My Wallet".to_string());
+    let filter = discovery::build_named_backup_query_filter(&keys.public_key(), &name);
     log::info!("[restore-trace] restore_mnemonic_from_nostr: fetching events...");
     let events = client
         .fetch_events(vec![filter], Duration::from_secs(8))
@@ -548,46 +557,55 @@ pub async fn check_nostr_backup(
     let mut tasks = tokio::task::JoinSet::new();
     for url in relays {
         let f = filter.clone();
-        let keys = keys.clone();
         tasks.spawn(async move {
-            let found = match discovery::connect_multi_relay_client(std::slice::from_ref(&url))
-                .await
-            {
-                Ok(per_relay_client) => {
-                    match per_relay_client
-                        .fetch_events(vec![f], Duration::from_secs(8))
-                        .await
-                    {
-                        Ok(events) => events.iter().any(|event| {
-                            discovery::is_wallet_backup_candidate(event)
-                                && discovery::nip44_decrypt_from_self(&keys, &event.content).is_ok()
-                        }),
-                        Err(_) => false,
+            let wallet_d_tags: Vec<String> =
+                match discovery::connect_multi_relay_client(std::slice::from_ref(&url)).await {
+                    Ok(per_relay_client) => {
+                        match per_relay_client
+                            .fetch_events(vec![f], Duration::from_secs(8))
+                            .await
+                        {
+                            Ok(events) => events
+                                .iter()
+                                .filter_map(|e| e.tags.identifier().map(|d| d.to_string()))
+                                .filter(|d| d.starts_with(discovery::WALLET_BACKUP_D_TAG_PREFIX))
+                                .collect(),
+                            Err(_) => vec![],
+                        }
                     }
-                }
-                Err(_) => false,
-            };
-            discovery::RelayBackupResult {
-                url,
-                has_backup: found,
-            }
+                    Err(_) => vec![],
+                };
+            (url, wallet_d_tags)
         });
     }
 
     let mut relay_results = Vec::new();
+    let mut seen_d_tags: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut wallets: Vec<discovery::WalletEntry> = Vec::new();
     let mut any_found = false;
+
     while let Some(result) = tasks.join_next().await {
-        if let Ok(r) = result {
-            if r.has_backup {
+        if let Ok((url, d_tags)) = result {
+            let has_backup = !d_tags.is_empty();
+            if has_backup {
                 any_found = true;
             }
-            relay_results.push(r);
+            for d_tag in &d_tags {
+                if seen_d_tags.insert(d_tag.clone()) {
+                    wallets.push(discovery::WalletEntry {
+                        name: discovery::d_tag_to_wallet_name(d_tag),
+                        d_tag: d_tag.clone(),
+                    });
+                }
+            }
+            relay_results.push(discovery::RelayBackupResult { url, has_backup });
         }
     }
 
     Ok(discovery::NostrBackupStatus {
         has_backup: any_found,
         relay_results,
+        wallets,
     })
 }
 
@@ -2041,6 +2059,31 @@ pub async fn get_wallet_utxos(
 // Market store commands
 // =========================================================================
 
+/// Compute live YES/NO spot prices for a pool from stored state.
+///
+/// Returns `None` if the pool is missing table values or params fail to
+/// deserialize — never panics or breaks the market listing.
+fn pool_spot_prices(pool: &deadcat_store::LmsrPoolInfo) -> Option<(u16, u16)> {
+    let params: deadcat_sdk::LmsrPoolParams = serde_json::from_str(&pool.params_json)
+        .map_err(|e| log::warn!("pool {}: bad params_json: {e}", pool.pool_id))
+        .ok()?;
+    let table_values = pool.lmsr_table_values.as_ref().or_else(|| {
+        log::warn!(
+            "pool {}: missing table values, cannot compute spot price",
+            pool.pool_id
+        );
+        None
+    })?;
+    let manifest = deadcat_sdk::LmsrTableManifest::new(params.table_depth, table_values.clone())
+        .map_err(|e| log::warn!("pool {}: bad table manifest: {e}", pool.pool_id))
+        .ok()?;
+    let yes_bps =
+        deadcat_sdk::fee_free_yes_spot_price_bps(&manifest, &params, pool.current_s_index)
+            .map_err(|e| log::warn!("pool {}: spot price error: {e}", pool.pool_id))
+            .ok()?;
+    Some((yes_bps, 10_000u16.saturating_sub(yes_bps)))
+}
+
 #[tauri::command]
 pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
     let store_arc = {
@@ -2061,9 +2104,32 @@ pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, St
         .list_markets(&MarketFilter::default())
         .map_err(|e| format!("list markets: {e}"))?;
 
+    // Build market_id → pool lookup for spot price computation.
+    let pools = store
+        .list_lmsr_pools(&LmsrPoolFilter::default())
+        .unwrap_or_default();
+    let mut pool_by_market: HashMap<&str, &deadcat_store::LmsrPoolInfo> =
+        HashMap::with_capacity(pools.len());
+    for pool in &pools {
+        pool_by_market
+            .entry(&pool.market_id)
+            .and_modify(|existing| {
+                if pool.updated_at > existing.updated_at {
+                    *existing = pool;
+                }
+            })
+            .or_insert(pool);
+    }
+
     let mut result = Vec::with_capacity(infos.len());
     for info in &infos {
-        result.push(market_info_to_discovered(info, None, None));
+        let market_id_hex = hex::encode(info.market_id.as_bytes());
+        let (yes_bps, no_bps) = pool_by_market
+            .get(market_id_hex.as_str())
+            .and_then(|pool| pool_spot_prices(pool))
+            .map(|(y, n)| (Some(y), Some(n)))
+            .unwrap_or((None, None));
+        result.push(market_info_to_discovered(info, yes_bps, no_bps));
     }
     Ok(result)
 }
@@ -2103,6 +2169,11 @@ fn market_info_to_discovered(
         nostr_event_json: info.nostr_event_json.clone(),
         yes_price_bps,
         no_price_bps,
+        dormant_txid: info.dormant_txid.clone(),
+        unresolved_txid: info.unresolved_txid.clone(),
+        resolved_yes_txid: info.resolved_yes_txid.clone(),
+        resolved_no_txid: info.resolved_no_txid.clone(),
+        expired_txid: info.expired_txid.clone(),
     }
 }
 
@@ -2385,6 +2456,60 @@ pub fn generate_lmsr_table(
 }
 
 #[derive(Deserialize)]
+pub struct BuildPoolParamsRequest {
+    pub yes_asset_id: String,
+    pub no_asset_id: String,
+    pub collateral_asset_id: String,
+    pub table_depth: u32,
+    pub q_step_lots: u64,
+    pub s_bias: u64,
+    pub s_max_index: u64,
+    pub half_payout_sats: u64,
+    pub fee_bps: u64,
+    pub min_r_yes: u64,
+    pub min_r_no: u64,
+    pub min_r_collateral: u64,
+    pub cosigner_pubkey: String,
+    pub table_values: Vec<u64>,
+}
+
+fn decode_hex32(label: &str, hex_str: &str) -> Result<[u8; 32], String> {
+    let bytes = hex::decode(hex_str).map_err(|e| format!("invalid {label} hex: {e}"))?;
+    <[u8; 32]>::try_from(bytes.as_slice())
+        .map_err(|_| format!("{label}: expected 32 bytes, got {}", bytes.len()))
+}
+
+/// Build a serialized `LmsrPoolParams` JSON from simple inputs + table values.
+///
+/// Computes `lmsr_table_root` from the provided table values so the frontend
+/// doesn't need to know about Merkle hashing.
+#[tauri::command]
+pub fn build_pool_params_json(request: BuildPoolParamsRequest) -> Result<String, String> {
+    let table_root = deadcat_sdk::lmsr_table_root(&request.table_values)
+        .map_err(|e| format!("table root: {e}"))?;
+    let params = deadcat_sdk::LmsrPoolParams {
+        yes_asset_id: decode_hex32("yes_asset_id", &request.yes_asset_id)?,
+        no_asset_id: decode_hex32("no_asset_id", &request.no_asset_id)?,
+        collateral_asset_id: decode_hex32("collateral_asset_id", &request.collateral_asset_id)?,
+        lmsr_table_root: table_root,
+        table_depth: request.table_depth,
+        q_step_lots: request.q_step_lots,
+        s_bias: request.s_bias,
+        s_max_index: request.s_max_index,
+        half_payout_sats: request.half_payout_sats,
+        fee_bps: request.fee_bps,
+        min_r_yes: request.min_r_yes,
+        min_r_no: request.min_r_no,
+        min_r_collateral: request.min_r_collateral,
+        cosigner_pubkey: decode_hex32("cosigner_pubkey", &request.cosigner_pubkey)?,
+    };
+    params
+        .validate()
+        .map_err(|e| format!("invalid pool params: {e}"))?;
+    serde_json::to_string(&params).map_err(|e| format!("serialize pool params: {e}"))
+}
+
+#[derive(Deserialize)]
 pub struct CreateLmsrPoolRequest {
     pub market_params_json: String,
     pub pool_params_json: String,
@@ -2490,13 +2615,31 @@ pub async fn scan_lmsr_pool(
     scan_lmsr_pool_inner(pool_id, app).await
 }
 
+/// Retrieve stored table values for a pool, or error if missing.
+fn get_pool_table_values(
+    store: &mut deadcat_store::DeadcatStore,
+    pool_id: &str,
+) -> Result<Vec<u64>, String> {
+    let pools = store
+        .list_lmsr_pools(&LmsrPoolFilter {
+            pool_id: Some(pool_id.to_string()),
+            ..Default::default()
+        })
+        .map_err(|e| format!("query pool: {e}"))?;
+    let pool = pools
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("unknown pool_id {pool_id}"))?;
+    pool.lmsr_table_values
+        .ok_or_else(|| format!("pool {pool_id}: missing stored table values"))
+}
+
 #[derive(Deserialize)]
 pub struct AdjustLmsrPoolTauriRequest {
     pub pool_id: String,
     pub new_reserves_yes: u64,
     pub new_reserves_no: u64,
     pub new_reserves_lbtc: u64,
-    pub table_values: Vec<u64>,
     pub tx_options: deadcat_sdk::TxOptions,
     pub pool_index: Option<u32>,
 }
@@ -2512,23 +2655,62 @@ pub struct AdjustLmsrPoolResponse {
 }
 
 /// Adjust an LMSR pool's reserves via AdminAdjust transition.
-///
-/// Requires the pool scan to return unblinded UTXOs — not yet wired.
-/// Returns an error until full pool-UTXO passthrough is implemented.
 #[tauri::command]
 pub async fn adjust_lmsr_pool(
-    _request: AdjustLmsrPoolTauriRequest,
-    _app: tauri::AppHandle,
+    request: AdjustLmsrPoolTauriRequest,
+    app: tauri::AppHandle,
 ) -> Result<AdjustLmsrPoolResponse, String> {
-    Err("adjust_lmsr_pool is not yet fully wired — pool UTXO passthrough required".to_string())
+    let table_values = {
+        let store_arc = get_store(&app)?;
+        let mut store = store_arc.lock().map_err(|_| "store lock failed")?;
+        get_pool_table_values(&mut store, &request.pool_id)?
+    };
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let locator = node
+        .resolve_lmsr_pool_locator(&request.pool_id)
+        .map_err(|e| format!("{e}"))?;
+    let (_snapshot, mut adjust_req) = node
+        .scan_for_adjust(locator)
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    adjust_req.new_reserves = deadcat_sdk::PoolReserves {
+        r_yes: request.new_reserves_yes,
+        r_no: request.new_reserves_no,
+        r_lbtc: request.new_reserves_lbtc,
+    };
+    adjust_req.table_values = table_values;
+    adjust_req.pool_index = request.pool_index.unwrap_or(0);
+
+    let prepared = node
+        .prepare_adjust_lmsr_pool(adjust_req, request.tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let result = node
+        .broadcast_prepared_adjust_lmsr_pool(prepared)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
+
+    bump_revision_and_emit(&app).await?;
+
+    Ok(AdjustLmsrPoolResponse {
+        txid: result.txid.to_string(),
+        pool_id: result.new_snapshot.locator.pool_id.to_hex(),
+        current_s_index: result.new_snapshot.current_s_index,
+        reserve_yes: result.new_snapshot.reserves.r_yes,
+        reserve_no: result.new_snapshot.reserves.r_no,
+        reserve_collateral: result.new_snapshot.reserves.r_lbtc,
+    })
 }
 
 #[derive(Deserialize)]
 pub struct CloseLmsrPoolTauriRequest {
     pub pool_id: String,
-    pub table_values: Vec<u64>,
     pub tx_options: deadcat_sdk::TxOptions,
-    pub pool_index: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -2540,15 +2722,74 @@ pub struct CloseLmsrPoolResponse {
 }
 
 /// Close an LMSR pool by adjusting reserves to covenant minimums.
-///
-/// Requires the pool scan to return unblinded UTXOs — not yet wired.
-/// Returns an error until full pool-UTXO passthrough is implemented.
 #[tauri::command]
 pub async fn close_lmsr_pool(
-    _request: CloseLmsrPoolTauriRequest,
-    _app: tauri::AppHandle,
+    request: CloseLmsrPoolTauriRequest,
+    app: tauri::AppHandle,
 ) -> Result<CloseLmsrPoolResponse, String> {
-    Err("close_lmsr_pool is not yet fully wired — pool UTXO passthrough required".to_string())
+    let table_values = {
+        let store_arc = get_store(&app)?;
+        let mut store = store_arc.lock().map_err(|_| "store lock failed")?;
+        get_pool_table_values(&mut store, &request.pool_id)?
+    };
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let locator = node
+        .resolve_lmsr_pool_locator(&request.pool_id)
+        .map_err(|e| format!("{e}"))?;
+    let (_snapshot, mut adjust_req) = node
+        .scan_for_adjust(locator.clone())
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    // Close = adjust reserves to covenant minimums.
+    let params: deadcat_sdk::LmsrPoolParams = serde_json::from_str(&{
+        let store_arc = get_store(&app)?;
+        let mut store = store_arc.lock().map_err(|_| "store lock failed")?;
+        let pools = store
+            .list_lmsr_pools(&LmsrPoolFilter {
+                pool_id: Some(request.pool_id.clone()),
+                ..Default::default()
+            })
+            .map_err(|e| format!("query pool: {e}"))?;
+        pools
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("unknown pool_id {}", request.pool_id))?
+            .params_json
+    })
+    .map_err(|e| format!("invalid pool params: {e}"))?;
+
+    let current_reserves = adjust_req.current_reserves;
+    adjust_req.new_reserves = deadcat_sdk::PoolReserves {
+        r_yes: params.min_r_yes,
+        r_no: params.min_r_no,
+        r_lbtc: params.min_r_collateral,
+    };
+    adjust_req.table_values = table_values;
+
+    let prepared = node
+        .prepare_adjust_lmsr_pool(adjust_req, request.tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let result = node
+        .broadcast_prepared_adjust_lmsr_pool(prepared)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    drop(guard);
+
+    bump_revision_and_emit(&app).await?;
+
+    Ok(CloseLmsrPoolResponse {
+        txid: result.txid.to_string(),
+        reclaimed_yes: current_reserves.r_yes.saturating_sub(params.min_r_yes),
+        reclaimed_no: current_reserves.r_no.saturating_sub(params.min_r_no),
+        reclaimed_collateral: current_reserves
+            .r_lbtc
+            .saturating_sub(params.min_r_collateral),
+    })
 }
 
 #[derive(Serialize)]

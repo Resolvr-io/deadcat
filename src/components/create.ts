@@ -250,6 +250,12 @@ export function renderCreateMarket(): string {
               <input id="create-resolution-source" value="${escapeAttr(state.createResolutionSource)}" maxlength="120" class="dc-input" placeholder="Official source (e.g., NHC advisory, FEC filing, exchange index)" />
             </div>
 
+            <div>
+              <label for="create-cpt-sats" class="mb-1 block text-xs text-slate-400">Collateral per token (sats)</label>
+              <input id="create-cpt-sats" type="number" min="1" step="1" value="${state.createCptSats}" class="dc-input" placeholder="5000" />
+              <p class="mt-1 text-xs text-slate-500">Full contract payout = 2 &times; this value. Default: 5,000 sats (YES + NO = 10,000).</p>
+            </div>
+
           </div>
         </section>
 
@@ -262,6 +268,7 @@ export function renderCreateMarket(): string {
             <p class="text-xs text-slate-400">Category: <span class="text-slate-200">${escapeHtml(state.createCategory)}</span></p>
             <p class="text-xs text-slate-400">Settlement deadline: <span class="text-slate-200">${escapeHtml(state.createSettlementInput ? settlementDisplay : "Not set")}</span></p>
             <p class="text-xs text-slate-400">Resolution source: <span class="text-slate-200">${escapeHtml(state.createResolutionSource.trim() || "Not set")}</span></p>
+            <p class="text-xs text-slate-400">Contract value: <span class="text-slate-200">YES + NO = ${(state.createCptSats * 2).toLocaleString()} sats</span></p>
           </div>
           <button data-action="submit-create-market" class="mt-4 w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50" ${state.marketCreating ? "disabled" : ""}>${state.marketCreating ? "Creating Market..." : "Create Market"}</button>
           <p class="mt-2 text-xs text-slate-500">${state.marketCreating ? "Building transaction, broadcasting, and announcing. This may take a moment." : "Creates the on-chain contract and announces the market. Your key is the oracle signing key."}</p>

@@ -3,6 +3,7 @@ export type NavCategory =
   | "Ending Soon"
   | "New"
   | "My Markets"
+  | "Resolved"
   | "Politics"
   | "Sports"
   | "Culture"
@@ -11,9 +12,9 @@ export type NavCategory =
   | "Macro";
 export type MarketCategory = Exclude<
   NavCategory,
-  "Trending" | "Ending Soon" | "New" | "My Markets"
+  "Trending" | "Ending Soon" | "New" | "My Markets" | "Resolved"
 >;
-export type ViewMode = "home" | "detail" | "create" | "wallet";
+export type ViewMode = "home" | "detail" | "create";
 export type Side = "yes" | "no";
 export type OrderType = "market" | "limit";
 export type ActionTab = "trade" | "issue" | "redeem" | "cancel";
@@ -141,6 +142,11 @@ export type DiscoveredMarket = {
   nostr_event_json?: string | null;
   yes_price_bps?: number | null;
   no_price_bps?: number | null;
+  dormant_txid?: string | null;
+  unresolved_txid?: string | null;
+  resolved_yes_txid?: string | null;
+  resolved_no_txid?: string | null;
+  expired_txid?: string | null;
 };
 
 export type DiscoveredOrder = {
@@ -232,9 +238,11 @@ export type IdentityResponse = { pubkey_hex: string; npub: string };
 
 export type RelayEntry = { url: string; has_backup: boolean };
 export type RelayBackupResult = { url: string; has_backup: boolean };
+export type WalletEntry = { name: string; d_tag: string };
 export type NostrBackupStatus = {
   has_backup: boolean;
   relay_results: RelayBackupResult[];
+  wallets: WalletEntry[];
 };
 export type NostrProfile = {
   picture?: string;
@@ -278,6 +286,11 @@ export type Market = {
   change24h: number;
   volumeBtc: number;
   liquidityBtc: number;
+  dormantTxid: string | null;
+  unresolvedTxid: string | null;
+  resolvedYesTxid: string | null;
+  resolvedNoTxid: string | null;
+  expiredTxid: string | null;
 };
 
 export type PathAvailability = {
@@ -365,12 +378,7 @@ export type TradePreview = {
   executionPriceSats: number;
   notionalSats: number;
   executedSats: number;
-  executionFeeSats: number;
-  winFeeSats: number;
   grossPayoutSats: number;
-  netIfCorrectSats: number;
-  maxProfitSats: number;
-  netAfterFeesSats: number;
   slippagePct: number;
   positionContracts: number;
 };

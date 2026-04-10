@@ -153,6 +153,11 @@ pub struct MarketInfo {
     pub nevent: Option<String>,
     pub nostr_event_id: Option<String>,
     pub nostr_event_json: Option<String>,
+    pub dormant_txid: Option<String>,
+    pub unresolved_txid: Option<String>,
+    pub resolved_yes_txid: Option<String>,
+    pub resolved_no_txid: Option<String>,
+    pub expired_txid: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -912,6 +917,7 @@ impl DeadcatStore {
         Ok(pools
             .into_iter()
             .map(|pool| LmsrPoolSyncInfo {
+                reserve_yes_outpoint: pool.reserve_yes_outpoint.clone(),
                 pool_id: pool.pool_id,
                 market_id: pool.market_id,
                 creation_txid: pool.creation_txid,

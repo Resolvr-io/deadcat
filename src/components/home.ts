@@ -11,6 +11,7 @@ import {
 } from "../utils/format.ts";
 import { escapeAttr, escapeHtml } from "../utils/html.ts";
 import {
+  fullContractSats,
   getEndingSoonMarkets,
   getFilteredMarkets,
   getNewMarkets,
@@ -369,8 +370,8 @@ export function renderMyMarkets(): string {
         </div>
         <p class="mb-3 text-base font-normal text-slate-200">${escapeHtml(market.question)}</p>
         <div class="flex items-center justify-between text-sm">
-          <span class="text-emerald-300">${market.yesPrice != null ? `Yes ${formatProbabilityWithPercent(market.yesPrice)}` : "Buy Yes"}</span>
-          <span class="text-rose-300">${no != null ? `No ${formatProbabilityWithPercent(no)}` : "Buy No"}</span>
+          <span class="text-emerald-300">${market.yesPrice != null ? `Yes ${formatProbabilityWithPercent(market.yesPrice, fullContractSats(market))}` : "Buy Yes"}</span>
+          <span class="text-rose-300">${no != null ? `No ${formatProbabilityWithPercent(no, fullContractSats(market))}` : "Buy No"}</span>
         </div>
       </button>
     `;

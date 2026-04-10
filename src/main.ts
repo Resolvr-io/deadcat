@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { renderCreateMarket } from "./components/create.ts";
 import { renderDetail } from "./components/detail.ts";
 import { renderHome } from "./components/home.ts";
-import { renderOnboarding } from "./components/onboarding.ts";
+import { renderSetupModalOverlay } from "./components/onboarding.ts";
 // Components
 import { renderTopShell } from "./components/shell.ts";
 import { renderWallet } from "./components/wallet.ts";
@@ -27,7 +27,7 @@ import {
   refreshWallet,
   syncCurrentHeightFromLwk,
 } from "./services/wallet.ts";
-import { app, markets, state } from "./state.ts";
+import { app, loadPersistedTxLabels, markets, state } from "./state.ts";
 import type {
   IdentityResponse,
   NostrBackupStatus,
@@ -112,19 +112,22 @@ function scheduleChartAspectSync(): void {
 }
 
 function render(): void {
-  if (state.onboardingStep !== null) {
-    app.innerHTML = `<div class="min-h-screen text-slate-100 flex items-center justify-center">${renderOnboarding()}</div>`;
-    scheduleChartAspectSync();
-    return;
-  }
+  const walletScroll =
+    app.querySelector<HTMLElement>("[data-wallet-scroll]")?.scrollTop ?? 0;
   const html = `
     <div class="min-h-screen text-slate-100">
       ${renderTopShell()}
-      <main>${state.view === "wallet" ? renderWallet() : state.view === "home" ? renderHome() : state.view === "detail" ? renderDetail() : renderCreateMarket()}</main>
+      <main>${state.view === "home" ? renderHome() : state.view === "detail" ? renderDetail() : renderCreateMarket()}</main>
     </div>
+    ${state.walletOpen ? renderWallet() : ""}
     ${renderNostrEventModal()}
+    ${state.setupModalOpen ? renderSetupModalOverlay() : ""}
   `;
   app.innerHTML = html;
+  if (state.walletOpen && walletScroll > 0) {
+    const el = app.querySelector<HTMLElement>("[data-wallet-scroll]");
+    if (el) el.scrollTop = walletScroll;
+  }
   scheduleChartAspectSync();
 }
 
@@ -162,7 +165,7 @@ function openMarket(
   state.tradeContractsDraft = state.tradeContracts.toFixed(2);
   state.chartHoverMarketId = null;
   state.chartHoverX = null;
-  setLimitPriceSats(getBasePriceSats(market, nextSide));
+  setLimitPriceSats(market, getBasePriceSats(market, nextSide));
   render();
 
   // Fetch limit orders for the selected market in the background
@@ -181,7 +184,14 @@ function openMarket(
 }
 
 async function finishOnboarding(): Promise<void> {
+  state.setupModalOpen = false;
+  state.setupRequires = null;
   state.onboardingStep = null;
+  state.onboardingWalletOnly = false;
+  state.onboardingWalletName = "My Wallet";
+  state.onboardingSelectedWalletDTag = "";
+  state.onboardingPendingPubkey = "";
+  state.onboardingPendingNpub = "";
   state.onboardingWalletPassword = "";
   state.onboardingWalletMnemonic = "";
   state.onboardingNostrNsec = "";
@@ -193,7 +203,7 @@ async function finishOnboarding(): Promise<void> {
   state.onboardingBackupScanning = false;
 
   await fetchWalletStatus();
-  state.view = "wallet";
+  state.walletOpen = true;
   render();
 
   if (state.walletStatus === "unlocked") {
@@ -320,41 +330,18 @@ async function initApp(): Promise<void> {
       .catch(() => {});
   }
 
+  // If no identity, use default relay set for guest market discovery
+  if (!hasNostrIdentity) {
+    state.relays = [
+      { url: "wss://relay.damus.io", has_backup: false },
+      { url: "wss://relay.primal.net", has_backup: false },
+    ];
+  }
+
   // 2. Fetch wallet status
   await fetchWalletStatus();
 
-  // 3. Determine onboarding state
-  const needsNostr = !hasNostrIdentity;
-  const needsWallet = state.walletStatus === "not_created";
-
-  if (needsNostr || needsWallet) {
-    state.onboardingStep = needsNostr ? "nostr" : "wallet";
-    if (!needsNostr) {
-      state.onboardingNostrDone = true;
-    }
-    render();
-    await splashReady;
-    dismissSplash();
-    if (!needsNostr && needsWallet) {
-      state.onboardingBackupScanning = true;
-      render();
-      invoke<NostrBackupStatus>("check_nostr_backup")
-        .then((status) => {
-          if (status.has_backup) {
-            state.onboardingBackupFound = true;
-            state.onboardingWalletMode = "nostr-restore";
-          }
-        })
-        .catch(() => {})
-        .finally(() => {
-          state.onboardingBackupScanning = false;
-          render();
-        });
-    }
-    return;
-  }
-
-  // 4. Normal boot — both identity and wallet exist
+  // 3. Always proceed to load markets — setup is deferred to point of need
   if (state.walletStatus === "unlocked") {
     void refreshWallet(render);
     fetchOwnOrders()
@@ -373,6 +360,7 @@ async function initApp(): Promise<void> {
 
   // Dismiss splash after minimum time — don't wait for slow relay queries.
   // Markets load in background; skeleton cards show until ready.
+  loadPersistedTxLabels();
   await splashReady;
   dismissSplash();
   void loadMarkets().then(() => {
@@ -506,7 +494,5 @@ window.addEventListener("resize", () => {
 
 initApp();
 setInterval(() => {
-  if (state.onboardingStep === null) {
-    void syncCurrentHeightFromLwk("liquid-testnet", render);
-  }
+  void syncCurrentHeightFromLwk("liquid-testnet", render);
 }, 60_000);

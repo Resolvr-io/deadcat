@@ -47,9 +47,38 @@ export const app = document.querySelector<HTMLDivElement>(
 ) as HTMLDivElement;
 export const DEV_MODE = import.meta.env.DEV;
 
-export const EXECUTION_FEE_RATE = 0.01;
-export const WIN_FEE_RATE = 0.02;
-export const SATS_PER_FULL_CONTRACT = 100;
+const TX_LABELS_STORAGE_KEY = "deadcat_tx_labels";
+
+export function persistTxLabel(
+  txid: string,
+  label: string,
+  marketId: string,
+): void {
+  state.recentTxLabels.set(txid, { label, marketId });
+  try {
+    const stored = JSON.parse(
+      localStorage.getItem(TX_LABELS_STORAGE_KEY) ?? "{}",
+    );
+    stored[txid] = { label, marketId };
+    localStorage.setItem(TX_LABELS_STORAGE_KEY, JSON.stringify(stored));
+  } catch {
+    // localStorage unavailable — session-only labeling
+  }
+}
+
+export function loadPersistedTxLabels(): void {
+  try {
+    const stored = JSON.parse(
+      localStorage.getItem(TX_LABELS_STORAGE_KEY) ?? "{}",
+    );
+    for (const [txid, entry] of Object.entries(stored)) {
+      const { label, marketId } = entry as { label: string; marketId: string };
+      state.recentTxLabels.set(txid, { label, marketId });
+    }
+  } catch {
+    // localStorage unavailable
+  }
+}
 
 export const categories: NavCategory[] = [
   "Trending",
@@ -61,6 +90,7 @@ export const categories: NavCategory[] = [
   "Bitcoin",
   "Weather",
   "Macro",
+  "Resolved",
   "My Markets",
 ];
 
@@ -106,6 +136,9 @@ export function defaultSettlementInput(): string {
 export const state: {
   view: ViewMode;
   previousView: ViewMode | null;
+  walletOpen: boolean;
+  walletTokenPage: number;
+  walletTxPage: number;
   activeCategory: NavCategory;
   search: string;
   trendingIndex: number;
@@ -148,6 +181,7 @@ export const state: {
   createCategory: MarketCategory;
   createCategoryOpen: boolean;
   createResolutionSource: string;
+  createCptSats: number;
   createSettlementInput: string;
   createSettlementPickerOpen: boolean;
   createSettlementPickerDropdown: string;
@@ -220,22 +254,46 @@ export const state: {
   relayLoading: boolean;
   nostrProfile: NostrProfile | null;
   profilePicError: boolean;
+  setupModalOpen: boolean;
+  setupRequires: "wallet" | "identity+wallet" | null;
   onboardingStep: "nostr" | "wallet" | null;
   onboardingNostrMode: "generate" | "import";
   onboardingNostrNsec: string;
   onboardingNostrGeneratedNsec: string;
   onboardingNsecRevealed: boolean;
+  onboardingNsecAcknowledged: boolean;
   onboardingNostrDone: boolean;
+  onboardingPendingPubkey: string;
+  onboardingPendingNpub: string;
   onboardingWalletMode: "create" | "restore" | "nostr-restore";
+  onboardingWalletPasswordStep: boolean;
   onboardingWalletPassword: string;
   onboardingWalletPasswordConfirm: string;
   onboardingWalletMnemonic: string;
+  onboardingMnemonicVerifyStep: boolean;
+  onboardingMnemonicVerifyIndices: number[];
+  onboardingMnemonicVerifyInputs: string[];
   onboardingError: string;
   onboardingLoading: boolean;
   onboardingBackupFound: boolean;
   onboardingBackupScanning: boolean;
+  onboardingPasswordRevealed: boolean;
+  onboardingWalletOnly: boolean;
+  onboardingWalletName: string;
+  onboardingSelectedWalletDTag: string;
+  walletRecovering: boolean;
+  walletRecoveryPhase: number;
+  walletRecoverySummary: {
+    markets: number;
+    positions: number;
+    orders: number;
+    pools: number;
+    estimatedSats: number;
+  } | null;
   marketCreating: boolean;
   marketsLoading: boolean;
+  recentTxLabels: Map<string, { label: string; marketId: string }>;
+  attestationLoading: boolean;
   lastAttestationSig: string | null;
   lastAttestationOutcome: boolean | null;
   lastAttestationMarketId: string | null;
@@ -255,6 +313,9 @@ export const state: {
 } = {
   view: "home",
   previousView: null,
+  walletOpen: false,
+  walletTokenPage: 0,
+  walletTxPage: 0,
   activeCategory: "Trending",
   search: "",
   trendingIndex: 0,
@@ -297,6 +358,7 @@ export const state: {
   createCategory: "Bitcoin",
   createCategoryOpen: false,
   createResolutionSource: "",
+  createCptSats: 5000,
   createSettlementInput: defaultSettlementInput(),
   createSettlementPickerOpen: false,
   createSettlementPickerDropdown: "",
@@ -379,21 +441,39 @@ export const state: {
   relayLoading: false,
   nostrProfile: null,
   profilePicError: false,
+  setupModalOpen: false,
+  setupRequires: null,
   onboardingStep: null,
   onboardingNostrMode: "generate",
   onboardingNostrNsec: "",
   onboardingNostrGeneratedNsec: "",
   onboardingNsecRevealed: false,
+  onboardingNsecAcknowledged: false,
   onboardingNostrDone: false,
+  onboardingPendingPubkey: "",
+  onboardingPendingNpub: "",
   onboardingWalletMode: "create",
+  onboardingWalletPasswordStep: false,
   onboardingWalletPassword: "",
   onboardingWalletPasswordConfirm: "",
   onboardingWalletMnemonic: "",
+  onboardingMnemonicVerifyStep: false,
+  onboardingMnemonicVerifyIndices: [],
+  onboardingMnemonicVerifyInputs: [],
   onboardingError: "",
   onboardingLoading: false,
   onboardingBackupFound: false,
   onboardingBackupScanning: false,
+  onboardingPasswordRevealed: false,
+  onboardingWalletOnly: false,
+  onboardingWalletName: "My Wallet",
+  onboardingSelectedWalletDTag: "",
+  walletRecovering: false,
+  walletRecoveryPhase: 0,
+  walletRecoverySummary: null,
   marketsLoading: true,
+  recentTxLabels: new Map(),
+  attestationLoading: false,
   lastAttestationSig: null,
   lastAttestationOutcome: null,
   lastAttestationMarketId: null,

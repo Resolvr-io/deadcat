@@ -1,9 +1,4 @@
-import {
-  EXECUTION_FEE_RATE,
-  SATS_PER_FULL_CONTRACT,
-  state,
-  WIN_FEE_RATE,
-} from "../state.ts";
+import { state } from "../state.ts";
 import type { Market } from "../types.ts";
 import { hexToNpub } from "../utils/crypto.ts";
 import {
@@ -15,6 +10,7 @@ import {
 } from "../utils/format.ts";
 import {
   clampContractPriceSats,
+  fullContractSats,
   getEstimatedSettlementDate,
   getFullOrderbook,
   getPathAvailability,
@@ -164,12 +160,13 @@ export function chartSkeleton(
     return out;
   };
 
-  const fallbackYes = market.yesPrice ?? 0.5;
   const history = state.priceHistory.get(market.marketId);
-  const seriesData =
-    history && history.length > 0
-      ? buildChartFromHistory(market, history)
-      : buildChartSeriesData(market);
+  const hasHistory = history != null && history.length > 0;
+  const hasPrice = market.yesPrice != null || hasHistory;
+  const fallbackYes = market.yesPrice ?? 0.5;
+  const seriesData = hasHistory
+    ? buildChartFromHistory(market, history)
+    : buildChartSeriesData(market);
   const displayedYes = lastDefinedChartProbability(seriesData, fallbackYes);
   const { pointCount, scaleBlocks, startBlockHeight, xLabels, yesSeries } =
     seriesData;
@@ -261,8 +258,9 @@ export function chartSkeleton(
     )
     .join("");
 
-  const yesEnd = yesPoints[yesPoints.length - 1];
-  const noEnd = noPoints[noPoints.length - 1];
+  const defaultPoint = { x: plotRight, y: plotTop + plotYSpan / 2 };
+  const yesEnd = yesPoints[yesPoints.length - 1] ?? defaultPoint;
+  const noEnd = noPoints[noPoints.length - 1] ?? defaultPoint;
   const yesPct = Math.round(displayedYes * 100);
   const noPct = 100 - yesPct;
   const hoverRequested =
@@ -346,10 +344,10 @@ export function chartSkeleton(
   const readoutYesLabelY = readoutYesTop + readoutTokenOffsetY;
   const readoutNoPctY = readoutNoLabelY + readoutLineGap + readoutPctFont;
   const readoutYesPctY = readoutYesLabelY + readoutLineGap + readoutPctFont;
-  const readoutNoPct = hoverActive ? hoverNoPct : noPct;
-  const readoutYesPct = hoverActive ? hoverYesPct : yesPct;
-  const legendNoPct = hoverActive ? hoverNoPct : noPct;
-  const legendYesPct = hoverActive ? hoverYesPct : yesPct;
+  const readoutNoPct = hasPrice ? (hoverActive ? hoverNoPct : noPct) : null;
+  const readoutYesPct = hasPrice ? (hoverActive ? hoverYesPct : yesPct) : null;
+  const legendNoPct = hasPrice ? (hoverActive ? hoverNoPct : noPct) : null;
+  const legendYesPct = hasPrice ? (hoverActive ? hoverYesPct : yesPct) : null;
   const hoverTimeX = Math.max(plotLeft + 18, Math.min(plotRight - 18, hoverX));
   const hoverTimeText = `Block ${hoverBlockHeight.toLocaleString()}`;
   const hoverTimeFontSize = isHomeChart ? 7.8 : 8.4;
@@ -378,9 +376,9 @@ export function chartSkeleton(
     <div style="font-variant-numeric: tabular-nums;">
       <div class="relative ${isHomeChart ? "h-[17.5rem]" : "h-[19.5rem]"} rounded-xl border border-slate-800 bg-slate-950/60 p-3">
       <div class="mb-2 flex items-center gap-4 text-[14px] font-medium text-slate-300">
-        <span class="inline-flex items-center gap-1 text-slate-200">${legendIcon("#5eead4")}Yes ${legendYesPct}%</span>
-        <span class="inline-flex items-center gap-1 text-slate-200">${legendIcon("#fb7185")}No ${legendNoPct}%</span>
-        <span class="text-slate-500">Yes + No = ${SATS_PER_FULL_CONTRACT} sats</span>
+        <span class="inline-flex items-center gap-1 text-slate-200">${legendIcon("#5eead4")}Yes ${legendYesPct != null ? `${legendYesPct}%` : "\u2014"}</span>
+        <span class="inline-flex items-center gap-1 text-slate-200">${legendIcon("#fb7185")}No ${legendNoPct != null ? `${legendNoPct}%` : "\u2014"}</span>
+        <span class="text-slate-500">Yes + No = ${fullContractSats(market)} sats</span>
         ${
           market.isLive
             ? '<span class="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-400"><span class="liveIndicatorDot"></span>Live · Round 1</span>'
@@ -422,10 +420,14 @@ export function chartSkeleton(
           <text x="${hoverTimeTextX}" y="${hoverTimeTextY}" fill="#dbe7f6" font-size="${hoverTimeFontSize}" font-weight="430" text-anchor="middle" style="paint-order:stroke;stroke:#020617;stroke-width:${hoverTimeStrokeWidth};stroke-opacity:0.45;">${hoverTimeText}</text>`
               : ""
           }
-          <text x="${readoutX}" y="${readoutNoLabelY}" fill="#fda4af" font-size="${readoutLabelFont}" font-weight="520" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">NO</text>
+          ${
+            readoutNoPct != null
+              ? `<text x="${readoutX}" y="${readoutNoLabelY}" fill="#fda4af" font-size="${readoutLabelFont}" font-weight="520" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">NO</text>
           <text x="${readoutX}" y="${readoutNoPctY}" fill="#f98fa2" font-size="${readoutPctFont}" font-weight="560" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">${readoutNoPct}%</text>
           <text x="${readoutX}" y="${readoutYesLabelY}" fill="#99f6e4" font-size="${readoutLabelFont}" font-weight="520" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">YES</text>
-          <text x="${readoutX}" y="${readoutYesPctY}" fill="#84f4cb" font-size="${readoutPctFont}" font-weight="560" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">${readoutYesPct}%</text>
+          <text x="${readoutX}" y="${readoutYesPctY}" fill="#84f4cb" font-size="${readoutPctFont}" font-weight="560" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">${readoutYesPct}%</text>`
+              : `<text x="${readoutX}" y="${(readoutNoPctY + readoutYesPctY) / 2}" fill="#64748b" font-size="${readoutLabelFont}" font-weight="480" style="paint-order:stroke;stroke:#020617;stroke-width:${readoutStrokeWidth};stroke-opacity:0.82;">No price data</text>`
+          }
         </svg>
       </div>
       <div
@@ -526,29 +528,18 @@ export function renderActionTicket(market: Market): string {
       ? market.cptSats
       : 0;
   const redeemCollateral = state.tokensInput * redeemRate;
-  const yesDisplaySats = clampContractPriceSats(
-    Math.round((market.yesPrice ?? 0.5) * SATS_PER_FULL_CONTRACT),
-  );
-  const noDisplaySats = SATS_PER_FULL_CONTRACT - yesDisplaySats;
-  const estimatedExecutionFeeSats = Math.round(
-    preview.notionalSats * EXECUTION_FEE_RATE,
-  );
-  const estimatedGrossPayoutSats = Math.floor(
-    preview.requestedContracts * SATS_PER_FULL_CONTRACT,
-  );
-  const estimatedProfitSats = Math.max(
-    0,
-    estimatedGrossPayoutSats - preview.notionalSats,
-  );
-  const estimatedWinFeeSats =
-    state.tradeIntent === "open"
-      ? Math.round(estimatedProfitSats * WIN_FEE_RATE)
-      : 0;
-  const estimatedFeesSats = estimatedExecutionFeeSats + estimatedWinFeeSats;
-  const estimatedNetIfCorrectSats = Math.max(
-    0,
-    estimatedGrossPayoutSats - estimatedFeesSats,
-  );
+  const fc = fullContractSats(market);
+  const yesPrice = market.yesPrice;
+  const yesDisplaySats =
+    yesPrice != null
+      ? clampContractPriceSats(Math.round(yesPrice * fc), fc)
+      : null;
+  const noDisplaySats = yesDisplaySats != null ? fc - yesDisplaySats : null;
+  const yesLabel =
+    yesDisplaySats != null ? `Yes ${yesDisplaySats} sats` : "Yes \u2014";
+  const noLabel =
+    noDisplaySats != null ? `No ${noDisplaySats} sats` : "No \u2014";
+  const estimatedGrossPayoutSats = Math.floor(preview.requestedContracts * fc);
   const routeLegsHtml = quote
     ? quote.legs
         .map((leg, idx) => {
@@ -573,8 +564,8 @@ export function renderActionTicket(market: Market): string {
         </div>
       </div>
       <div class="mb-3 grid grid-cols-2 gap-2">
-        <button data-side="yes" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "yes" ? (state.tradeIntent === "open" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">Yes ${yesDisplaySats} sats</button>
-        <button data-side="no" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "no" ? (state.tradeIntent === "open" ? "border-rose-400 bg-rose-400/20 text-rose-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">No ${noDisplaySats} sats</button>
+        <button data-side="yes" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "yes" ? (state.tradeIntent === "open" ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">${yesLabel}</button>
+        <button data-side="no" class="rounded-xl border px-3 py-3 text-lg font-semibold ${state.selectedSide === "no" ? (state.tradeIntent === "open" ? "border-rose-400 bg-rose-400/20 text-rose-200" : "border-slate-400 bg-slate-400/15 text-slate-200") : "border-slate-700 text-slate-300"}">${noLabel}</button>
       </div>
       ${
         state.orderType === "limit"
@@ -624,7 +615,7 @@ export function renderActionTicket(market: Market): string {
           ? `
       <div class="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
         <div class="flex items-center justify-between py-1"><span>Order type</span><span>Limit</span></div>
-        <div class="flex items-center justify-between py-1"><span>Price</span><span>${Math.round(state.limitPrice * SATS_PER_FULL_CONTRACT)} sats</span></div>
+        <div class="flex items-center justify-between py-1"><span>Price</span><span>${Math.round(state.limitPrice * fc)} sats</span></div>
         <div class="flex items-center justify-between py-1"><span>Amount</span><span>${currentDirection === "buy" ? formatSats(Math.max(1, Math.floor(state.tradeSizeSats))) : `${Math.max(1, Math.floor(state.tradeContracts))} contracts`}</span></div>
         <div class="mt-1 flex items-center justify-between py-1 text-xs text-slate-500"><span>Side</span><span>${state.selectedSide.toUpperCase()} · ${currentDirection}</span></div>
       </div>
@@ -641,12 +632,11 @@ export function renderActionTicket(market: Market): string {
         ${
           state.tradeIntent === "open"
             ? `<div class="flex items-center justify-between py-1"><span>You pay</span><span>${formatSats(preview.notionalSats)}</span></div>
-        <div class="flex items-center justify-between py-1"><span>If filled & correct</span><span>${formatSats(estimatedNetIfCorrectSats)}</span></div>`
-            : `<div class="flex items-center justify-between py-1"><span>You receive (if filled)</span><span>${formatSats(Math.max(0, preview.notionalSats - estimatedExecutionFeeSats))}</span></div>
+        <div class="flex items-center justify-between py-1"><span>If filled & correct</span><span>${formatSats(estimatedGrossPayoutSats)}</span></div>`
+            : `<div class="flex items-center justify-between py-1"><span>You receive (if filled)</span><span>${formatSats(preview.notionalSats)}</span></div>
         <div class="flex items-center justify-between py-1"><span>Position remaining (if filled)</span><span>${Math.max(0, selectedPositionContracts - preview.requestedContracts).toFixed(2)} contracts</span></div>`
         }
-        <div class="flex items-center justify-between py-1"><span>Estimated fees</span><span>${formatSats(estimatedFeesSats)}</span></div>
-        <div class="mt-1 flex items-center justify-between py-1 text-xs text-slate-500"><span>Price</span><span>${executionPriceSats} sats · Yes + No = ${SATS_PER_FULL_CONTRACT}</span></div>
+        <div class="mt-1 flex items-center justify-between py-1 text-xs text-slate-500"><span>Price</span><span>${executionPriceSats} sats · Yes + No = ${fc}</span></div>
       </div>
       ${
         state.tradeQuoteLoading
@@ -669,7 +659,15 @@ export function renderActionTicket(market: Market): string {
           ? `<p class="mt-3 text-xs text-rose-300">${state.tradeError}</p>`
           : ""
       }
-      <button data-action="submit-trade" ${tradeBusy ? "disabled" : ""} class="mt-4 w-full rounded-lg ${tradeBusy ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 font-semibold">${state.tradeExecuteLoading ? "Executing..." : state.tradeQuoteLoading ? "Quoting..." : ctaLabel}</button>
+      ${
+        state.walletStatus !== "unlocked"
+          ? `<div class="mt-4 rounded-lg border border-slate-700 bg-slate-900/60 p-4 text-center">
+        <p class="text-sm font-medium text-slate-300">Create a wallet to trade</p>
+        <p class="text-xs text-slate-500 mt-1">Your quote will be preserved</p>
+        <button data-action="setup-wallet-from-quote" class="mt-3 w-full rounded-lg bg-emerald-400 px-4 py-2.5 font-semibold text-slate-950 hover:bg-emerald-300 transition">Set up wallet</button>
+      </div>`
+          : `<button data-action="submit-trade" ${tradeBusy ? "disabled" : ""} class="mt-4 w-full rounded-lg ${tradeBusy ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 font-semibold">${state.tradeExecuteLoading ? "Executing..." : state.tradeQuoteLoading ? "Quoting..." : ctaLabel}</button>`
+      }
       `
       }
       <div class="mt-3 flex items-center justify-between text-xs text-slate-400">
@@ -779,15 +777,37 @@ export function renderActionTicket(market: Market): string {
           if (marketPools.length === 0)
             return '<p class="text-xs text-slate-500">No active pools for this market.</p>';
           return marketPools
-            .map(
-              (
-                p,
-              ) => `<div class="flex items-center justify-between border-b border-slate-800 py-2 text-xs">
-            <span class="mono text-slate-300">${p.pool_id.slice(0, 10)}...</span>
-            <span class="text-slate-400">Y:${p.reserve_yes} N:${p.reserve_no} L:${p.reserve_collateral}</span>
-            <span class="text-slate-500">s:${p.current_s_index}</span>
-          </div>`,
-            )
+            .map((p) => {
+              const poolParams = (() => {
+                try {
+                  return JSON.parse(p.params_json) as {
+                    fee_bps?: number;
+                    half_payout_sats?: number;
+                  };
+                } catch {
+                  return null;
+                }
+              })();
+              const feeLine =
+                poolParams?.fee_bps != null ? `${poolParams.fee_bps} bps` : "";
+              const payoutLine =
+                poolParams?.half_payout_sats != null
+                  ? `U/2=${poolParams.half_payout_sats}`
+                  : "";
+              const paramsLabel = [feeLine, payoutLine]
+                .filter(Boolean)
+                .join(" · ");
+              return `<div class="border-b border-slate-800 py-2 text-xs">
+            <div class="flex items-center justify-between">
+              <span class="mono text-slate-300">${p.pool_id.slice(0, 10)}...</span>
+              <span class="text-slate-400">Y:${p.reserve_yes} N:${p.reserve_no} L:${p.reserve_collateral} · s:${p.current_s_index}</span>
+              <span class="flex gap-1">
+                <button data-action="scan-pool" data-pool-id="${p.pool_id}" class="rounded border border-slate-700 px-2 py-0.5 text-slate-400 transition hover:bg-slate-800" title="Refresh pool state">&#x21bb;</button>
+                <button data-action="close-pool" data-pool-id="${p.pool_id}" class="rounded border border-rose-800 px-2 py-0.5 text-rose-400 transition hover:bg-rose-900/30">Close</button>
+              </span>
+            </div>${paramsLabel ? `<div class="mt-0.5 text-slate-500">${paramsLabel}</div>` : ""}
+          </div>`;
+            })
             .join("");
         })()}
         ${
@@ -936,8 +956,8 @@ export function renderDetail(): string {
             ${market.yesPrice != null ? `<p class="mb-2 text-5xl font-bold text-emerald-400">${Math.round(market.yesPrice * 100)}<span class="text-2xl text-slate-400">%</span> <span class="text-lg font-normal text-slate-500">chance</span></p>` : ""}
 
             <div class="mb-4 flex items-center gap-3">
-              <button data-action="side" data-side="yes" class="w-36 rounded-full bg-emerald-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-emerald-400">${market.yesPrice != null ? "Yes " + Math.round(market.yesPrice * 100) + "%" : "Buy Yes"}</button>
-              <button data-action="side" data-side="no" class="w-36 rounded-full bg-rose-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-rose-400">${noPrice != null ? "No " + Math.round(noPrice * 100) + "%" : "Buy No"}</button>
+              <button data-action="side" data-side="yes" class="w-36 rounded-full bg-emerald-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-emerald-400">${market.yesPrice != null ? `Yes ${Math.round(market.yesPrice * 100)}%` : "Buy Yes"}</button>
+              <button data-action="side" data-side="no" class="w-36 rounded-full bg-rose-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-rose-400">${noPrice != null ? `No ${Math.round(noPrice * 100)}%` : "Buy No"}</button>
             </div>
 
             <p class="mb-4 text-xs text-slate-500">${formatVolumeBtc(market.volumeBtc)} vol · Est. by ${formatSettlementDateTime(estimatedSettlementDate)} · ${formatTimeRemaining(market.expiryHeight - market.currentHeight)}</p>
@@ -954,6 +974,58 @@ export function renderDetail(): string {
 
             ${chartSkeleton(market, "detail")}
           </div>
+
+          ${(() => {
+            const pos = getPositionContracts(market);
+            const isResolved = market.state === 2 || market.state === 3;
+            const canExpRedeem = paths.expiryRedeem;
+            if (!isResolved && !canExpRedeem) return "";
+            const winningSide =
+              market.state === 2 ? "yes" : market.state === 3 ? "no" : null;
+            const winningTokens =
+              winningSide === "yes"
+                ? pos.yes
+                : winningSide === "no"
+                  ? pos.no
+                  : 0;
+            const expiryTokens = canExpRedeem ? pos.yes + pos.no : 0;
+            const redeemableTokens = isResolved ? winningTokens : expiryTokens;
+            if (redeemableTokens <= 0) return "";
+            const payoutPerToken = isResolved
+              ? 2 * market.cptSats
+              : market.cptSats;
+            const estimatedPayout = redeemableTokens * payoutPerToken;
+            const redeemAction = isResolved
+              ? "redeem-winnings"
+              : "redeem-expired";
+            const label = isResolved
+              ? `Redeem ${redeemableTokens} winning ${winningSide?.toUpperCase()} token${redeemableTokens !== 1 ? "s" : ""}`
+              : `Redeem ${redeemableTokens} expired token${redeemableTokens !== 1 ? "s" : ""}`;
+            return `
+          <section class="rounded-[21px] border border-emerald-700/60 bg-emerald-950/20 p-[21px]">
+            <p class="mb-2 text-sm font-semibold text-emerald-200">${isResolved ? `Market resolved ${winningSide?.toUpperCase()}` : "Market expired"} — you have redeemable tokens</p>
+            <p class="mb-3 text-xs text-slate-400">Estimated payout: ${formatSats(estimatedPayout)}</p>
+            <button data-action="${redeemAction}" data-tokens="${redeemableTokens}" class="w-full rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950">${label}</button>
+          </section>`;
+          })()}
+
+          ${
+            state.marketMakerMode &&
+            state.nostrPubkey &&
+            state.nostrPubkey === market.oraclePubkey &&
+            market.state === 1 &&
+            !market.resolveTx
+              ? `
+          <section class="rounded-[21px] border border-amber-700/60 bg-amber-950/20 p-[21px]">
+            <p class="mb-2 text-sm font-semibold text-amber-200">You are the oracle for this market</p>
+            <p class="mb-3 text-xs text-slate-400">Publish an attestation and execute the on-chain resolution in one step.</p>
+            <div class="flex items-center gap-2">
+              <button data-action="oracle-attest-yes" ${state.attestationLoading ? "disabled" : ""} class="rounded-lg ${state.attestationLoading ? "bg-slate-600 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 text-sm font-semibold">${state.attestationLoading ? "Attesting..." : "Resolve YES"}</button>
+              <button data-action="oracle-attest-no" ${state.attestationLoading ? "disabled" : ""} class="rounded-lg ${state.attestationLoading ? "bg-slate-600 text-slate-400" : "bg-rose-400 text-slate-950"} px-4 py-2 text-sm font-semibold">${state.attestationLoading ? "Attesting..." : "Resolve NO"}</button>
+            </div>
+          </section>`
+              : ""
+          }
 
           <section class="rounded-[21px] border border-slate-800 bg-slate-950/55 px-[21px] py-3">
             <div class="flex items-center justify-between gap-4">
@@ -982,35 +1054,6 @@ export function renderDetail(): string {
                 <div class="kv-row"><span class="shrink-0">Resolve status</span><span class="${market.resolveTx?.sigVerified ? "text-emerald-300" : "text-slate-400"}">${market.resolveTx ? `Attested ${market.resolveTx.outcome.toUpperCase()} @ ${market.resolveTx.height}` : "Unresolved"}</span></div>
                 ${market.resolveTx ? `<div class="kv-row"><span class="shrink-0">Sig hash</span><button data-action="copy-to-clipboard" data-copy-value="${market.resolveTx.signatureHash}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.resolveTx.signatureHash}">${market.resolveTx.signatureHash.slice(0, 8)}...${market.resolveTx.signatureHash.slice(-8)}</button></div><div class="kv-row"><span class="shrink-0">Resolve tx</span><button data-action="copy-to-clipboard" data-copy-value="${market.resolveTx.txid}" class="mono truncate text-right hover:text-slate-100 transition cursor-pointer" title="${market.resolveTx.txid}">${market.resolveTx.txid.slice(0, 8)}...${market.resolveTx.txid.slice(-8)}</button></div>` : ""}
               </div>
-              ${
-                state.marketMakerMode &&
-                state.nostrPubkey &&
-                state.nostrPubkey === market.oraclePubkey &&
-                market.state === 1 &&
-                !market.resolveTx
-                  ? `
-              <div class="mt-3 rounded-lg border border-amber-700/60 bg-amber-950/20 p-3">
-                <p class="mb-2 text-sm font-semibold text-amber-200">You are the oracle for this market</p>
-                <div class="flex items-center gap-2">
-                  <button data-action="oracle-attest-yes" class="rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950">Resolve YES</button>
-                  <button data-action="oracle-attest-no" class="rounded-lg bg-rose-400 px-4 py-2 text-sm font-semibold text-slate-950">Resolve NO</button>
-                </div>
-              </div>`
-                  : ""
-              }
-              ${
-                state.marketMakerMode &&
-                state.lastAttestationSig &&
-                state.lastAttestationMarketId === market.marketId &&
-                market.state === 1
-                  ? `
-              <div class="mt-3 rounded-lg border border-emerald-700/60 bg-emerald-950/20 p-3">
-                <p class="mb-2 text-sm font-semibold text-emerald-200">Attestation published — execute on-chain resolution</p>
-                <p class="mb-2 text-xs text-slate-300">Outcome: ${state.lastAttestationOutcome ? "YES" : "NO"} | Sig: ${state.lastAttestationSig.slice(0, 24)}...</p>
-                <button data-action="execute-resolution" ${state.resolutionExecuting ? "disabled" : ""} class="w-full rounded-lg ${state.resolutionExecuting ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 text-sm font-semibold">${state.resolutionExecuting ? "Executing..." : "Execute Resolution On-Chain"}</button>
-              </div>`
-                  : ""
-              }
             </section>
 
             <section class="rounded-[21px] border ${market.collateralUtxos.length === 1 ? "border-emerald-800" : "border-rose-800"} bg-slate-950/55 p-[21px]">
@@ -1058,7 +1101,15 @@ export function renderDetail(): string {
           }
         </section>
 
-        ${renderActionTicket(market)}
+        ${
+          market.state === 1 || market.state === 0
+            ? renderActionTicket(market)
+            : `
+        <aside class="rounded-[21px] border border-slate-800 bg-slate-900/80 p-[21px]">
+          <p class="panel-subtitle">Market ${market.state === 2 ? "Resolved YES" : market.state === 3 ? "Resolved NO" : "Expired"}</p>
+          <p class="mt-2 text-sm text-slate-400">Trading is closed. ${market.state === 2 || market.state === 3 ? "Holders of winning tokens can redeem above." : "Token holders can redeem via expiry above."}</p>
+        </aside>`
+        }
       </div>
     </div>
   `;

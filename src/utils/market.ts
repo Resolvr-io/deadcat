@@ -1,10 +1,4 @@
-import {
-  EXECUTION_FEE_RATE,
-  markets,
-  SATS_PER_FULL_CONTRACT,
-  state,
-  WIN_FEE_RATE,
-} from "../state.ts";
+import { markets, state } from "../state.ts";
 import type {
   CovenantState,
   DiscoveredOrder,
@@ -76,18 +70,31 @@ export function getSelectedMarket(): Market {
   return getMarketById(state.selectedMarketId);
 }
 
-export function getTrendingMarkets(): Market[] {
-  return markets.slice(0, 7);
+function isSettled(market: Market): boolean {
+  return market.state === 2 || market.state === 3 || market.state === 4;
 }
 
-export function clampContractPriceSats(value: number): number {
-  return Math.max(1, Math.min(SATS_PER_FULL_CONTRACT - 1, Math.round(value)));
+export function getTrendingMarkets(): Market[] {
+  return markets.filter((m) => !isSettled(m)).slice(0, 7);
+}
+
+/** Full payout for a winning token: 2 × collateral_per_token. */
+export function fullContractSats(market: Market): number {
+  return 2 * market.cptSats;
+}
+
+export function clampContractPriceSats(
+  value: number,
+  fullContract: number,
+): number {
+  return Math.max(1, Math.min(fullContract - 1, Math.round(value)));
 }
 
 export function getBasePriceSats(market: Market, side: Side): number {
+  const fc = fullContractSats(market);
   const raw =
     side === "yes" ? (market.yesPrice ?? 0.5) : 1 - (market.yesPrice ?? 0.5);
-  return clampContractPriceSats(raw * SATS_PER_FULL_CONTRACT);
+  return clampContractPriceSats(raw * fc, fc);
 }
 
 export function getMarketSeed(market: Market): number {
@@ -160,7 +167,10 @@ export function getDiscoveredOrderbookLevels(
     if (!Number.isFinite(order.price) || order.price <= 0) continue;
     const contracts = getAvailableOrderContracts(order);
     if (contracts <= 0) continue;
-    const priceSats = clampContractPriceSats(order.price);
+    const priceSats = clampContractPriceSats(
+      order.price,
+      fullContractSats(market),
+    );
     grouped.set(priceSats, (grouped.get(priceSats) ?? 0) + contracts);
   }
 
@@ -327,9 +337,8 @@ export function estimateFill(
 }
 
 export function getTradePreview(market: Market): TradePreview {
-  const limitPriceSats = clampContractPriceSats(
-    state.limitPrice * SATS_PER_FULL_CONTRACT,
-  );
+  const fc = fullContractSats(market);
+  const limitPriceSats = clampContractPriceSats(state.limitPrice * fc, fc);
   const basePriceSats = getBasePriceSats(market, state.selectedSide);
   const levels = getOrderbookLevels(
     market,
@@ -360,21 +369,7 @@ export function getTradePreview(market: Market): TradePreview {
       ? Math.max(1, Math.floor(state.tradeSizeSats))
       : Math.max(0, Math.round(requestedContracts * referencePriceSats));
   const executedSats = Math.max(0, fill.totalSats);
-  const executionFeeSats = Math.round(executedSats * EXECUTION_FEE_RATE);
-  const grossPayoutSats = Math.floor(
-    fill.filledContracts * SATS_PER_FULL_CONTRACT,
-  );
-  const grossProfitSats = Math.max(0, grossPayoutSats - executedSats);
-  const winFeeSats =
-    state.tradeIntent === "open"
-      ? Math.round(grossProfitSats * WIN_FEE_RATE)
-      : 0;
-  const netIfCorrectSats = Math.max(
-    0,
-    grossPayoutSats - executionFeeSats - winFeeSats,
-  );
-  const maxProfitSats = Math.max(0, netIfCorrectSats - executedSats);
-  const netAfterFeesSats = Math.max(0, executedSats - executionFeeSats);
+  const grossPayoutSats = Math.floor(fill.filledContracts * fc);
   const slippagePct =
     fill.bestPriceSats > 0
       ? Math.max(
@@ -396,12 +391,7 @@ export function getTradePreview(market: Market): TradePreview {
     executionPriceSats,
     notionalSats,
     executedSats,
-    executionFeeSats,
-    winFeeSats,
     grossPayoutSats,
-    netIfCorrectSats,
-    maxProfitSats,
-    netAfterFeesSats,
     slippagePct,
     positionContracts,
   };
@@ -428,21 +418,26 @@ export function commitTradeContractsDraft(market: Market): void {
   state.tradeContractsDraft = String(clamped);
 }
 
-export function setLimitPriceSats(limitPriceSats: number): void {
-  const clampedSats = clampContractPriceSats(limitPriceSats);
-  state.limitPrice = clampedSats / SATS_PER_FULL_CONTRACT;
+export function setLimitPriceSats(
+  market: Market,
+  limitPriceSats: number,
+): void {
+  const fc = fullContractSats(market);
+  const clampedSats = clampContractPriceSats(limitPriceSats, fc);
+  state.limitPrice = clampedSats / fc;
   state.limitPriceDraft = String(clampedSats);
 }
 
-export function commitLimitPriceDraft(): void {
+export function commitLimitPriceDraft(market: Market): void {
+  const fc = fullContractSats(market);
   const sanitized = state.limitPriceDraft.replace(/[^\d]/g, "");
   if (sanitized.length === 0) {
     state.limitPriceDraft = String(
-      clampContractPriceSats(state.limitPrice * SATS_PER_FULL_CONTRACT),
+      clampContractPriceSats(state.limitPrice * fc, fc),
     );
     return;
   }
-  setLimitPriceSats(Math.floor(Number(sanitized)));
+  setLimitPriceSats(market, Math.floor(Number(sanitized)));
 }
 
 /** Markets sorted by nearest expiry (live only, not expired). */
@@ -469,14 +464,22 @@ export function getFilteredMarkets(): Market[] {
   const lowered = state.search.trim().toLowerCase();
   return markets
     .filter((market) => {
+      const settled = isSettled(market);
+      // "Resolved" tab: only settled markets.
+      if (state.activeCategory === "Resolved") return settled;
+      // "My Markets": show all regardless of state.
+      if (state.activeCategory === "My Markets") {
+        return (
+          state.nostrPubkey != null && market.oraclePubkey === state.nostrPubkey
+        );
+      }
+      // All other tabs: exclude settled markets.
+      if (settled) return false;
       const categoryMatch =
         state.activeCategory === "Trending" ||
         state.activeCategory === "Ending Soon" ||
         state.activeCategory === "New" ||
-        (state.activeCategory === "My Markets"
-          ? state.nostrPubkey != null &&
-            market.oraclePubkey === state.nostrPubkey
-          : market.category === state.activeCategory);
+        market.category === state.activeCategory;
       const searchMatch =
         lowered.length === 0 ||
         market.question.toLowerCase().includes(lowered) ||

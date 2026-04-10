@@ -61,6 +61,11 @@ export function discoveredToMarket(d: DiscoveredMarket): Market {
     change24h: 0,
     volumeBtc: 0,
     liquidityBtc: 0,
+    dormantTxid: d.dormant_txid ?? null,
+    unresolvedTxid: d.unresolved_txid ?? null,
+    resolvedYesTxid: d.resolved_yes_txid ?? null,
+    resolvedNoTxid: d.resolved_no_txid ?? null,
+    expiredTxid: d.expired_txid ?? null,
   };
 }
 
@@ -68,9 +73,16 @@ export async function loadMarkets(): Promise<void> {
   try {
     const stored = await invoke<DiscoveredMarket[]>("discover_contracts");
     setMarkets(stored.map(discoveredToMarket));
-  } catch (error) {
-    console.warn("Failed to load markets:", error);
-    setMarkets([]);
+  } catch {
+    // discover_contracts requires a Nostr node (identity). Fall back to list_contracts
+    // which reads directly from the store and works without identity.
+    try {
+      const stored = await invoke<DiscoveredMarket[]>("list_contracts");
+      setMarkets(stored.map(discoveredToMarket));
+    } catch (error) {
+      console.warn("Failed to load markets:", error);
+      setMarkets([]);
+    }
   }
 }
 
@@ -298,6 +310,6 @@ export function mergeOrdersIntoMarket(
 ): void {
   const market = markets.find((m) => m.marketId === marketId);
   if (market) {
-    market.limitOrders = orders;
+    market.limitOrders = orders.filter((o) => o.market_id === marketId);
   }
 }

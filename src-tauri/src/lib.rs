@@ -175,6 +175,22 @@ async fn get_wallet_status(app: AppHandle) -> Result<wallet::types::WalletStatus
 }
 
 #[tauri::command]
+async fn generate_mnemonic(app: AppHandle) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        let network = mgr.network().ok_or("Network not initialized")?;
+        let sdk_network = state::to_sdk_network(network);
+        deadcat_sdk::DeadcatNode::<deadcat_sdk::NoopStore>::generate_mnemonic(sdk_network)
+            .map_err(|e| format!("{e}"))
+    })
+    .await
+    .map_err(|e| format!("generate_mnemonic task failed: {e}"))?
+}
+
+#[tauri::command]
 async fn create_wallet(password: String, app: AppHandle) -> Result<String, String> {
     let app_handle = app.clone();
     tokio::task::spawn_blocking(move || {
@@ -1315,6 +1331,7 @@ pub fn run() {
             get_app_state,
             // Wallet
             get_wallet_status,
+            generate_mnemonic,
             create_wallet,
             restore_wallet,
             unlock_wallet,
@@ -1377,6 +1394,7 @@ pub fn run() {
             commands::list_own_orders,
             // LMSR Pools
             commands::generate_lmsr_table,
+            commands::build_pool_params_json,
             commands::create_lmsr_pool,
             commands::scan_lmsr_pool,
             commands::adjust_lmsr_pool,

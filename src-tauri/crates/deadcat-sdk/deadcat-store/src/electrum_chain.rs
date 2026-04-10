@@ -17,18 +17,28 @@ pub enum ElectrumChainError {
 
 pub struct ElectrumChainAdapter {
     electrum_url: String,
+    cached_client: std::cell::RefCell<Option<electrum_client::Client>>,
 }
 
 impl ElectrumChainAdapter {
     pub fn new(electrum_url: &str) -> Self {
         Self {
             electrum_url: electrum_url.to_string(),
+            cached_client: std::cell::RefCell::new(None),
         }
     }
 
     fn client(&self) -> Result<electrum_client::Client, ElectrumChainError> {
+        let mut cached = self.cached_client.borrow_mut();
+        if let Some(client) = cached.take() {
+            return Ok(client);
+        }
         electrum_client::Client::new(&self.electrum_url)
             .map_err(|e| ElectrumChainError::Electrum(e.to_string()))
+    }
+
+    fn return_client(&self, client: electrum_client::Client) {
+        *self.cached_client.borrow_mut() = Some(client);
     }
 
     fn script_hash_hex(script_pubkey: &[u8]) -> String {
@@ -46,6 +56,7 @@ impl ChainSource for ElectrumChainAdapter {
         let resp = client
             .raw_call("blockchain.headers.subscribe", [])
             .map_err(|e| ElectrumChainError::Electrum(e.to_string()))?;
+        self.return_client(client);
         let height = resp["height"].as_u64().ok_or_else(|| {
             ElectrumChainError::Parse("missing height in headers response".into())
         })?;
@@ -61,6 +72,7 @@ impl ChainSource for ElectrumChainAdapter {
                 [electrum_client::Param::String(script_hash_hex)],
             )
             .map_err(|e| ElectrumChainError::Electrum(e.to_string()))?;
+        self.return_client(client);
 
         let entries = resp
             .as_array()
@@ -147,6 +159,7 @@ impl ChainSource for ElectrumChainAdapter {
                     && hash == txid_display
                     && pos == vout as u64
                 {
+                    self.return_client(client);
                     return Ok(None);
                 }
             }
@@ -158,6 +171,7 @@ impl ChainSource for ElectrumChainAdapter {
                 [electrum_client::Param::String(script_hash_hex)],
             )
             .map_err(|e| ElectrumChainError::Electrum(e.to_string()))?;
+        self.return_client(client);
 
         if let Some(entries) = history.as_array() {
             for entry in entries {
@@ -198,6 +212,7 @@ impl ChainSource for ElectrumChainAdapter {
             "blockchain.transaction.get",
             [electrum_client::Param::String(txid_hex)],
         );
+        self.return_client(client);
 
         let resp = match response {
             Ok(resp) => resp,

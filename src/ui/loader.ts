@@ -10,7 +10,7 @@ export function loaderHtml(message?: string): string {
 }
 
 export function showOverlayLoader(message?: string): void {
-  if (document.getElementById("deadcat-overlay")) return;
+  if (!document.body || document.getElementById("deadcat-overlay")) return;
   const el = document.createElement("div");
   el.id = "deadcat-overlay";
   el.className = "deadcat-overlay";
@@ -19,6 +19,7 @@ export function showOverlayLoader(message?: string): void {
 }
 
 export function hideOverlayLoader(): void {
+  if (!document.body) return;
   const el = document.getElementById("deadcat-overlay");
   if (!el) return;
   el.classList.add("fade-out");

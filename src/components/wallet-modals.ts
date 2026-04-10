@@ -1,8 +1,8 @@
 import { btcLabel } from "../services/wallet.ts";
 import { state } from "../state.ts";
-import type { RelayBackupResult } from "../types.ts";
 import { hexToNpub } from "../utils/crypto.ts";
 import { escapeAttr, escapeHtml } from "../utils/html.ts";
+import { renderNostrBackupSection } from "./wallet/nostr-backup.ts";
 
 export function renderMnemonicGrid(mnemonic: string): string {
   const words = mnemonic.split(" ");
@@ -10,23 +10,33 @@ export function renderMnemonicGrid(mnemonic: string): string {
 }
 
 export function renderMnemonicWordsGrid(words: string[]): string {
-  return (
-    '<div class="grid grid-cols-3 gap-2">' +
-    words
-      .map(
-        (w, i) =>
-          '<div class="flex items-baseline gap-2 rounded bg-slate-800 px-3 py-2">' +
-          '<span class="text-xs text-slate-500 w-5 text-right shrink-0">' +
-          (i + 1) +
-          ".</span>" +
-          '<span class="mono text-sm text-slate-100 whitespace-nowrap">' +
-          escapeHtml(w) +
-          "</span>" +
-          "</div>",
-      )
-      .join("") +
-    "</div>"
-  );
+  const rows: string[][] = [];
+  for (let i = 0; i < words.length; i += 3) {
+    rows.push(words.slice(i, i + 3));
+  }
+  const rowsHtml = rows
+    .map((row, rowIdx) => {
+      const cells = row
+        .map(
+          (w, colIdx) =>
+            '<div class="flex items-baseline gap-1.5 min-w-0">' +
+            '<span class="text-xs text-slate-500 shrink-0">' +
+            (rowIdx * 3 + colIdx + 1) +
+            ".</span>" +
+            '<span class="mono text-sm text-slate-100">' +
+            escapeHtml(w) +
+            "</span>" +
+            "</div>",
+        )
+        .join("");
+      const divider =
+        rowIdx < rows.length - 1
+          ? '<div class="border-t border-slate-700/60"></div>'
+          : "";
+      return `<div class="grid grid-cols-3 gap-x-4 py-2.5">${cells}</div>${divider}`;
+    })
+    .join("");
+  return `<div>${rowsHtml}</div>`;
 }
 
 export function renderBackupModal(loading: boolean): string {
@@ -40,41 +50,10 @@ export function renderBackupModal(loading: boolean): string {
   let body: string;
   if ((state.walletData?.backupWords?.length ?? 0) > 0) {
     const copied = state.walletData?.backupCopied ?? false;
-    const backupStatus = state.nostrBackupStatus;
-    const securityInfoHtml =
-      '<details class="group">' +
-      '<summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-400 transition select-none">' +
-      "Why is this secure?" +
-      "</summary>" +
-      '<div class="mt-2 space-y-1.5 text-xs text-slate-500">' +
-      '<p><strong class="text-slate-400">NIP-44 encryption</strong> &mdash; Your recovery phrase is encrypted using the Nostr NIP-44 protocol (XChaCha20 + secp256k1 ECDH). Only your private key (nsec) can decrypt it.</p>' +
-      '<p><strong class="text-slate-400">Self-encrypted</strong> &mdash; The backup is encrypted to your own public key, so no one else can read it &mdash; not even the relay operators.</p>' +
-      '<p><strong class="text-slate-400">Stored as NIP-78</strong> &mdash; The encrypted data is published as a kind 30078 addressable event (application-specific data). It can be retrieved from any relay that has it.</p>' +
-      '<p><strong class="text-slate-400">Relay redundancy</strong> &mdash; The backup is sent to all your configured relays, so it survives even if some go offline.</p>' +
-      "</div>" +
-      "</details>";
-    const nostrBackupHtml = state.nostrNpub
-      ? '<div class="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">' +
-        '<p class="text-[11px] font-medium uppercase tracking-wider text-slate-500">Nostr Relay Backup</p>' +
-        (backupStatus?.has_backup
-          ? '<p class="text-xs text-emerald-400">Encrypted backup stored on ' +
-            backupStatus.relay_results.filter(
-              (r: RelayBackupResult) => r.has_backup,
-            ).length +
-            " of " +
-            backupStatus.relay_results.length +
-            " relays</p>"
-          : '<p class="text-xs text-slate-400">Encrypt and store your recovery phrase on Nostr relays using NIP-44.</p>' +
-            '<button data-action="nostr-backup-wallet" class="w-full rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-300 transition"' +
-            (state.nostrBackupLoading ? " disabled" : "") +
-            ">" +
-            (state.nostrBackupLoading
-              ? "Encrypting..."
-              : "Encrypt & Upload to Relays") +
-            "</button>") +
-        securityInfoHtml +
-        "</div>"
-      : "";
+    const nostrBackupHtml = renderNostrBackupSection({
+      action: "nostr",
+      showPasswordPrompt: false,
+    });
     body =
       renderMnemonicWordsGrid(state.walletData?.backupWords ?? []) +
       '<div class="flex gap-3">' +

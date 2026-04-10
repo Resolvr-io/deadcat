@@ -604,6 +604,11 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             nostr_event_json: None,
             yes_price_bps: None,
             no_price_bps: None,
+            dormant_txid: None,
+            unresolved_txid: None,
+            resolved_yes_txid: None,
+            resolved_no_txid: None,
+            expired_txid: None,
         };
 
         let parsed = ParsedDiscoveredMarketAnnouncement {
@@ -1570,21 +1575,43 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     /// Sync the wallet with the Electrum backend.
     pub async fn sync_wallet(&self) -> Result<(), NodeError> {
+        let t0 = std::time::Instant::now();
         let electrum_url = self
             .with_sdk(|sdk| {
                 sdk.sync()?;
                 Ok(sdk.electrum_url().to_string())
             })
             .await?;
+        log::info!(
+            "[node.sync_wallet] sdk.sync: {:.0}ms",
+            t0.elapsed().as_millis()
+        );
 
+        let t1 = std::time::Instant::now();
         let pending = if self.store.is_some() {
             let electrum_url_for_store = electrum_url.clone();
             match self
                 .with_store_blocking(move |store| {
-                    if let Err(e) = store.sync_own_order_state(&electrum_url_for_store) {
-                        log::warn!(
-                            "failed to sync own maker order state from {}: {e}",
-                            electrum_url_for_store
+                    // Only run the expensive chain sync if there are own orders.
+                    let has_own_orders = store
+                        .list_own_maker_pubkeys()
+                        .map(|pks| !pks.is_empty())
+                        .unwrap_or(false);
+                    if has_own_orders {
+                        let t = std::time::Instant::now();
+                        if let Err(e) = store.sync_own_order_state(&electrum_url_for_store) {
+                            log::warn!(
+                                "failed to sync own maker order state from {}: {e}",
+                                electrum_url_for_store
+                            );
+                        }
+                        log::info!(
+                            "[node.sync_wallet] sync_own_order_state: {:.0}ms",
+                            t.elapsed().as_millis()
+                        );
+                    } else {
+                        log::info!(
+                            "[node.sync_wallet] sync_own_order_state: skipped (no own orders)"
                         );
                     }
                     match store.list_pending_order_deletions() {
@@ -1606,8 +1633,21 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         } else {
             Vec::new()
         };
+        log::info!(
+            "[node.sync_wallet] store sync phase: {:.0}ms",
+            t1.elapsed().as_millis()
+        );
 
+        let t2 = std::time::Instant::now();
         self.publish_pending_order_deletions(pending).await;
+        log::info!(
+            "[node.sync_wallet] pending deletions: {:.0}ms",
+            t2.elapsed().as_millis()
+        );
+        log::info!(
+            "[node.sync_wallet] total: {:.0}ms",
+            t0.elapsed().as_millis()
+        );
         Ok(())
     }
 
@@ -2113,7 +2153,12 @@ impl<S: NodeStore> DeadcatNode<S> {
 
     /// Sync wallet state and backfill irreversible LMSR transition history.
     pub async fn sync(&self) -> Result<(), NodeError> {
+        let sync_all_start = std::time::Instant::now();
         self.sync_wallet().await?;
+        log::info!(
+            "[node.sync] sync_wallet done at {:.0}ms",
+            sync_all_start.elapsed().as_millis()
+        );
 
         let store = self
             .store
@@ -2125,7 +2170,71 @@ impl<S: NodeStore> DeadcatNode<S> {
             guard.list_lmsr_pool_sync_info().map_err(NodeError::Store)?
         };
 
+        log::debug!("[node.sync] {} pools to scan", pools.len());
         for pool in pools {
+            let pool_start = std::time::Instant::now();
+
+            // Quick check: if the last known YES reserve outpoint is still
+            // unspent, the pool state hasn't changed — skip the expensive
+            // full chain walk.
+            let last_yes_outpoint = pool.reserve_yes_outpoint.clone();
+            log::info!(
+                "[node.sync] pool {} fast-check outpoint: '{}'",
+                pool.pool_id.get(..10).unwrap_or(&pool.pool_id),
+                last_yes_outpoint
+            );
+            let skip = if !last_yes_outpoint.is_empty() {
+                match self
+                    .with_sdk(move |sdk| {
+                        // Outpoint format is "[elements]txid:vout" — strip the prefix.
+                        let cleaned = last_yes_outpoint
+                            .strip_prefix("[elements]")
+                            .unwrap_or(&last_yes_outpoint);
+                        let parts: Vec<&str> = cleaned.split(':').collect();
+                        if parts.len() != 2 {
+                            log::warn!("[node.sync] bad outpoint format: {}", last_yes_outpoint);
+                            return Ok(false);
+                        }
+                        let txid_hex = parts[0];
+                        let vout: u32 = parts[1].parse().unwrap_or(u32::MAX);
+                        if vout == u32::MAX {
+                            log::warn!("[node.sync] bad vout in outpoint");
+                            return Ok(false);
+                        }
+                        let txid: Txid = match txid_hex.parse() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                log::warn!("[node.sync] bad txid parse: {e}");
+                                return Ok(false);
+                            }
+                        };
+                        sdk.is_outpoint_unspent(&txid, vout)
+                    })
+                    .await
+                {
+                    Ok(unspent) => {
+                        log::debug!("[node.sync] fast-check result: unspent={unspent}");
+                        unspent
+                    }
+                    Err(e) => {
+                        log::warn!("[node.sync] fast-check failed: {e}");
+                        false
+                    }
+                }
+            } else {
+                log::debug!("[node.sync] no cached outpoint, doing full scan");
+                false
+            };
+
+            if skip {
+                log::info!(
+                    "[node.sync] pool {} unchanged, skipped in {:.0}ms",
+                    pool.pool_id.get(..10).unwrap_or(&pool.pool_id),
+                    pool_start.elapsed().as_millis()
+                );
+                continue;
+            }
+
             let resolved = match self.resolve_and_repair_pool_sync_metadata(pool.clone()) {
                 Ok(resolved) => resolved,
                 Err(err) => {
@@ -2204,8 +2313,21 @@ impl<S: NodeStore> DeadcatNode<S> {
                     .record_lmsr_price_transition(&transition)
                     .map_err(NodeError::Store)?;
             }
+            log::debug!(
+                "[node.sync] pool {} scanned in {:.0}ms",
+                pool.pool_id.get(..10).unwrap_or(&pool.pool_id),
+                pool_start.elapsed().as_millis()
+            );
         }
 
+        let total = sync_all_start.elapsed();
+        log::debug!("[node.sync] total: {:.0}ms", total.as_millis());
+        if total.as_secs() > 10 {
+            log::warn!(
+                "[node.sync] slow sync: {:.1}s (consider reducing pool/order count)",
+                total.as_secs_f64()
+            );
+        }
         Ok(())
     }
 
