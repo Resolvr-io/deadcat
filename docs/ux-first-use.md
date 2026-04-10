@@ -83,7 +83,7 @@ Setup is triggered at the **point of need** — the exact moment the user tries 
 
 **Identity modal** (`onboardingStep = "nostr"`): Opened when the user has no Nostr identity. Handles identity generation or import only. Does not create a wallet. After completing identity setup, the user returns to whatever they were doing. If the triggering action also requires a wallet, the wallet modal then opens separately.
 
-**Wallet modal** (`onboardingStep = "wallet"`): Only available when the user **already has a Nostr identity**. A user without an identity cannot open the wallet modal — they see the identity modal first. The wallet modal always begins with a backup scan before presenting setup options. When opened directly by a signed-in user (via the header button or an action guard), `state.onboardingWalletOnly` is set to `true` and the step indicator, "Step 2 of 2" eyebrow, and back-to-identity button are all hidden. When reached by completing Step 1 in the same session, `onboardingWalletOnly` is `false` and the full two-step progress UI is shown.
+**Wallet modal** (`onboardingStep = "wallet"`): Only available when the user **already has a Nostr identity**. A user without an identity cannot open the wallet modal — they see the identity modal first. The wallet modal always begins with a backup scan before presenting setup options. It never navigates back into the identity modal. When opened directly by a signed-in user (via the header button or an action guard), `state.onboardingWalletOnly` is set to `true` and the step indicator and "Step 2 of 2" eyebrow are hidden. When reached by completing Step 1 in the same session, `onboardingWalletOnly` is `false` and the full two-step progress UI is shown.
 
 ### Trigger Guard Logic
 
@@ -122,11 +122,11 @@ When the user triggers any action without a Nostr identity:
 
 When a signed-in user triggers a wallet-requiring action or clicks "Set up wallet" in the header, and has no wallet:
 
-1. The wallet modal opens as an overlay (`onboardingWalletOnly = true` — no step indicator, no "Step 2 of 2", no back-to-identity button)
+1. The wallet modal opens as an overlay (`onboardingWalletOnly = true` — no step indicator, no "Step 2 of 2")
 2. **Backup scan runs immediately** — the modal shows a spinner while checking Nostr relays for existing encrypted wallet backups
 3. After scan:
-   - **Backup found**: The "Restore from Nostr backup" page is shown. Each discovered wallet is presented as a **selectable card** showing the wallet name and the primary relay hostname (e.g. `relay.primal.net` or `relay.primal.net and 1 other`). There is no back button; instead a secondary `Set up a new wallet` button is shown below the primary CTA, which navigates to the create-wallet path. Multiple named wallet backups may be listed — the user selects the one to restore.
-   - **No backup**: "Set up your wallet" page is shown with create / restore-from-seed options. A back button navigates to the identity confirmation screen only when `onboardingWalletOnly === false` (the user arrived via identity setup in this session); it is hidden in wallet-only mode.
+   - **Backup found**: The "Restore from Nostr backup" page is shown. Each discovered wallet is presented as a **selectable card** showing the wallet name and the primary relay hostname (e.g. `relay.primal.net` or `relay.primal.net and 1 other`). A secondary `Set up a new wallet` button is always shown below the primary CTA. There is no back button — the wallet modal never navigates back into the identity modal. Multiple named wallet backups may be listed — the user selects the one to restore.
+   - **No backup**: "Set up your wallet" page is shown with create / restore-from-seed options. No back button — the wallet modal never navigates back to the identity modal.
 4. User creates or restores a wallet (password required)
 5. Modal closes. The user is returned to exactly where they were.
 
@@ -225,4 +225,4 @@ This document **supersedes** the mandatory onboarding flow described in the orig
 | No backup scan for new-identity users | Backup scan always runs when wallet modal opens |
 | User signed in at keypair generate/import | User signed in only at "Continue to wallet setup"; pending identity held in `onboardingPendingPubkey`/`onboardingPendingNpub` until confirmed |
 | Backup restore shown as data rows with relay name | Backup restore shown as selectable wallet cards with wallet name; multiple named wallets supported |
-| Back button on backup restore page (2e) | No back button in wallet-only mode; secondary `Set up a new wallet` button shown instead |
+| Back button on backup restore page (2e) | No back button anywhere in the wallet modal; secondary `Set up a new wallet` button always shown on 2e |

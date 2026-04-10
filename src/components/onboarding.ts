@@ -300,7 +300,6 @@ export function renderOnboarding(): string {
     return `
       <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
         ${stepIndicator}
-        ${walletOnly ? "" : backBtn}
         <p class="text-xs font-semibold uppercase tracking-widest text-emerald-400 mb-2">Backup found</p>
         <h2 class="text-2xl font-semibold text-white">Restore from Nostr backup</h2>
         <p class="mt-3 text-sm text-slate-400 leading-relaxed">Select a wallet to restore.</p>
@@ -309,7 +308,7 @@ export function renderOnboarding(): string {
         </div>
         <div class="mt-6 space-y-3">
           <button data-action="onboarding-wallet-continue" class="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition">Restore wallet</button>
-          ${walletOnly ? `<button data-action="onboarding-set-wallet-mode" data-mode="create" class="w-full rounded-lg border border-slate-700 px-4 py-3.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:border-slate-600 transition">Set up a new wallet</button>` : ""}
+          <button data-action="onboarding-set-wallet-mode" data-mode="create" class="w-full rounded-lg border border-slate-700 px-4 py-3.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:border-slate-600 transition">Set up a new wallet</button>
         </div>
       </div>
     `;
@@ -351,7 +350,6 @@ export function renderOnboarding(): string {
   return `
     <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
       ${stepIndicator}
-      ${walletOnly ? "" : backBtn}
       ${walletOnly ? "" : `<p class="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">Step 2 of 2</p>`}
       <h2 class="text-2xl font-semibold text-white">Set up your wallet</h2>
       <p class="mt-3 text-sm text-slate-400 leading-relaxed">Create a new Liquid wallet or restore an existing one.</p>

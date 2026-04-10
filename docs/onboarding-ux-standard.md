@@ -17,7 +17,7 @@ Step 2 (Wallet):    2a (scan) → 2b → 2c/2d/2e/2f/2g → done
 - **Step 1 — Identity modal**: Handles Nostr keypair generation or import only. Does not create a wallet, and does **not** sign the user in. The user is signed in only when they click "Continue to wallet setup" (`onboarding-nostr-continue`). If they go back before clicking that button, the generated/imported identity is discarded and the backend identity is deleted.
 - **Step 2 — Wallet modal**: Requires a Nostr identity to already exist. Always begins with a backup scan (2a) before presenting setup options.
 
-**Exception — wallet-only modal**: When a user who is already signed in opens wallet setup (via the "Set up wallet" header button, or by triggering any wallet-requiring action while signed in), the wallet step opens on its own — Step 1 is skipped, and `state.onboardingWalletOnly` is set to `true`. In this mode the step indicator, "Step 2 of 2" eyebrow, and back-to-identity button are all hidden. The wallet flow is otherwise identical with one additional difference on 2e (see below).
+**Exception — wallet-only modal**: When a user who is already signed in opens wallet setup (via the "Set up wallet" header button, or by triggering any wallet-requiring action while signed in), the wallet step opens on its own — Step 1 is skipped, and `state.onboardingWalletOnly` is set to `true`. In this mode the step indicator and "Step 2 of 2" eyebrow are hidden. The wallet modal never navigates back into the identity modal regardless of `onboardingWalletOnly`.
 
 ### Step Indicator
 
@@ -147,7 +147,7 @@ On scan complete: `onboardingBackupScanning = false`. If backup found: `onboardi
 - Primary: `Create new wallet` → `onboarding-wallet-continue` with mode `create` → advances to 2c
 - Secondary: `Restore from seed` → `onboarding-set-wallet-mode` with `data-mode="restore"` → advances to 2d
 
-**Back:** Shown only when `onboardingWalletOnly === false` (user arrived via identity modal in this session). Returns to Step 1. Resets `onboardingNostrDone = false`, `onboardingNostrMode = "generate"`. Hidden when `onboardingWalletOnly === true`.
+**Back:** No back button. The wallet modal never navigates back into the identity modal.
 
 **Note:** When `onboarding-set-wallet-mode` is called with `data-mode="create"` (e.g. "Set up a new wallet" from 2e), `onboardingBackupFound` is also cleared so the backup card does not reappear.
 
@@ -206,8 +206,8 @@ Clicking a card sets `onboardingSelectedWalletDTag` to that wallet's d-tag. If o
 **CTA:** `Restore wallet` → `onboarding-wallet-continue` → advances to 2g (password) with mode `nostr-restore`
 
 **Navigation:**
-- **`onboardingWalletOnly === false`** (arrived via Step 1 in this session): Back button shown. Returns to Step 1 identity confirmation screen (`onboardingStep = "nostr"`, `onboardingNostrDone = true`). Resets `onboardingWalletMode = "create"`, `onboardingBackupFound = false`.
-- **`onboardingWalletOnly === true`** (wallet-only modal, signed-in user): **No back button.** Instead, a secondary button `Set up a new wallet` is shown below the primary CTA. Clicking it sets `onboardingWalletMode = "create"`, clears `onboardingBackupFound`, and navigates to 2b.
+- Secondary button `Set up a new wallet` is **always shown** below the primary CTA. Clicking it sets `onboardingWalletMode = "create"`, clears `onboardingBackupFound`, and navigates to 2b.
+- **No back button** on this screen regardless of how the user arrived. The wallet modal never navigates back into the identity modal.
 
 ---
 
@@ -282,12 +282,12 @@ Clicking a card sets `onboardingSelectedWalletDTag` to that wallet's d-tag. If o
 | `openWalletSetupModal()` called | Sets `onboardingWalletOnly = true`, `onboardingSelectedWalletDTag` to first found wallet's d-tag after scan |
 | `onboarding-nostr-continue` fired | Sets `onboardingWalletOnly = false` — user just completed Step 1, full progress UI shown |
 | `onboarding-set-wallet-mode` with `data-mode="create"` | Clears `onboardingBackupFound = false` so backup card does not reappear on 2b |
-| Back from wallet setup main (2b) to Step 1 | `onboardingNostrDone = false`, `onboardingNostrMode = "generate"`, `onboardingError`. Only reachable when `onboardingWalletOnly === false`. |
+| Back from wallet setup main (2b) to Step 1 | Not possible — the wallet modal never navigates back to the identity modal. |
 | Back from any wallet sub-page to 2b | `onboardingWalletMode = "create"`, `onboardingWalletMnemonic`, `onboardingWalletPassword`, `onboardingWalletPasswordConfirm`, `onboardingWalletPasswordStep`, `onboardingMnemonicVerifyStep`, `onboardingMnemonicVerifyIndices`, `onboardingMnemonicVerifyInputs`, `onboardingBackupFound`, `onboardingError` |
 | Back from 2g (create) to 2f | `onboardingWalletPasswordStep = false`, `onboardingMnemonicVerifyStep = true`, `onboardingWalletPassword`, `onboardingWalletPasswordConfirm`, `onboardingError` |
 | Back from 2g (restore/nostr-restore) to sub-page | `onboardingWalletPasswordStep = false`, `onboardingWalletPassword`, `onboardingWalletPasswordConfirm`, `onboardingError` |
-| Back from 2e (nostr-restore), `onboardingWalletOnly === false` | `onboardingStep = "nostr"`, `onboardingNostrDone = true`, `onboardingWalletMode = "create"`, `onboardingBackupFound = false`, `onboardingError` |
-| "Set up a new wallet" from 2e, `onboardingWalletOnly === true` | `onboardingWalletMode = "create"`, `onboardingBackupFound = false`, `onboardingError` — navigates to 2b. No back button is shown on 2e in this mode. |
+| Back from 2e (nostr-restore) | Not possible — no back button on 2e. Use "Set up a new wallet" to navigate to 2b instead. |
+| "Set up a new wallet" from 2e (any mode) | `onboardingWalletMode = "create"`, `onboardingBackupFound = false`, `onboardingError` — navigates to 2b. |
 | `onboarding-back` (any page) | Always clears `onboardingPasswordRevealed` |
 | `finishOnboarding()` | Clears all onboarding state fields, sets `setupModalOpen = false`, `setupRequires = null`, `onboardingWalletOnly = false`, `onboardingPendingPubkey = ""`, `onboardingPendingNpub = ""` |
 | Logout | Deletes wallet file from disk (`delete_wallet`), sets `walletStatus = "not_created"`, clears Nostr identity. No wallet or key material persists. |
