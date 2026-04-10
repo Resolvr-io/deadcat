@@ -119,7 +119,7 @@ export function renderWalletTransactionRows(params: {
         ? new Date(tx.timestamp * 1000).toLocaleString()
         : "unconfirmed";
       const shortTxid = `${tx.txid.slice(0, 10)}...${tx.txid.slice(-6)}`;
-      const feeStr = (tx.fee / 1e8).toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+      const feeStr = formatLbtc(tx.fee);
       const confirmations = tx.height != null ? "Block " + tx.height : "Unconfirmed";
       return (
         '<details class="border-b border-slate-800 text-sm select-none group">' +
@@ -136,9 +136,14 @@ export function renderWalletTransactionRows(params: {
         "</span>" +
         "</div>" +
         '<div class="flex items-center gap-2">' +
-        '<div class="text-right">' +
+        '<div class="relative text-right">' +
         (state.walletBalanceHidden
-          ? '<span class="inline-flex gap-0.5 text-slate-500">' +
+          ? '<span class="' +
+            color +
+            ' invisible">' +
+            sign +
+            formatLbtc(tx.balanceChange) +
+            '</span><span class="absolute inset-0 inline-flex items-center justify-end gap-0.5 text-slate-500">' +
             pawIcon +
             pawIcon +
             "</span>"
@@ -170,18 +175,12 @@ export function renderWalletTransactionRows(params: {
         '<span class="text-slate-500">Fee</span>' +
         '<span class="mono text-slate-400">' +
         escapeHtml(feeStr) +
-        " L-BTC</span>" +
+        "</span>" +
         "</div>" +
         '<div class="flex items-center gap-2">' +
         '<span class="text-slate-500">Status</span>' +
         '<span class="mono text-slate-400">' +
         escapeHtml(confirmations) +
-        "</span>" +
-        "</div>" +
-        '<div class="flex items-center gap-2">' +
-        '<span class="text-slate-500">Type</span>' +
-        '<span class="mono text-slate-400">' +
-        escapeHtml(tx.txType) +
         "</span>" +
         "</div>" +
         "</div>" +
@@ -206,11 +205,11 @@ export function renderWalletSwapRows(params: {
         escapeHtml(flowLabel(sw.flow)) +
         "</span>" +
         (state.walletBalanceHidden
-          ? '<span class="ml-2 inline-flex gap-0.5 text-slate-500">' +
+          ? '<span class="ml-2 inline-flex items-center h-5 gap-0.5 text-slate-500">' +
             pawIcon +
             pawIcon +
             "</span>"
-          : '<span class="ml-2 text-slate-500">' +
+          : '<span class="ml-2 inline-flex items-center h-5 text-slate-500">' +
             sw.invoiceAmountSat.toLocaleString() +
             " sats</span>") +
         "</div>" +

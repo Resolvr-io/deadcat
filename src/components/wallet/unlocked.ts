@@ -205,7 +205,7 @@ export function renderWalletUnlocked(params: {
         <div class="flex items-center justify-between">
           <h2 class="flex items-center gap-2 text-xl font-medium text-slate-100">${networkBadge}</h2>
           <div class="flex gap-2">
-            <button data-action="sync-wallet" class="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800" ${loading ? "disabled" : ""}>${loading ? '<span class="flex items-center gap-1.5"><span class="h-3.5 w-3.5 rounded-full border-2 border-slate-600 border-t-emerald-400 animate-spin"></span>Syncing</span>' : "Sync"}</button>
+            <button data-action="sync-wallet" class="relative rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800" ${loading ? "disabled" : ""}>Sync${loading ? '<span class="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-800"><span class="h-3.5 w-3.5 rounded-full border-2 border-transparent border-t-emerald-400 animate-[spin_0.8s_steps(8)_infinite]"></span></span>' : ""}</button>
             <button data-action="show-backup" class="rounded-lg border px-4 py-2 text-sm transition ${showBackupBadge ? "border-amber-500/40 text-amber-200 hover:bg-amber-500/10" : "border-slate-700 text-slate-300 hover:bg-slate-800"}">
               <span class="flex items-center gap-2">
                 <span>Backup</span>
@@ -235,9 +235,9 @@ export function renderWalletUnlocked(params: {
               }
             </button>
           </div>
-          <div class="mt-1 text-3xl font-medium tracking-tight text-slate-100">${state.walletBalanceHidden ? `<span class="inline-flex gap-1 text-slate-500">${PAW_ICON}${PAW_ICON}${PAW_ICON}${PAW_ICON}</span>` : formatLbtc(policyBalance)}</div>
-          ${!state.walletBalanceHidden && state.baseCurrency !== "BTC" ? `<div class="mt-1 text-sm text-slate-400">${satsToFiatStr(policyBalance)}</div>` : ""}
-          <div class="mt-3 flex items-center justify-center gap-1 rounded-full border border-slate-700 mx-auto w-fit text-xs">
+          <div class="mt-1 font-medium tracking-tight text-slate-100 h-[2.5rem] flex items-center justify-center">${state.walletBalanceHidden ? `<span class="inline-flex items-center gap-1.5 text-3xl text-slate-500">${PAW_ICON}${PAW_ICON}${PAW_ICON}${PAW_ICON}</span>` : `<span class="text-3xl">${formatLbtc(policyBalance)}</span>`}</div>
+          ${!state.walletBalanceHidden && state.baseCurrency !== "BTC" ? `<div class="text-sm text-slate-400 h-5 flex items-center justify-center">${satsToFiatStr(policyBalance)}</div>` : ""}
+          <div class="mt-2 flex items-center justify-center gap-1 rounded-full border border-slate-700 mx-auto w-fit text-xs">
             <button data-action="set-wallet-unit" data-unit="sats" class="rounded-full px-3 py-1 transition ${state.walletUnit === "sats" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}">${satsLabel()}</button>
             <button data-action="set-wallet-unit" data-unit="btc" class="rounded-full px-3 py-1 transition ${state.walletUnit === "btc" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}">${btcLabel()}</button>
           </div>
@@ -305,11 +305,11 @@ export function renderWalletUnlocked(params: {
                   "</button>" +
                   "</div>" +
                   (state.walletBalanceHidden
-                    ? '<span class="inline-flex gap-0.5 text-slate-500">' +
+                    ? '<span class="inline-flex items-center h-5 gap-0.5 text-slate-500">' +
                       PAW_ICON +
                       PAW_ICON +
                       "</span>"
-                    : '<span class="mono text-slate-100">' +
+                    : '<span class="inline-flex items-center h-5 mono text-slate-100">' +
                       tp.amount.toLocaleString() +
                       "</span>") +
                   "</div>"
@@ -385,11 +385,11 @@ export function renderWalletUnlocked(params: {
                 "</div>" +
                 '<div class="flex items-center gap-3 shrink-0">' +
                 (state.walletBalanceHidden
-                  ? '<span class="inline-flex gap-0.5 text-slate-500">' +
+                  ? '<span class="inline-flex items-center h-5 gap-0.5 text-slate-500">' +
                     PAW_ICON +
                     PAW_ICON +
                     "</span>"
-                  : '<span class="text-xs text-slate-400">' +
+                  : '<span class="inline-flex items-center h-5 text-xs text-slate-400">' +
                     o.price +
                     " sats &middot; " +
                     o.offered_amount.toLocaleString() +
@@ -435,11 +435,11 @@ export function renderWalletUnlocked(params: {
                 "</div>" +
                 '<div class="flex items-center gap-3 shrink-0">' +
                 (state.walletBalanceHidden
-                  ? '<span class="inline-flex gap-0.5 text-slate-500">' +
+                  ? '<span class="inline-flex items-center h-5 gap-0.5 text-slate-500">' +
                     PAW_ICON +
                     PAW_ICON +
                     "</span>"
-                  : '<span class="text-xs text-slate-400">Y:' +
+                  : '<span class="inline-flex items-center h-5 text-xs text-slate-400">Y:' +
                     p.reserve_yes +
                     " N:" +
                     p.reserve_no +
@@ -458,8 +458,6 @@ export function renderWalletUnlocked(params: {
         `
             : ""
         }
-
-        ${utxoSection}
 
         <!-- Transactions -->
         <div class="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
@@ -482,6 +480,8 @@ export function renderWalletUnlocked(params: {
         `
             : ""
         }
+
+        ${utxoSection}
 
         <!-- Backup modal rendered in renderTopShell -->
       </div>

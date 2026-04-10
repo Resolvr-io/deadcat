@@ -112,6 +112,8 @@ function scheduleChartAspectSync(): void {
 }
 
 function render(): void {
+  const walletScroll =
+    app.querySelector<HTMLElement>("[data-wallet-scroll]")?.scrollTop ?? 0;
   const html = `
     <div class="min-h-screen text-slate-100">
       ${renderTopShell()}
@@ -122,6 +124,10 @@ function render(): void {
     ${state.setupModalOpen ? renderSetupModalOverlay() : ""}
   `;
   app.innerHTML = html;
+  if (state.walletOpen && walletScroll > 0) {
+    const el = app.querySelector<HTMLElement>("[data-wallet-scroll]");
+    if (el) el.scrollTop = walletScroll;
+  }
   scheduleChartAspectSync();
 }
 
