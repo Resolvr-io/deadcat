@@ -82,7 +82,7 @@ export function renderOnboarding(): string {
             ${avatarHtml}
             <div class="min-w-0">
               <p class="text-sm font-semibold text-white truncate">${escapeHtml(displayName ?? "No display name")}</p>
-              <p class="mt-0.5 text-[11px] text-slate-600 italic mono truncate">${escapeHtml(truncatedNpub)}</p>
+              <p class="mt-0.5 text-[11px] text-slate-600 mono truncate">${escapeHtml(truncatedNpub)}</p>
             </div>
           </div>`;
       })() : `
@@ -186,7 +186,7 @@ export function renderOnboarding(): string {
         ${backBtn}
         <p class="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">Protect your wallet</p>
         <h2 class="text-2xl font-semibold text-white">Set a password</h2>
-        <p class="mt-3 text-sm text-slate-400 leading-relaxed">Your wallet will be encrypted with this password on this device. You'll need it every time you open deadcat to unlock your wallet.</p>
+        <p class="mt-3 text-sm text-slate-400 leading-relaxed">This password encrypts your wallet on this device. If lost, you'll need to restore from a backup.</p>
         ${errorHtml ? `<div class="mt-5">${errorHtml}</div>` : ""}
         <div class="mt-8 space-y-6">
           ${renderPasswordFields(loading)}

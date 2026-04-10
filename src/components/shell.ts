@@ -69,7 +69,7 @@ export function renderTopShell(): string {
             </button>
             ${
               !state.nostrPubkey
-                ? `<button data-action="open-wallet" class="shrink-0 rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-400 transition">Get started</button>`
+                ? `<button data-action="open-wallet" class="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-300 transition">Get started</button>`
                 : `${
                     state.walletStatus === "not_created"
                       ? `<button data-action="open-wallet" class="shrink-0 px-3 py-1.5 text-sm font-medium text-emerald-400 hover:text-emerald-300 transition">Set up wallet</button>`
