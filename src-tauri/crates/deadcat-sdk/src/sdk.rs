@@ -536,6 +536,11 @@ impl DeadcatSdk {
         self.wollet.utxos().map_err(|e| Error::Query(e.to_string()))
     }
 
+    pub fn is_outpoint_unspent(&self, txid: &Txid, vout: u32) -> Result<bool> {
+        let utxos = self.wollet.utxos().map_err(|e| Error::Query(e.to_string()))?;
+        Ok(utxos.iter().any(|u| u.outpoint.txid == *txid && u.outpoint.vout == vout))
+    }
+
     pub fn transactions(&self) -> Result<Vec<WalletTx>> {
         self.wollet
             .transactions()
