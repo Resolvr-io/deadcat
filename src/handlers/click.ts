@@ -97,6 +97,86 @@ export type ClickDeps = {
   finishOnboarding: () => Promise<void>;
 };
 
+// Opens the wallet setup modal for a signed-in user, always starting with a backup scan.
+function openWalletSetupModal(
+  requires: "wallet" | "identity+wallet",
+  render: () => void,
+): void {
+  state.setupRequires = requires;
+  state.onboardingStep = "wallet";
+  state.onboardingNostrDone = true;
+  state.onboardingWalletOnly = true;
+  state.setupModalOpen = true;
+  state.onboardingBackupScanning = true;
+  state.onboardingBackupFound = false;
+  state.onboardingWalletMode = "create";
+  render();
+  void (async () => {
+    try {
+      const status = await invoke<NostrBackupStatus>("check_nostr_backup");
+      state.nostrBackupStatus = status;
+      if (status.has_backup) {
+        state.onboardingBackupFound = true;
+        state.onboardingWalletMode = "nostr-restore";
+        // Auto-select first wallet; user can change selection on 2e
+        if (status.wallets.length > 0) {
+          state.onboardingSelectedWalletDTag = status.wallets[0].d_tag;
+        }
+      }
+    } catch (_) {
+      /* scan failed silently */
+    }
+    state.onboardingBackupScanning = false;
+    render();
+  })();
+}
+
+function requiresWallet(render: () => void): boolean {
+  if (state.walletStatus !== "unlocked") {
+    if (!state.nostrPubkey) {
+      // Not signed in → identity modal first
+      state.setupRequires = "identity+wallet";
+      state.onboardingStep = "nostr";
+      state.setupModalOpen = true;
+      render();
+    } else if (state.walletStatus === "not_created") {
+      // Signed in, no wallet → scan for backups then show wallet setup
+      openWalletSetupModal("wallet", render);
+    } else {
+      // Signed in, wallet locked → unlock flow
+      state.setupRequires = "wallet";
+      state.onboardingStep = null;
+      state.setupModalOpen = true;
+      render();
+    }
+    return true;
+  }
+  return false;
+}
+
+function requiresIdentityAndWallet(render: () => void): boolean {
+  if (!state.nostrPubkey || state.walletStatus !== "unlocked") {
+    if (!state.nostrPubkey) {
+      // Not signed in → identity modal first
+      state.setupRequires = "identity+wallet";
+      state.onboardingStep = "nostr";
+      state.setupModalOpen = true;
+      render();
+    } else if (state.walletStatus === "not_created") {
+      // Signed in, no wallet → scan for backups then show wallet setup
+      openWalletSetupModal("identity+wallet", render);
+    } else {
+      // Signed in, wallet locked
+      state.setupRequires = "identity+wallet";
+      state.onboardingStep = null;
+      state.setupModalOpen = true;
+      render();
+    }
+    return true;
+  }
+  return false;
+}
+
 function ticketActionAllowed(market: Market, tab: ActionTab): boolean {
   const paths = getPathAvailability(market);
   if (tab === "trade") return true;
@@ -295,8 +375,10 @@ export async function handleClick(
         const identity = await invoke<IdentityResponse>(
           "generate_nostr_identity",
         );
-        state.nostrPubkey = identity.pubkey_hex;
-        state.nostrNpub = identity.npub;
+        // Don't commit to state.nostrPubkey yet — only sign in when user
+        // clicks "Continue to wallet setup" (onboarding-nostr-continue)
+        state.onboardingPendingPubkey = identity.pubkey_hex;
+        state.onboardingPendingNpub = identity.npub;
         const nsec = await invoke<string>("export_nostr_nsec");
         state.onboardingNostrGeneratedNsec = nsec;
         state.onboardingNostrDone = true;
@@ -329,8 +411,9 @@ export async function handleClick(
         const identity = await invoke<IdentityResponse>("import_nostr_nsec", {
           nsec: nsecInput,
         });
-        state.nostrPubkey = identity.pubkey_hex;
-        state.nostrNpub = identity.npub;
+        // Don't commit to state.nostrPubkey yet — only sign in on continue
+        state.onboardingPendingPubkey = identity.pubkey_hex;
+        state.onboardingPendingNpub = identity.npub;
         // Show confirmation screen — user stays on nostr step to review their identity
         state.onboardingNostrDone = true;
         state.onboardingLoading = false;
@@ -377,7 +460,16 @@ export async function handleClick(
   }
 
   if (action === "onboarding-nostr-continue") {
+    // Commit pending identity — this is the moment the user is signed in
+    state.nostrPubkey = state.onboardingPendingPubkey || state.nostrPubkey;
+    state.nostrNpub = state.onboardingPendingNpub || state.nostrNpub;
+    state.onboardingPendingPubkey = "";
+    state.onboardingPendingNpub = "";
+    // Clear nsec backup screen state
+    state.onboardingNsecAcknowledged = false;
+    state.onboardingNsecRevealed = false;
     state.onboardingStep = "wallet";
+    state.onboardingWalletOnly = false;
     state.onboardingNostrNsec = "";
     state.onboardingError = "";
     if (state.onboardingNostrMode === "import") {
@@ -387,9 +479,13 @@ export async function handleClick(
       (async () => {
         try {
           const status = await invoke<NostrBackupStatus>("check_nostr_backup");
+          state.nostrBackupStatus = status;
           if (status.has_backup) {
             state.onboardingBackupFound = true;
             state.onboardingWalletMode = "nostr-restore";
+            if (status.wallets.length > 0) {
+              state.onboardingSelectedWalletDTag = status.wallets[0].d_tag;
+            }
           }
         } catch (_) {
           /* scan failed silently */
@@ -465,12 +561,20 @@ export async function handleClick(
         state.onboardingWalletPasswordConfirm = "";
         state.onboardingError = "";
       } else if (state.onboardingWalletMode === "nostr-restore") {
-        // Back from nostr-restore sub-page → "Set up your identity"
-        state.onboardingStep = "nostr";
-        state.onboardingNostrDone = true;
-        state.onboardingWalletMode = "create";
-        state.onboardingBackupFound = false;
-        state.onboardingError = "";
+        // Back from nostr-restore sub-page
+        if (state.onboardingWalletOnly) {
+          // Standalone wallet modal (signed-in user) → back to main wallet page
+          state.onboardingWalletMode = "create";
+          state.onboardingBackupFound = false;
+          state.onboardingError = "";
+        } else {
+          // Full onboarding flow → back to identity confirmation step
+          state.onboardingStep = "nostr";
+          state.onboardingNostrDone = true;
+          state.onboardingWalletMode = "create";
+          state.onboardingBackupFound = false;
+          state.onboardingError = "";
+        }
       } else {
         const onSubPage =
           state.onboardingWalletPasswordStep ||
@@ -499,12 +603,17 @@ export async function handleClick(
       }
     } else if (state.onboardingStep === "nostr") {
       // Back from any nostr sub-page → "Set up your identity"
+      // Discard the generated/imported identity — user hasn't confirmed yet
       state.onboardingNostrMode = "generate";
       state.onboardingNostrDone = false;
       state.onboardingNostrGeneratedNsec = "";
       state.onboardingNsecRevealed = false;
       state.onboardingNsecAcknowledged = false;
+      state.onboardingPendingPubkey = "";
+      state.onboardingPendingNpub = "";
       state.onboardingError = "";
+      // Drop the identity from the backend (fire-and-forget — no identity was committed)
+      void invoke("delete_nostr_identity").catch(() => {});
     }
     render();
     return;
@@ -517,9 +626,20 @@ export async function handleClick(
   }
 
   if (action === "onboarding-set-wallet-mode") {
-    state.onboardingWalletMode = (actionEl?.getAttribute("data-mode") ??
-      "create") as "create" | "restore" | "nostr-restore";
+    const mode = (actionEl?.getAttribute("data-mode") ?? "create") as "create" | "restore" | "nostr-restore";
+    state.onboardingWalletMode = mode;
+    // When explicitly choosing to create (not restore), clear backup state
+    if (mode === "create") {
+      state.onboardingBackupFound = false;
+    }
     state.onboardingError = "";
+    render();
+    return;
+  }
+
+  if (action === "select-backup-wallet") {
+    const dTag = actionEl?.getAttribute("data-dtag") ?? "";
+    state.onboardingSelectedWalletDTag = dTag;
     render();
     return;
   }
@@ -675,7 +795,12 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        const mnemonic = await invoke<string>("restore_mnemonic_from_nostr");
+        const selectedWallet = state.nostrBackupStatus?.wallets.find(
+          w => w.d_tag === state.onboardingSelectedWalletDTag
+        );
+        const mnemonic = await invoke<string>("restore_mnemonic_from_nostr", {
+          walletName: selectedWallet?.name ?? "My Wallet",
+        });
         updateOverlayMessage("Restoring wallet...");
         await invoke("restore_wallet", {
           mnemonic: mnemonic.trim(),
@@ -698,6 +823,45 @@ export async function handleClick(
         render();
       }
     })();
+    return;
+  }
+
+  if (action === "close-setup-modal") {
+    state.setupModalOpen = false;
+    state.setupRequires = null;
+    state.onboardingStep = null;
+    state.onboardingNostrMode = "generate";
+    state.onboardingNostrDone = false;
+    state.onboardingNostrGeneratedNsec = "";
+    state.onboardingNsecRevealed = false;
+    state.onboardingNsecAcknowledged = false;
+    state.onboardingError = "";
+    state.onboardingWalletMode = "create";
+    state.onboardingWalletMnemonic = "";
+    state.onboardingWalletPassword = "";
+    state.onboardingWalletPasswordConfirm = "";
+    state.onboardingWalletPasswordStep = false;
+    state.onboardingMnemonicVerifyStep = false;
+    state.onboardingMnemonicVerifyIndices = [];
+    state.onboardingMnemonicVerifyInputs = [];
+    state.onboardingBackupFound = false;
+    state.onboardingBackupScanning = false;
+    state.onboardingPasswordRevealed = false;
+    render();
+    return;
+  }
+
+  if (action === "setup-modal-backdrop" && actionEl === target) {
+    state.setupModalOpen = false;
+    state.setupRequires = null;
+    state.onboardingStep = null;
+    state.onboardingError = "";
+    render();
+    return;
+  }
+
+  if (action === "setup-wallet-from-quote") {
+    if (requiresWallet(render)) return;
     return;
   }
 
@@ -997,7 +1161,9 @@ export async function handleClick(
         state.devResetPrompt = false;
         state.devResetConfirm = "";
         await fetchWalletStatus();
-        state.onboardingStep = "nostr";
+        state.setupModalOpen = false;
+        state.setupRequires = null;
+        state.view = "home";
         render();
         showToast("App data erased", "success");
       } catch (e) {
@@ -1087,7 +1253,7 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        await invoke("backup_mnemonic_to_nostr", { password: "" });
+        await invoke("backup_mnemonic_to_nostr", { password: "", walletName: state.onboardingWalletName || "My Wallet" });
         // Refresh backup status
         const status = await invoke<NostrBackupStatus>("check_nostr_backup");
         state.nostrBackupStatus = status;
@@ -1136,7 +1302,7 @@ export async function handleClick(
     render();
     (async () => {
       try {
-        await invoke("backup_mnemonic_to_nostr", { password });
+        await invoke("backup_mnemonic_to_nostr", { password, walletName: "My Wallet" });
         const status = await invoke<NostrBackupStatus>("check_nostr_backup");
         state.nostrBackupStatus = status;
         if (status.relay_results) {
@@ -1199,7 +1365,7 @@ export async function handleClick(
     showOverlayLoader("Fetching backup from relays...");
     (async () => {
       try {
-        const mnemonic = await invoke<string>("restore_mnemonic_from_nostr");
+        const mnemonic = await invoke<string>("restore_mnemonic_from_nostr", { walletName: "My Wallet" });
         hideOverlayLoader();
         // Pre-fill the mnemonic in the restore form
         state.walletShowRestore = true;
@@ -1232,6 +1398,7 @@ export async function handleClick(
     (async () => {
       try {
         await invoke("delete_nostr_identity");
+        try { await invoke("delete_wallet"); } catch (_) { /* no wallet is fine */ }
         state.nostrPubkey = null;
         state.nostrNpub = null;
         state.nostrNsecRevealed = null;
@@ -1244,7 +1411,7 @@ export async function handleClick(
         state.walletStatus = "not_created";
         resetReceiveState();
         resetSendState();
-        state.onboardingStep = "nostr";
+        state.onboardingStep = null;
         state.onboardingNostrMode = "generate";
         state.onboardingNostrNsec = "";
         state.onboardingNostrGeneratedNsec = "";
@@ -1264,6 +1431,9 @@ export async function handleClick(
         state.onboardingBackupScanning = false;
         state.onboardingLoading = false;
         state.onboardingError = "";
+        state.setupModalOpen = false;
+        state.setupRequires = null;
+        state.view = "home";
       } catch (e) {
         showToast(`Logout failed: ${String(e)}`, "error");
       }
@@ -1274,12 +1444,28 @@ export async function handleClick(
 
   if (action === "open-create-market") {
     if (!state.marketMakerMode) return;
+    if (requiresIdentityAndWallet(render)) return;
     state.view = "create";
     render();
     return;
   }
 
   if (action === "open-wallet") {
+    if (!state.nostrPubkey) {
+      // Not signed in → identity modal (Log In / Sign Up flow)
+      state.setupRequires = "identity+wallet";
+      state.onboardingStep = "nostr";
+      state.setupModalOpen = true;
+      state.userMenuOpen = false;
+      render();
+      return;
+    }
+    if (state.walletStatus === "not_created") {
+      // Signed in, no wallet → scan for backups then show wallet setup
+      state.userMenuOpen = false;
+      openWalletSetupModal("wallet", render);
+      return;
+    }
     state.walletError = "";
     state.walletPassword = "";
     state.settingsOpen = false;
@@ -1650,6 +1836,7 @@ export async function handleClick(
   }
 
   if (action === "open-receive") {
+    if (requiresWallet(render)) return;
     state.walletModal = "receive";
     state.walletModalTab = "lightning";
     resetReceiveState();
@@ -1669,6 +1856,7 @@ export async function handleClick(
   }
 
   if (action === "open-send") {
+    if (requiresWallet(render)) return;
     state.walletModal = "send";
     state.walletModalTab = "lightning";
     resetSendState();
@@ -2168,6 +2356,7 @@ export async function handleClick(
   }
 
   if (action === "oracle-attest-yes" || action === "oracle-attest-no") {
+    if (requiresIdentityAndWallet(render)) return;
     const market = getSelectedMarket();
     const outcomeYes = action === "oracle-attest-yes";
     const outcomeLabel = outcomeYes ? "YES" : "NO";
@@ -2216,6 +2405,7 @@ export async function handleClick(
   }
 
   if (action === "execute-resolution") {
+    if (requiresIdentityAndWallet(render)) return;
     const market = getSelectedMarket();
     if (!state.lastAttestationSig || state.lastAttestationOutcome === null) {
       showToast("No attestation available to execute", "error");
@@ -2308,12 +2498,14 @@ export async function handleClick(
   }
 
   if (action === "toggle-pool-create") {
+    if (requiresIdentityAndWallet(render)) return;
     state.poolCreateOpen = !state.poolCreateOpen;
     render();
     return;
   }
 
   if (action === "create-pool") {
+    if (requiresIdentityAndWallet(render)) return;
     const cosignerPubkey = state.nostrPubkey;
     if (!cosignerPubkey) {
       showToast("Wallet identity not initialized", "error");
@@ -2721,6 +2913,7 @@ export async function handleClick(
     action === "submit-create-market"
   ) {
     if (action === "submit-create-market") {
+      if (requiresIdentityAndWallet(render)) return;
       const question = state.createQuestion.trim();
       const description = state.createDescription.trim();
       const source = state.createResolutionSource.trim();
@@ -2779,6 +2972,7 @@ export async function handleClick(
     const market = getSelectedMarket();
     if (action === "submit-trade") {
       if (state.orderType === "limit") {
+        if (requiresIdentityAndWallet(render)) return;
         const side = state.selectedSide;
         const direction = currentTradeDirection();
         const priceSats = Math.round(
@@ -2828,6 +3022,7 @@ export async function handleClick(
         return;
       }
 
+      if (requiresWallet(render)) return;
       const side = state.selectedSide;
       const direction = currentTradeDirection();
       const exactInput = currentExactInput();
@@ -2884,6 +3079,7 @@ export async function handleClick(
     }
 
     if (action === "submit-issue") {
+      if (requiresWallet(render)) return;
       const pairs = Math.max(1, Math.floor(state.pairsInput));
       if (!market.anchor) {
         showToast(
@@ -2913,6 +3109,7 @@ export async function handleClick(
     }
 
     if (action === "submit-cancel") {
+      if (requiresWallet(render)) return;
       const pairs = Math.max(1, Math.floor(state.pairsInput));
       const anchor = requireMarketAnchor(market, "cancel tokens");
       if (!anchor) return;
@@ -2941,6 +3138,7 @@ export async function handleClick(
     }
 
     if (action === "submit-redeem") {
+      if (requiresWallet(render)) return;
       const tokens = Math.max(1, Math.floor(state.tokensInput));
       const paths = getPathAvailability(market);
 

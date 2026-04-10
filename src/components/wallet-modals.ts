@@ -10,23 +10,35 @@ export function renderMnemonicGrid(mnemonic: string): string {
 }
 
 export function renderMnemonicWordsGrid(words: string[]): string {
-  return (
-    '<div class="grid grid-cols-3 gap-2">' +
-    words
-      .map(
-        (w, i) =>
-          '<div class="flex items-baseline gap-2 rounded bg-slate-800 px-3 py-2">' +
-          '<span class="text-xs text-slate-500 w-5 text-right shrink-0">' +
-          (i + 1) +
-          ".</span>" +
-          '<span class="mono text-sm text-slate-100 whitespace-nowrap">' +
-          escapeHtml(w) +
-          "</span>" +
-          "</div>",
-      )
-      .join("") +
-    "</div>"
-  );
+  const rows: string[][] = [];
+  for (let i = 0; i < words.length; i += 3) {
+    rows.push(words.slice(i, i + 3));
+  }
+  const rowsHtml = rows
+    .map((row, rowIdx) => {
+      const cells = row
+        .map(
+          (w, colIdx) =>
+            '<div class="flex items-baseline gap-1.5 min-w-0">' +
+            '<span class="text-xs text-slate-500 shrink-0">' +
+            (rowIdx * 3 + colIdx + 1) +
+            ".</span>" +
+            '<span class="mono text-sm text-slate-100">' +
+            escapeHtml(w) +
+            "</span>" +
+            "</div>",
+        )
+        .join("");
+      const divider =
+        rowIdx < rows.length - 1
+          ? '<div class="border-t border-slate-700/60"></div>'
+          : "";
+      return (
+        '<div class="grid grid-cols-3 gap-x-4 py-2.5">' + cells + "</div>" + divider
+      );
+    })
+    .join("");
+  return '<div>' + rowsHtml + "</div>";
 }
 
 export function renderBackupModal(loading: boolean): string {

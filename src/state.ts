@@ -246,6 +246,8 @@ export const state: {
   relayLoading: boolean;
   nostrProfile: NostrProfile | null;
   profilePicError: boolean;
+  setupModalOpen: boolean;
+  setupRequires: "wallet" | "identity+wallet" | null;
   onboardingStep: "nostr" | "wallet" | null;
   onboardingNostrMode: "generate" | "import";
   onboardingNostrNsec: string;
@@ -253,6 +255,8 @@ export const state: {
   onboardingNsecRevealed: boolean;
   onboardingNsecAcknowledged: boolean;
   onboardingNostrDone: boolean;
+  onboardingPendingPubkey: string;
+  onboardingPendingNpub: string;
   onboardingWalletMode: "create" | "restore" | "nostr-restore";
   onboardingWalletPasswordStep: boolean;
   onboardingWalletPassword: string;
@@ -266,6 +270,9 @@ export const state: {
   onboardingBackupFound: boolean;
   onboardingBackupScanning: boolean;
   onboardingPasswordRevealed: boolean;
+  onboardingWalletOnly: boolean;
+  onboardingWalletName: string;
+  onboardingSelectedWalletDTag: string;
   walletRecovering: boolean;
   walletRecoveryPhase: number;
   walletRecoverySummary: { markets: number; positions: number; orders: number; pools: number; estimatedSats: number } | null;
@@ -415,6 +422,8 @@ export const state: {
   relayLoading: false,
   nostrProfile: null,
   profilePicError: false,
+  setupModalOpen: false,
+  setupRequires: null,
   onboardingStep: null,
   onboardingNostrMode: "generate",
   onboardingNostrNsec: "",
@@ -422,6 +431,8 @@ export const state: {
   onboardingNsecRevealed: false,
   onboardingNsecAcknowledged: false,
   onboardingNostrDone: false,
+  onboardingPendingPubkey: "",
+  onboardingPendingNpub: "",
   onboardingWalletMode: "create",
   onboardingWalletPasswordStep: false,
   onboardingWalletPassword: "",
@@ -435,6 +446,9 @@ export const state: {
   onboardingBackupFound: false,
   onboardingBackupScanning: false,
   onboardingPasswordRevealed: false,
+  onboardingWalletOnly: false,
+  onboardingWalletName: "My Wallet",
+  onboardingSelectedWalletDTag: "",
   walletRecovering: false,
   walletRecoveryPhase: 0,
   walletRecoverySummary: null,

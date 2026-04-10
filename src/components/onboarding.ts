@@ -40,7 +40,8 @@ export function renderOnboarding(): string {
     ? `<div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3"><p class="text-sm text-red-400">${escapeHtml(state.onboardingError)}</p></div>`
     : "";
 
-  const stepIndicator = `
+  const walletOnly = state.onboardingWalletOnly;
+  const stepIndicator = walletOnly ? "" : `
     <div class="flex items-center gap-3 mb-10">
       <div class="flex items-center gap-2.5">
         <div class="h-7 w-7 rounded-full ${step === "nostr" || state.onboardingNostrDone ? "bg-emerald-400 text-slate-950" : "border border-slate-700 text-slate-500"} flex items-center justify-center text-xs font-semibold shrink-0">
@@ -71,7 +72,7 @@ export function renderOnboarding(): string {
       const identityRows = isImport ? (() => {
         const profile = state.nostrProfile;
         const displayName = profile?.display_name || profile?.name || null;
-        const npub = state.nostrNpub ?? "";
+        const npub = state.onboardingPendingNpub || state.nostrNpub || "";
         const truncatedNpub = npub.length > 20 ? `${npub.slice(0, 10)}...${npub.slice(-8)}` : npub;
         const avatarHtml = profile?.picture && !state.profilePicError
           ? `<img src="${escapeAttr(profile.picture)}" class="h-10 w-10 rounded-full object-cover shrink-0" onerror="this.style.display='none'" />`
@@ -88,7 +89,7 @@ export function renderOnboarding(): string {
         <div class="py-4 flex items-center justify-between gap-3">
           <div class="min-w-0">
             <p class="text-[10px] font-medium uppercase tracking-wide text-slate-500 mb-1">npub — public key</p>
-            <p class="mono truncate text-xs text-slate-600">${escapeHtml(state.nostrNpub)}</p>
+            <p class="mono truncate text-xs text-slate-600">${escapeHtml(state.onboardingPendingNpub || state.nostrNpub || "")}</p>
           </div>
           <button data-action="onboarding-copy-npub" class="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition">Copy</button>
         </div>
@@ -107,7 +108,7 @@ export function renderOnboarding(): string {
         </div>`;
 
       return `
-        <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-10">
+        <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
           ${stepIndicator}
           ${backBtn}
           <p class="text-xs font-semibold uppercase tracking-widest text-emerald-400 mb-2">${eyebrow}</p>
@@ -120,7 +121,10 @@ export function renderOnboarding(): string {
             ${identityRows}
           </div>
           ${!isImport ? `<label class="mt-4 flex items-start gap-3 cursor-pointer select-none">
-            <input type="checkbox" id="onboarding-nsec-ack" ${state.onboardingNsecAcknowledged ? "checked" : ""} class="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-emerald-400" />
+            <span class="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded ${state.onboardingNsecAcknowledged ? "bg-emerald-400" : "border border-slate-600 bg-slate-800"}">
+              ${state.onboardingNsecAcknowledged ? `<svg class="h-3 w-3 text-slate-950" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,6 5,9 10,3"/></svg>` : ""}
+            </span>
+            <input type="checkbox" id="onboarding-nsec-ack" ${state.onboardingNsecAcknowledged ? "checked" : ""} class="sr-only" />
             <span class="text-sm text-slate-300 leading-relaxed">I have saved my secret key in a safe place</span>
           </label>` : ""}
           <button data-action="onboarding-nostr-continue" class="mt-6 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-40 disabled:cursor-not-allowed transition" ${!isImport && !state.onboardingNsecAcknowledged ? "disabled" : ""}>Continue to wallet setup</button>
@@ -131,7 +135,7 @@ export function renderOnboarding(): string {
     // Import sub-page
     if (state.onboardingNostrMode === "import") {
       return `
-        <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-10">
+        <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
           ${stepIndicator}
           ${backBtn}
           <p class="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">Step 1 of 2</p>
@@ -151,7 +155,7 @@ export function renderOnboarding(): string {
 
     // Main nostr step
     return `
-      <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-10">
+      <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
         ${stepIndicator}
         <p class="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">Step 1 of 2</p>
         <h2 class="text-2xl font-semibold text-white">Set up your identity</h2>
@@ -177,12 +181,12 @@ export function renderOnboarding(): string {
       ? (wMode2 === "create" ? "Creating..." : "Restoring...")
       : "Create password";
     return `
-      <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-10">
+      <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
         ${stepIndicator}
         ${backBtn}
         <p class="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">Protect your wallet</p>
         <h2 class="text-2xl font-semibold text-white">Set a password</h2>
-        <p class="mt-3 text-sm text-slate-400 leading-relaxed">Your wallet will be encrypted with this password on this device. You'll need it every time you unlock the app.</p>
+        <p class="mt-3 text-sm text-slate-400 leading-relaxed">Your wallet will be encrypted with this password on this device. You'll need it every time you open deadcat to unlock your wallet.</p>
         ${errorHtml ? `<div class="mt-5">${errorHtml}</div>` : ""}
         <div class="mt-8 space-y-6">
           ${renderPasswordFields(loading)}
@@ -207,7 +211,7 @@ export function renderOnboarding(): string {
         </div>`;
     }).join("");
     return `
-      <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-10">
+      <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
         ${stepIndicator}
         ${backBtn}
         <p class="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">Verify backup</p>
@@ -228,7 +232,7 @@ export function renderOnboarding(): string {
     state.onboardingWalletMode === "create"
   ) {
     return `
-      <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-10">
+      <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
         ${stepIndicator}
         ${backBtn}
         <p class="text-xs font-semibold uppercase tracking-widest text-emerald-400 mb-2">Wallet created</p>
@@ -250,10 +254,10 @@ export function renderOnboarding(): string {
   // Restore from seed sub-page
   if (modeRestore) {
     return `
-      <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-10">
+      <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
         ${stepIndicator}
         ${backBtn}
-        <p class="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">Step 2 of 2</p>
+        ${walletOnly ? "" : `<p class="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">Step 2 of 2</p>`}
         <h2 class="text-2xl font-semibold text-white">Restore from seed</h2>
         <p class="mt-3 text-sm text-slate-400 leading-relaxed">Enter your 12-word recovery phrase to restore your existing wallet.</p>
         ${errorHtml ? `<div class="mt-5">${errorHtml}</div>` : ""}
@@ -270,31 +274,43 @@ export function renderOnboarding(): string {
 
   // Nostr restore sub-page
   if (modeNostrRestore) {
+    const wallets = state.nostrBackupStatus?.wallets ?? [];
+    const selectedDTag = state.onboardingSelectedWalletDTag || (wallets[0]?.d_tag ?? "");
     const backupRelays = state.nostrBackupStatus?.relay_results?.filter(r => r.has_backup) ?? [];
     const fallbackRelay = state.relays[0]?.url ?? state.nostrBackupStatus?.relay_results?.[0]?.url ?? "";
     const primaryRelayUrl = backupRelays.length > 0 ? backupRelays[0].url : fallbackRelay;
     const primaryRelay = primaryRelayUrl.replace(/^wss?:\/\//, "").replace(/\/$/, "");
     const othersCount = backupRelays.length > 1 ? backupRelays.length - 1 : 0;
-    const sourceLabel = othersCount > 0
-      ? `${escapeHtml(primaryRelay)} <span class="text-slate-600">and ${othersCount} other${othersCount > 1 ? "s" : ""}</span>`
-      : escapeHtml(primaryRelay);
-    return `
-      <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-10">
-        ${stepIndicator}
-        ${backBtn}
-        <p class="text-xs font-semibold uppercase tracking-widest text-emerald-400 mb-2">Backup found</p>
-        <h2 class="text-2xl font-semibold text-white">Restore from Nostr backup</h2>
-        <p class="mt-3 text-sm text-slate-400 leading-relaxed">An encrypted wallet backup was found. It will be decrypted locally on this device.</p>
-        <div class="mt-4 border-t border-slate-800">
-          <div class="py-3.5 flex items-center justify-between">
-            <span class="text-[10px] font-medium uppercase tracking-wide text-slate-500">Source</span>
-            <span class="text-xs text-slate-400 mono">${sourceLabel}</span>
+
+    const walletCardsHtml = (wallets.length > 0 ? wallets : [{ name: "My Wallet", d_tag: "" }]).map(w => {
+      const isSelected = w.d_tag === selectedDTag || (wallets.length === 1);
+      return `<button data-action="select-backup-wallet" data-dtag="${escapeAttr(w.d_tag)}"
+        class="w-full flex items-center justify-between rounded-xl border ${isSelected ? "border-emerald-600/50 bg-emerald-950/20" : "border-slate-700 bg-slate-900/40 hover:border-slate-600"} px-4 py-3.5 transition text-left">
+        <div class="flex items-center gap-3 min-w-0">
+          <svg class="h-4 w-4 shrink-0 ${isSelected ? "text-emerald-400" : "text-slate-500"}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 12m18 0v6a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 18v-6m18 0V9M3 12V9m18-3a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 9m18 0V9a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 9"/></svg>
+          <div class="min-w-0">
+            <p class="text-sm font-medium ${isSelected ? "text-emerald-300" : "text-slate-300"} truncate">${escapeHtml(w.name)}</p>
+            <p class="text-xs text-slate-500 mono truncate">${escapeHtml(primaryRelay)}${othersCount > 0 ? ` <span class="not-mono">and ${othersCount} other${othersCount > 1 ? "s" : ""}</span>` : ""}</p>
           </div>
         </div>
-        <div class="mt-4 rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3.5">
-          <p class="text-sm text-slate-400">Restore your wallet to view your balance.</p>
+        ${isSelected ? `<svg class="h-4 w-4 text-emerald-400 shrink-0 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>` : ""}
+      </button>`;
+    }).join("");
+
+    return `
+      <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
+        ${stepIndicator}
+        ${walletOnly ? "" : backBtn}
+        <p class="text-xs font-semibold uppercase tracking-widest text-emerald-400 mb-2">Backup found</p>
+        <h2 class="text-2xl font-semibold text-white">Restore from Nostr backup</h2>
+        <p class="mt-3 text-sm text-slate-400 leading-relaxed">Select a wallet to restore.</p>
+        <div class="mt-6 space-y-2">
+          ${walletCardsHtml}
         </div>
-        <button data-action="onboarding-wallet-continue" class="mt-6 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition">Restore wallet</button>
+        <div class="mt-6 space-y-3">
+          <button data-action="onboarding-wallet-continue" class="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition">Restore wallet</button>
+          ${walletOnly ? `<button data-action="onboarding-set-wallet-mode" data-mode="create" class="w-full rounded-lg border border-slate-700 px-4 py-3.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:border-slate-600 transition">Set up a new wallet</button>` : ""}
+        </div>
       </div>
     `;
   }
@@ -302,7 +318,7 @@ export function renderOnboarding(): string {
   // Scanning state — full card while relay scan is in progress
   if (state.onboardingBackupScanning) {
     return `
-      <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-10">
+      <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
         ${stepIndicator}
         <div class="flex flex-col items-center justify-center py-8 text-center">
           <div class="h-10 w-10 animate-spin rounded-full border-2 border-slate-700 border-t-emerald-400 mb-6"></div>
@@ -315,19 +331,17 @@ export function renderOnboarding(): string {
   }
 
   // Main wallet setup page — two action buttons, no tabs
-  const backupCardRelay = (() => {
-    const relays = state.nostrBackupStatus?.relay_results?.filter(r => r.has_backup) ?? [];
-    const primary = relays[0]?.url ?? state.relays[0]?.url ?? "";
-    const name = primary.replace(/^wss?:\/\//, "").replace(/\/$/, "");
-    const others = relays.length > 1 ? relays.length - 1 : 0;
-    return others > 0 ? `${name} and ${others} other${others > 1 ? "s" : ""}` : name;
-  })();
+  const backupFoundWallets = state.nostrBackupStatus?.wallets ?? [];
   const backupFoundHtml = state.onboardingBackupFound
     ? `<button data-action="onboarding-set-wallet-mode" data-mode="nostr-restore" class="w-full rounded-xl border border-emerald-700/40 bg-emerald-950/20 hover:border-emerald-600/50 p-4 text-left transition">
         <div class="flex items-start gap-3">
           <svg class="h-5 w-5 text-emerald-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/></svg>
           <div>
-            <p class="text-sm font-medium text-emerald-300">Wallet backup found on ${escapeHtml(backupCardRelay)}</p>
+            <p class="text-sm font-medium text-emerald-300">
+              ${backupFoundWallets.length === 1
+                ? escapeHtml(backupFoundWallets[0].name)
+                : `${backupFoundWallets.length} wallet backup${backupFoundWallets.length !== 1 ? "s" : ""} found`}
+            </p>
             <p class="mt-1 text-xs text-emerald-400/60 leading-relaxed">Restore your existing wallet from an encrypted Nostr backup</p>
           </div>
         </div>
@@ -335,10 +349,10 @@ export function renderOnboarding(): string {
     : "";
 
   return `
-    <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-10">
+    <div class="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
       ${stepIndicator}
-      ${backBtn}
-      <p class="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">Step 2 of 2</p>
+      ${walletOnly ? "" : backBtn}
+      ${walletOnly ? "" : `<p class="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">Step 2 of 2</p>`}
       <h2 class="text-2xl font-semibold text-white">Set up your wallet</h2>
       <p class="mt-3 text-sm text-slate-400 leading-relaxed">Create a new Liquid wallet or restore an existing one.</p>
       ${errorHtml ? `<div class="mt-5">${errorHtml}</div>` : ""}
@@ -346,6 +360,20 @@ export function renderOnboarding(): string {
       <div class="mt-10 space-y-3">
         <button data-action="onboarding-wallet-continue" class="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition">Create new wallet</button>
         <button data-action="onboarding-set-wallet-mode" data-mode="restore" class="w-full rounded-lg border border-slate-700 px-4 py-3.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:border-slate-600 transition">Restore from seed</button>
+      </div>
+    </div>
+  `;
+}
+
+export function renderSetupModalOverlay(): string {
+  return `
+    <div data-action="setup-modal-backdrop" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+      <div class="relative w-full max-w-[432px] mx-4">
+        <button data-action="close-setup-modal" class="absolute -top-10 right-0 flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition">
+          <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          Close
+        </button>
+        ${renderOnboarding()}
       </div>
     </div>
   `;

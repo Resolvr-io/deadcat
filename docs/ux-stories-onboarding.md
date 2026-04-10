@@ -29,27 +29,29 @@ Cross-cutting stories that apply to all personas. See [ux-design.md](ux-design.m
 
 ---
 
-## US-OB2: Wallet Setup (Deferred)
+## US-OB2: Wallet Setup (Deferred, Identity Required)
 
 **As a** user who wants to trade, send, or receive funds, **I want to** create or restore a Liquid wallet, **so that** I can hold funds and execute transactions.
 
-**Trigger**: User attempts an action requiring a wallet (execute trade, send/receive funds, issue tokens, redeem). NOT triggered on first launch.
+**Trigger**: User attempts an action requiring a wallet (execute trade, send/receive funds, issue tokens, redeem). NOT triggered on first launch. If the user has no Nostr identity, the identity modal runs first; the wallet step follows automatically. If the user is already signed in but has no wallet, the wallet step opens directly (skipping identity setup). The "Set up wallet" button in the header for a signed-in user with no wallet also opens it directly.
 
 **Acceptance criteria**:
 - Wallet setup opens as a **modal overlay**, preserving the user's current context
-- Options shown depend on whether user has a Nostr identity:
-  - With identity: "Create new wallet" | "Restore from mnemonic" | "Restore from Nostr backup"
-  - Without identity: "Create new wallet" | "Restore from mnemonic" (no Nostr backup option)
+- Requires a Nostr identity — guests see the identity modal first; wallet setup is only reached once an identity exists
+- Always begins with a backup scan (2a loading state) before presenting any options
+- Options after scan: "Create new wallet" | "Restore from seed" | "Restore from Nostr backup" (if backup found)
 - Create: generate a new mnemonic, set a password, display backup words
-- Restore from mnemonic: paste 12/24 words, set a password
-- Restore from Nostr backup: if `check_nostr_backup` finds a backup on relays, decrypt with the Nostr key and restore automatically
+- Restore from seed: paste 12/24 words, set a password
+- Restore from Nostr backup: if `check_nostr_backup` finds a backup on relays, the backup-found page is shown automatically; user enters password to decrypt
 - After wallet creation: modal closes, user returns to their prior context with the action button now enabled
 - Wallet is encrypted at rest with the user's password
+- On logout: wallet file is deleted from disk. No wallet data or password persists after logout. On next sign-in, the wallet modal starts fresh (backup scan, then create or restore).
 
 **Interaction design**:
-- **Nostr backup detection**: If the user has a Nostr identity, the modal checks relays for an existing encrypted backup in the background. If found, "Restore from Nostr backup" is pre-selected with a note: "We found an existing wallet backup on your Nostr relays."
-- **Mnemonic display**: For new wallets, show the 12 words in a numbered grid. "Write these down" warning. Verification step: ask the user to confirm 3 random words.
-- **Password requirements**: Minimum 8 characters. Confirm field. Show strength indicator.
+- **Nostr backup detection**: The modal always runs a backup scan immediately on open, showing a spinner (2a). This is a blocking step — the user waits for the scan to complete before seeing any options. If a backup is found, the "Restore from Nostr backup" page is shown directly. If not, the main setup page (create / restore from seed) is shown.
+- **No step indicator when signed in**: The two-circle step indicator shown during the combined identity+wallet flow is hidden when the wallet modal is opened independently by a signed-in user. "Step 2 of 2" eyebrow labels are also hidden. There is no back button to the identity step.
+- **Mnemonic display**: For new wallets, show the 12 words in divider-separated rows (3 words per row), each word with a number prefix. "Write these down" warning. Verification step: ask the user to confirm 3 random words.
+- **Password requirements**: Minimum 8 characters. Confirm field.
 - **Auto-lock**: After wallet creation, configure auto-lock timeout (default: 15 minutes of inactivity). The wallet locks (requires password to unlock) but the Nostr identity persists.
 - **Return to action**: After wallet creation completes, the modal closes and the trade/send/receive action that triggered it is now available. The user does not need to re-navigate or re-enter parameters.
 

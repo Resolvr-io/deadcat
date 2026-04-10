@@ -660,7 +660,15 @@ export function renderActionTicket(market: Market): string {
           ? `<p class="mt-3 text-xs text-rose-300">${state.tradeError}</p>`
           : ""
       }
-      <button data-action="submit-trade" ${tradeBusy ? "disabled" : ""} class="mt-4 w-full rounded-lg ${tradeBusy ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 font-semibold">${state.tradeExecuteLoading ? "Executing..." : state.tradeQuoteLoading ? "Quoting..." : ctaLabel}</button>
+      ${
+        state.walletStatus !== "unlocked"
+          ? `<div class="mt-4 rounded-lg border border-slate-700 bg-slate-900/60 p-4 text-center">
+        <p class="text-sm font-medium text-slate-300">Create a wallet to trade</p>
+        <p class="text-xs text-slate-500 mt-1">Your quote will be preserved</p>
+        <button data-action="setup-wallet-from-quote" class="mt-3 w-full rounded-lg bg-emerald-400 px-4 py-2.5 font-semibold text-slate-950 hover:bg-emerald-300 transition">Set up wallet</button>
+      </div>`
+          : `<button data-action="submit-trade" ${tradeBusy ? "disabled" : ""} class="mt-4 w-full rounded-lg ${tradeBusy ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 font-semibold">${state.tradeExecuteLoading ? "Executing..." : state.tradeQuoteLoading ? "Quoting..." : ctaLabel}</button>`
+      }
       `
       }
       <div class="mt-3 flex items-center justify-between text-xs text-slate-400">

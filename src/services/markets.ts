@@ -73,9 +73,16 @@ export async function loadMarkets(): Promise<void> {
   try {
     const stored = await invoke<DiscoveredMarket[]>("discover_contracts");
     setMarkets(stored.map(discoveredToMarket));
-  } catch (error) {
-    console.warn("Failed to load markets:", error);
-    setMarkets([]);
+  } catch {
+    // discover_contracts requires a Nostr node (identity). Fall back to list_contracts
+    // which reads directly from the store and works without identity.
+    try {
+      const stored = await invoke<DiscoveredMarket[]>("list_contracts");
+      setMarkets(stored.map(discoveredToMarket));
+    } catch (error) {
+      console.warn("Failed to load markets:", error);
+      setMarkets([]);
+    }
   }
 }
 

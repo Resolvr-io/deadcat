@@ -60,6 +60,10 @@ export const APP_ACTION_LIST = [
   "confirm-logout",
   "open-create-market",
   "open-wallet",
+  "setup-wallet-from-quote",
+  "close-setup-modal",
+  "setup-modal-backdrop",
+  "select-backup-wallet",
 ] as const;
 
 export const WALLET_ACTION_LIST = [

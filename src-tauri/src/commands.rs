@@ -378,9 +378,11 @@ pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> 
 // =========================================================================
 
 /// Encrypt the wallet mnemonic with NIP-44 and publish to relays.
+/// `wallet_name` is used to derive the d-tag; defaults to "My Wallet".
 #[tauri::command]
 pub async fn backup_mnemonic_to_nostr(
     password: String,
+    wallet_name: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     let (keys, client) = get_keys_and_client(&app).await?;
@@ -401,31 +403,36 @@ pub async fn backup_mnemonic_to_nostr(
         }
     };
 
+    let name = wallet_name.unwrap_or_else(|| "My Wallet".to_string());
     let encrypted = discovery::nip44_encrypt_to_self(&keys, &mnemonic)?;
-    let event = discovery::build_wallet_backup_event(&keys, &encrypted)?;
+    let event = discovery::build_wallet_backup_event(&keys, &encrypted, &name)?;
     let event_id = discovery::publish_event(&client, event).await?;
 
     Ok(event_id.to_hex())
 }
 
-/// Fetch and decrypt wallet mnemonic backup from relays.
+/// Fetch and decrypt a wallet mnemonic backup from relays.
+/// `wallet_name` selects which wallet to restore; defaults to "My Wallet".
 #[tauri::command]
-pub async fn restore_mnemonic_from_nostr(app: tauri::AppHandle) -> Result<String, String> {
+pub async fn restore_mnemonic_from_nostr(
+    wallet_name: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
     let (keys, client) = get_keys_and_client(&app).await?;
 
-    let filter = discovery::build_backup_query_filter(&keys.public_key());
+    let name = wallet_name.unwrap_or_else(|| "My Wallet".to_string());
+    let filter = discovery::build_named_backup_query_filter(&keys.public_key(), &name);
     let events = client
         .fetch_events(vec![filter], Duration::from_secs(8))
         .await
         .map_err(|e| format!("failed to fetch backup: {e}"))?;
 
-    let encrypted_content = {
-        let mut iter = events.iter();
-        let event = iter
-            .next()
-            .ok_or_else(|| "No wallet backup found on relays".to_string())?;
-        event.content.clone()
-    };
+    let encrypted_content = events
+        .iter()
+        .next()
+        .ok_or_else(|| "No wallet backup found on relays".to_string())?
+        .content
+        .clone();
 
     discovery::nip44_decrypt_from_self(&keys, &encrypted_content)
 }
@@ -455,40 +462,54 @@ pub async fn check_nostr_backup(
     for url in relays {
         let f = filter.clone();
         tasks.spawn(async move {
-            let found =
+            let wallet_d_tags: Vec<String> =
                 match discovery::connect_multi_relay_client(std::slice::from_ref(&url)).await {
                     Ok(per_relay_client) => {
                         match per_relay_client
                             .fetch_events(vec![f], Duration::from_secs(8))
                             .await
                         {
-                            Ok(events) => events.iter().next().is_some(),
-                            Err(_) => false,
+                            Ok(events) => events
+                                .iter()
+                                .filter_map(|e| e.tags.identifier().map(|d| d.to_string()))
+                                .filter(|d| d.starts_with(discovery::WALLET_BACKUP_D_TAG_PREFIX))
+                                .collect(),
+                            Err(_) => vec![],
                         }
                     }
-                    Err(_) => false,
+                    Err(_) => vec![],
                 };
-            discovery::RelayBackupResult {
-                url,
-                has_backup: found,
-            }
+            (url, wallet_d_tags)
         });
     }
 
     let mut relay_results = Vec::new();
+    let mut seen_d_tags: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut wallets: Vec<discovery::WalletEntry> = Vec::new();
     let mut any_found = false;
+
     while let Some(result) = tasks.join_next().await {
-        if let Ok(r) = result {
-            if r.has_backup {
+        if let Ok((url, d_tags)) = result {
+            let has_backup = !d_tags.is_empty();
+            if has_backup {
                 any_found = true;
             }
-            relay_results.push(r);
+            for d_tag in &d_tags {
+                if seen_d_tags.insert(d_tag.clone()) {
+                    wallets.push(discovery::WalletEntry {
+                        name: discovery::d_tag_to_wallet_name(d_tag),
+                        d_tag: d_tag.clone(),
+                    });
+                }
+            }
+            relay_results.push(discovery::RelayBackupResult { url, has_backup });
         }
     }
 
     Ok(discovery::NostrBackupStatus {
         has_backup: any_found,
         relay_results,
+        wallets,
     })
 }
 

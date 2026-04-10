@@ -35,54 +35,58 @@ export function renderTopShell(): string {
             <button data-action="open-search" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 lg:hidden">
               <svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </button>
-            <button data-action="open-wallet" class="flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${state.showMiniWallet && state.walletStatus === "unlocked" && state.walletData?.balance && !state.walletBalanceHidden ? "gap-1.5 px-3" : "w-9"}">
-              <svg class="h-[18px] w-[18px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
-              ${state.showMiniWallet && state.walletStatus === "unlocked" && state.walletData?.balance && !state.walletBalanceHidden ? `<span class="text-xs font-medium text-slate-300">${formatCompactSats(state.walletData?.balance[state.walletPolicyAssetId] ?? 0)}</span>` : ""}
-            </button>
-            <div class="relative shrink-0">
-              <button data-action="toggle-user-menu" class="flex h-9 w-9 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 overflow-hidden">
-                ${
-                  state.nostrProfile?.picture && !state.profilePicError
-                    ? `<img src="${escapeAttr(state.nostrProfile.picture)}" class="h-full w-full rounded-full object-cover" onerror="this.style.display='none';this.nextElementSibling.style.display='block'" /><svg style="display:none" class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`
-                    : `<svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`
-                }
-              </button>
-              ${
-                state.userMenuOpen
-                  ? `<div class="absolute right-0 top-full z-50 mt-2 w-64 rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
-                ${
-                  state.nostrNpub
-                    ? `<div class="px-3 pb-1 pt-3">
-                  <div class="mb-1.5 text-[11px] text-slate-500">Nostr Publishing ID</div>
-                  <button data-action="copy-nostr-npub" class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-slate-800" title="Click to copy npub">
-                    <span class="mono min-w-0 truncate text-xs text-slate-300">${escapeHtml(state.nostrNpub)}</span>
-                    <svg class="h-3.5 w-3.5 shrink-0 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                  </button>
-                </div>`
-                    : ""
-                }
-                <div class="px-3 pb-1 ${state.nostrNpub ? "pt-1 border-t border-slate-800" : "pt-3"}">
-                  <div class="mb-1.5 text-[11px] text-slate-500">Display currency</div>
-                  <div class="grid grid-cols-3 gap-1">
-                    ${baseCurrencyOptions.map((c) => `<button data-action="set-currency" data-currency="${c}" class="rounded-md px-2 py-1 text-xs transition ${c === state.baseCurrency ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"}">${c}</button>`).join("")}
-                  </div>
-                </div>
-                <div class="mt-1 border-t border-slate-800 py-1">
-                  <button data-action="user-settings" class="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-800 hover:text-slate-100">
-                    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                    Settings
-                  </button>
-                </div>
-                <div class="border-t border-slate-800 py-1">
-                  <button data-action="user-logout" class="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-800 hover:text-slate-100">
-                    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-                    Log out
-                  </button>
-                </div>
-              </div>`
-                  : ""
-              }
-            </div>
+            ${
+              !state.nostrPubkey
+                ? `<button data-action="open-wallet" class="shrink-0 rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-400 transition">Get started</button>`
+                : `${
+                    state.walletStatus === "not_created"
+                      ? `<button data-action="open-wallet" class="shrink-0 px-3 py-1.5 text-sm font-medium text-emerald-400 hover:text-emerald-300 transition">Set up wallet</button>`
+                      : `<button data-action="open-wallet" class="flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${state.showMiniWallet && state.walletStatus === "unlocked" && state.walletData?.balance && !state.walletBalanceHidden ? "gap-1.5 px-3" : "w-9"}">
+                    <svg class="h-[18px] w-[18px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+                    ${state.showMiniWallet && state.walletStatus === "unlocked" && state.walletData?.balance && !state.walletBalanceHidden ? `<span class="text-xs font-medium text-slate-300">${formatCompactSats(state.walletData?.balance[state.walletPolicyAssetId] ?? 0)}</span>` : ""}
+                  </button>`
+                  }
+                  <div class="relative shrink-0">
+                    <button data-action="toggle-user-menu" class="flex h-9 w-9 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 overflow-hidden">
+                      ${
+                        state.nostrProfile?.picture && !state.profilePicError
+                          ? `<img src="${escapeAttr(state.nostrProfile.picture)}" class="h-full w-full rounded-full object-cover" onerror="this.style.display='none';this.nextElementSibling.style.display='block'" /><svg style="display:none" class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`
+                          : `<svg class="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`
+                      }
+                    </button>
+                    ${
+                      state.userMenuOpen && state.nostrNpub
+                        ? `<div class="absolute right-0 top-full z-50 mt-2 w-64 rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
+                          <div class="px-3 pb-1 pt-3">
+                            <div class="mb-1.5 text-[11px] text-slate-500">Nostr Publishing ID</div>
+                            <button data-action="copy-nostr-npub" class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-slate-800" title="Click to copy npub">
+                              <span class="mono min-w-0 truncate text-xs text-slate-300">${escapeHtml(state.nostrNpub)}</span>
+                              <svg class="h-3.5 w-3.5 shrink-0 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                            </button>
+                          </div>
+                          <div class="px-3 pb-1 pt-1 border-t border-slate-800">
+                            <div class="mb-1.5 text-[11px] text-slate-500">Display currency</div>
+                            <div class="grid grid-cols-3 gap-1">
+                              ${baseCurrencyOptions.map((c) => `<button data-action="set-currency" data-currency="${c}" class="rounded-md px-2 py-1 text-xs transition ${c === state.baseCurrency ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"}">${c}</button>`).join("")}
+                            </div>
+                          </div>
+                          <div class="mt-1 border-t border-slate-800 py-1">
+                            <button data-action="user-settings" class="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-800 hover:text-slate-100">
+                              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                              Settings
+                            </button>
+                          </div>
+                          <div class="border-t border-slate-800 py-1">
+                            <button data-action="user-logout" class="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-800 hover:text-slate-100">
+                              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                              Log out
+                            </button>
+                          </div>
+                        </div>`
+                        : ""
+                    }
+                  </div>`
+            }
           </div>
         </div>
       </div>
@@ -443,22 +447,22 @@ export function renderTopShell(): string {
         ? `<div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
       <div class="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-8">
         <div class="flex items-center justify-between">
-          <h2 class="text-lg font-medium text-slate-100">Log Out</h2>
+          <h2 class="text-lg font-medium text-slate-100">Log Out of Nostr</h2>
           <button data-action="close-logout" class="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200">
             <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
           </button>
         </div>
         <div class="mt-5 space-y-4">
           <div class="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
-            <p class="text-sm font-medium text-slate-200">Before you log out, make sure you have:</p>
+            <p class="text-sm font-medium text-slate-200">This will remove your Nostr identity from this device. Before you continue, make sure you have:</p>
             <ul class="mt-3 space-y-2 text-sm text-slate-400">
               <li class="flex items-start gap-2">
                 <svg class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                <span>Backed up your <strong class="text-slate-200">recovery phrase</strong> — this is the only way to restore your wallet</span>
+                <span>Saved your <strong class="text-slate-200">nsec (secret key)</strong> — you'll need it to log back in and resolve your markets</span>
               </li>
               <li class="flex items-start gap-2">
                 <svg class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                <span>Saved your <strong class="text-slate-200">unlock password</strong> — you'll need it to access your wallet again</span>
+                <span>Backed up your <strong class="text-slate-200">wallet recovery phrase</strong> — your wallet remains encrypted on this device</span>
               </li>
             </ul>
           </div>
