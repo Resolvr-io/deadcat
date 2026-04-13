@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { markets, setMarkets } from "../state.ts";
 import type {
   CancelLimitOrderResponse,
   CancellationResult,
@@ -67,43 +66,6 @@ export function discoveredToMarket(d: DiscoveredMarket): Market {
     resolvedNoTxid: d.resolved_no_txid ?? null,
     expiredTxid: d.expired_txid ?? null,
   };
-}
-
-export async function loadMarkets(): Promise<void> {
-  try {
-    const stored = await invoke<DiscoveredMarket[]>("discover_contracts");
-    setMarkets(stored.map(discoveredToMarket));
-  } catch {
-    // discover_contracts requires a Nostr node (identity). Fall back to list_contracts
-    // which reads directly from the store and works without identity.
-    try {
-      const stored = await invoke<DiscoveredMarket[]>("list_contracts");
-      setMarkets(stored.map(discoveredToMarket));
-    } catch (error) {
-      console.warn("Failed to load markets:", error);
-      setMarkets([]);
-    }
-  }
-}
-
-export async function refreshMarketsFromStore(): Promise<void> {
-  try {
-    const stored = await invoke<DiscoveredMarket[]>("list_contracts");
-    const oldByMarketId = new Map(markets.map((m) => [m.marketId, m]));
-    setMarkets(
-      stored.map((d) => {
-        const m = discoveredToMarket(d);
-        const prev = oldByMarketId.get(m.marketId);
-        if (prev) {
-          m.limitOrders = prev.limitOrders;
-          m.collateralUtxos = prev.collateralUtxos;
-        }
-        return m;
-      }),
-    );
-  } catch (error) {
-    console.warn("Failed to refresh markets from store:", error);
-  }
 }
 
 export function marketToContractParamsJson(market: Market): string {
@@ -302,14 +264,4 @@ export async function cancelLimitOrder(
 
 export async function fetchOwnOrders(): Promise<OwnOrderSummary[]> {
   return invoke<OwnOrderSummary[]>("list_own_orders");
-}
-
-export function mergeOrdersIntoMarket(
-  marketId: string,
-  orders: DiscoveredOrder[],
-): void {
-  const market = markets.find((m) => m.marketId === marketId);
-  if (market) {
-    market.limitOrders = orders.filter((o) => o.market_id === marketId);
-  }
 }
