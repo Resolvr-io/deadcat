@@ -75,14 +75,13 @@ function ToastItem({ entry }: { entry: ToastEntry }) {
   }, [entry.id]);
 
   return (
-    <div
-      role="status"
+    <output
       onClick={handleClick}
       className={`max-w-lg w-[90vw] px-4 py-3 rounded-lg border bg-slate-950 ${kindStyles[entry.kind]} text-sm shadow-lg transition-opacity duration-300 cursor-pointer select-text break-all`}
       style={{ opacity: visible ? 1 : 0 }}
     >
       {entry.message}
-    </div>
+    </output>
   );
 }
 
