@@ -63,6 +63,7 @@ export default function OnboardingOverlay() {
               viewBox="0 0 24 24"
               stroke="currentColor"
               strokeWidth={3}
+              aria-hidden="true"
             >
               <path
                 strokeLinecap="round"
@@ -104,11 +105,16 @@ export default function OnboardingOverlay() {
 
   return (
     <div
+      role="presentation"
       onClick={handleBackdropClick}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") handleClose();
+      }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm"
     >
       <div className="relative w-full max-w-[432px] mx-4">
         <button
+          type="button"
           onClick={handleClose}
           className="absolute -top-10 right-0 flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition"
         >
@@ -118,6 +124,7 @@ export default function OnboardingOverlay() {
             viewBox="0 0 24 24"
             stroke="currentColor"
             strokeWidth={2}
+            aria-hidden="true"
           >
             <path
               strokeLinecap="round"

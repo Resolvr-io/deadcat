@@ -29,19 +29,20 @@ export function UserMenu() {
   return (
     <div className="relative shrink-0">
       <button
+        type="button"
         onClick={toggleMenu}
         className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 overflow-hidden"
       >
         {nostrProfile?.picture && !profilePicError ? (
-          <>
-            <img
-              src={nostrProfile.picture}
-              className="h-full w-full rounded-full object-cover"
-              onError={() => useStore.setState({ profilePicError: true })}
-            />
-          </>
+          <img
+            src={nostrProfile.picture}
+            alt="Profile"
+            className="h-full w-full rounded-full object-cover"
+            onError={() => useStore.setState({ profilePicError: true })}
+          />
         ) : (
           <svg
+            aria-hidden="true"
             className="h-[18px] w-[18px]"
             viewBox="0 0 24 24"
             fill="none"
@@ -63,6 +64,7 @@ export function UserMenu() {
               Nostr Publishing ID
             </div>
             <button
+              type="button"
               onClick={copyNpub}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-slate-800"
               title="Click to copy npub"
@@ -71,6 +73,7 @@ export function UserMenu() {
                 {nostrNpub}
               </span>
               <svg
+                aria-hidden="true"
                 className="h-3.5 w-3.5 shrink-0 text-slate-500"
                 viewBox="0 0 24 24"
                 fill="none"
@@ -87,10 +90,12 @@ export function UserMenu() {
 
           <div className="mt-1 border-t border-slate-800 py-1">
             <button
+              type="button"
               onClick={openSettings}
               className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-800 hover:text-slate-100"
             >
               <svg
+                aria-hidden="true"
                 className="h-4 w-4"
                 viewBox="0 0 24 24"
                 fill="none"
@@ -108,10 +113,12 @@ export function UserMenu() {
 
           <div className="border-t border-slate-800 py-1">
             <button
+              type="button"
               onClick={openLogout}
               className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-800 hover:text-slate-100"
             >
               <svg
+                aria-hidden="true"
                 className="h-4 w-4"
                 viewBox="0 0 24 24"
                 fill="none"

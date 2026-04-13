@@ -1,6 +1,7 @@
-import React, { useCallback, useMemo, useRef } from "react";
-import type { ChartTimescale, Market, PriceHistoryEntry } from "../../types";
+import type React from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useStore } from "../../store";
+import type { ChartTimescale, Market, PriceHistoryEntry } from "../../types";
 import {
   buildChartFromHistory,
   buildChartSeriesData,
@@ -49,11 +50,7 @@ function markerSvg(
   );
 }
 
-function pulseSvg(
-  x: number,
-  y: number,
-  toneClass: string,
-): React.JSX.Element {
+function pulseSvg(x: number, y: number, toneClass: string): React.JSX.Element {
   const pulseBaseScale = (MARKER_WIDTH * 0.82) / MARKER_VIEWBOX_WIDTH;
   const markerCenterX = MARKER_VIEWBOX_WIDTH / 2;
   const markerCenterY = MARKER_VIEWBOX_HEIGHT / 2;
@@ -187,9 +184,9 @@ function buildPawTrail(
           transform={`translate(${x} ${y}) rotate(${angle}) scale(${s})`}
           opacity={pawOpacity}
         >
-          {PAW_PATHS.map((d, pi) => (
+          {PAW_PATHS.map((d) => (
             <path
-              key={pi}
+              key={d}
               d={d}
               transform={`translate(${-PAW_VIEWBOX.w / 2} ${-PAW_VIEWBOX.h / 2})`}
               fill={fill}
@@ -296,7 +293,7 @@ export default function MarketChart({
       yesPoints: visible.map((p) => ({ x: p.x, y: p.yesY })),
       noPoints: visible.map((p) => ({ x: p.x, y: p.noY })),
     };
-  }, [yesSeries, pointCount, plotLeft, plotXSpan, plotTop, plotBottom, yFromProbability]);
+  }, [yesSeries, pointCount, plotXSpan, plotBottom, yFromProbability]);
 
   const yesLinePoints = yesPoints
     .map((p) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`)
@@ -344,9 +341,7 @@ export default function MarketChart({
       ? { x: hoverX, y: separatedHover.yesY }
       : null;
   const noHover =
-    hoverActive && separatedHover
-      ? { x: hoverX, y: separatedHover.noY }
-      : null;
+    hoverActive && separatedHover ? { x: hoverX, y: separatedHover.noY } : null;
 
   const hoverBlockHeight = Math.round(startBlockHeight + scaleBlocks * hoverT);
   const hoverYesPct =
@@ -365,8 +360,8 @@ export default function MarketChart({
       { x: noEnd.x, y: noEnd.y, r: 3.5 },
       ...(hoverAvailable
         ? [
-            { x: yesHover!.x, y: yesHover!.y, r: 3.3 },
-            { x: noHover!.x, y: noHover!.y, r: 3.3 },
+            { x: yesHover?.x, y: yesHover?.y, r: 3.3 },
+            { x: noHover?.x, y: noHover?.y, r: 3.3 },
           ]
         : []),
     ],
@@ -395,11 +390,11 @@ export default function MarketChart({
         plotTop + 0.6,
         Math.min(plotBottom - readoutBlockHeight - 0.6, y),
       ),
-    [plotTop, plotBottom, readoutBlockHeight],
+    [plotBottom, readoutBlockHeight],
   );
 
-  const noAnchorY = hoverAvailable ? noHover!.y : noEnd.y;
-  const yesAnchorY = hoverAvailable ? yesHover!.y : yesEnd.y;
+  const noAnchorY = hoverAvailable ? noHover?.y : noEnd.y;
+  const yesAnchorY = hoverAvailable ? yesHover?.y : yesEnd.y;
   let readoutNoTop = clampReadoutTop(noAnchorY - (readoutLabelFont + 0.8));
   let readoutYesTop = clampReadoutTop(yesAnchorY - (readoutLabelFont + 0.8));
   const minReadoutGap = readoutBlockHeight + 1.4;
@@ -418,17 +413,9 @@ export default function MarketChart({
   const readoutNoPctY = readoutNoLabelY + readoutLineGap + readoutPctFont;
   const readoutYesPctY = readoutYesLabelY + readoutLineGap + readoutPctFont;
   const readoutNoPct = hasPrice ? (hoverActive ? hoverNoPct : noPct) : null;
-  const readoutYesPct = hasPrice
-    ? hoverActive
-      ? hoverYesPct
-      : yesPct
-    : null;
+  const readoutYesPct = hasPrice ? (hoverActive ? hoverYesPct : yesPct) : null;
   const legendNoPct = hasPrice ? (hoverActive ? hoverNoPct : noPct) : null;
-  const legendYesPct = hasPrice
-    ? hoverActive
-      ? hoverYesPct
-      : yesPct
-    : null;
+  const legendYesPct = hasPrice ? (hoverActive ? hoverYesPct : yesPct) : null;
 
   // ── Hover time box ────────────────────────────────────────────────
   const hoverTimeX = Math.max(plotLeft + 18, Math.min(plotRight - 18, hoverX));
@@ -469,7 +456,7 @@ export default function MarketChart({
         chartHoverX: svgX,
       });
     },
-    [market.id, plotLeft, plotXSpan],
+    [market.id, plotXSpan],
   );
 
   const handleMouseLeave = useCallback(() => {
@@ -521,11 +508,12 @@ export default function MarketChart({
             viewBox={`0 0 ${chartWidth} ${chartHeight}`}
             preserveAspectRatio="none"
             className="h-full w-full"
+            aria-hidden="true"
           >
             {/* Guide lines */}
-            {guideLineYs.map((y, i) => (
+            {guideLineYs.map((y) => (
               <line
-                key={i}
+                key={y}
                 x1="0"
                 y1={y}
                 x2={chartWidth}
@@ -569,9 +557,9 @@ export default function MarketChart({
                   fillOpacity="0.5"
                 />
                 <line
-                  x1={yesHover!.x}
+                  x1={yesHover?.x}
                   y1={plotTop}
-                  x2={yesHover!.x}
+                  x2={yesHover?.x}
                   y2={plotBottom}
                   stroke="#e2e8f0"
                   strokeOpacity="0.6"
@@ -597,8 +585,8 @@ export default function MarketChart({
             {/* Hover markers */}
             {hoverAvailable && (
               <>
-                {markerSvg(yesHover!.x, yesHover!.y, "#5eead4", 1.16)}
-                {markerSvg(noHover!.x, noHover!.y, "#fb7185", 1.16)}
+                {markerSvg(yesHover?.x, yesHover?.y, "#5eead4", 1.16)}
+                {markerSvg(noHover?.x, noHover?.y, "#fb7185", 1.16)}
               </>
             )}
 
@@ -723,6 +711,7 @@ export default function MarketChart({
         {/* Hover interaction overlay */}
         <div
           ref={hoverRef}
+          role="presentation"
           className="absolute inset-x-3 top-10 bottom-8 z-10"
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
@@ -745,8 +734,8 @@ export default function MarketChart({
           className="pointer-events-none absolute inset-x-3 bottom-1 flex items-center justify-between text-[12px] font-normal text-slate-500"
           style={{ textShadow: "0 1px 1px rgba(2, 6, 23, 0.35)" }}
         >
-          {xLabels.map((label, i) => (
-            <span key={i}>#{label.toLocaleString()}</span>
+          {xLabels.map((label) => (
+            <span key={label}>#{label.toLocaleString()}</span>
           ))}
           <span className="ml-2 text-[11px] uppercase tracking-wide text-slate-600">
             BLOCK
@@ -762,6 +751,7 @@ export default function MarketChart({
         <div className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/65 p-1 text-[12px]">
           {(["10B", "25B", "50B", "100B"] as const).map((option) => (
             <button
+              type="button"
               key={option}
               onClick={() =>
                 useStore.setState({ chartTimescale: option as ChartTimescale })

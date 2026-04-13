@@ -1,5 +1,5 @@
-import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { useEffect } from "react";
 import { queryClient } from "../queries/queryClient";
 import { useStore } from "../store";
 import type { WalletTransaction, WalletUtxo } from "../types";

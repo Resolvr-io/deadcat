@@ -139,7 +139,10 @@ export function formatFiat(value: number, currency: BaseCurrency): string {
 }
 
 /** Accepts baseCurrency as param instead of reading from global state. */
-export function satsToFiatStr(sats: number, baseCurrency: BaseCurrency): string {
+export function satsToFiatStr(
+  sats: number,
+  baseCurrency: BaseCurrency,
+): string {
   if (baseCurrency === "BTC") return "";
   return formatFiat(satsToFiat(sats, baseCurrency), baseCurrency);
 }

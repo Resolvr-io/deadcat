@@ -1,16 +1,16 @@
-import { useStore } from "./store";
-import { useTauriEvents } from "./hooks/useTauriEvents";
+import CreateMarketPage from "./components/create/CreateMarketPage";
+import DetailPage from "./components/detail/DetailPage";
+import HomePage from "./components/home/HomePage";
+import { TopShell } from "./components/layout/TopShell";
+import { NostrEventModal } from "./components/modals/NostrEventModal";
+import OnboardingOverlay from "./components/onboarding/OnboardingOverlay";
+import { OverlayLoader } from "./components/shared/OverlayLoader";
+import { ToastContainer } from "./components/shared/Toast";
+import { WalletPage } from "./components/wallet/WalletPage";
 import { useActivityTracking } from "./hooks/useActivityTracking";
 import { useBootstrap } from "./hooks/useBootstrap";
-import { ToastContainer } from "./components/shared/Toast";
-import { OverlayLoader } from "./components/shared/OverlayLoader";
-import { TopShell } from "./components/layout/TopShell";
-import HomePage from "./components/home/HomePage";
-import DetailPage from "./components/detail/DetailPage";
-import CreateMarketPage from "./components/create/CreateMarketPage";
-import { WalletPage } from "./components/wallet/WalletPage";
-import OnboardingOverlay from "./components/onboarding/OnboardingOverlay";
-import { NostrEventModal } from "./components/modals/NostrEventModal";
+import { useTauriEvents } from "./hooks/useTauriEvents";
+import { useStore } from "./store";
 
 export default function App() {
   useBootstrap();

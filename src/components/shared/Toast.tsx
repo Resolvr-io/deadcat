@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 type ToastKind = "success" | "error" | "warning" | "info";
@@ -19,10 +19,7 @@ function notify() {
 }
 
 /** Imperative toast API -- call from anywhere (no hook required). */
-export function showToast(
-  message: string,
-  kind: ToastKind = "info",
-): void {
+export function showToast(message: string, kind: ToastKind = "info"): void {
   const id = nextId++;
   toasts = [...toasts, { id, message, kind }];
   notify();

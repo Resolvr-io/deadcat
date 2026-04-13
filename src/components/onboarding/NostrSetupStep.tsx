@@ -1,12 +1,13 @@
-import { useCallback, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { type ReactNode, useCallback } from "react";
 import { useStore } from "../../store";
-import { showToast } from "../shared/Toast";
 import type { IdentityResponse, NostrProfile } from "../../types";
+import { showToast } from "../shared/Toast";
 
 function BackButton({ onClick }: { onClick: () => void }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       className="mb-8 flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition"
     >
@@ -16,6 +17,7 @@ function BackButton({ onClick }: { onClick: () => void }) {
         viewBox="0 0 24 24"
         stroke="currentColor"
         strokeWidth={2}
+        aria-hidden="true"
       >
         <path
           strokeLinecap="round"
@@ -32,9 +34,7 @@ interface NostrSetupStepProps {
   stepIndicator: ReactNode;
 }
 
-export default function NostrSetupStep({
-  stepIndicator,
-}: NostrSetupStepProps) {
+export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const nostrMode = useStore((s) => s.onboardingNostrMode);
   const nostrDone = useStore((s) => s.onboardingNostrDone);
   const loading = useStore((s) => s.onboardingLoading);
@@ -114,8 +114,7 @@ export default function NostrSetupStep({
     }
     if (!nsecInput.startsWith("nsec1")) {
       useStore.setState({
-        onboardingError:
-          "Invalid secret key. It should start with nsec1.",
+        onboardingError: "Invalid secret key. It should start with nsec1.",
       });
       return;
     }
@@ -164,9 +163,10 @@ export default function NostrSetupStep({
       // Scan for backups when importing an existing identity
       useStore.setState({ onboardingBackupScanning: true });
       try {
-        const status = await invoke<import("../../types").NostrBackupStatus>(
-          "check_nostr_backup",
-        );
+        const status =
+          await invoke<import("../../types").NostrBackupStatus>(
+            "check_nostr_backup",
+          );
         useStore.setState({ nostrBackupStatus: status });
         if (status.has_backup) {
           useStore.setState({
@@ -248,8 +248,8 @@ export default function NostrSetupStep({
         {!isImport && (
           <div className="mt-5 rounded-lg border border-amber-700/30 bg-amber-950/20 px-4 py-3">
             <p className="text-xs text-amber-300/90 leading-relaxed">
-              Never share your nsec with anyone. Anyone who has it can act
-              as you on Nostr.
+              Never share your nsec with anyone. Anyone who has it can act as
+              you on Nostr.
             </p>
           </div>
         )}
@@ -260,10 +260,9 @@ export default function NostrSetupStep({
               {nostrProfile?.picture && !profilePicError ? (
                 <img
                   src={nostrProfile.picture}
+                  alt="Profile"
                   className="h-10 w-10 rounded-full object-cover shrink-0"
-                  onError={() =>
-                    useStore.setState({ profilePicError: true })
-                  }
+                  onError={() => useStore.setState({ profilePicError: true })}
                 />
               ) : (
                 <div className="h-10 w-10 rounded-full bg-slate-800 flex items-center justify-center shrink-0">
@@ -273,6 +272,7 @@ export default function NostrSetupStep({
                     viewBox="0 0 24 24"
                     stroke="currentColor"
                     strokeWidth={1.5}
+                    aria-hidden="true"
                   >
                     <path
                       strokeLinecap="round"
@@ -305,6 +305,7 @@ export default function NostrSetupStep({
                   </p>
                 </div>
                 <button
+                  type="button"
                   onClick={handleCopyNpub}
                   className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
                 >
@@ -328,6 +329,7 @@ export default function NostrSetupStep({
                 </div>
                 {nsecRevealed ? (
                   <button
+                    type="button"
                     onClick={handleCopyNsec}
                     className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
                   >
@@ -335,6 +337,7 @@ export default function NostrSetupStep({
                   </button>
                 ) : (
                   <button
+                    type="button"
                     onClick={handleRevealNsec}
                     className="shrink-0 rounded-lg border border-amber-700/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-300 hover:bg-amber-900/30 transition"
                   >
@@ -360,6 +363,7 @@ export default function NostrSetupStep({
                   strokeWidth={2.5}
                   strokeLinecap="round"
                   strokeLinejoin="round"
+                  aria-hidden="true"
                 >
                   <polyline points="2,6 5,9 10,3" />
                 </svg>
@@ -378,6 +382,7 @@ export default function NostrSetupStep({
         )}
 
         <button
+          type="button"
           onClick={handleContinue}
           disabled={!isImport && !nsecAcknowledged}
           className="mt-6 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-40 disabled:cursor-not-allowed transition"
@@ -407,10 +412,14 @@ export default function NostrSetupStep({
         {errorHtml && <div className="mt-5">{errorHtml}</div>}
         <div className="mt-8 space-y-4">
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+            <label
+              htmlFor="nostr-secret-key"
+              className="text-xs font-medium text-slate-400 uppercase tracking-wide"
+            >
               Secret Key
             </label>
             <input
+              id="nostr-secret-key"
               type="text"
               placeholder="nsec1..."
               autoComplete="off"
@@ -423,6 +432,7 @@ export default function NostrSetupStep({
             />
           </div>
           <button
+            type="button"
             onClick={handleImport}
             disabled={loading}
             className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed transition"
@@ -451,6 +461,7 @@ export default function NostrSetupStep({
       {errorHtml && <div className="mt-5">{errorHtml}</div>}
       <div className="mt-10 space-y-3">
         <button
+          type="button"
           onClick={handleGenerate}
           disabled={loading}
           className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 transition"
@@ -458,6 +469,7 @@ export default function NostrSetupStep({
           {loading ? "Generating..." : "Generate new identity"}
         </button>
         <button
+          type="button"
           onClick={() =>
             useStore.setState({
               onboardingNostrMode: "import",

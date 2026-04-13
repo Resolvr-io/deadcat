@@ -1,12 +1,12 @@
-import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore } from "../../store";
+import { useCallback } from "react";
 import { categories } from "../../constants";
+import { useStore } from "../../store";
+import type { NavCategory } from "../../types";
 import { formatCompactSats } from "../../utils-react/wallet";
 import { SearchBar } from "./SearchBar";
-import { UserMenu } from "./UserMenu";
 import { SettingsPanel } from "./SettingsPanel";
-import type { NavCategory } from "../../types";
+import { UserMenu } from "./UserMenu";
 
 /* ── Category icon helper ──────────────────────────────────────────── */
 
@@ -29,27 +29,28 @@ export function categoryIcon(
   switch (category) {
     case "Trending":
       return (
-        <svg {...a}>
+        <svg aria-hidden="true" {...a}>
           <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
           <polyline points="16 7 22 7 22 13" />
         </svg>
       );
     case "Ending Soon":
       return (
-        <svg {...a}>
+        <svg aria-hidden="true" {...a}>
           <circle cx="12" cy="12" r="10" />
           <polyline points="12 6 12 12 16 14" />
         </svg>
       );
     case "New":
       return (
-        <svg {...a}>
+        <svg aria-hidden="true" {...a}>
           <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
         </svg>
       );
     case "Politics":
       return (
         <svg
+          aria-hidden="true"
           className={`${size} shrink-0`}
           viewBox="0 0 24 24"
           fill="currentColor"
@@ -59,7 +60,7 @@ export function categoryIcon(
       );
     case "Sports":
       return (
-        <svg {...a}>
+        <svg aria-hidden="true" {...a}>
           <path d="M6 9H4a2 2 0 0 1-2-2V4h4" />
           <path d="M18 9h2a2 2 0 0 0 2-2V4h-4" />
           <path d="M4 22h16" />
@@ -70,7 +71,7 @@ export function categoryIcon(
       );
     case "Culture":
       return (
-        <svg {...a}>
+        <svg aria-hidden="true" {...a}>
           <circle cx="12" cy="12" r="10" />
           <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
           <path d="M2 12h20" />
@@ -79,6 +80,7 @@ export function categoryIcon(
     case "Bitcoin":
       return (
         <svg
+          aria-hidden="true"
           className={`${size} shrink-0`}
           viewBox="0 0 24 24"
           fill="currentColor"
@@ -92,20 +94,20 @@ export function categoryIcon(
       );
     case "Weather":
       return (
-        <svg {...a}>
+        <svg aria-hidden="true" {...a}>
           <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
         </svg>
       );
     case "Macro":
       return (
-        <svg {...a}>
+        <svg aria-hidden="true" {...a}>
           <path d="M3 3v18h18" />
           <path d="m19 9-5 5-4-4-3 3" />
         </svg>
       );
     case "My Markets":
       return (
-        <svg {...a}>
+        <svg aria-hidden="true" {...a}>
           <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
           <circle cx="12" cy="7" r="4" />
         </svg>
@@ -127,10 +129,12 @@ function HelpModal() {
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-medium text-slate-100">Help</h2>
           <button
+            type="button"
             onClick={() => useStore.setState({ helpOpen: false })}
             className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
           >
             <svg
+              aria-hidden="true"
               className="h-5 w-5"
               fill="none"
               viewBox="0 0 24 24"
@@ -145,9 +149,7 @@ function HelpModal() {
             </svg>
           </button>
         </div>
-        <p className="mt-4 text-sm text-slate-400">
-          Help content coming soon.
-        </p>
+        <p className="mt-4 text-sm text-slate-400">Help content coming soon.</p>
       </div>
     </div>
   );
@@ -181,10 +183,12 @@ function LogoutModal() {
             Log Out of Nostr
           </h2>
           <button
+            type="button"
             onClick={closeLogout}
             className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
           >
             <svg
+              aria-hidden="true"
               className="h-5 w-5"
               fill="none"
               viewBox="0 0 24 24"
@@ -202,9 +206,8 @@ function LogoutModal() {
         <div className="mt-5 space-y-4">
           <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
             <p className="text-sm font-medium text-slate-200">
-              Logging out will{" "}
-              <strong>remove your Nostr key and wallet</strong> from this
-              device. Make sure you have:
+              Logging out will <strong>remove your Nostr key and wallet</strong>{" "}
+              from this device. Make sure you have:
             </p>
             <ul className="mt-3 space-y-2 text-sm text-slate-400">
               {[
@@ -222,14 +225,13 @@ function LogoutModal() {
                 </>,
                 <>
                   Backed up your{" "}
-                  <strong className="text-slate-200">
-                    Nostr private key
-                  </strong>{" "}
+                  <strong className="text-slate-200">Nostr private key</strong>{" "}
                   locally so you can restore your identity
                 </>,
               ].map((text, i) => (
                 <li key={i} className="flex items-start gap-2">
                   <svg
+                    aria-hidden="true"
                     className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400"
                     fill="none"
                     viewBox="0 0 24 24"
@@ -271,12 +273,14 @@ function LogoutModal() {
           </p>
           <div className="flex gap-3">
             <button
+              type="button"
               onClick={closeLogout}
               className="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
             >
               Cancel
             </button>
             <button
+              type="button"
               onClick={confirmLogout}
               disabled={!logoutBackedUp}
               className={`flex-1 rounded-xl py-2.5 text-sm font-medium transition ${logoutBackedUp ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "cursor-not-allowed border border-slate-800 text-slate-600"}`}
@@ -298,8 +302,7 @@ function CategoryBar() {
   const marketMakerMode = useStore((s) => s.marketMakerMode);
 
   const filteredCategories = categories.filter(
-    (category) =>
-      category !== "My Markets" || (nostrPubkey && marketMakerMode),
+    (category) => category !== "My Markets" || (nostrPubkey && marketMakerMode),
   );
 
   return (
@@ -311,6 +314,7 @@ function CategoryBar() {
             const icon = categoryIcon(category);
             return (
               <button
+                type="button"
                 key={category}
                 onClick={() =>
                   useStore.setState({
@@ -331,10 +335,12 @@ function CategoryBar() {
             );
           })}
           <button
+            type="button"
             onClick={() => useStore.setState({ helpOpen: true })}
             className="ml-auto flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-normal text-slate-500 transition hover:text-slate-300"
           >
             <svg
+              aria-hidden="true"
               className="h-4 w-4"
               viewBox="0 0 24 24"
               fill="none"
@@ -371,6 +377,7 @@ function WalletButton() {
   if (!nostrPubkey) {
     return (
       <button
+        type="button"
         onClick={openWallet}
         className="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-300 transition"
       >
@@ -382,6 +389,7 @@ function WalletButton() {
   if (walletStatus === "not_created") {
     return (
       <button
+        type="button"
         onClick={openWallet}
         className="shrink-0 px-3 py-1.5 text-sm font-medium text-emerald-400 hover:text-emerald-300 transition"
       >
@@ -398,10 +406,12 @@ function WalletButton() {
 
   return (
     <button
+      type="button"
       onClick={openWallet}
       className={`flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${showBalance ? "gap-1.5 px-3" : "w-9"}`}
     >
       <svg
+        aria-hidden="true"
         className="h-[18px] w-[18px] shrink-0"
         viewBox="0 0 24 24"
         fill="none"
@@ -415,9 +425,7 @@ function WalletButton() {
       </svg>
       {showBalance && (
         <span className="text-xs font-medium text-slate-300">
-          {formatCompactSats(
-            walletData?.balance[walletPolicyAssetId] ?? 0,
-          )}
+          {formatCompactSats(walletData?.balance[walletPolicyAssetId] ?? 0)}
         </span>
       )}
     </button>
@@ -433,6 +441,7 @@ function Logo() {
       viewBox="0 0 1274 267"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
     >
       <path
         d="M0.146484 9.04596C0.146625 1.23444 10.9146 -3.15996 16.7881 2.6983L86.5566 71.7335C100.141 68.0293 114.765 66.0128 130 66.0128C145.239 66.0128 159.865 68.0305 173.453 71.7364L243.212 2.71197C249.085 -3.1467 259.853 1.24702 259.854 9.05865V161.26C259.949 162.835 260 164.419 260 166.013C260 221.241 201.797 266.013 130 266.013C58.203 266.013 0 221.241 0 166.013C4.78859e-06 164.419 0.0506708 162.835 0.146484 161.26V9.04596ZM100.287 187.013L120.892 207.087V208.903C120.892 217.907 114.199 225.23 105.974 225.231H91.0049C87.1409 225.231 84.0001 228.319 84 232.118C84 235.918 87.1446 239.013 91.0049 239.013H105.974C114.534 239.013 122.574 235.049 128.02 228.383C133.461 235.045 141.502 239.013 150.065 239.013C166.019 239.013 179 225.506 179 208.903C179 205.104 175.856 202.013 171.992 202.013C168.128 202.013 164.984 205.104 164.983 208.903C164.983 217.907 158.291 225.231 150.065 225.231C141.84 225.23 135.147 217.907 135.147 208.903V207.049L155.713 187.013H100.287ZM70.4697 140.12L52.4219 122.072L44 130.495L62.0469 148.542L44.0596 166.53L52.4824 174.953L70.4697 156.965L88.5176 175.013L96.9404 166.591L78.8916 148.542L97 130.435L88.5781 122.013L70.4697 140.12ZM195.367 123.557C200.554 128.783 204 138.006 204 148.513C204 158.3 201.01 166.973 196.408 172.339C216.243 169.73 231 159.83 231 148.013C231 135.99 215.724 125.951 195.367 123.557ZM175.489 123.7C155.707 126.33 141 136.216 141 148.013C141 159.603 155.197 169.349 174.456 172.181C169.931 166.803 167 158.204 167 148.513C167 138.102 170.382 128.951 175.489 123.7Z"
@@ -482,10 +491,7 @@ function Logo() {
         d="M1112.03 187L1080.01 107.8H1101.05L1123.57 166.747L1146.54 107.8H1166.79L1134.32 187H1112.03Z"
         fill="white"
       />
-      <path
-        d="M1049.11 187V107.8H1068.57V187H1049.11Z"
-        fill="white"
-      />
+      <path d="M1049.11 187V107.8H1068.57V187H1049.11Z" fill="white" />
       <path
         d="M971.412 187V107.8H990.873V169.802H1032.62V187H971.412Z"
         fill="white"
@@ -510,13 +516,18 @@ export function TopShell() {
         <div className="phi-container py-4 lg:py-5">
           <div className="flex items-end gap-5">
             {/* Logo */}
-            <button onClick={goHome} className="shrink-0 py-1 leading-none">
+            <button
+              type="button"
+              onClick={goHome}
+              className="shrink-0 py-1 leading-none"
+            >
               <Logo />
             </button>
 
             {/* Nav links */}
             <nav className="flex shrink-0 items-baseline gap-5 whitespace-nowrap pb-[9px] text-base text-slate-400">
               <button
+                type="button"
                 onClick={goHome}
                 className={
                   view === "home" || view === "detail"
@@ -526,8 +537,12 @@ export function TopShell() {
               >
                 Markets
               </button>
-              <button className="hover:text-slate-200">Live</button>
-              <button className="hover:text-slate-200">Social</button>
+              <button type="button" className="hover:text-slate-200">
+                Live
+              </button>
+              <button type="button" className="hover:text-slate-200">
+                Social
+              </button>
             </nav>
 
             {/* Right side: search + wallet + user menu */}

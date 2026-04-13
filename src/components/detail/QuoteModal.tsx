@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef } from "react";
-import type { Market } from "../../types";
-import { useStore } from "../../store";
 import { useExecuteTrade } from "../../queries/mutations/useTrading";
+import { DEFAULT_TX_OPTIONS } from "../../services/tx";
+import { useStore } from "../../store";
+import type { Market } from "../../types";
 import { formatSats } from "../../utils-react/format";
 import {
   getQuoteEffectivePriceSatsPerContract,
   getQuoteRemainingSeconds,
 } from "../../utils-react/market";
-import { DEFAULT_TX_OPTIONS } from "../../services/tx";
 
 export default function QuoteModal({ market }: { market: Market }) {
   const tradeQuoteModalOpen = useStore((s) => s.tradeQuoteModalOpen);
@@ -96,15 +96,22 @@ export default function QuoteModal({ market }: { market: Market }) {
 
   const effectivePrice = getQuoteEffectivePriceSatsPerContract(tradeQuoteData);
   const remainingSeconds = tradeQuoteData.expires_at_unix
-    ? getQuoteRemainingSeconds(tradeQuoteData.expires_at_unix, tradeQuoteNowUnix)
+    ? getQuoteRemainingSeconds(
+        tradeQuoteData.expires_at_unix,
+        tradeQuoteNowUnix,
+      )
     : null;
   const isExpired = remainingSeconds !== null && remainingSeconds <= 0;
 
   return (
     <div
+      role="presentation"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       onClick={(e) => {
         if (e.target === e.currentTarget) handleCancel();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") handleCancel();
       }}
     >
       <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
@@ -145,9 +152,7 @@ export default function QuoteModal({ market }: { market: Market }) {
           )}
           <div className="flex items-center justify-between">
             <span className="text-slate-400">Route legs</span>
-            <span className="text-slate-200">
-              {tradeQuoteData.legs.length}
-            </span>
+            <span className="text-slate-200">{tradeQuoteData.legs.length}</span>
           </div>
         </div>
 
@@ -176,12 +181,14 @@ export default function QuoteModal({ market }: { market: Market }) {
         {/* Actions */}
         <div className="mt-6 flex items-center gap-3">
           <button
+            type="button"
             onClick={handleCancel}
             className="flex-1 rounded-lg border border-slate-600 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:bg-slate-800"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={handleConfirm}
             disabled={tradeQuoteExecuting || isExpired}
             className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition ${

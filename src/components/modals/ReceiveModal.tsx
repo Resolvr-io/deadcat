@@ -1,12 +1,12 @@
-import { useCallback, useEffect } from "react";
 import QRCode from "qrcode";
-import { useStore } from "../../store";
-import { btcLabel } from "../../utils-react/wallet";
+import { useCallback, useEffect } from "react";
 import {
-  useCreateLightningReceive,
   useCreateBitcoinReceive,
+  useCreateLightningReceive,
   useGenerateLiquidAddress,
 } from "../../queries/mutations/useWalletOps";
+import { useStore } from "../../store";
+import { btcLabel } from "../../utils-react/wallet";
 
 const QR_LOGO_SVG =
   "data:image/svg+xml;base64," +
@@ -45,13 +45,7 @@ async function generateQr(value: string): Promise<string> {
   }
 }
 
-function Copyable({
-  value,
-  label,
-}: {
-  value: string;
-  label: string;
-}) {
+function Copyable({ value, label }: { value: string; label: string }) {
   const handleCopy = useCallback(() => {
     void navigator.clipboard.writeText(value);
   }, [value]);
@@ -63,6 +57,7 @@ function Copyable({
         <div className="mono text-xs text-slate-300 truncate">{value}</div>
       </div>
       <button
+        type="button"
         onClick={handleCopy}
         className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
       >
@@ -107,7 +102,7 @@ export function ReceiveModal() {
         },
       });
     }
-  }, [walletModalTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [walletModalTab, receiveLiquidAddress, generateAddress.mutate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePreset = useCallback((preset: string) => {
     useStore.setState({ receiveAmount: preset });
@@ -169,7 +164,8 @@ export function ReceiveModal() {
     );
   }, [receiveAmount, createBitcoin]);
 
-  const creating = receiveCreating || createLightning.isPending || createBitcoin.isPending;
+  const creating =
+    receiveCreating || createLightning.isPending || createBitcoin.isPending;
 
   let content: React.ReactNode = null;
 
@@ -205,15 +201,12 @@ export function ReceiveModal() {
           <div className="flex gap-2">
             {["1000", "10000", "100000"].map((preset) => (
               <button
+                type="button"
                 key={preset}
                 onClick={() => handlePreset(preset)}
                 className="flex-1 rounded-lg border border-slate-700 py-2 text-sm text-slate-300 hover:bg-slate-800"
               >
-                {preset === "1000"
-                  ? "1k"
-                  : preset === "10000"
-                    ? "10k"
-                    : "100k"}
+                {preset === "1000" ? "1k" : preset === "10000" ? "10k" : "100k"}
               </button>
             ))}
           </div>
@@ -230,6 +223,7 @@ export function ReceiveModal() {
               className="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2"
             />
             <button
+              type="button"
               onClick={handleCreateLightning}
               className="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-300"
               disabled={creating}
@@ -288,8 +282,8 @@ export function ReceiveModal() {
             </p>
           </div>
           <p className="text-xs text-slate-400">
-            Swap {s.id.slice(0, 8)}... |{" "}
-            {s.expectedAmountSat.toLocaleString()} sats expected on Liquid
+            Swap {s.id.slice(0, 8)}... | {s.expectedAmountSat.toLocaleString()}{" "}
+            sats expected on Liquid
           </p>
           <p className="text-xs text-slate-500">
             Timeout block: {s.timeoutBlockHeight}
@@ -337,6 +331,7 @@ export function ReceiveModal() {
               className="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2"
             />
             <button
+              type="button"
               onClick={handleCreateBitcoin}
               className="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-300"
               disabled={creating}

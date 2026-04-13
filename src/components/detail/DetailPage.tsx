@@ -1,7 +1,9 @@
 import { useMemo } from "react";
-import { useStore } from "../../store";
-import { useMarkets, useMarketOrders } from "../../queries/useMarkets";
+import { useMarketOrders, useMarkets } from "../../queries/useMarkets";
 import { usePriceHistory } from "../../queries/usePools";
+import { useStore } from "../../store";
+import { hexToNpub } from "../../utils/crypto";
+import { formatSats } from "../../utils-react/format";
 import {
   getMarketById,
   getPathAvailability,
@@ -9,11 +11,9 @@ import {
   isExpired,
   stateLabel,
 } from "../../utils-react/market";
-import { formatSats } from "../../utils-react/format";
-import { hexToNpub } from "../../utils/crypto";
+import MarketChart from "../chart/MarketChart";
 import MarketHeader from "./MarketHeader";
 import TradingPanel from "./TradingPanel";
-import MarketChart from "../chart/MarketChart";
 
 export default function DetailPage() {
   const selectedMarketId = useStore((s) => s.selectedMarketId);
@@ -31,9 +31,7 @@ export default function DetailPage() {
 
   useMarketOrders(market?.marketId ?? null);
 
-  const { data: priceHistory = [] } = usePriceHistory(
-    market?.marketId ?? null,
-  );
+  const { data: priceHistory = [] } = usePriceHistory(market?.marketId ?? null);
 
   if (!market) {
     return (
@@ -105,6 +103,7 @@ export default function DetailPage() {
                 Estimated payout: {formatSats(estimatedPayout)}
               </p>
               <button
+                type="button"
                 onClick={() => {
                   // TODO: wire to redeem mutation
                 }}
@@ -124,17 +123,19 @@ export default function DetailPage() {
                 You are the oracle for this market
               </p>
               <p className="mb-3 text-xs text-slate-400">
-                Publish an attestation and execute the on-chain resolution in one
-                step.
+                Publish an attestation and execute the on-chain resolution in
+                one step.
               </p>
               <div className="flex items-center gap-2">
                 <button
+                  type="button"
                   disabled={attestationLoading}
                   className={`rounded-lg ${attestationLoading ? "bg-slate-600 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 text-sm font-semibold`}
                 >
                   {attestationLoading ? "Attesting..." : "Resolve YES"}
                 </button>
                 <button
+                  type="button"
                   disabled={attestationLoading}
                   className={`rounded-lg ${attestationLoading ? "bg-slate-600 text-slate-400" : "bg-rose-400 text-slate-950"} px-4 py-2 text-sm font-semibold`}
                 >
@@ -152,6 +153,7 @@ export default function DetailPage() {
                 oracle, covenant paths, and collateral mechanics
               </p>
               <button
+                type="button"
                 onClick={() =>
                   useStore.setState({
                     showAdvancedDetails: !showAdvancedDetails,
@@ -205,6 +207,7 @@ function AdvancedDetails({ market }: { market: import("../../types").Market }) {
           <div className="kv-row">
             <span className="shrink-0">Oracle</span>
             <button
+              type="button"
               onClick={() => navigator.clipboard.writeText(npub)}
               className="mono truncate text-right transition hover:text-slate-100"
               title={npub}
@@ -215,6 +218,7 @@ function AdvancedDetails({ market }: { market: import("../../types").Market }) {
           <div className="kv-row">
             <span className="shrink-0">Market ID</span>
             <button
+              type="button"
               onClick={() => navigator.clipboard.writeText(market.marketId)}
               className="mono truncate text-right transition hover:text-slate-100"
               title={market.marketId}
@@ -261,9 +265,10 @@ function AdvancedDetails({ market }: { market: import("../../types").Market }) {
               <div className="kv-row">
                 <span className="shrink-0">Sig hash</span>
                 <button
+                  type="button"
                   onClick={() =>
                     navigator.clipboard.writeText(
-                      market.resolveTx!.signatureHash,
+                      market.resolveTx?.signatureHash ?? "",
                     )
                   }
                   className="mono truncate text-right transition hover:text-slate-100"
@@ -276,8 +281,9 @@ function AdvancedDetails({ market }: { market: import("../../types").Market }) {
               <div className="kv-row">
                 <span className="shrink-0">Resolve tx</span>
                 <button
+                  type="button"
                   onClick={() =>
-                    navigator.clipboard.writeText(market.resolveTx!.txid)
+                    navigator.clipboard.writeText(market.resolveTx?.txid ?? "")
                   }
                   className="mono truncate text-right transition hover:text-slate-100"
                   title={market.resolveTx.txid}
@@ -307,6 +313,7 @@ function AdvancedDetails({ market }: { market: import("../../types").Market }) {
           {market.collateralUtxos.map((utxo) => (
             <div key={`${utxo.txid}:${utxo.vout}`} className="kv-row">
               <button
+                type="button"
                 onClick={() =>
                   navigator.clipboard.writeText(`${utxo.txid}:${utxo.vout}`)
                 }
@@ -337,20 +344,17 @@ function CollateralMechanics() {
       <h3 className="panel-title mb-2 text-lg">Collateral Mechanics</h3>
       <div className="grid gap-2 text-sm md:grid-cols-2">
         <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
-          Issuance:{" "}
-          <span className="text-slate-100">pairs * 2 * CPT</span>
+          Issuance: <span className="text-slate-100">pairs * 2 * CPT</span>
         </div>
         <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
           Post-resolution redeem:{" "}
           <span className="text-slate-100">tokens * 2 * CPT</span>
         </div>
         <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
-          Expiry redeem:{" "}
-          <span className="text-slate-100">tokens * CPT</span>
+          Expiry redeem: <span className="text-slate-100">tokens * CPT</span>
         </div>
         <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
-          Cancellation:{" "}
-          <span className="text-slate-100">pairs * 2 * CPT</span>
+          Cancellation: <span className="text-slate-100">pairs * 2 * CPT</span>
         </div>
       </div>
     </section>

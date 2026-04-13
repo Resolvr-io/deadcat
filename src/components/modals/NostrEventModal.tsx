@@ -25,11 +25,13 @@ function CopyableField({
 
   return (
     <button
+      type="button"
       onClick={handleCopy}
       className="flex w-full min-w-0 items-center gap-1.5 overflow-hidden font-mono text-xs text-slate-200 transition-colors hover:text-white"
     >
       <span className="truncate">{display}</span>
       <svg
+        aria-hidden="true"
         xmlns="http://www.w3.org/2000/svg"
         width="12"
         height="12"
@@ -114,7 +116,11 @@ export function NostrEventModal() {
 
   return (
     <div
+      role="presentation"
       onClick={handleBackdropClick}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") handleClose();
+      }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
     >
       <div className="relative mx-4 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
@@ -122,6 +128,7 @@ export function NostrEventModal() {
           <div className="flex items-center gap-2.5">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-500/15">
               <svg
+                aria-hidden="true"
                 xmlns="http://www.w3.org/2000/svg"
                 width="16"
                 height="16"
@@ -141,10 +148,12 @@ export function NostrEventModal() {
             <h3 className="text-lg font-medium text-slate-100">Nostr Event</h3>
           </div>
           <button
+            type="button"
             onClick={handleClose}
             className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
           >
             <svg
+              aria-hidden="true"
               xmlns="http://www.w3.org/2000/svg"
               width="18"
               height="18"
@@ -294,10 +303,12 @@ export function NostrEventModal() {
         <div className="flex items-center justify-end gap-2 border-t border-slate-800 px-6 py-4">
           {nostrEventNevent && (
             <button
+              type="button"
               onClick={handleCopyNevent}
               className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800"
             >
               <svg
+                aria-hidden="true"
                 xmlns="http://www.w3.org/2000/svg"
                 width="14"
                 height="14"
@@ -315,10 +326,12 @@ export function NostrEventModal() {
             </button>
           )}
           <button
+            type="button"
             onClick={handleCopyJson}
             className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800"
           >
             <svg
+              aria-hidden="true"
               xmlns="http://www.w3.org/2000/svg"
               width="14"
               height="14"
@@ -335,6 +348,7 @@ export function NostrEventModal() {
             Copy JSON
           </button>
           <button
+            type="button"
             onClick={handleClose}
             className="rounded-lg bg-slate-800 px-4 py-1.5 text-sm text-slate-200 hover:bg-slate-700"
           >

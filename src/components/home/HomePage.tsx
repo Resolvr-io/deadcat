@@ -1,21 +1,21 @@
 import { useMemo } from "react";
-import { useStore } from "../../store";
 import { useMarkets } from "../../queries/useMarkets";
+import { useStore } from "../../store";
+import type { CovenantState, Market, NavCategory } from "../../types";
 import {
-  getFilteredMarkets,
-  getTrendingMarkets,
-  getEndingSoonMarkets,
-  getNewMarkets,
-  isExpired,
-  fullContractSats,
-} from "../../utils-react/market";
-import {
-  formatVolumeBtc,
   formatProbabilityWithPercent,
+  formatVolumeBtc,
 } from "../../utils-react/format";
-import type { Market, NavCategory, CovenantState } from "../../types";
-import MarketCard, { openMarket, TrendIndicator } from "./MarketCard";
+import {
+  fullContractSats,
+  getEndingSoonMarkets,
+  getFilteredMarkets,
+  getNewMarkets,
+  getTrendingMarkets,
+  isExpired,
+} from "../../utils-react/market";
 import FeaturedMarket from "./FeaturedMarket";
+import MarketCard, { openMarket, TrendIndicator } from "./MarketCard";
 
 // ── Category icon (JSX version) ──────────────────────────────────────
 function CategoryIcon({
@@ -38,27 +38,27 @@ function CategoryIcon({
   switch (category) {
     case "Trending":
       return (
-        <svg {...props}>
+        <svg aria-hidden="true" {...props}>
           <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
           <polyline points="16 7 22 7 22 13" />
         </svg>
       );
     case "Ending Soon":
       return (
-        <svg {...props}>
+        <svg aria-hidden="true" {...props}>
           <circle cx="12" cy="12" r="10" />
           <polyline points="12 6 12 12 16 14" />
         </svg>
       );
     case "New":
       return (
-        <svg {...props}>
+        <svg aria-hidden="true" {...props}>
           <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
         </svg>
       );
     case "My Markets":
       return (
-        <svg {...props}>
+        <svg aria-hidden="true" {...props}>
           <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
           <circle cx="12" cy="7" r="4" />
         </svg>
@@ -72,6 +72,7 @@ function CategoryIcon({
 function TopMoversIcon() {
   return (
     <svg
+      aria-hidden="true"
       className="h-4 w-4 shrink-0"
       viewBox="0 0 24 24"
       fill="none"
@@ -117,6 +118,7 @@ function SidebarMarketItem({
   return (
     <div className="w-full py-3 text-left">
       <button
+        type="button"
         onClick={() => openMarket(market)}
         className="w-full text-left"
       >
@@ -128,6 +130,7 @@ function SidebarMarketItem({
         {resolvedBadge ?? (
           <>
             <button
+              type="button"
               onClick={() =>
                 openMarket(market, { side: "yes", intent: "open" })
               }
@@ -136,9 +139,8 @@ function SidebarMarketItem({
               {yesPct != null ? `Yes ${yesPct}%` : "Buy Yes"}
             </button>
             <button
-              onClick={() =>
-                openMarket(market, { side: "no", intent: "open" })
-              }
+              type="button"
+              onClick={() => openMarket(market, { side: "no", intent: "open" })}
               className="rounded-full bg-rose-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-rose-400"
             >
               {noPct != null ? `No ${noPct}%` : "Buy No"}
@@ -241,6 +243,7 @@ function EmptyState() {
             Set up your wallet first to start trading
           </p>
           <button
+            type="button"
             onClick={() => useStore.setState({ walletOpen: true })}
             className="mr-3 rounded-xl border border-slate-600 px-6 py-3 text-base font-medium text-slate-200"
           >
@@ -250,6 +253,7 @@ function EmptyState() {
       )}
       {marketMakerMode && (
         <button
+          type="button"
           onClick={() => useStore.setState({ view: "create" })}
           className="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950"
         >
@@ -279,9 +283,7 @@ function SortedView({
         <h2 className="mb-3 text-2xl font-semibold text-slate-100">
           No {title.toLowerCase()} markets
         </h2>
-        <p className="text-base text-slate-400">
-          Check back soon for updates.
-        </p>
+        <p className="text-base text-slate-400">Check back soon for updates.</p>
       </div>
     );
   }
@@ -313,8 +315,7 @@ function MyMarketsView({ markets }: { markets: Market[] }) {
   const nostrPubkey = useStore((s) => s.nostrPubkey);
 
   const myMarkets = useMemo(
-    () =>
-      getFilteredMarkets(markets, "", "My Markets", nostrPubkey),
+    () => getFilteredMarkets(markets, "", "My Markets", nostrPubkey),
     [markets, nostrPubkey],
   );
 
@@ -328,6 +329,7 @@ function MyMarketsView({ markets }: { markets: Market[] }) {
           Markets you create as oracle will appear here.
         </p>
         <button
+          type="button"
           onClick={() => useStore.setState({ view: "create" })}
           className="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950"
         >
@@ -339,9 +341,7 @@ function MyMarketsView({ markets }: { markets: Market[] }) {
 
   const dormant = myMarkets.filter((m) => m.state === 0);
   const active = myMarkets.filter((m) => m.state === 1);
-  const resolved = myMarkets.filter(
-    (m) => m.state === 2 || m.state === 3,
-  );
+  const resolved = myMarkets.filter((m) => m.state === 2 || m.state === 3);
   const expiredMarkets = myMarkets.filter((m) => m.state === 4);
 
   const renderMyMarketCard = (market: Market) => {
@@ -366,6 +366,7 @@ function MyMarketsView({ markets }: { markets: Market[] }) {
 
     return (
       <button
+        type="button"
         key={market.id}
         onClick={() => openMarket(market)}
         className="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600"
@@ -420,6 +421,7 @@ function MyMarketsView({ markets }: { markets: Market[] }) {
         </h1>
         {marketMakerMode && (
           <button
+            type="button"
             onClick={() => useStore.setState({ view: "create" })}
             className="rounded-xl bg-emerald-300 px-5 py-2 text-sm font-semibold text-slate-950"
           >
@@ -503,13 +505,22 @@ function CategoryPageView({
         {/* Left sidebar */}
         <aside className="hidden xl:block">
           <div className="space-y-1 text-sm text-slate-400">
-            <button className="block w-full rounded-md bg-slate-900/70 px-2 py-2 text-left text-emerald-300">
+            <button
+              type="button"
+              className="block w-full rounded-md bg-slate-900/70 px-2 py-2 text-left text-emerald-300"
+            >
               All markets
             </button>
-            <button className="block w-full rounded-md px-2 py-2 text-left hover:bg-slate-900/40 hover:text-slate-200">
+            <button
+              type="button"
+              className="block w-full rounded-md px-2 py-2 text-left hover:bg-slate-900/40 hover:text-slate-200"
+            >
               Live now
             </button>
-            <button className="block w-full rounded-md px-2 py-2 text-left hover:bg-slate-900/40 hover:text-slate-200">
+            <button
+              type="button"
+              className="block w-full rounded-md px-2 py-2 text-left hover:bg-slate-900/40 hover:text-slate-200"
+            >
               Resolved soon
             </button>
           </div>
@@ -522,10 +533,16 @@ function CategoryPageView({
               {category}
             </h1>
             <div className="flex items-center gap-2 text-sm text-slate-400">
-              <button className="rounded-full border border-slate-700 px-3 py-1.5">
+              <button
+                type="button"
+                className="rounded-full border border-slate-700 px-3 py-1.5"
+              >
                 Trending
               </button>
-              <button className="rounded-full border border-slate-700 px-3 py-1.5">
+              <button
+                type="button"
+                className="rounded-full border border-slate-700 px-3 py-1.5"
+              >
                 Frequency
               </button>
             </div>
@@ -572,6 +589,7 @@ function CategoryPageView({
               {liveContracts.length ? (
                 liveContracts.map((market) => (
                   <button
+                    type="button"
                     key={market.id}
                     onClick={() => openMarket(market)}
                     className="w-full text-left"
@@ -602,6 +620,7 @@ function CategoryPageView({
             <div className="space-y-3">
               {highestLiquidity.map((market, idx) => (
                 <button
+                  type="button"
                   key={market.id}
                   onClick={() => openMarket(market)}
                   className="flex w-full items-start justify-between gap-2 text-left"
@@ -656,10 +675,7 @@ function TrendingHomeView({ markets }: { markets: Market[] }) {
   const search = useStore((s) => s.search);
   const nostrPubkey = useStore((s) => s.nostrPubkey);
 
-  const trending = useMemo(
-    () => getTrendingMarkets(markets),
-    [markets],
-  );
+  const trending = useMemo(() => getTrendingMarkets(markets), [markets]);
 
   const topMarkets = useMemo(
     () =>

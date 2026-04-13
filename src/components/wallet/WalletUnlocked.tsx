@@ -1,26 +1,23 @@
-import { useCallback, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore } from "../../store";
+import { useCallback, useMemo, useState } from "react";
 import {
-  formatLbtc,
-  btcLabel,
-  satsLabel,
-} from "../../utils-react/wallet";
-import { satsToFiatStr } from "../../utils-react/format";
-import {
-  useSyncWallet,
   useLockWallet,
+  useSyncWallet,
 } from "../../queries/mutations/useWalletOps";
 import { useMarkets } from "../../queries/useMarkets";
-import { reverseHex } from "../../utils/crypto";
+import { useStore } from "../../store";
 import type { PaymentSwap } from "../../types";
-import { ActivityList } from "./ActivityList";
-import { UtxoList } from "./UtxoList";
+import { reverseHex } from "../../utils/crypto";
+import { satsToFiatStr } from "../../utils-react/format";
+import { btcLabel, formatLbtc, satsLabel } from "../../utils-react/wallet";
 import { WalletModal } from "../modals/WalletModal";
 import { showToast } from "../shared/Toast";
+import { ActivityList } from "./ActivityList";
+import { UtxoList } from "./UtxoList";
 
 const PAW_ICON = (
   <svg
+    aria-hidden="true"
     className="inline-block h-[1em] w-[1em] align-text-bottom"
     viewBox="0 0 90 79"
     fill="currentColor"
@@ -286,16 +283,17 @@ export function WalletUnlocked({
   );
 
   const handleOpenMarket = useCallback((marketId: string) => {
-    useStore.setState({ selectedMarketId: marketId, view: "detail", walletOpen: false });
+    useStore.setState({
+      selectedMarketId: marketId,
+      view: "detail",
+      walletOpen: false,
+    });
   }, []);
 
-  const handleCancelOrder = useCallback(
-    (orderId: string) => {
-      useStore.setState({ cancellingOrderId: orderId });
-      // Cancel logic handled via store/mutations
-    },
-    [],
-  );
+  const handleCancelOrder = useCallback((orderId: string) => {
+    useStore.setState({ cancellingOrderId: orderId });
+    // Cancel logic handled via store/mutations
+  }, []);
 
   const errorHtml = walletError ? (
     <div className="rounded-lg border border-red-500/30 bg-red-900/20 px-4 py-3 text-sm text-red-300">
@@ -314,8 +312,7 @@ export function WalletUnlocked({
 
   // Known assets for display
   const KNOWN_ASSETS: Record<string, string> = {
-    "38fca2d939696061a8f76d4e6b5eecd54e3b4221c846f24a6b279e79952850a5":
-      "TEST",
+    "38fca2d939696061a8f76d4e6b5eecd54e3b4221c846f24a6b279e79952850a5": "TEST",
   };
 
   return (
@@ -328,6 +325,7 @@ export function WalletUnlocked({
           </h2>
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={handleSync}
               className="relative rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
               disabled={loading}
@@ -340,6 +338,7 @@ export function WalletUnlocked({
               )}
             </button>
             <button
+              type="button"
               onClick={handleShowBackup}
               className={`rounded-lg border px-4 py-2 text-sm transition ${showBackupBadge ? "border-amber-500/40 text-amber-200 hover:bg-amber-500/10" : "border-slate-700 text-slate-300 hover:bg-slate-800"}`}
             >
@@ -351,6 +350,7 @@ export function WalletUnlocked({
               </span>
             </button>
             <button
+              type="button"
               onClick={handleLock}
               className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
             >
@@ -366,14 +366,14 @@ export function WalletUnlocked({
           <div className="flex items-center justify-center gap-2 text-sm text-slate-400">
             <span>Balance</span>
             <button
+              type="button"
               onClick={handleToggleBalanceHidden}
               className="text-slate-500 hover:text-slate-300"
-              title={
-                walletBalanceHidden ? "Show balance" : "Hide balance"
-              }
+              title={walletBalanceHidden ? "Show balance" : "Hide balance"}
             >
               {walletBalanceHidden ? (
                 <svg
+                  aria-hidden="true"
                   className="h-4 w-4"
                   viewBox="0 0 24 24"
                   fill="none"
@@ -388,6 +388,7 @@ export function WalletUnlocked({
                 </svg>
               ) : (
                 <svg
+                  aria-hidden="true"
                   className="h-4 w-4"
                   viewBox="0 0 24 24"
                   fill="none"
@@ -423,12 +424,14 @@ export function WalletUnlocked({
           )}
           <div className="mt-2 flex items-center justify-center gap-1 rounded-full border border-slate-700 mx-auto w-fit text-xs">
             <button
+              type="button"
               onClick={() => handleSetUnit("sats")}
               className={`rounded-full px-3 py-1 transition ${walletUnit === "sats" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}`}
             >
               {satsLabel(showLbtcLabel)}
             </button>
             <button
+              type="button"
               onClick={() => handleSetUnit("btc")}
               className={`rounded-full px-3 py-1 transition ${walletUnit === "btc" ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}`}
             >
@@ -440,10 +443,12 @@ export function WalletUnlocked({
         {/* Action Buttons */}
         <div className="grid grid-cols-2 gap-4">
           <button
+            type="button"
             onClick={handleOpenReceive}
             className="flex items-center justify-center gap-3 rounded-xl border border-emerald-400/30 bg-emerald-900/20 px-6 py-4 font-semibold text-emerald-300 transition hover:bg-emerald-900/40"
           >
             <svg
+              aria-hidden="true"
               xmlns="http://www.w3.org/2000/svg"
               width="20"
               height="20"
@@ -460,10 +465,12 @@ export function WalletUnlocked({
             Receive
           </button>
           <button
+            type="button"
             onClick={handleOpenSend}
             className="flex items-center justify-center gap-3 rounded-xl border border-slate-600 bg-slate-800/60 px-6 py-4 font-medium text-slate-200 transition hover:bg-slate-800"
           >
             <svg
+              aria-hidden="true"
               xmlns="http://www.w3.org/2000/svg"
               width="20"
               height="20"
@@ -501,9 +508,7 @@ export function WalletUnlocked({
               const shortAsset = `${tp.assetId.slice(0, 8)}...${tp.assetId.slice(-4)}`;
               if (tp.info) {
                 const sideColor =
-                  tp.info.side === "YES"
-                    ? "text-emerald-300"
-                    : "text-red-300";
+                  tp.info.side === "YES" ? "text-emerald-300" : "text-red-300";
                 const sideBg =
                   tp.info.side === "YES"
                     ? "bg-emerald-500/20"
@@ -524,7 +529,10 @@ export function WalletUnlocked({
                         {tp.info.side}
                       </span>
                       <button
-                        onClick={() => handleOpenMarket(tp.info!.marketId)}
+                        type="button"
+                        onClick={() =>
+                          handleOpenMarket(tp.info?.marketId ?? "")
+                        }
                         className="text-slate-300 hover:text-slate-100 transition cursor-pointer text-left"
                       >
                         {truncQ}
@@ -556,6 +564,7 @@ export function WalletUnlocked({
                       {badge}
                     </span>
                     <button
+                      type="button"
                       onClick={() => handleOpenExplorerAsset(tp.assetId)}
                       className={`${knownName ? "text-slate-300 hover:text-slate-100" : "mono text-xs text-slate-500 hover:text-slate-300"} transition cursor-pointer`}
                     >
@@ -578,6 +587,7 @@ export function WalletUnlocked({
             {tokenTotalPages > 1 && (
               <div className="mt-3 flex items-center justify-between text-xs text-slate-400">
                 <button
+                  type="button"
                   disabled={walletTokenPage <= 0}
                   onClick={() =>
                     useStore.setState((s) => ({
@@ -592,6 +602,7 @@ export function WalletUnlocked({
                   {walletTokenPage + 1} / {tokenTotalPages}
                 </span>
                 <button
+                  type="button"
                   disabled={walletTokenPage >= tokenTotalPages - 1}
                   onClick={() =>
                     useStore.setState((s) => ({
@@ -634,6 +645,7 @@ export function WalletUnlocked({
                       {dirText}
                     </span>
                     <button
+                      type="button"
                       onClick={() => handleOpenMarket(m.id)}
                       className="truncate text-slate-300 hover:text-slate-100 transition cursor-pointer text-left"
                     >
@@ -653,6 +665,7 @@ export function WalletUnlocked({
                       </span>
                     )}
                     <button
+                      type="button"
                       onClick={() => handleCancelOrder(o.id)}
                       disabled={cancelling}
                       className={`rounded border px-2 py-0.5 text-xs transition ${cancelling ? "border-slate-700 text-slate-500" : "border-rose-800 text-rose-400 hover:bg-rose-900/30"}`}
@@ -744,6 +757,7 @@ export function WalletUnlocked({
                       .replace(/\b\w/g, (c) => c.toUpperCase())}
                   </span>
                   <button
+                    type="button"
                     onClick={() => {
                       void (async () => {
                         try {
@@ -753,9 +767,8 @@ export function WalletUnlocked({
                           await invoke("refresh_payment_swap_status", {
                             swapId: sw.id,
                           });
-                          const swaps = await invoke<
-                            PaymentSwap[]
-                          >("list_payment_swaps");
+                          const swaps =
+                            await invoke<PaymentSwap[]>("list_payment_swaps");
                           if (walletData) {
                             useStore.setState({
                               walletData: { ...walletData, swaps },
@@ -777,10 +790,7 @@ export function WalletUnlocked({
         )}
 
         {/* UTXOs */}
-        <UtxoList
-          utxos={walletData?.utxos ?? []}
-          assetLabel={assetLabel}
-        />
+        <UtxoList utxos={walletData?.utxos ?? []} assetLabel={assetLabel} />
       </div>
 
       {/* Wallet modal (receive/send) */}
@@ -795,10 +805,12 @@ export function WalletUnlocked({
                 Backup Recovery Phrase
               </h3>
               <button
+                type="button"
                 onClick={handleHideBackup}
                 className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
               >
                 <svg
+                  aria-hidden="true"
                   className="h-5 w-5"
                   fill="none"
                   viewBox="0 0 24 24"
@@ -825,7 +837,7 @@ export function WalletUnlocked({
                 <div className="mb-4 grid grid-cols-3 gap-2">
                   {backupWords.map((word, i) => (
                     <div
-                      key={i}
+                      key={`backup-word-${i + 1}`}
                       className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-center text-sm"
                     >
                       <span className="mr-1 text-slate-500">{i + 1}.</span>
@@ -835,6 +847,7 @@ export function WalletUnlocked({
                 </div>
                 <div className="flex gap-3">
                   <button
+                    type="button"
                     onClick={handleCopyBackupMnemonic}
                     className={`flex-1 rounded-xl border py-2.5 text-sm font-medium transition ${
                       backupCopied
@@ -845,6 +858,7 @@ export function WalletUnlocked({
                     {backupCopied ? "Copied" : "Copy to clipboard"}
                   </button>
                   <button
+                    type="button"
                     onClick={handleHideBackup}
                     className="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
                   >
@@ -869,6 +883,7 @@ export function WalletUnlocked({
                   className="mb-3 h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm text-slate-200 outline-none ring-emerald-400 transition focus:ring-2"
                 />
                 <button
+                  type="button"
                   onClick={() => void handleExportBackup()}
                   disabled={backupLoading || !backupPassword}
                   className="w-full rounded-xl bg-emerald-500 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-400 disabled:opacity-50"

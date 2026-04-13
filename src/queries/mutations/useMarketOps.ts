@@ -1,18 +1,18 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  issueTokens,
-  redeemTokens,
-  redeemExpiredTokens,
   cancelTokens,
+  issueTokens,
+  redeemExpiredTokens,
+  redeemTokens,
   resolveMarket,
 } from "../../services/markets";
 import type {
-  Market,
-  TxOptions,
-  IssuanceResult,
-  RedemptionResult,
   CancellationResult,
+  IssuanceResult,
+  Market,
+  RedemptionResult,
   ResolutionResult,
+  TxOptions,
 } from "../../types";
 
 export function useIssueTokens() {
@@ -38,13 +38,16 @@ export function useRedeemTokens() {
       market: Market;
       tokens: number;
       txOptions?: TxOptions;
-    }): Promise<RedemptionResult> =>
-      redeemTokens(
+    }): Promise<RedemptionResult> => {
+      const anchor = params.market.anchor;
+      if (!anchor) throw new Error("Market anchor is required for redemption");
+      return redeemTokens(
         params.market,
-        params.market.anchor!,
+        anchor,
         params.tokens,
         params.txOptions,
-      ),
+      );
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["walletSnapshot"] });
       void queryClient.invalidateQueries({ queryKey: ["markets"] });
@@ -60,14 +63,17 @@ export function useRedeemExpiredTokens() {
       tokenAssetHex: string;
       tokens: number;
       txOptions?: TxOptions;
-    }): Promise<RedemptionResult> =>
-      redeemExpiredTokens(
+    }): Promise<RedemptionResult> => {
+      const anchor = params.market.anchor;
+      if (!anchor) throw new Error("Market anchor is required for redemption");
+      return redeemExpiredTokens(
         params.market,
-        params.market.anchor!,
+        anchor,
         params.tokenAssetHex,
         params.tokens,
         params.txOptions,
-      ),
+      );
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["walletSnapshot"] });
       void queryClient.invalidateQueries({ queryKey: ["markets"] });
@@ -82,13 +88,17 @@ export function useCancelTokens() {
       market: Market;
       pairs: number;
       txOptions?: TxOptions;
-    }): Promise<CancellationResult> =>
-      cancelTokens(
+    }): Promise<CancellationResult> => {
+      const anchor = params.market.anchor;
+      if (!anchor)
+        throw new Error("Market anchor is required for cancellation");
+      return cancelTokens(
         params.market,
-        params.market.anchor!,
+        anchor,
         params.pairs,
         params.txOptions,
-      ),
+      );
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["walletSnapshot"] });
       void queryClient.invalidateQueries({ queryKey: ["markets"] });
@@ -104,14 +114,17 @@ export function useResolveMarket() {
       outcomeYes: boolean;
       oracleSignatureHex: string;
       txOptions?: TxOptions;
-    }): Promise<ResolutionResult> =>
-      resolveMarket(
+    }): Promise<ResolutionResult> => {
+      const anchor = params.market.anchor;
+      if (!anchor) throw new Error("Market anchor is required for resolution");
+      return resolveMarket(
         params.market,
-        params.market.anchor!,
+        anchor,
         params.outcomeYes,
         params.oracleSignatureHex,
         params.txOptions,
-      ),
+      );
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["walletSnapshot"] });
       void queryClient.invalidateQueries({ queryKey: ["markets"] });

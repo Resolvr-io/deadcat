@@ -1,15 +1,15 @@
 import { useCallback, useState } from "react";
-import type { Market } from "../../types";
-import { useStore } from "../../store";
-import {
-  createLmsrPool,
-  closeLmsrPool,
-  scanLmsrPool,
-  buildPoolParamsJson,
-  generateLmsrTable,
-} from "../../services/pools";
 import { marketToContractParamsJson } from "../../services/markets";
+import {
+  buildPoolParamsJson,
+  closeLmsrPool,
+  createLmsrPool,
+  generateLmsrTable,
+  scanLmsrPool,
+} from "../../services/pools";
 import { DEFAULT_TX_OPTIONS } from "../../services/tx";
+import { useStore } from "../../store";
+import type { Market } from "../../types";
 
 export default function PoolSection({ market }: { market: Market }) {
   const poolCreateOpen = useStore((s) => s.poolCreateOpen);
@@ -25,6 +25,7 @@ export default function PoolSection({ market }: { market: Market }) {
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-500">Advanced actions</p>
           <button
+            type="button"
             onClick={() =>
               useStore.setState({
                 showAdvancedActions: !showAdvancedActions,
@@ -44,6 +45,7 @@ export default function PoolSection({ market }: { market: Market }) {
             Active Pools
           </span>
           <button
+            type="button"
             onClick={() =>
               useStore.setState({ poolCreateOpen: !poolCreateOpen })
             }
@@ -95,6 +97,7 @@ export default function PoolSection({ market }: { market: Market }) {
                   </span>
                   <span className="flex gap-1">
                     <button
+                      type="button"
                       onClick={async () => {
                         try {
                           const result = await scanLmsrPool(p.pool_id);
@@ -123,15 +126,14 @@ export default function PoolSection({ market }: { market: Market }) {
                       &#x21bb;
                     </button>
                     <button
+                      type="button"
                       onClick={async () => {
                         try {
                           await closeLmsrPool(p.pool_id);
                           useStore.setState({
                             myPools: useStore
                               .getState()
-                              .myPools.filter(
-                                (pp) => pp.pool_id !== p.pool_id,
-                              ),
+                              .myPools.filter((pp) => pp.pool_id !== p.pool_id),
                           });
                         } catch {
                           // close failed silently
@@ -152,9 +154,7 @@ export default function PoolSection({ market }: { market: Market }) {
         )}
 
         {/* Create pool form */}
-        {poolCreateOpen && (
-          <CreatePoolForm market={market} />
-        )}
+        {poolCreateOpen && <CreatePoolForm market={market} />}
       </section>
     </>
   );
@@ -220,10 +220,14 @@ function CreatePoolForm({ market }: { market: Market }) {
   return (
     <div className="mt-3 space-y-2">
       <div>
-        <label className="mb-1 block text-xs text-slate-400">
+        <label
+          className="mb-1 block text-xs text-slate-400"
+          htmlFor="pool-liquidity"
+        >
           Liquidity parameter
         </label>
         <input
+          id="pool-liquidity"
           type="number"
           min="1"
           step="1"
@@ -233,8 +237,14 @@ function CreatePoolForm({ market }: { market: Market }) {
         />
       </div>
       <div>
-        <label className="mb-1 block text-xs text-slate-400">Fee BPS</label>
+        <label
+          className="mb-1 block text-xs text-slate-400"
+          htmlFor="pool-fee-bps"
+        >
+          Fee BPS
+        </label>
         <input
+          id="pool-fee-bps"
           type="number"
           min="0"
           step="1"
@@ -245,10 +255,14 @@ function CreatePoolForm({ market }: { market: Market }) {
       </div>
       <div className="grid grid-cols-3 gap-2">
         <div>
-          <label className="mb-1 block text-xs text-slate-400">
+          <label
+            className="mb-1 block text-xs text-slate-400"
+            htmlFor="pool-reserves-yes"
+          >
             YES reserves
           </label>
           <input
+            id="pool-reserves-yes"
             type="number"
             min="0"
             step="1"
@@ -258,10 +272,14 @@ function CreatePoolForm({ market }: { market: Market }) {
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs text-slate-400">
+          <label
+            className="mb-1 block text-xs text-slate-400"
+            htmlFor="pool-reserves-no"
+          >
             NO reserves
           </label>
           <input
+            id="pool-reserves-no"
             type="number"
             min="0"
             step="1"
@@ -271,10 +289,14 @@ function CreatePoolForm({ market }: { market: Market }) {
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs text-slate-400">
+          <label
+            className="mb-1 block text-xs text-slate-400"
+            htmlFor="pool-reserves-lbtc"
+          >
             L-BTC reserves
           </label>
           <input
+            id="pool-reserves-lbtc"
             type="number"
             min="0"
             step="1"
@@ -285,6 +307,7 @@ function CreatePoolForm({ market }: { market: Market }) {
         </div>
       </div>
       <button
+        type="button"
         onClick={handleCreate}
         disabled={creating}
         className={`mt-2 w-full rounded-lg ${creating ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 text-sm font-semibold`}

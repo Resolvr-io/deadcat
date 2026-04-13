@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { tauriApi } from "../../api/tauri";
+import { DEFAULT_TX_OPTIONS } from "../../services/tx";
 import type {
   BoltzChainSwapCreated,
   BoltzChainSwapPairInfo,
@@ -9,7 +10,6 @@ import type {
   LiquidSendResult,
   TxOptions,
 } from "../../types";
-import { DEFAULT_TX_OPTIONS } from "../../services/tx";
 
 export function useCreateWallet() {
   const queryClient = useQueryClient();

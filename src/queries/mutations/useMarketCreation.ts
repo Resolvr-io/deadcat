@@ -17,8 +17,7 @@ export function useCreateMarket() {
       settlement_deadline_unix: number;
       collateral_per_token: number;
       tx_options: TxOptions;
-    }): Promise<CreateContractOnchainResponse> =>
-      createContractOnchain(params),
+    }): Promise<CreateContractOnchainResponse> => createContractOnchain(params),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["markets"] });
       void queryClient.invalidateQueries({ queryKey: ["walletSnapshot"] });

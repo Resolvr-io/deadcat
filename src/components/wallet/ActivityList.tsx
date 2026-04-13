@@ -1,8 +1,8 @@
 import { useCallback, useMemo } from "react";
 import { useStore } from "../../store";
-import { formatLbtc } from "../../utils-react/wallet";
-import { satsToFiatStr } from "../../utils-react/format";
 import type { Market, WalletData, WalletTransaction } from "../../types";
+import { satsToFiatStr } from "../../utils-react/format";
+import { formatLbtc } from "../../utils-react/wallet";
 
 const PAGE_SIZE = 10;
 
@@ -81,6 +81,7 @@ function TransactionRow({
           <span className={color}>{icon}</span>
           {label && labelMarketId ? (
             <button
+              type="button"
               onClick={(e) => {
                 e.preventDefault();
                 handleOpenMarket();
@@ -137,6 +138,7 @@ function TransactionRow({
         <div className="flex items-center gap-2">
           <span className="text-slate-500">TXID</span>
           <button
+            type="button"
             onClick={handleOpenExplorerTx}
             className="mono text-slate-400 hover:text-slate-200 transition cursor-pointer"
           >
@@ -190,10 +192,7 @@ export function ActivityList({
         .map((m) => [m.creationTxid as string, m.id]),
     );
 
-    const covenant = new Map<
-      string,
-      { label: string; marketId: string }
-    >();
+    const covenant = new Map<string, { label: string; marketId: string }>();
     for (const m of markets) {
       const entries: Array<[string | null, string]> = [
         [m.unresolvedTxid, "Issuance"],
@@ -206,10 +205,7 @@ export function ActivityList({
       }
     }
 
-    const order = new Map<
-      string,
-      { label: string; marketId: string | null }
-    >();
+    const order = new Map<string, { label: string; marketId: string | null }>();
     for (const o of ownOrders) {
       if (o.creation_txid) {
         order.set(o.creation_txid, {
@@ -253,7 +249,12 @@ export function ActivityList({
   const getTxLabel = useCallback(
     (
       tx: WalletTransaction,
-    ): { label: string | null; color: string; bg: string; marketId: string | null } => {
+    ): {
+      label: string | null;
+      color: string;
+      bg: string;
+      marketId: string | null;
+    } => {
       const recentInfo = recentTxLabels.get(tx.txid);
       if (recentInfo)
         return {
@@ -349,6 +350,7 @@ export function ActivityList({
           {totalPages > 1 && (
             <div className="mt-3 flex items-center justify-between text-xs text-slate-400">
               <button
+                type="button"
                 disabled={walletTxPage <= 0}
                 onClick={() =>
                   useStore.setState((s) => ({
@@ -363,6 +365,7 @@ export function ActivityList({
                 {walletTxPage + 1} / {totalPages}
               </span>
               <button
+                type="button"
                 disabled={walletTxPage >= totalPages - 1}
                 onClick={() =>
                   useStore.setState((s) => ({

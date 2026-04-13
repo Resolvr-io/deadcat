@@ -47,8 +47,7 @@ export function WalletModal() {
 
   if (walletModal === "none") return null;
 
-  const title =
-    walletModal === "receive" ? "Receive Funds" : "Send Funds";
+  const title = walletModal === "receive" ? "Receive Funds" : "Send Funds";
   const subtitle =
     walletModal === "receive"
       ? "Choose a method to receive funds into your Liquid wallet."
@@ -62,7 +61,11 @@ export function WalletModal() {
 
   const modal = (
     <div
+      role="presentation"
       onClick={handleBackdropClick}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") handleClose();
+      }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
     >
       <div className="relative mx-4 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
@@ -72,10 +75,12 @@ export function WalletModal() {
             <p className="text-xs text-slate-400">{subtitle}</p>
           </div>
           <button
+            type="button"
             onClick={handleClose}
             className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
           >
             <svg
+              aria-hidden="true"
               xmlns="http://www.w3.org/2000/svg"
               width="18"
               height="18"
@@ -104,6 +109,7 @@ export function WalletModal() {
                     : "Bitcoin";
               return (
                 <button
+                  type="button"
                   key={t}
                   onClick={() => handleTabChange(t)}
                   className={`flex-1 rounded-md px-3 py-2 text-sm font-semibold transition ${active ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:text-slate-200"}`}

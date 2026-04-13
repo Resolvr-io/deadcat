@@ -1,7 +1,7 @@
-import { useCallback, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore } from "../../store";
+import { useCallback, useState } from "react";
 import { useUnlockWallet } from "../../queries/mutations/useWalletOps";
+import { useStore } from "../../store";
 
 export function WalletLocked({
   networkBadge,
@@ -57,7 +57,9 @@ export function WalletLocked({
           walletStatus: "not_created",
         });
       } catch (e) {
-        useStore.setState({ walletError: `Failed to remove wallet: ${String(e)}` });
+        useStore.setState({
+          walletError: `Failed to remove wallet: ${String(e)}`,
+        });
       }
     })();
   }, []);
@@ -95,6 +97,7 @@ export function WalletLocked({
             disabled={loading}
           />
           <button
+            type="button"
             onClick={handleUnlock}
             className="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={loading}
@@ -105,9 +108,7 @@ export function WalletLocked({
         <details
           className="group"
           open={forgotOpen}
-          onToggle={(e) =>
-            setForgotOpen((e.target as HTMLDetailsElement).open)
-          }
+          onToggle={(e) => setForgotOpen((e.target as HTMLDetailsElement).open)}
         >
           <summary className="cursor-pointer text-xs text-slate-500 hover:text-slate-400 transition select-none">
             Forgot your password?
@@ -124,6 +125,7 @@ export function WalletLocked({
               {nostrNpub && (
                 <div className="flex items-start gap-2">
                   <svg
+                    aria-hidden="true"
                     className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400"
                     fill="none"
                     viewBox="0 0 24 24"
@@ -147,6 +149,7 @@ export function WalletLocked({
               )}
               <div className="flex items-start gap-2">
                 <svg
+                  aria-hidden="true"
                   className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500"
                   fill="none"
                   viewBox="0 0 24 24"
@@ -168,6 +171,7 @@ export function WalletLocked({
               </div>
             </div>
             <button
+              type="button"
               onClick={handleForgotDelete}
               className="w-full rounded-lg border border-rose-700/40 px-4 py-2 text-xs text-rose-400 hover:bg-rose-900/20 transition"
             >

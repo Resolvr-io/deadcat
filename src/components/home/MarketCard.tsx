@@ -1,11 +1,11 @@
 import { useCallback } from "react";
-import type { Market, Side, TradeIntent } from "../../types";
 import { useStore } from "../../store";
+import type { Market, Side, TradeIntent } from "../../types";
 import {
   formatPercent,
+  formatSatsInput,
   formatTimeRemaining,
   formatVolumeBtc,
-  formatSatsInput,
 } from "../../utils-react/format";
 import {
   getBasePriceSats,
@@ -17,6 +17,7 @@ import {
 function TrendUpIcon() {
   return (
     <svg
+      aria-hidden="true"
       xmlns="http://www.w3.org/2000/svg"
       width="14"
       height="14"
@@ -37,6 +38,7 @@ function TrendUpIcon() {
 function TrendDownIcon() {
   return (
     <svg
+      aria-hidden="true"
       xmlns="http://www.w3.org/2000/svg"
       width="14"
       height="14"
@@ -119,6 +121,7 @@ function openMarket(
 function ChartSparkline() {
   return (
     <svg
+      aria-hidden="true"
       viewBox="0 0 80 24"
       fill="none"
       className="h-6 w-20 text-emerald-400/40"
@@ -190,15 +193,14 @@ export default function MarketCard({
       style={{ animationDelay: `${index * 50}ms` }}
     >
       <button
+        type="button"
         onClick={handleOpenMarket}
         className="w-full text-left"
       >
         <div className="mb-2 flex items-center justify-between text-xs">
           <span className="text-slate-500">
             {market.category}
-            {market.isLive && (
-              <span className="text-emerald-400"> · LIVE</span>
-            )}
+            {market.isLive && <span className="text-emerald-400"> · LIVE</span>}
           </span>
           <span className="text-slate-500">{timeLeft}</span>
         </div>
@@ -216,12 +218,14 @@ export default function MarketCard({
         {resolvedBadge ?? (
           <>
             <button
+              type="button"
               onClick={handleBuyYes}
               className="w-24 rounded-full bg-emerald-500 px-3 py-1 text-center text-sm font-medium text-white transition hover:bg-emerald-400"
             >
               {yesPct != null ? `Yes ${yesPct}%` : "Buy Yes"}
             </button>
             <button
+              type="button"
               onClick={handleBuyNo}
               className="w-24 rounded-full bg-rose-500 px-3 py-1 text-center text-sm font-medium text-white transition hover:bg-rose-400"
             >
@@ -240,4 +244,4 @@ export default function MarketCard({
   );
 }
 
-export { openMarket, TrendIndicator, ChartSparkline };
+export { ChartSparkline, openMarket, TrendIndicator };

@@ -1,14 +1,14 @@
-import { useCallback } from "react";
-import QRCode from "qrcode";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore } from "../../store";
-import { btcLabel } from "../../utils-react/wallet";
+import QRCode from "qrcode";
+import { useCallback } from "react";
 import {
+  useCreateBitcoinSend,
   usePayLightningInvoice,
   useSendLiquid,
-  useCreateBitcoinSend,
 } from "../../queries/mutations/useWalletOps";
+import { useStore } from "../../store";
 import type { BoltzChainSwapPairsInfo } from "../../types";
+import { btcLabel } from "../../utils-react/wallet";
 
 const QR_LOGO_SVG =
   "data:image/svg+xml;base64," +
@@ -59,6 +59,7 @@ function Copyable({ value, label }: { value: string; label: string }) {
         <div className="mono text-xs text-slate-300 truncate">{value}</div>
       </div>
       <button
+        type="button"
         onClick={handleCopy}
         className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
       >
@@ -197,8 +198,8 @@ export function SendModal() {
         <div className="space-y-3">
           <p className="text-sm font-semibold text-slate-100">Swap Created</p>
           <p className="text-xs text-slate-400">
-            Swap {s.id.slice(0, 8)}... |{" "}
-            {s.invoiceAmountSat.toLocaleString()} sats
+            Swap {s.id.slice(0, 8)}... | {s.invoiceAmountSat.toLocaleString()}{" "}
+            sats
           </p>
           <p className="text-xs text-slate-500">
             Waiting for lockup confirmation. Expires:{" "}
@@ -217,13 +218,12 @@ export function SendModal() {
           <input
             id="send-invoice"
             value={sendInvoice}
-            onChange={(e) =>
-              useStore.setState({ sendInvoice: e.target.value })
-            }
+            onChange={(e) => useStore.setState({ sendInvoice: e.target.value })}
             placeholder="BOLT11 invoice"
             className="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2"
           />
           <button
+            type="button"
             onClick={handlePayLightning}
             className="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300"
             disabled={creating}
@@ -274,6 +274,7 @@ export function SendModal() {
             className="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2"
           />
           <button
+            type="button"
             onClick={handleSendLiquid}
             className="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300"
             disabled={creating}
@@ -293,8 +294,8 @@ export function SendModal() {
             Chain Swap Created
           </p>
           <p className="text-xs text-slate-400">
-            Swap {s.id.slice(0, 8)}... |{" "}
-            {s.expectedAmountSat.toLocaleString()} sats expected on Bitcoin
+            Swap {s.id.slice(0, 8)}... | {s.expectedAmountSat.toLocaleString()}{" "}
+            sats expected on Bitcoin
           </p>
           <p className="text-xs text-slate-500">
             Timeout block: {s.timeoutBlockHeight}
@@ -304,10 +305,7 @@ export function SendModal() {
               <img src={modalQr} alt="QR" className="w-56 h-56 rounded-lg" />
             </div>
           )}
-          <Copyable
-            value={s.lockupAddress}
-            label="Liquid Lockup Address"
-          />
+          <Copyable value={s.lockupAddress} label="Liquid Lockup Address" />
           {s.bip21 && <Copyable value={s.bip21} label="BIP21 URI" />}
         </div>
       );
@@ -345,6 +343,7 @@ export function SendModal() {
               className="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2"
             />
             <button
+              type="button"
               onClick={handleCreateBitcoinSend}
               className="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-300"
               disabled={creating}

@@ -1,8 +1,8 @@
 import { useMemo } from "react";
-import type { Market } from "../../types";
-import { useStore } from "../../store";
-import { getFullOrderbook } from "../../utils-react/market";
 import { useCancelLimitOrder } from "../../queries/mutations/useTrading";
+import { useStore } from "../../store";
+import type { Market } from "../../types";
+import { getFullOrderbook } from "../../utils-react/market";
 
 export default function OrderbookPanel({ market }: { market: Market }) {
   const selectedSide = useStore((s) => s.selectedSide);
@@ -66,11 +66,11 @@ export default function OrderbookPanel({ market }: { market: Market }) {
         </div>
 
         {/* Asks (reversed — highest at top) */}
-        {askRows.map((level, idx) => {
+        {askRows.map((level) => {
           const pct = (level.contracts / maxContracts) * 100;
           return (
             <div
-              key={`ask-${idx}`}
+              key={`ask-${level.priceSats}`}
               className="relative flex items-center justify-between px-2 py-0.5 text-xs"
             >
               <div
@@ -101,11 +101,11 @@ export default function OrderbookPanel({ market }: { market: Market }) {
             No bids
           </div>
         )}
-        {book.bids.map((level, idx) => {
+        {book.bids.map((level) => {
           const pct = (level.contracts / maxContracts) * 100;
           return (
             <div
-              key={`bid-${idx}`}
+              key={`bid-${level.priceSats}`}
               className="relative flex items-center justify-between px-2 py-0.5 text-xs"
             >
               <div
@@ -141,6 +141,7 @@ export default function OrderbookPanel({ market }: { market: Market }) {
                   {o.offered_amount} offered
                 </span>
                 <button
+                  type="button"
                   onClick={() => handleCancelOrder(o.id)}
                   disabled={cancelling}
                   className={`rounded border ${cancelling ? "border-slate-700 text-slate-500" : "border-rose-800 text-rose-400 hover:bg-rose-900/30"} px-2 py-0.5 text-xs transition`}

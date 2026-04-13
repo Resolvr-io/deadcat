@@ -317,10 +317,7 @@ export function getTradePreview(
   walletData: WalletData | null,
 ): TradePreview {
   const fc = fullContractSats(market);
-  const limitPriceSats = clampContractPriceSats(
-    tradeState.limitPrice * fc,
-    fc,
-  );
+  const limitPriceSats = clampContractPriceSats(tradeState.limitPrice * fc, fc);
   const basePriceSats = getBasePriceSats(market, tradeState.selectedSide);
   const levels = getOrderbookLevels(
     market,
@@ -334,8 +331,7 @@ export function getTradePreview(
       ? tradeState.tradeIntent === "open"
         ? Math.max(1, Math.floor(tradeState.tradeContracts))
         : Math.max(0, Math.floor(tradeState.tradeContracts))
-      : Math.max(1, tradeState.tradeSizeSats) /
-        Math.max(1, referencePriceSats);
+      : Math.max(1, tradeState.tradeSizeSats) / Math.max(1, referencePriceSats);
   const fill = estimateFill(
     levels,
     requestedContracts,
@@ -387,7 +383,10 @@ export function commitTradeSizeSatsDraft(draft: string): {
   const sanitized = draft.replace(/,/g, "");
   const parsed = Math.floor(Number(sanitized) || 1);
   const clamped = Math.max(1, parsed);
-  return { tradeSizeSats: clamped, tradeSizeSatsDraft: formatSatsInput(clamped) };
+  return {
+    tradeSizeSats: clamped,
+    tradeSizeSatsDraft: formatSatsInput(clamped),
+  };
 }
 
 export function commitTradeContractsDraft(

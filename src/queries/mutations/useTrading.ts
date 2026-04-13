@@ -1,21 +1,21 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  cancelLimitOrder,
+  createLimitOrder,
   executeTrade,
   quoteTrade,
-  createLimitOrder,
-  cancelLimitOrder,
 } from "../../services/markets";
 import type {
+  CancelLimitOrderResponse,
+  CreateLimitOrderResponse,
+  DiscoveredOrder,
+  ExecuteTradeExpectedQuote,
+  ExecuteTradeResponse,
   Market,
   Side,
   TradeDirection,
-  TxOptions,
-  ExecuteTradeExpectedQuote,
-  DiscoveredOrder,
-  ExecuteTradeResponse,
   TradeQuoteResponse,
-  CreateLimitOrderResponse,
-  CancelLimitOrderResponse,
+  TxOptions,
 } from "../../types";
 
 export function useQuoteTrade() {
@@ -26,7 +26,12 @@ export function useQuoteTrade() {
       direction: TradeDirection;
       exactInput: number;
     }): Promise<TradeQuoteResponse> =>
-      quoteTrade(params.market, params.side, params.direction, params.exactInput),
+      quoteTrade(
+        params.market,
+        params.side,
+        params.direction,
+        params.exactInput,
+      ),
   });
 }
 

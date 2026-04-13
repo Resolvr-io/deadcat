@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useStore } from "../../store";
-import { formatLbtc, btcLabel } from "../../utils-react/wallet";
 import type { WalletUtxo } from "../../types";
+import { btcLabel, formatLbtc } from "../../utils-react/wallet";
 
 type WalletAssetLabel = {
   side: string;
@@ -80,6 +80,7 @@ export function UtxoList({
   return (
     <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-6">
       <button
+        type="button"
         onClick={handleToggle}
         className="flex w-full items-center justify-between"
       >
@@ -90,6 +91,7 @@ export function UtxoList({
           </span>
         </h3>
         <svg
+          aria-hidden="true"
           className={`h-4 w-4 text-slate-400 transition ${walletUtxosExpanded ? "rotate-180" : ""}`}
           fill="none"
           viewBox="0 0 24 24"
@@ -129,13 +131,9 @@ export function UtxoList({
                 const info = assetLabel.get(u.assetId);
                 if (info) {
                   const sideColor =
-                    info.side === "YES"
-                      ? "text-emerald-300"
-                      : "text-red-300";
+                    info.side === "YES" ? "text-emerald-300" : "text-red-300";
                   const sideBg =
-                    info.side === "YES"
-                      ? "bg-emerald-500/20"
-                      : "bg-red-500/20";
+                    info.side === "YES" ? "bg-emerald-500/20" : "bg-red-500/20";
                   const truncQ =
                     info.question.length > 35
                       ? `${info.question.slice(0, 35)}...`
@@ -149,6 +147,7 @@ export function UtxoList({
                         {info.side}
                       </span>
                       <button
+                        type="button"
                         onClick={() => handleOpenMarket(info.marketId)}
                         className="text-slate-400 hover:text-slate-200 transition cursor-pointer truncate text-left"
                       >

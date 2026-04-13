@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useStore } from "../../store";
-import { WalletSetup } from "./WalletSetup";
 import { WalletLocked } from "./WalletLocked";
+import { WalletSetup } from "./WalletSetup";
 import { WalletUnlocked } from "./WalletUnlocked";
 
 export function WalletPage() {
@@ -49,10 +49,12 @@ export function WalletPage() {
         <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
           <h2 className="text-lg font-medium text-slate-100">Wallet</h2>
           <button
+            type="button"
             onClick={close}
             className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
           >
             <svg
+              aria-hidden="true"
               xmlns="http://www.w3.org/2000/svg"
               width="18"
               height="18"

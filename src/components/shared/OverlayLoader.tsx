@@ -24,9 +24,7 @@ export function OverlayLoader({ message }: OverlayLoaderProps) {
           </div>
         </div>
         {message && (
-          <p className="mt-4 text-sm text-slate-300 animate-pulse">
-            {message}
-          </p>
+          <p className="mt-4 text-sm text-slate-300 animate-pulse">{message}</p>
         )}
       </div>
     </div>,
@@ -38,7 +36,12 @@ export function OverlayLoader({ message }: OverlayLoaderProps) {
 
 function CatSvg() {
   return (
-    <svg viewBox="0 0 260 267" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg
+      viewBox="0 0 260 267"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
       <path
         fillRule="evenodd"
         clipRule="evenodd"
@@ -51,7 +54,12 @@ function CatSvg() {
 
 function BagSvg() {
   return (
-    <svg viewBox="0 0 298 376" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg
+      viewBox="0 0 298 376"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
       <path
         fillRule="evenodd"
         clipRule="evenodd"

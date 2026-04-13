@@ -1,14 +1,11 @@
 import { useCallback } from "react";
-import type { Market } from "../../types";
-import { useStore } from "../../store";
-import {
-  formatTimeRemaining,
-  formatVolumeBtc,
-} from "../../utils-react/format";
-import { stateLabel } from "../../utils-react/market";
-import { openMarket, TrendIndicator } from "./MarketCard";
-import MarketChart from "../chart/MarketChart";
 import { usePriceHistory } from "../../queries/usePools";
+import { useStore } from "../../store";
+import type { Market } from "../../types";
+import { formatTimeRemaining, formatVolumeBtc } from "../../utils-react/format";
+import { stateLabel } from "../../utils-react/market";
+import MarketChart from "../chart/MarketChart";
+import { openMarket, TrendIndicator } from "./MarketCard";
 
 // ── State badge (React version) ──────────────────────────────────────
 function StateBadge({ state }: { state: 0 | 1 | 2 | 3 | 4 }) {
@@ -49,13 +46,11 @@ export default function FeaturedMarket({
   const featuredNoPct =
     featuredNo != null ? Math.round(featuredNo * 100) : null;
   const blocksLeft = market.expiryHeight - market.currentHeight;
-  const timeLeft =
-    blocksLeft > 0 ? formatTimeRemaining(blocksLeft) : "Expired";
+  const timeLeft = blocksLeft > 0 ? formatTimeRemaining(blocksLeft) : "Expired";
 
   const handlePrev = useCallback(() => {
     useStore.setState({
-      trendingIndex:
-        (trendingIndex - 1 + trending.length) % trending.length,
+      trendingIndex: (trendingIndex - 1 + trending.length) % trending.length,
     });
   }, [trendingIndex, trending.length]);
 
@@ -106,6 +101,7 @@ export default function FeaturedMarket({
         </div>
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={handlePrev}
             className="h-9 w-9 rounded-full border border-slate-700 text-lg text-slate-300 hover:bg-slate-800"
           >
@@ -115,6 +111,7 @@ export default function FeaturedMarket({
             {trendingIndex + 1} of {trending.length}
           </p>
           <button
+            type="button"
             onClick={handleNext}
             className="h-9 w-9 rounded-full border border-slate-700 text-lg text-slate-300 hover:bg-slate-800"
           >
@@ -124,7 +121,11 @@ export default function FeaturedMarket({
       </div>
 
       {/* Question / title */}
-      <button onClick={handleOpenMarket} className="mb-4 block text-left">
+      <button
+        type="button"
+        onClick={handleOpenMarket}
+        className="mb-4 block text-left"
+      >
         <h1 className="phi-title text-2xl font-medium leading-tight text-slate-100 transition hover:text-white lg:text-[34px]">
           {market.question}
         </h1>
@@ -135,12 +136,14 @@ export default function FeaturedMarket({
         {resolvedActions ?? (
           <>
             <button
+              type="button"
               onClick={handleBuyYes}
               className="w-32 rounded-full bg-emerald-500 px-4 py-2 text-center text-base font-semibold text-white transition hover:bg-emerald-400"
             >
               {featuredYesPct != null ? `Yes ${featuredYesPct}%` : "Buy Yes"}
             </button>
             <button
+              type="button"
               onClick={handleBuyNo}
               className="w-32 rounded-full bg-rose-500 px-4 py-2 text-center text-base font-semibold text-white transition hover:bg-rose-400"
             >

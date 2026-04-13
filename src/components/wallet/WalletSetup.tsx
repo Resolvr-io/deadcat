@@ -1,10 +1,10 @@
+import { invoke } from "@tauri-apps/api/core";
 import { useCallback } from "react";
-import { useStore } from "../../store";
 import {
   useCreateWallet,
   useRestoreWallet,
 } from "../../queries/mutations/useWalletOps";
-import { invoke } from "@tauri-apps/api/core";
+import { useStore } from "../../store";
 
 function MnemonicGrid({ mnemonic }: { mnemonic: string }) {
   const words = mnemonic.split(" ");
@@ -16,10 +16,13 @@ function MnemonicGrid({ mnemonic }: { mnemonic: string }) {
   return (
     <div>
       {rows.map((row, rowIdx) => (
-        <div key={rowIdx}>
+        <div key={`row-${rowIdx * 3}`}>
           <div className="grid grid-cols-3 gap-x-4 py-2.5">
             {row.map((w, colIdx) => (
-              <div key={colIdx} className="flex items-baseline gap-1.5 min-w-0">
+              <div
+                key={`word-${rowIdx * 3 + colIdx + 1}`}
+                className="flex items-baseline gap-1.5 min-w-0"
+              >
                 <span className="text-xs text-slate-500 shrink-0">
                   {rowIdx * 3 + colIdx + 1}.
                 </span>
@@ -53,7 +56,8 @@ export function WalletSetup({
   const createWallet = useCreateWallet();
   const restoreWallet = useRestoreWallet();
 
-  const loading = walletLoading || createWallet.isPending || restoreWallet.isPending;
+  const loading =
+    walletLoading || createWallet.isPending || restoreWallet.isPending;
 
   const handleCreate = useCallback(() => {
     if (!walletPassword || walletPassword !== walletPasswordConfirm) {
@@ -123,7 +127,12 @@ export function WalletSetup({
         },
       },
     );
-  }, [walletRestoreMnemonic, walletPassword, walletPasswordConfirm, restoreWallet]);
+  }, [
+    walletRestoreMnemonic,
+    walletPassword,
+    walletPasswordConfirm,
+    restoreWallet,
+  ]);
 
   const handleDismissMnemonic = useCallback(() => {
     useStore.setState({ walletMnemonic: "", walletPassword: "" });
@@ -176,6 +185,7 @@ export function WalletSetup({
             </p>
             <MnemonicGrid mnemonic={walletMnemonic} />
             <button
+              type="button"
               onClick={handleCopyMnemonic}
               className="mt-2 w-full rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
             >
@@ -184,6 +194,7 @@ export function WalletSetup({
           </div>
           {errorHtml}
           <button
+            type="button"
             onClick={handleDismissMnemonic}
             className="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300"
           >
@@ -210,11 +221,13 @@ export function WalletSetup({
 
         {nostrNpub && !loading && (
           <button
+            type="button"
             onClick={handleNostrRestore}
             className="w-full rounded-xl border border-slate-700 bg-slate-900/50 p-4 text-left transition hover:border-slate-600"
           >
             <div className="flex items-center gap-3">
               <svg
+                aria-hidden="true"
                 className="h-6 w-6 text-slate-500 shrink-0"
                 fill="none"
                 viewBox="0 0 24 24"
@@ -241,11 +254,13 @@ export function WalletSetup({
 
         <div className="grid grid-cols-2 gap-3">
           <button
+            type="button"
             onClick={isCreate || loading ? undefined : handleToggleRestore}
             className={`rounded-xl border ${isCreate ? "border-emerald-500/50 bg-emerald-500/10" : "border-slate-700 bg-slate-900/50 hover:border-slate-600"} p-4 text-left transition ${loading ? "opacity-50 cursor-not-allowed" : ""}`}
             disabled={loading}
           >
             <svg
+              aria-hidden="true"
               className={`h-6 w-6 ${isCreate ? "text-emerald-400" : "text-slate-500"}`}
               fill="none"
               viewBox="0 0 24 24"
@@ -270,11 +285,13 @@ export function WalletSetup({
             </p>
           </button>
           <button
+            type="button"
             onClick={isRestore || loading ? undefined : handleToggleRestore}
             className={`rounded-xl border ${isRestore ? "border-emerald-500/50 bg-emerald-500/10" : "border-slate-700 bg-slate-900/50 hover:border-slate-600"} p-4 text-left transition ${loading ? "opacity-50 cursor-not-allowed" : ""}`}
             disabled={loading}
           >
             <svg
+              aria-hidden="true"
               className={`h-6 w-6 ${isRestore ? "text-emerald-400" : "text-slate-500"}`}
               fill="none"
               viewBox="0 0 24 24"
@@ -342,6 +359,7 @@ export function WalletSetup({
               disabled={loading}
             />
             <button
+              type="button"
               onClick={handleCreate}
               className="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={loading}
@@ -413,6 +431,7 @@ export function WalletSetup({
               disabled={loading}
             />
             <button
+              type="button"
               onClick={handleRestore}
               className="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={loading}

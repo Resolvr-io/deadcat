@@ -1,7 +1,7 @@
 import { useCallback } from "react";
-import { useStore } from "../../store";
 import { useCreateMarket } from "../../queries/mutations/useMarketCreation";
 import { DEFAULT_TX_OPTIONS } from "../../services/tx";
+import { useStore } from "../../store";
 import { showToast } from "../shared/Toast";
 import CategoryDropdown from "./CategoryDropdown";
 import SettlementPicker from "./SettlementPicker";
@@ -135,10 +135,12 @@ export default function CreateMarketPage() {
         {/* Left: Form */}
         <section className="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
           <button
+            type="button"
             onClick={handleCancel}
             className="mb-3 flex items-center gap-1 text-sm text-slate-400 transition hover:text-slate-200"
           >
             <svg
+              aria-hidden="true"
               xmlns="http://www.w3.org/2000/svg"
               width="16"
               height="16"
@@ -205,15 +207,15 @@ export default function CreateMarketPage() {
             {/* Category + Settlement */}
             <div className="grid gap-4 md:grid-cols-2">
               <div>
-                <label className="mb-1 block text-xs text-slate-400">
+                <span className="mb-1 block text-xs text-slate-400">
                   Category
-                </label>
+                </span>
                 <CategoryDropdown />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-slate-400">
+                <span className="mb-1 block text-xs text-slate-400">
                   Settlement deadline
-                </label>
+                </span>
                 <SettlementPicker />
               </div>
             </div>
@@ -263,8 +265,8 @@ export default function CreateMarketPage() {
                 placeholder="5000"
               />
               <p className="mt-1 text-xs text-slate-500">
-                Full contract payout = 2 &times; this value. Default: 5,000
-                sats (YES + NO = 10,000).
+                Full contract payout = 2 &times; this value. Default: 5,000 sats
+                (YES + NO = 10,000).
               </p>
             </div>
           </div>
@@ -276,16 +278,14 @@ export default function CreateMarketPage() {
           <h3 className="panel-title mb-3 text-lg">New Contract Ticket</h3>
           <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
             <p className="text-sm text-slate-200">
-              {question.trim() ||
-                "Your market question will appear here."}
+              {question.trim() || "Your market question will appear here."}
             </p>
             <p className="text-xs text-slate-400">
               {description.trim() ||
                 "Settlement rule summary will appear here."}
             </p>
             <p className="text-xs text-slate-400">
-              Category:{" "}
-              <span className="text-slate-200">{category}</span>
+              Category: <span className="text-slate-200">{category}</span>
             </p>
             <p className="text-xs text-slate-400">
               Settlement deadline:{" "}
@@ -307,6 +307,7 @@ export default function CreateMarketPage() {
             </p>
           </div>
           <button
+            type="button"
             onClick={handleSubmit}
             disabled={marketCreating}
             className="mt-4 w-full rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50"

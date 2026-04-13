@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useRef } from "react";
 import { useStore } from "../store";
 import type { IdentityResponse } from "../types";
 
@@ -52,7 +52,10 @@ export function useBootstrap(): void {
       try {
         const appState = await invoke<{
           walletStatus: "not_created" | "locked" | "unlocked";
-          networkStatus: { network: "mainnet" | "testnet" | "regtest"; policyAssetId: string };
+          networkStatus: {
+            network: "mainnet" | "testnet" | "regtest";
+            policyAssetId: string;
+          };
         }>("get_app_state");
         useStore.setState({
           walletStatus: appState.walletStatus,

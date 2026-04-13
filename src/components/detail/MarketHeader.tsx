@@ -1,14 +1,14 @@
-import type { Market } from "../../types";
 import { useStore } from "../../store";
+import type { Market } from "../../types";
 import {
-  getPositionContracts,
-  getEstimatedSettlementDate,
-} from "../../utils-react/market";
-import {
-  formatVolumeBtc,
   formatSettlementDateTime,
   formatTimeRemaining,
+  formatVolumeBtc,
 } from "../../utils-react/format";
+import {
+  getEstimatedSettlementDate,
+  getPositionContracts,
+} from "../../utils-react/market";
 
 function stateBadge(state: number) {
   const colorMap: Record<number, string> = {
@@ -38,8 +38,7 @@ function stateBadge(state: number) {
 export default function MarketHeader({ market }: { market: Market }) {
   const walletData = useStore((s) => s.walletData);
 
-  const noPrice =
-    market.yesPrice != null ? 1 - market.yesPrice : null;
+  const noPrice = market.yesPrice != null ? 1 - market.yesPrice : null;
   const estimatedSettlementDate = getEstimatedSettlementDate(market);
   const positions = getPositionContracts(market, walletData);
 
@@ -48,6 +47,7 @@ export default function MarketHeader({ market }: { market: Market }) {
       {/* Top bar: back button + badges */}
       <div className="mb-3 flex items-center justify-between">
         <button
+          type="button"
           onClick={() => useStore.setState({ view: "home" })}
           className="flex items-center gap-1 text-sm text-slate-400 transition hover:text-slate-200"
         >
@@ -61,6 +61,7 @@ export default function MarketHeader({ market }: { market: Market }) {
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
+            aria-hidden="true"
           >
             <polyline points="15 18 9 12 15 6" />
           </svg>
@@ -72,11 +73,17 @@ export default function MarketHeader({ market }: { market: Market }) {
           </span>
           {stateBadge(market.state)}
           <span className="h-3.5 w-px bg-slate-700" />
-          <button className="text-xs text-slate-400 transition hover:text-slate-200">
+          <button
+            type="button"
+            className="text-xs text-slate-400 transition hover:text-slate-200"
+          >
             Nostr Event
           </button>
           {market.creationTxid && (
-            <button className="text-xs text-slate-400 transition hover:text-slate-200">
+            <button
+              type="button"
+              className="text-xs text-slate-400 transition hover:text-slate-200"
+            >
               Creation TX
             </button>
           )}
@@ -101,6 +108,7 @@ export default function MarketHeader({ market }: { market: Market }) {
       {/* Yes / No quick-buy buttons */}
       <div className="mb-4 flex items-center gap-3">
         <button
+          type="button"
           onClick={() =>
             useStore.setState({ selectedSide: "yes", tradeIntent: "open" })
           }
@@ -111,14 +119,13 @@ export default function MarketHeader({ market }: { market: Market }) {
             : "Buy Yes"}
         </button>
         <button
+          type="button"
           onClick={() =>
             useStore.setState({ selectedSide: "no", tradeIntent: "open" })
           }
           className="w-36 rounded-full bg-rose-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-rose-400"
         >
-          {noPrice != null
-            ? `No ${Math.round(noPrice * 100)}%`
-            : "Buy No"}
+          {noPrice != null ? `No ${Math.round(noPrice * 100)}%` : "Buy No"}
         </button>
       </div>
 

@@ -5,8 +5,8 @@ import type {
   IdentityResponse,
   NostrBackupStatus,
   NostrProfile,
-  RelayEntry,
   RelayBackupResult,
+  RelayEntry,
 } from "../types";
 
 export function useIdentity(enabled = true) {

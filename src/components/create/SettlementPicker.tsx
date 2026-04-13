@@ -85,6 +85,7 @@ function MiniDropdown({
       >
         <span>{label}</span>
         <svg
+          aria-hidden="true"
           xmlns="http://www.w3.org/2000/svg"
           width="12"
           height="12"
@@ -154,10 +155,7 @@ export default function SettlementPicker() {
   useEffect(() => {
     if (!pickerOpen) return;
     function handleClickOutside(e: MouseEvent) {
-      if (
-        pickerRef.current &&
-        !pickerRef.current.contains(e.target as Node)
-      ) {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
         useStore.setState({
           createSettlementPickerOpen: false,
           createSettlementPickerDropdown: "",
@@ -283,18 +281,12 @@ export default function SettlementPicker() {
     if (isSelected) {
       cls += " bg-emerald-400 text-slate-950 font-semibold";
     } else if (isToday) {
-      cls +=
-        " ring-1 ring-emerald-400/40 text-slate-100 hover:bg-slate-700/60";
+      cls += " ring-1 ring-emerald-400/40 text-slate-100 hover:bg-slate-700/60";
     } else {
       cls += " text-slate-300 hover:bg-slate-700/60";
     }
     return (
-      <button
-        key={d}
-        type="button"
-        onClick={() => pickDay(d)}
-        className={cls}
-      >
+      <button key={d} type="button" onClick={() => pickDay(d)} className={cls}>
         {d}
       </button>
     );
@@ -308,6 +300,7 @@ export default function SettlementPicker() {
         className="dc-input flex items-center gap-2 cursor-pointer text-left"
       >
         <svg
+          aria-hidden="true"
           xmlns="http://www.w3.org/2000/svg"
           width="16"
           height="16"
@@ -324,11 +317,7 @@ export default function SettlementPicker() {
           <line x1="8" y1="2" x2="8" y2="6" />
           <line x1="3" y1="10" x2="21" y2="10" />
         </svg>
-        <span
-          className={
-            settlementInput ? "text-slate-100" : "text-slate-500"
-          }
-        >
+        <span className={settlementInput ? "text-slate-100" : "text-slate-500"}>
           {settlementDisplay}
         </span>
       </button>
@@ -341,6 +330,7 @@ export default function SettlementPicker() {
               className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
             >
               <svg
+                aria-hidden="true"
                 xmlns="http://www.w3.org/2000/svg"
                 width="16"
                 height="16"
@@ -372,6 +362,7 @@ export default function SettlementPicker() {
               className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
             >
               <svg
+                aria-hidden="true"
                 xmlns="http://www.w3.org/2000/svg"
                 width="16"
                 height="16"

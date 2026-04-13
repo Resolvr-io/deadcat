@@ -1,12 +1,13 @@
-import { useCallback, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { useQueryClient } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
+import { type ReactNode, useCallback } from "react";
 import { useStore } from "../../store";
 import { showToast } from "../shared/Toast";
 
 function BackButton({ onClick }: { onClick: () => void }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       className="mb-8 flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition"
     >
@@ -16,6 +17,7 @@ function BackButton({ onClick }: { onClick: () => void }) {
         viewBox="0 0 24 24"
         stroke="currentColor"
         strokeWidth={2}
+        aria-hidden="true"
       >
         <path
           strokeLinecap="round"
@@ -38,10 +40,10 @@ function MnemonicGrid({ mnemonic }: { mnemonic: string }) {
   return (
     <div className="space-y-2">
       {rows.map((row, rowIdx) => (
-        <div key={rowIdx} className="grid grid-cols-3 gap-2">
+        <div key={`row-${rowIdx}`} className="grid grid-cols-3 gap-2">
           {row.map((word, colIdx) => (
             <div
-              key={colIdx}
+              key={`word-${rowIdx * 3 + colIdx + 1}-${word}`}
               className="flex items-baseline gap-1.5 min-w-0"
             >
               <span className="text-xs text-slate-500 shrink-0">
@@ -79,11 +81,15 @@ function PasswordFields({
   return (
     <div className="space-y-4">
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+        <label
+          htmlFor="wallet-password"
+          className="text-xs font-medium text-slate-400 uppercase tracking-wide"
+        >
           Password
         </label>
         <div className="relative">
           <input
+            id="wallet-password"
             type={inputType}
             maxLength={32}
             placeholder="At least 8 characters"
@@ -108,6 +114,7 @@ function PasswordFields({
                 viewBox="0 0 24 24"
                 stroke="currentColor"
                 strokeWidth={2}
+                aria-hidden="true"
               >
                 <path
                   strokeLinecap="round"
@@ -122,6 +129,7 @@ function PasswordFields({
                 viewBox="0 0 24 24"
                 stroke="currentColor"
                 strokeWidth={2}
+                aria-hidden="true"
               >
                 <path
                   strokeLinecap="round"
@@ -139,10 +147,14 @@ function PasswordFields({
         </div>
       </div>
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+        <label
+          htmlFor="wallet-password-confirm"
+          className="text-xs font-medium text-slate-400 uppercase tracking-wide"
+        >
           Confirm password
         </label>
         <input
+          id="wallet-password-confirm"
           type={inputType}
           maxLength={32}
           placeholder="Repeat your password"
@@ -159,7 +171,9 @@ function PasswordFields({
 }
 
 // ── Finish onboarding helper ────────────────────────────────────────
-async function finishOnboarding(queryClient: ReturnType<typeof useQueryClient>) {
+async function finishOnboarding(
+  queryClient: ReturnType<typeof useQueryClient>,
+) {
   useStore.setState({
     setupModalOpen: false,
     setupRequires: null,
@@ -266,10 +280,7 @@ export default function WalletSetupStep({
       }
     } else {
       const onSubPage =
-        passwordStep ||
-        verifyStep ||
-        !!mnemonic ||
-        walletMode === "restore";
+        passwordStep || verifyStep || !!mnemonic || walletMode === "restore";
       if (onSubPage) {
         useStore.setState({
           onboardingWalletMode: "create",
@@ -572,6 +583,7 @@ export default function WalletSetupStep({
             }
           />
           <button
+            type="button"
             onClick={submitAction}
             disabled={loading}
             className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed transition"
@@ -596,12 +608,14 @@ export default function WalletSetupStep({
           Confirm your recovery phrase
         </h2>
         <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-          Enter the 3 words below to confirm you've written them down
-          correctly.
+          Enter the 3 words below to confirm you've written them down correctly.
         </p>
         <div className="mt-8 space-y-4">
           {verifyIndices.map((wordIdx, i) => (
-            <div key={i} className="flex items-center gap-4">
+            <div
+              key={`verify-word-${wordIdx}`}
+              className="flex items-center gap-4"
+            >
               <span className="w-16 shrink-0 text-right text-xs font-medium text-slate-500">
                 Word {wordIdx + 1}
               </span>
@@ -619,6 +633,7 @@ export default function WalletSetupStep({
         </div>
         {errorHtml && <div className="mt-5">{errorHtml}</div>}
         <button
+          type="button"
           onClick={handleVerifyMnemonic}
           className="mt-8 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
         >
@@ -641,12 +656,13 @@ export default function WalletSetupStep({
           Save your recovery phrase
         </h2>
         <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-          Write these 12 words down in order and store them somewhere safe.
-          This is the only way to recover your wallet.
+          Write these 12 words down in order and store them somewhere safe. This
+          is the only way to recover your wallet.
         </p>
         <div className="mt-6 rounded-xl border border-slate-700 bg-slate-900/60 p-5 space-y-4">
           <MnemonicGrid mnemonic={mnemonic} />
           <button
+            type="button"
             onClick={handleCopyMnemonic}
             className="w-full rounded-lg border border-slate-700 px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 transition"
           >
@@ -654,6 +670,7 @@ export default function WalletSetupStep({
           </button>
         </div>
         <button
+          type="button"
           onClick={handleMnemonicDone}
           className="mt-8 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
         >
@@ -674,19 +691,21 @@ export default function WalletSetupStep({
             Step 2 of 2
           </p>
         )}
-        <h2 className="text-2xl font-semibold text-white">
-          Restore from seed
-        </h2>
+        <h2 className="text-2xl font-semibold text-white">Restore from seed</h2>
         <p className="mt-3 text-sm text-slate-400 leading-relaxed">
           Enter your 12-word recovery phrase to restore your existing wallet.
         </p>
         {errorHtml && <div className="mt-5">{errorHtml}</div>}
         <div className="mt-8 space-y-4">
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+            <label
+              htmlFor="wallet-recovery-phrase"
+              className="text-xs font-medium text-slate-400 uppercase tracking-wide"
+            >
               Recovery Phrase
             </label>
             <textarea
+              id="wallet-recovery-phrase"
               placeholder="word1 word2 word3 ... word12"
               rows={3}
               value={mnemonic}
@@ -699,6 +718,7 @@ export default function WalletSetupStep({
             />
           </div>
           <button
+            type="button"
             onClick={handleWalletContinue}
             className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
           >
@@ -712,14 +732,11 @@ export default function WalletSetupStep({
   // ── Nostr restore sub-page ────────────────────────────────────────
   if (walletMode === "nostr-restore") {
     const wallets = backupStatus?.wallets ?? [];
-    const effectiveSelectedDTag =
-      selectedDTag || (wallets[0]?.d_tag ?? "");
+    const effectiveSelectedDTag = selectedDTag || (wallets[0]?.d_tag ?? "");
     const backupRelays =
       backupStatus?.relay_results?.filter((r) => r.has_backup) ?? [];
     const fallbackRelay =
-      relays[0]?.url ??
-      backupStatus?.relay_results?.[0]?.url ??
-      "";
+      relays[0]?.url ?? backupStatus?.relay_results?.[0]?.url ?? "";
     const primaryRelayUrl =
       backupRelays.length > 0 ? backupRelays[0].url : fallbackRelay;
     const primaryRelay = primaryRelayUrl
@@ -748,6 +765,7 @@ export default function WalletSetupStep({
               w.d_tag === effectiveSelectedDTag || wallets.length === 1;
             return (
               <button
+                type="button"
                 key={w.d_tag}
                 onClick={() =>
                   useStore.setState({
@@ -767,6 +785,7 @@ export default function WalletSetupStep({
                     viewBox="0 0 24 24"
                     stroke="currentColor"
                     strokeWidth={1.5}
+                    aria-hidden="true"
                   >
                     <path
                       strokeLinecap="round"
@@ -799,6 +818,7 @@ export default function WalletSetupStep({
                     viewBox="0 0 24 24"
                     stroke="currentColor"
                     strokeWidth={2.5}
+                    aria-hidden="true"
                   >
                     <path
                       strokeLinecap="round"
@@ -813,12 +833,14 @@ export default function WalletSetupStep({
         </div>
         <div className="mt-6 space-y-3">
           <button
+            type="button"
             onClick={handleWalletContinue}
             className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
           >
             Restore wallet
           </button>
           <button
+            type="button"
             onClick={() =>
               useStore.setState({
                 onboardingWalletMode: "create",
@@ -839,6 +861,7 @@ export default function WalletSetupStep({
   const backupFoundWallets = backupStatus?.wallets ?? [];
   const backupFoundCard = backupFound ? (
     <button
+      type="button"
       onClick={() =>
         useStore.setState({
           onboardingWalletMode: "nostr-restore",
@@ -854,6 +877,7 @@ export default function WalletSetupStep({
           viewBox="0 0 24 24"
           stroke="currentColor"
           strokeWidth={1.5}
+          aria-hidden="true"
         >
           <path
             strokeLinecap="round"
@@ -878,17 +902,13 @@ export default function WalletSetupStep({
   return (
     <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
       {stepIndicator}
-      {!walletOnly && !backupScanning && (
-        <BackButton onClick={handleBack} />
-      )}
+      {!walletOnly && !backupScanning && <BackButton onClick={handleBack} />}
       {!walletOnly && (
         <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">
           Step 2 of 2
         </p>
       )}
-      <h2 className="text-2xl font-semibold text-white">
-        Set up your wallet
-      </h2>
+      <h2 className="text-2xl font-semibold text-white">Set up your wallet</h2>
       <p className="mt-3 text-sm text-slate-400 leading-relaxed">
         Create a new Liquid wallet or restore an existing one.
       </p>
@@ -896,12 +916,14 @@ export default function WalletSetupStep({
       {backupFoundCard && <div className="mt-5">{backupFoundCard}</div>}
       <div className="mt-10 space-y-3">
         <button
+          type="button"
           onClick={handleWalletContinue}
           className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
         >
           Create new wallet
         </button>
         <button
+          type="button"
           onClick={() =>
             useStore.setState({
               onboardingWalletMode: "restore",

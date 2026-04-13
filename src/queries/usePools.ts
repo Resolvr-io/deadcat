@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { listLmsrPools, getPriceHistory } from "../services/pools";
+import { getPriceHistory, listLmsrPools } from "../services/pools";
 import type { LmsrPoolInfo, PriceHistoryEntry } from "../types";
 
 export function usePools(marketId?: string) {
@@ -14,7 +14,7 @@ export function usePriceHistory(marketId: string | null, limit = 500) {
   return useQuery({
     queryKey: ["priceHistory", marketId],
     queryFn: (): Promise<PriceHistoryEntry[]> =>
-      getPriceHistory(marketId!, limit),
+      getPriceHistory(marketId ?? "", limit),
     enabled: !!marketId,
     staleTime: 30_000,
   });

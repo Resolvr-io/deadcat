@@ -1,9 +1,9 @@
-import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore } from "../../store";
+import { useCallback } from "react";
 import { baseCurrencyOptions } from "../../constants";
-import { btcLabel } from "../../utils-react/wallet";
+import { useStore } from "../../store";
 import type { BaseCurrency, RelayEntry } from "../../types";
+import { btcLabel } from "../../utils-react/wallet";
 
 const DEV_MODE = import.meta.env.DEV;
 
@@ -32,6 +32,7 @@ function SettingsAccordion({
   return (
     <div className="rounded-lg border border-slate-800 overflow-hidden">
       <button
+        type="button"
         onClick={toggle}
         className="w-full flex items-center justify-between px-4 py-3 text-left transition-colors hover:bg-slate-900/50"
       >
@@ -39,6 +40,7 @@ function SettingsAccordion({
           {title}
         </span>
         <svg
+          aria-hidden="true"
           className={`h-4 w-4 text-slate-500 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
           fill="none"
           viewBox="0 0 24 24"
@@ -72,6 +74,7 @@ function Toggle({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       className={`relative h-5 w-9 rounded-full transition ${enabled ? "bg-emerald-400" : "bg-slate-700"}`}
     >
@@ -150,6 +153,7 @@ function NostrSection() {
           </div>
           {nostrNpub && (
             <button
+              type="button"
               onClick={copyNpub}
               className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
             >
@@ -172,6 +176,7 @@ function NostrSection() {
             </div>
             {nostrNsecRevealed ? (
               <button
+                type="button"
                 onClick={copyNsec}
                 className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
               >
@@ -179,6 +184,7 @@ function NostrSection() {
               </button>
             ) : (
               <button
+                type="button"
                 onClick={revealNsec}
                 className="shrink-0 rounded-lg border border-amber-700/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-300 hover:bg-amber-900/30 transition"
               >
@@ -214,6 +220,7 @@ function NostrSection() {
                 className="h-9 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2 mono"
               />
               <button
+                type="button"
                 onClick={importNsec}
                 disabled={nostrImporting}
                 className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
@@ -227,6 +234,7 @@ function NostrSection() {
               Or generate a fresh keypair
             </p>
             <button
+              type="button"
               onClick={generateKey}
               className="mt-1 w-full rounded-lg bg-emerald-400 px-4 py-2.5 text-sm font-medium text-slate-950 hover:bg-emerald-300 transition"
             >
@@ -252,6 +260,7 @@ function NostrSection() {
               autoComplete="off"
             />
             <button
+              type="button"
               onClick={() =>
                 useStore.setState({
                   nostrReplacePrompt: false,
@@ -264,6 +273,7 @@ function NostrSection() {
               Continue
             </button>
             <button
+              type="button"
               onClick={() =>
                 useStore.setState({
                   nostrReplacePrompt: false,
@@ -278,6 +288,7 @@ function NostrSection() {
         </div>
       ) : (
         <button
+          type="button"
           onClick={() => useStore.setState({ nostrReplacePrompt: true })}
           className="w-full rounded-lg border border-rose-700/40 px-4 py-2 text-xs text-rose-400 hover:bg-rose-900/20 transition"
         >
@@ -306,8 +317,7 @@ function WalletSection() {
 
   const canConfirmDelete =
     walletDeleteConfirm.trim().toUpperCase() === "DELETE";
-  const showPasswordPrompt =
-    nostrBackupPrompt && walletStatus !== "unlocked";
+  const showPasswordPrompt = nostrBackupPrompt && walletStatus !== "unlocked";
   const hasBackup = nostrBackupStatus?.has_backup ?? false;
 
   if (walletStatus === "not_created") {
@@ -317,6 +327,7 @@ function WalletSection() {
           No wallet configured on this device.
         </p>
         <button
+          type="button"
           onClick={() => useStore.setState({ walletOpen: true })}
           className="w-full rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
         >
@@ -372,6 +383,7 @@ function WalletSection() {
         <div className="grid grid-cols-3 gap-1">
           {baseCurrencyOptions.map((c) => (
             <button
+              type="button"
               key={c}
               onClick={() =>
                 useStore.setState({ baseCurrency: c as BaseCurrency })
@@ -412,6 +424,7 @@ function WalletSection() {
             <>
               <div className="flex items-center gap-2">
                 <svg
+                  aria-hidden="true"
                   className="h-4 w-4 shrink-0 text-emerald-400"
                   fill="none"
                   viewBox="0 0 24 24"
@@ -426,9 +439,8 @@ function WalletSection() {
                 </svg>
                 <p className="text-xs text-emerald-400">
                   Encrypted backup on{" "}
-                  {nostrBackupStatus?.relay_results?.filter(
-                    (r) => r.has_backup,
-                  ).length ?? 0}{" "}
+                  {nostrBackupStatus?.relay_results?.filter((r) => r.has_backup)
+                    .length ?? 0}{" "}
                   of {nostrBackupStatus?.relay_results?.length ?? 0} relays
                 </p>
               </div>
@@ -458,6 +470,7 @@ function WalletSection() {
                   />
                   <div className="flex gap-2">
                     <button
+                      type="button"
                       onClick={() => invoke("settings_backup_wallet")}
                       disabled={nostrBackupLoading}
                       className="flex-1 rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition"
@@ -465,6 +478,7 @@ function WalletSection() {
                       {nostrBackupLoading ? "Uploading..." : "Upload"}
                     </button>
                     <button
+                      type="button"
                       onClick={() =>
                         useStore.setState({ nostrBackupPrompt: false })
                       }
@@ -477,13 +491,17 @@ function WalletSection() {
               ) : (
                 <div className="flex gap-2">
                   <button
+                    type="button"
                     onClick={() => invoke("settings_backup_wallet")}
                     disabled={nostrBackupLoading}
                     className="flex-1 rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
                   >
-                    {nostrBackupLoading ? "Uploading..." : "Re-upload to Relays"}
+                    {nostrBackupLoading
+                      ? "Uploading..."
+                      : "Re-upload to Relays"}
                   </button>
                   <button
+                    type="button"
                     onClick={() => invoke("delete_nostr_backup")}
                     disabled={nostrBackupLoading}
                     className="shrink-0 rounded-lg border border-rose-700/40 px-3 py-2 text-xs text-rose-400 hover:bg-rose-900/20 transition"
@@ -493,57 +511,56 @@ function WalletSection() {
                 </div>
               )}
             </>
+          ) : showPasswordPrompt ? (
+            <div className="space-y-2">
+              <input
+                type="password"
+                maxLength={32}
+                value={nostrBackupPassword}
+                onChange={(e) =>
+                  useStore.setState({
+                    nostrBackupPassword: e.target.value,
+                  })
+                }
+                placeholder="Wallet password"
+                className="h-9 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => invoke("settings_backup_wallet")}
+                  disabled={nostrBackupLoading}
+                  className="flex-1 rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition"
+                >
+                  {nostrBackupLoading ? "Encrypting..." : "Upload"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    useStore.setState({ nostrBackupPrompt: false })
+                  }
+                  className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 transition"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
           ) : (
             <>
-              {showPasswordPrompt ? (
-                <div className="space-y-2">
-                  <input
-                    type="password"
-                    maxLength={32}
-                    value={nostrBackupPassword}
-                    onChange={(e) =>
-                      useStore.setState({
-                        nostrBackupPassword: e.target.value,
-                      })
-                    }
-                    placeholder="Wallet password"
-                    className="h-9 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2"
-                  />
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => invoke("settings_backup_wallet")}
-                      disabled={nostrBackupLoading}
-                      className="flex-1 rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition"
-                    >
-                      {nostrBackupLoading ? "Encrypting..." : "Upload"}
-                    </button>
-                    <button
-                      onClick={() =>
-                        useStore.setState({ nostrBackupPrompt: false })
-                      }
-                      className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 transition"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <p className="text-xs text-slate-400">
-                    Encrypt your recovery phrase with NIP-44 and store it on
-                    your Nostr relays. Only your nsec can decrypt it.
-                  </p>
-                  <button
-                    onClick={() => invoke("settings_backup_wallet")}
-                    disabled={nostrBackupLoading}
-                    className="w-full rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition"
-                  >
-                    {nostrBackupLoading
-                      ? "Encrypting..."
-                      : "Encrypt & Upload to Relays"}
-                  </button>
-                </>
-              )}
+              <p className="text-xs text-slate-400">
+                Encrypt your recovery phrase with NIP-44 and store it on your
+                Nostr relays. Only your nsec can decrypt it.
+              </p>
+              <button
+                type="button"
+                onClick={() => invoke("settings_backup_wallet")}
+                disabled={nostrBackupLoading}
+                className="w-full rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition"
+              >
+                {nostrBackupLoading
+                  ? "Encrypting..."
+                  : "Encrypt & Upload to Relays"}
+              </button>
             </>
           )}
           <details className="group">
@@ -552,9 +569,9 @@ function WalletSection() {
             </summary>
             <div className="mt-2 space-y-1.5 text-[11px] text-slate-500">
               <p>
-                <strong className="text-slate-400">NIP-44 encryption</strong>{" "}
-                -- Recovery phrase is encrypted using XChaCha20 + secp256k1
-                ECDH. Only your nsec can decrypt it.
+                <strong className="text-slate-400">NIP-44 encryption</strong> --
+                Recovery phrase is encrypted using XChaCha20 + secp256k1 ECDH.
+                Only your nsec can decrypt it.
               </p>
               <p>
                 <strong className="text-slate-400">Self-encrypted</strong> --
@@ -567,8 +584,8 @@ function WalletSection() {
                 any relay that has it.
               </p>
               <p>
-                <strong className="text-slate-400">Relay redundancy</strong>{" "}
-                -- Sent to all your configured relays for resilience.
+                <strong className="text-slate-400">Relay redundancy</strong> --
+                Sent to all your configured relays for resilience.
               </p>
             </div>
           </details>
@@ -598,6 +615,7 @@ function WalletSection() {
               autoComplete="off"
             />
             <button
+              type="button"
               onClick={() => invoke("wallet_delete_confirm")}
               disabled={!canConfirmDelete}
               className={`shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${canConfirmDelete ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`}
@@ -605,6 +623,7 @@ function WalletSection() {
               Continue
             </button>
             <button
+              type="button"
               onClick={() =>
                 useStore.setState({
                   walletDeletePrompt: false,
@@ -619,6 +638,7 @@ function WalletSection() {
         </div>
       ) : (
         <button
+          type="button"
           onClick={() => useStore.setState({ walletDeletePrompt: true })}
           className="w-full rounded-lg border border-rose-700/40 px-4 py-2 text-xs text-rose-400 hover:bg-rose-900/20 transition"
         >
@@ -679,6 +699,7 @@ function RelaysSection() {
             </div>
             {relay.has_backup && (
               <svg
+                aria-hidden="true"
                 className="h-3.5 w-3.5 shrink-0 text-emerald-400"
                 fill="none"
                 viewBox="0 0 24 24"
@@ -694,10 +715,12 @@ function RelaysSection() {
             )}
             {relays.length > 1 && (
               <button
+                type="button"
                 onClick={() => removeRelay(relay.url)}
                 className="shrink-0 text-slate-500 hover:text-rose-400 transition"
               >
                 <svg
+                  aria-hidden="true"
                   className="h-3.5 w-3.5"
                   fill="none"
                   viewBox="0 0 24 24"
@@ -723,6 +746,7 @@ function RelaysSection() {
           className="h-9 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2 mono"
         />
         <button
+          type="button"
           onClick={addRelay}
           disabled={relayLoading}
           className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
@@ -731,6 +755,7 @@ function RelaysSection() {
         </button>
       </div>
       <button
+        type="button"
         onClick={resetRelays}
         className="text-[10px] text-slate-500 hover:text-slate-300 transition"
       >
@@ -746,18 +771,19 @@ function DevSection() {
   const devResetPrompt = useStore((s) => s.devResetPrompt);
   const devResetConfirm = useStore((s) => s.devResetConfirm);
 
-  const canConfirmReset =
-    devResetConfirm.trim().toUpperCase() === "RESET";
+  const canConfirmReset = devResetConfirm.trim().toUpperCase() === "RESET";
 
   return (
     <div className="space-y-2">
       <button
+        type="button"
         onClick={() => invoke("load_demo_markets")}
         className="w-full rounded-lg border border-emerald-700/40 px-4 py-2 text-xs text-emerald-400 hover:bg-emerald-900/20 transition"
       >
         Load Demo Markets
       </button>
       <button
+        type="button"
         onClick={() => invoke("dev_restart")}
         className="w-full rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-400 hover:bg-slate-800 transition"
       >
@@ -781,6 +807,7 @@ function DevSection() {
               autoComplete="off"
             />
             <button
+              type="button"
               onClick={() => invoke("dev_reset_confirm")}
               disabled={!canConfirmReset}
               className={`shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${canConfirmReset ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`}
@@ -788,6 +815,7 @@ function DevSection() {
               Confirm
             </button>
             <button
+              type="button"
               onClick={() =>
                 useStore.setState({
                   devResetPrompt: false,
@@ -802,6 +830,7 @@ function DevSection() {
         </div>
       ) : (
         <button
+          type="button"
           onClick={() => useStore.setState({ devResetPrompt: true })}
           className="w-full rounded-lg border border-rose-700/40 px-4 py-2 text-xs text-rose-400 hover:bg-rose-900/20 transition"
         >
@@ -844,6 +873,7 @@ function NostrReplacePanel() {
     <>
       <div className="flex items-center justify-between">
         <button
+          type="button"
           onClick={() =>
             useStore.setState({
               nostrReplacePanel: false,
@@ -853,6 +883,7 @@ function NostrReplacePanel() {
           className="flex items-center gap-1 text-sm text-slate-400 hover:text-slate-200 transition"
         >
           <svg
+            aria-hidden="true"
             className="h-4 w-4"
             fill="none"
             viewBox="0 0 24 24"
@@ -868,10 +899,12 @@ function NostrReplacePanel() {
           Back
         </button>
         <button
+          type="button"
           onClick={() => useStore.setState({ settingsOpen: false })}
           className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
         >
           <svg
+            aria-hidden="true"
             className="h-5 w-5"
             fill="none"
             viewBox="0 0 24 24"
@@ -912,6 +945,7 @@ function NostrReplacePanel() {
               className="h-9 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2 mono"
             />
             <button
+              type="button"
               onClick={importNsec}
               disabled={nostrImporting}
               className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
@@ -925,6 +959,7 @@ function NostrReplacePanel() {
             Or generate a fresh keypair
           </p>
           <button
+            type="button"
             onClick={generateKey}
             className="w-full rounded-lg bg-emerald-400 px-4 py-2.5 text-sm font-medium text-slate-950 hover:bg-emerald-300 transition"
           >
@@ -954,10 +989,12 @@ export function SettingsPanel() {
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-medium text-slate-100">Settings</h2>
               <button
+                type="button"
                 onClick={() => useStore.setState({ settingsOpen: false })}
                 className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
               >
                 <svg
+                  aria-hidden="true"
                   className="h-5 w-5"
                   fill="none"
                   viewBox="0 0 24 24"

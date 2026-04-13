@@ -1,15 +1,24 @@
 import { useCallback, useMemo } from "react";
-import type {
-  ActionTab,
-  Market,
-  TradeDirection,
-} from "../../types";
+import {
+  useCancelTokens,
+  useIssueTokens,
+  useRedeemExpiredTokens,
+  useRedeemTokens,
+} from "../../queries/mutations/useMarketOps";
+import {
+  useCreateLimitOrder,
+  useExecuteTrade,
+  useQuoteTrade,
+} from "../../queries/mutations/useTrading";
+import { DEFAULT_TX_OPTIONS } from "../../services/tx";
 import { useStore } from "../../store";
+import type { ActionTab, Market, TradeDirection } from "../../types";
+import { formatSats } from "../../utils-react/format";
 import {
   clampContractPriceSats,
   commitLimitPriceDraft,
-  commitTradeSizeSatsDraft,
   commitTradeContractsDraft,
+  commitTradeSizeSatsDraft,
   fullContractSats,
   getPathAvailability,
   getPositionContracts,
@@ -17,19 +26,6 @@ import {
   isExpired,
   setLimitPriceSats,
 } from "../../utils-react/market";
-import { formatSats } from "../../utils-react/format";
-import {
-  useQuoteTrade,
-  useExecuteTrade,
-  useCreateLimitOrder,
-} from "../../queries/mutations/useTrading";
-import {
-  useIssueTokens,
-  useRedeemTokens,
-  useRedeemExpiredTokens,
-  useCancelTokens,
-} from "../../queries/mutations/useMarketOps";
-import { DEFAULT_TX_OPTIONS } from "../../services/tx";
 import OrderbookPanel from "./OrderbookPanel";
 import PoolSection from "./PoolSection";
 
@@ -122,9 +118,7 @@ export default function TradingPanel({ market }: { market: Market }) {
   const noLabel =
     noDisplaySats != null ? `No ${noDisplaySats} sats` : "No \u2014";
 
-  const estimatedGrossPayoutSats = Math.floor(
-    preview.requestedContracts * fc,
-  );
+  const estimatedGrossPayoutSats = Math.floor(preview.requestedContracts * fc);
 
   // Quote snapshot matching
   const snapshot = tradeQuoteSnapshot;
@@ -315,10 +309,7 @@ export default function TradingPanel({ market }: { market: Market }) {
       const walletBalance = walletData?.balance;
       const yesBalance = walletBalance
         ? (walletBalance[
-            market.yesAssetId
-              .match(/.{2}/g)
-              ?.reverse()
-              .join("") ?? ""
+            market.yesAssetId.match(/.{2}/g)?.reverse().join("") ?? ""
           ] ?? 0)
         : 0;
       const tokenAssetHex =
@@ -355,6 +346,7 @@ export default function TradingPanel({ market }: { market: Market }) {
       <div className="mb-3 flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
         <div className="flex items-center gap-4">
           <button
+            type="button"
             onClick={() =>
               useStore.setState({
                 tradeIntent: "open",
@@ -366,6 +358,7 @@ export default function TradingPanel({ market }: { market: Market }) {
             Buy
           </button>
           <button
+            type="button"
             onClick={() =>
               useStore.setState({
                 tradeIntent: "close",
@@ -379,12 +372,14 @@ export default function TradingPanel({ market }: { market: Market }) {
         </div>
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={() => useStore.setState({ orderType: "market" })}
             className={`rounded border px-2 py-1 text-xs ${orderType === "market" ? "border-slate-500 bg-slate-700 text-slate-100" : "border-slate-700 text-slate-400"}`}
           >
             Market
           </button>
           <button
+            type="button"
             onClick={() => useStore.setState({ orderType: "limit" })}
             className={`rounded border px-2 py-1 text-xs ${orderType === "limit" ? "border-slate-500 bg-slate-700 text-slate-100" : "border-slate-700 text-slate-400"}`}
           >
@@ -396,6 +391,7 @@ export default function TradingPanel({ market }: { market: Market }) {
       {/* Side selector */}
       <div className="mb-3 grid grid-cols-2 gap-2">
         <button
+          type="button"
           onClick={() => useStore.setState({ selectedSide: "yes" })}
           className={`rounded-xl border px-3 py-3 text-lg font-semibold ${
             selectedSide === "yes"
@@ -408,6 +404,7 @@ export default function TradingPanel({ market }: { market: Market }) {
           {yesLabel}
         </button>
         <button
+          type="button"
           onClick={() => useStore.setState({ selectedSide: "no" })}
           className={`rounded-xl border px-3 py-3 text-lg font-semibold ${
             selectedSide === "no"
@@ -424,11 +421,15 @@ export default function TradingPanel({ market }: { market: Market }) {
       {/* Limit price input */}
       {orderType === "limit" && (
         <div className="mb-3">
-          <label className="mb-1 block text-xs text-slate-400">
+          <label
+            className="mb-1 block text-xs text-slate-400"
+            htmlFor="limit-price-input"
+          >
             Price (sats per contract)
           </label>
           <div className="grid grid-cols-[42px_1fr_42px] gap-2">
             <button
+              type="button"
               onClick={() => handleStepLimitPrice(-1)}
               className="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800"
               aria-label="Decrease price"
@@ -436,6 +437,7 @@ export default function TradingPanel({ market }: { market: Market }) {
               &minus;
             </button>
             <input
+              id="limit-price-input"
               type="text"
               inputMode="numeric"
               value={limitPriceDraft}
@@ -453,6 +455,7 @@ export default function TradingPanel({ market }: { market: Market }) {
               className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2"
             />
             <button
+              type="button"
               onClick={() => handleStepLimitPrice(1)}
               className="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800"
               aria-label="Increase price"
@@ -465,9 +468,10 @@ export default function TradingPanel({ market }: { market: Market }) {
 
       {/* Size mode toggle */}
       <div className="mb-3 flex items-center justify-between gap-2">
-        <label className="text-xs text-slate-400">Amount</label>
+        <span className="text-xs text-slate-400">Amount</span>
         <div className="grid grid-cols-2 gap-2">
           <button
+            type="button"
             disabled={tradeIntent === "close"}
             onClick={() => useStore.setState({ sizeMode: "sats" })}
             className={`rounded border px-2 py-1 text-xs ${sizeMode === "sats" ? "border-slate-500 bg-slate-700 text-slate-100" : "border-slate-700 text-slate-300"} ${tradeIntent === "close" ? "cursor-not-allowed opacity-50" : ""}`}
@@ -475,6 +479,7 @@ export default function TradingPanel({ market }: { market: Market }) {
             sats
           </button>
           <button
+            type="button"
             disabled={tradeIntent === "open"}
             onClick={() => useStore.setState({ sizeMode: "contracts" })}
             className={`rounded border px-2 py-1 text-xs ${sizeMode === "contracts" ? "border-slate-500 bg-slate-700 text-slate-100" : "border-slate-700 text-slate-300"} ${tradeIntent === "open" ? "cursor-not-allowed opacity-50" : ""}`}
@@ -503,6 +508,7 @@ export default function TradingPanel({ market }: { market: Market }) {
         <>
           <div className="mb-3 grid grid-cols-[42px_1fr_42px] gap-2">
             <button
+              type="button"
               onClick={() => handleStepContracts(-1)}
               className="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800"
               aria-label="Decrease contracts"
@@ -529,6 +535,7 @@ export default function TradingPanel({ market }: { market: Market }) {
               className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2"
             />
             <button
+              type="button"
               onClick={() => handleStepContracts(1)}
               className="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800"
               aria-label="Increase contracts"
@@ -539,18 +546,21 @@ export default function TradingPanel({ market }: { market: Market }) {
           {tradeIntent === "close" && (
             <div className="mb-3 flex items-center gap-2 text-sm">
               <button
+                type="button"
                 onClick={() => handleSellPreset(0.25)}
                 className="rounded border border-slate-700 px-3 py-1 text-slate-300"
               >
                 25%
               </button>
               <button
+                type="button"
                 onClick={() => handleSellPreset(0.5)}
                 className="rounded border border-slate-700 px-3 py-1 text-slate-300"
               >
                 50%
               </button>
               <button
+                type="button"
                 onClick={() => handleSellPreset(1)}
                 className="rounded border border-slate-700 px-3 py-1 text-slate-300"
               >
@@ -592,6 +602,7 @@ export default function TradingPanel({ market }: { market: Market }) {
             <p className="mt-3 text-xs text-rose-300">{tradeError}</p>
           )}
           <button
+            type="button"
             onClick={handleSubmitTrade}
             disabled={tradeBusy}
             className={`mt-4 w-full rounded-lg ${tradeBusy ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 font-semibold`}
@@ -672,9 +683,13 @@ export default function TradingPanel({ market }: { market: Market }) {
                     leg.source.kind === "lmsr_pool"
                       ? `LMSR ${leg.source.pool_id.slice(0, 10)}... s:${leg.source.old_s_index}->${leg.source.new_s_index}`
                       : `Maker ${leg.source.order_id.slice(0, 10)}... @ ${leg.source.price}`;
+                  const legKey =
+                    leg.source.kind === "lmsr_pool"
+                      ? `lmsr-${leg.source.pool_id}-${leg.source.old_s_index}-${leg.source.new_s_index}`
+                      : `maker-${leg.source.order_id}-${leg.source.price}`;
                   return (
                     <div
-                      key={idx}
+                      key={legKey}
                       className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/50 px-2 py-1"
                     >
                       <span className="text-slate-300">
@@ -710,6 +725,7 @@ export default function TradingPanel({ market }: { market: Market }) {
                 Your quote will be preserved
               </p>
               <button
+                type="button"
                 onClick={() => useStore.setState({ walletOpen: true })}
                 className="mt-3 w-full rounded-lg bg-emerald-400 px-4 py-2.5 font-semibold text-slate-950 transition hover:bg-emerald-300"
               >
@@ -718,6 +734,7 @@ export default function TradingPanel({ market }: { market: Market }) {
             </div>
           ) : (
             <button
+              type="button"
               onClick={handleSubmitTrade}
               disabled={tradeBusy}
               className={`mt-4 w-full rounded-lg ${tradeBusy ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 font-semibold`}
@@ -740,6 +757,7 @@ export default function TradingPanel({ market }: { market: Market }) {
         </span>
         {tradeIntent === "close" && (
           <button
+            type="button"
             onClick={() => handleSellPreset(1)}
             className="rounded border border-slate-700 px-2 py-1 text-slate-300"
           >
@@ -752,17 +770,16 @@ export default function TradingPanel({ market }: { market: Market }) {
       {tradeIntent === "close" &&
         preview.requestedContracts > selectedPositionContracts + 0.0001 && (
           <p className="mt-2 text-xs text-rose-300">
-            Requested size exceeds your current{" "}
-            {selectedSide.toUpperCase()} position.
+            Requested size exceeds your current {selectedSide.toUpperCase()}{" "}
+            position.
           </p>
         )}
 
       {/* Fee details toggle */}
       <div className="mt-3 flex items-center gap-2">
         <button
-          onClick={() =>
-            useStore.setState({ showFeeDetails: !showFeeDetails })
-          }
+          type="button"
+          onClick={() => useStore.setState({ showFeeDetails: !showFeeDetails })}
           className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300"
         >
           {showFeeDetails ? "Hide fee details" : "Fee details"}
@@ -783,9 +800,7 @@ export default function TradingPanel({ market }: { market: Market }) {
       )}
 
       {/* Market maker pool & advanced actions sections */}
-      {marketMakerMode && (
-        <PoolSection market={market} />
-      )}
+      {marketMakerMode && <PoolSection market={market} />}
 
       {marketMakerMode && showAdvancedActions && (
         <AdvancedActionsPanel
@@ -840,6 +855,7 @@ function AdvancedActionsPanel({
       <div className="mt-3 grid grid-cols-3 gap-2">
         {(["issue", "redeem", "cancel"] as const).map((tab) => (
           <button
+            type="button"
             key={tab}
             onClick={() => useStore.setState({ actionTab: tab })}
             className={`rounded border px-3 py-2 text-sm ${actionTab === tab ? "border-slate-500 bg-slate-700 text-slate-100" : "border-slate-700 text-slate-300"}`}
@@ -857,10 +873,14 @@ function AdvancedActionsPanel({
               ? "0 \u2192 1 Initial Issuance"
               : "1 \u2192 1 Subsequent Issuance"}
           </p>
-          <label className="mb-1 block text-xs text-slate-400">
+          <label
+            className="mb-1 block text-xs text-slate-400"
+            htmlFor="pairs-to-mint-input"
+          >
             Pairs to mint
           </label>
           <input
+            id="pairs-to-mint-input"
             type="number"
             min="1"
             step="1"
@@ -880,6 +900,7 @@ function AdvancedActionsPanel({
             </div>
           </div>
           <button
+            type="button"
             onClick={onSubmitIssue}
             disabled={!paths.issue && !paths.initialIssue}
             className={`mt-4 w-full rounded-lg ${paths.issue || paths.initialIssue ? "bg-emerald-300 text-slate-950" : "bg-slate-700 text-slate-400"} px-4 py-2 font-semibold`}
@@ -901,10 +922,14 @@ function AdvancedActionsPanel({
                   : "Expiry redemption (4 \u2192 4)"
                 : "Unavailable"}
           </p>
-          <label className="mb-1 block text-xs text-slate-400">
+          <label
+            className="mb-1 block text-xs text-slate-400"
+            htmlFor="tokens-to-burn-input"
+          >
             Tokens to burn
           </label>
           <input
+            id="tokens-to-burn-input"
             type="number"
             min="1"
             step="1"
@@ -921,11 +946,7 @@ function AdvancedActionsPanel({
             </div>
             <div className="mt-1 text-xs text-slate-400">
               Formula: tokens *{" "}
-              {paths.redeem
-                ? "2*CPT"
-                : paths.expiryRedeem
-                  ? "CPT"
-                  : "N/A"}
+              {paths.redeem ? "2*CPT" : paths.expiryRedeem ? "CPT" : "N/A"}
             </div>
             {market.state === 1 && expired && paths.expiryRedeem && (
               <div className="mt-1 text-xs text-amber-300">
@@ -935,6 +956,7 @@ function AdvancedActionsPanel({
             )}
           </div>
           <button
+            type="button"
             onClick={onSubmitRedeem}
             disabled={!paths.redeem && !paths.expiryRedeem}
             className={`mt-4 w-full rounded-lg ${paths.redeem || paths.expiryRedeem ? "bg-emerald-300 text-slate-950" : "bg-slate-700 text-slate-400"} px-4 py-2 font-semibold`}
@@ -949,10 +971,14 @@ function AdvancedActionsPanel({
           <p className="mb-2 text-sm text-slate-300">
             Path: 1 {"\u2192"} 1 Cancellation
           </p>
-          <label className="mb-1 block text-xs text-slate-400">
+          <label
+            className="mb-1 block text-xs text-slate-400"
+            htmlFor="pairs-to-cancel-input"
+          >
             Matched YES/NO pairs to burn
           </label>
           <input
+            id="pairs-to-cancel-input"
             type="number"
             min="1"
             step="1"
@@ -972,6 +998,7 @@ function AdvancedActionsPanel({
             </div>
           </div>
           <button
+            type="button"
             onClick={onSubmitCancel}
             disabled={!paths.cancel}
             className={`mt-4 w-full rounded-lg ${paths.cancel ? "bg-emerald-300 text-slate-950" : "bg-slate-700 text-slate-400"} px-4 py-2 font-semibold`}
