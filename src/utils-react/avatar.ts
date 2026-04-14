@@ -1,14 +1,30 @@
-import { createAvatar } from "@dicebear/core";
 import { thumbs } from "@dicebear/collection";
+import { createAvatar } from "@dicebear/core";
 
 const BG_COLORS = [
-  "1e3a5f", "3b1f5e", "1f4e3d", "4a1f2e", "2d3a1f",
-  "1f2d4a", "4a3b1f", "1f4a3b", "3a1f4a", "4e2d1f",
+  "1e3a5f",
+  "3b1f5e",
+  "1f4e3d",
+  "4a1f2e",
+  "2d3a1f",
+  "1f2d4a",
+  "4a3b1f",
+  "1f4a3b",
+  "3a1f4a",
+  "4e2d1f",
 ];
 
 const SHAPE_COLORS = [
-  "34d399", "60a5fa", "f472b6", "fb923c", "a78bfa",
-  "facc15", "38bdf8", "4ade80", "f87171", "e879f9",
+  "34d399",
+  "60a5fa",
+  "f472b6",
+  "fb923c",
+  "a78bfa",
+  "facc15",
+  "38bdf8",
+  "4ade80",
+  "f87171",
+  "e879f9",
 ];
 
 /** Deterministic index from seed string. */

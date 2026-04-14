@@ -794,6 +794,30 @@ pub async fn publish_nostr_profile(
     discovery::publish_profile(&keys, &client, &name, picture.as_deref()).await
 }
 
+#[tauri::command]
+pub fn export_identity_file(
+    password: String,
+    nsec: String,
+    mnemonic: String,
+    display_name: String,
+) -> Result<String, String> {
+    let payload = crate::identity_file::IdentityFilePayload {
+        nsec,
+        mnemonic,
+        display_name,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    crate::identity_file::export_identity_file(&payload, &password)
+}
+
+#[tauri::command]
+pub fn import_identity_file(
+    file_content: String,
+    password: String,
+) -> Result<crate::identity_file::IdentityFilePayload, String> {
+    crate::identity_file::import_identity_file(&file_content, &password)
+}
+
 // =========================================================================
 // Contract discovery commands
 // =========================================================================

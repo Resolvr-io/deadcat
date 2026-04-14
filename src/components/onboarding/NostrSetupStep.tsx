@@ -1,29 +1,113 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
-import { type ReactNode, useCallback } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import { useStore } from "../../store";
 import type { IdentityResponse, NostrProfile } from "../../types";
 import { generateAvatarDataUri } from "../../utils-react/avatar";
 import { showToast } from "../shared/Toast";
 
 const ADJECTIVES = [
-  "sleepy", "sneaky", "fuzzy", "lazy", "curious", "shadow", "midnight",
-  "pouncy", "fluffy", "stealthy", "prowling", "purring", "crafty", "nimble",
-  "slinky", "feisty", "rogue", "silent", "velvet", "ghostly", "feral",
-  "savage", "golden", "silver", "copper", "ember", "frost", "storm",
-  "lunar", "solar", "misty", "dusky", "smoky", "inky", "ashen",
-  "crimson", "scarlet", "onyx", "scruffy", "rusty", "mossy", "sandy",
-  "wild", "lone", "swift", "bold", "keen", "sly", "wily",
+  "sleepy",
+  "sneaky",
+  "fuzzy",
+  "lazy",
+  "curious",
+  "shadow",
+  "midnight",
+  "pouncy",
+  "fluffy",
+  "stealthy",
+  "prowling",
+  "purring",
+  "crafty",
+  "nimble",
+  "slinky",
+  "feisty",
+  "rogue",
+  "silent",
+  "velvet",
+  "ghostly",
+  "feral",
+  "savage",
+  "golden",
+  "silver",
+  "copper",
+  "ember",
+  "frost",
+  "storm",
+  "lunar",
+  "solar",
+  "misty",
+  "dusky",
+  "smoky",
+  "inky",
+  "ashen",
+  "crimson",
+  "scarlet",
+  "onyx",
+  "scruffy",
+  "rusty",
+  "mossy",
+  "sandy",
+  "wild",
+  "lone",
+  "swift",
+  "bold",
+  "keen",
+  "sly",
+  "wily",
 ];
 const NOUNS = [
-  "cat", "kitten", "tabby", "calico", "panther", "lynx", "tomcat",
-  "mouser", "paws", "whiskers", "chonk", "neko", "lion", "tiger",
-  "jaguar", "leopard", "cheetah", "cougar", "puma", "bobcat", "ocelot",
-  "serval", "caracal", "margay", "manul", "wildcat", "civet", "genet",
-  "sphinx", "bengal", "maine", "siamese", "persian", "ragdoll", "abyssinian",
-  "birman", "burmese", "korat", "chartreux", "savannah", "toyger", "ocicat",
-  "claw", "fang", "stripe", "prowler", "stalker", "hunter", "shadow",
+  "cat",
+  "kitten",
+  "tabby",
+  "calico",
+  "panther",
+  "lynx",
+  "tomcat",
+  "mouser",
+  "paws",
+  "whiskers",
+  "chonk",
+  "neko",
+  "lion",
+  "tiger",
+  "jaguar",
+  "leopard",
+  "cheetah",
+  "cougar",
+  "puma",
+  "bobcat",
+  "ocelot",
+  "serval",
+  "caracal",
+  "margay",
+  "manul",
+  "wildcat",
+  "civet",
+  "genet",
+  "sphinx",
+  "bengal",
+  "maine",
+  "siamese",
+  "persian",
+  "ragdoll",
+  "abyssinian",
+  "birman",
+  "burmese",
+  "korat",
+  "chartreux",
+  "savannah",
+  "toyger",
+  "ocicat",
+  "claw",
+  "fang",
+  "stripe",
+  "prowler",
+  "stalker",
+  "hunter",
+  "shadow",
 ];
 
 function randomName(): string {
@@ -63,6 +147,7 @@ interface NostrSetupStepProps {
 }
 
 export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
+  const [showPassword, setShowPassword] = useState(false);
   const nostrMode = useStore((s) => s.onboardingNostrMode);
   const nostrDone = useStore((s) => s.onboardingNostrDone);
   const loading = useStore((s) => s.onboardingLoading);
@@ -79,6 +164,14 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const displayName = useStore((s) => s.onboardingNostrDisplayName);
   const profilePhoto = useStore((s) => s.onboardingProfilePhotoDataUrl);
   const keysOpen = useStore((s) => s.onboardingKeysOpen);
+  const walletPassword = useStore((s) => s.onboardingWalletPassword);
+  const walletPasswordConfirm = useStore(
+    (s) => s.onboardingWalletPasswordConfirm,
+  );
+  const restoreFileContent = useStore((s) => s.onboardingRestoreFileContent);
+  const restorePassword = useStore((s) => s.onboardingRestorePassword);
+  const restoreMnemonic = useStore((s) => s.onboardingRestoreMnemonic);
+  const restoreNsec = useStore((s) => s.onboardingRestoreNsec);
 
   const errorHtml = error ? (
     <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3">
@@ -248,33 +341,87 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     }));
   }, []);
 
-  // ── Profile continue (generate flow) ────────────────────────────────
-  const handleProfileContinue = useCallback(async () => {
+  // ── Create account (generate flow) — nostr + wallet in one shot ─────
+  const handleCreateAccount = useCallback(async () => {
     const s = useStore.getState();
-    useStore.setState({
-      nostrPubkey: s.onboardingPendingPubkey,
-      nostrNpub: s.onboardingPendingNpub,
-      nostrProfile: {
-        name: s.onboardingNostrDisplayName || undefined,
-        display_name: s.onboardingNostrDisplayName || undefined,
-        picture: s.onboardingProfilePhotoDataUrl || undefined,
-      },
-      onboardingPendingPubkey: "",
-      onboardingPendingNpub: "",
-      onboardingProfileStep: false,
-      onboardingNostrDisplayName: "",
-      onboardingProfilePhotoDataUrl: "",
-      onboardingKeysOpen: false,
-      onboardingNsecRevealed: false,
-      onboardingNostrGeneratedNsec: "",
-      setupModalOpen: false,
-      onboardingError: "",
-    });
-    // Publish kind 0 (fire-and-forget)
-    void invoke("publish_nostr_profile", {
-      name: s.onboardingNostrDisplayName,
-      picture: s.onboardingProfilePhotoDataUrl || null,
-    }).catch(() => {});
+    const password = s.onboardingWalletPassword;
+    const passwordConfirm = s.onboardingWalletPasswordConfirm;
+    if (!password) {
+      useStore.setState({ onboardingError: "Password is required." });
+      return;
+    }
+    if (password !== passwordConfirm) {
+      useStore.setState({
+        onboardingError: "Passwords do not match.",
+        onboardingWalletPassword: "",
+        onboardingWalletPasswordConfirm: "",
+      });
+      return;
+    }
+    useStore.setState({ onboardingLoading: true, onboardingError: "" });
+    try {
+      // 1. Commit identity
+      useStore.setState({
+        nostrPubkey: s.onboardingPendingPubkey,
+        nostrNpub: s.onboardingPendingNpub,
+        nostrProfile: {
+          name: s.onboardingNostrDisplayName || undefined,
+          display_name: s.onboardingNostrDisplayName || undefined,
+          picture: s.onboardingProfilePhotoDataUrl || undefined,
+        },
+      });
+      // 2. Create wallet
+      const mnemonic = await invoke<string>("create_wallet", { password });
+      // 3. Init nostr node + unlock wallet
+      await invoke("init_nostr_identity");
+      await invoke<void>("unlock_wallet", { password });
+      // 4. Publish kind 0 (fire-and-forget)
+      void invoke("publish_nostr_profile", {
+        name: s.onboardingNostrDisplayName,
+        picture: s.onboardingProfilePhotoDataUrl || null,
+      }).catch(() => {});
+      // 5. Export and download identity file
+      const nsec = s.onboardingNostrGeneratedNsec;
+      const displayNameVal = s.onboardingNostrDisplayName || "unnamed";
+      try {
+        const fileContent = await invoke<string>("export_identity_file", {
+          password,
+          nsec,
+          mnemonic,
+          displayName: displayNameVal,
+        });
+        const blob = new Blob([fileContent], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${displayNameVal}.dcid`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch {
+        // Download failure shouldn't block account creation
+      }
+      // 6. Done — close onboarding
+      useStore.setState({
+        walletStatus: "unlocked",
+        onboardingLoading: false,
+        onboardingProfileStep: false,
+        onboardingPendingPubkey: "",
+        onboardingPendingNpub: "",
+        onboardingNostrDisplayName: "",
+        onboardingProfilePhotoDataUrl: "",
+        onboardingKeysOpen: false,
+        onboardingNsecRevealed: false,
+        onboardingNostrGeneratedNsec: "",
+        onboardingWalletPassword: "",
+        onboardingWalletPasswordConfirm: "",
+        setupModalOpen: false,
+      });
+    } catch (e) {
+      useStore.setState({
+        onboardingError: String(e),
+        onboardingLoading: false,
+      });
+    }
   }, []);
 
   // ── Photo picker ───────────────────────────────────────────────────
@@ -282,18 +429,29 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     try {
       const file = await open({
         multiple: false,
-        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }],
+        filters: [
+          { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] },
+        ],
       });
       if (!file) return;
       const bytes = await readFile(file);
       const ext = file.split(".").pop()?.toLowerCase() ?? "png";
-      const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/png";
+      const mime =
+        ext === "jpg" || ext === "jpeg"
+          ? "image/jpeg"
+          : ext === "webp"
+            ? "image/webp"
+            : ext === "gif"
+              ? "image/gif"
+              : "image/png";
       let binary = "";
       for (let i = 0; i < bytes.length; i++) {
         binary += String.fromCharCode(bytes[i]);
       }
       const b64 = btoa(binary);
-      useStore.setState({ onboardingProfilePhotoDataUrl: `data:${mime};base64,${b64}` });
+      useStore.setState({
+        onboardingProfilePhotoDataUrl: `data:${mime};base64,${b64}`,
+      });
     } catch {
       // User cancelled or error — ignore
     }
@@ -303,19 +461,17 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
 
   // ── Profile setup screen (generate flow) ────────────────────────────
   if (profileStep && !nostrDone) {
-    const avatarSrc = profilePhoto || generateAvatarDataUri(pendingNpub || displayName || "default");
+    const avatarSrc =
+      profilePhoto ||
+      generateAvatarDataUri(pendingNpub || displayName || "default");
 
     return (
       <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
-        <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400 mb-2">
-          Identity created
-        </p>
         <h2 className="text-2xl font-semibold text-white">
-          Set your username
+          Create your account
         </h2>
         <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-          This is how others will see you on Nostr. You can change it anytime
-          from your profile.
+          Choose a name, set a password, and you&apos;re in.
         </p>
 
         {/* Avatar */}
@@ -478,14 +634,120 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           )}
         </div>
 
+        {/* Password */}
+        <div className="mt-5">
+          <label
+            htmlFor="onboarding-password"
+            className="text-xs font-medium text-slate-400 uppercase tracking-wide"
+          >
+            Password
+          </label>
+          <div className="relative mt-1.5">
+            <input
+              id="onboarding-password"
+              type={showPassword ? "text" : "password"}
+              maxLength={32}
+              value={walletPassword}
+              onChange={(e) =>
+                useStore.setState({ onboardingWalletPassword: e.target.value })
+              }
+              placeholder="Enter a password"
+              autoComplete="new-password"
+              className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 pr-11 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+              disabled={loading}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition"
+              tabIndex={-1}
+            >
+              {showPassword ? (
+                <svg
+                  aria-hidden="true"
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88"
+                  />
+                </svg>
+              ) : (
+                <svg
+                  aria-hidden="true"
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                  />
+                </svg>
+              )}
+            </button>
+          </div>
+          <div className="relative mt-2">
+            <input
+              id="onboarding-password-confirm"
+              type={showPassword ? "text" : "password"}
+              maxLength={32}
+              value={walletPasswordConfirm}
+              onChange={(e) =>
+                useStore.setState({
+                  onboardingWalletPasswordConfirm: e.target.value,
+                })
+              }
+              placeholder="Confirm password"
+              autoComplete="new-password"
+              className={`h-11 w-full rounded-lg border ${walletPasswordConfirm && walletPassword !== walletPasswordConfirm ? "border-red-500/50" : "border-slate-700"} bg-slate-900 px-4 pr-11 text-sm outline-none ring-emerald-400 transition focus:ring-2`}
+              disabled={loading}
+            />
+          </div>
+          <div className="mt-3 flex gap-2 rounded-lg border border-amber-700/30 bg-amber-950/20 px-3 py-2.5">
+            <svg
+              aria-hidden="true"
+              className="h-4 w-4 shrink-0 text-amber-400 mt-0.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
+              />
+            </svg>
+            <p className="text-[11px] text-amber-300/80 leading-relaxed">
+              Remember this password. It cannot be reset without re-importing
+              your wallet recovery phrase.
+            </p>
+          </div>
+        </div>
+
         {errorHtml && <div className="mt-4">{errorHtml}</div>}
 
         <button
           type="button"
-          onClick={handleProfileContinue}
-          className="mt-6 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
+          onClick={handleCreateAccount}
+          disabled={loading}
+          className="mt-5 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Get started
+          {loading ? "Creating account..." : "Create Account"}
         </button>
       </div>
     );
@@ -715,41 +977,316 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     );
   }
 
+  // ── Restore sub-page ────────────────────────────────────────────────
+  if (nostrMode === "restore") {
+    const hasFile = restoreFileContent.length > 0;
+    const isManual = restoreNsec.length > 0 || restoreMnemonic.length > 0;
+
+    const handleFileDrop = (e: React.DragEvent) => {
+      e.preventDefault();
+      const file = e.dataTransfer.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        useStore.setState({
+          onboardingRestoreFileContent: reader.result as string,
+        });
+      };
+      reader.readAsText(file);
+    };
+
+    const handleFileSelect = () => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".dcid,.json";
+      input.onchange = () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          useStore.setState({
+            onboardingRestoreFileContent: reader.result as string,
+          });
+        };
+        reader.readAsText(file);
+      };
+      input.click();
+    };
+
+    const handleFileRestore = async () => {
+      if (!restoreFileContent || !restorePassword) return;
+      useStore.setState({ onboardingLoading: true, onboardingError: "" });
+      try {
+        const payload = await invoke<{
+          nsec: string;
+          mnemonic: string;
+          display_name: string;
+        }>("import_identity_file", {
+          fileContent: restoreFileContent,
+          password: restorePassword,
+        });
+        // Import nsec
+        const identity = await invoke<IdentityResponse>("import_nostr_nsec", {
+          nsec: payload.nsec,
+        });
+        useStore.setState({
+          nostrPubkey: identity.pubkey_hex,
+          nostrNpub: identity.npub,
+        });
+        // Restore wallet
+        await invoke("restore_wallet", {
+          mnemonic: payload.mnemonic,
+          password: restorePassword,
+        });
+        await invoke("init_nostr_identity");
+        await invoke<void>("unlock_wallet", { password: restorePassword });
+        // Done
+        useStore.setState({
+          walletStatus: "unlocked",
+          nostrProfile: {
+            name: payload.display_name,
+            display_name: payload.display_name,
+          },
+          onboardingLoading: false,
+          setupModalOpen: false,
+          onboardingRestoreFileContent: "",
+          onboardingRestorePassword: "",
+        });
+        void invoke("publish_nostr_profile", {
+          name: payload.display_name,
+          picture: null,
+        }).catch(() => {});
+      } catch (e) {
+        useStore.setState({
+          onboardingError: String(e),
+          onboardingLoading: false,
+        });
+      }
+    };
+
+    const handleManualRestore = async () => {
+      if (!restoreNsec || !restoreMnemonic || !restorePassword) {
+        useStore.setState({ onboardingError: "All fields are required." });
+        return;
+      }
+      useStore.setState({ onboardingLoading: true, onboardingError: "" });
+      try {
+        const identity = await invoke<IdentityResponse>("import_nostr_nsec", {
+          nsec: restoreNsec,
+        });
+        useStore.setState({
+          nostrPubkey: identity.pubkey_hex,
+          nostrNpub: identity.npub,
+        });
+        await invoke("restore_wallet", {
+          mnemonic: restoreMnemonic,
+          password: restorePassword,
+        });
+        await invoke("init_nostr_identity");
+        await invoke<void>("unlock_wallet", { password: restorePassword });
+        useStore.setState({
+          walletStatus: "unlocked",
+          onboardingLoading: false,
+          setupModalOpen: false,
+          onboardingRestoreNsec: "",
+          onboardingRestoreMnemonic: "",
+          onboardingRestorePassword: "",
+        });
+      } catch (e) {
+        useStore.setState({
+          onboardingError: String(e),
+          onboardingLoading: false,
+        });
+      }
+    };
+
+    return (
+      <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
+        <BackButton
+          onClick={() =>
+            useStore.setState({
+              onboardingNostrMode: "generate",
+              onboardingError: "",
+              onboardingRestoreFileContent: "",
+              onboardingRestorePassword: "",
+              onboardingRestoreNsec: "",
+              onboardingRestoreMnemonic: "",
+            })
+          }
+        />
+        <h2 className="text-2xl font-semibold text-white">Restore account</h2>
+        <p className="mt-3 text-sm text-slate-400 leading-relaxed">
+          Import your Deadcat identity file, or enter your keys manually.
+        </p>
+        {errorHtml && <div className="mt-4">{errorHtml}</div>}
+
+        {/* File upload */}
+        <div className="mt-6 space-y-4">
+          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+            Import Deadcat Identity
+          </p>
+          <div
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={handleFileDrop}
+            className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed ${hasFile ? "border-emerald-500/50 bg-emerald-500/5" : "border-slate-700"} px-6 py-8 text-center transition`}
+          >
+            {hasFile ? (
+              <p className="text-sm text-emerald-300">File loaded</p>
+            ) : (
+              <>
+                <svg
+                  aria-hidden="true"
+                  className="h-8 w-8 text-slate-600 mb-2"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"
+                  />
+                </svg>
+                <p className="text-sm text-slate-400">
+                  Drop your <span className="text-slate-200">.dcid</span> file
+                  here
+                </p>
+                <button
+                  type="button"
+                  onClick={handleFileSelect}
+                  className="mt-2 text-xs text-emerald-400 hover:text-emerald-300 transition"
+                >
+                  or click to browse
+                </button>
+              </>
+            )}
+          </div>
+          {hasFile && (
+            <>
+              <input
+                type="password"
+                value={restorePassword}
+                onChange={(e) =>
+                  useStore.setState({
+                    onboardingRestorePassword: e.target.value,
+                  })
+                }
+                placeholder="Enter your password"
+                className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+                disabled={loading}
+              />
+              <button
+                type="button"
+                onClick={handleFileRestore}
+                disabled={loading || !restorePassword}
+                className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed transition"
+              >
+                {loading ? "Restoring..." : "Restore Account"}
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* Manual entry */}
+        <div className="mt-8 space-y-4">
+          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+            Or enter manually
+          </p>
+          <input
+            type="text"
+            value={restoreNsec}
+            onChange={(e) =>
+              useStore.setState({ onboardingRestoreNsec: e.target.value })
+            }
+            placeholder="nsec1..."
+            autoComplete="off"
+            spellCheck={false}
+            className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
+            disabled={loading || hasFile}
+          />
+          <textarea
+            value={restoreMnemonic}
+            onChange={(e) =>
+              useStore.setState({ onboardingRestoreMnemonic: e.target.value })
+            }
+            placeholder="12-word recovery phrase..."
+            rows={3}
+            className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
+            disabled={loading || hasFile}
+          />
+          {isManual && !hasFile && (
+            <>
+              <input
+                type="password"
+                value={restorePassword}
+                onChange={(e) =>
+                  useStore.setState({
+                    onboardingRestorePassword: e.target.value,
+                  })
+                }
+                placeholder="Set a wallet password"
+                className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+                disabled={loading}
+              />
+              <button
+                type="button"
+                onClick={handleManualRestore}
+                disabled={loading || !restorePassword}
+                className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed transition"
+              >
+                {loading ? "Restoring..." : "Restore Account"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // ── Main nostr step ─────────────────────────────────────────────────
   return (
     <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
-      {stepIndicator}
-      <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">
-        Step 1 of 2
-      </p>
-      <h2 className="text-2xl font-semibold text-white">
-        Set up your identity
-      </h2>
-      <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-        deadcat uses Nostr keypairs to publish markets and sign attestations.
-        Generate a new identity or bring your own.
-      </p>
-      {errorHtml && <div className="mt-5">{errorHtml}</div>}
-      <div className="mt-10 space-y-3">
+      <div className="flex items-start gap-4 mb-6">
+        <svg
+          aria-hidden="true"
+          className="h-10 w-10 shrink-0"
+          viewBox="0 0 260 267"
+          fill="#34D399"
+        >
+          <path d="M0.146484 9.04605C0.146484 1.23441 10.9146 -3.16002 16.7881 2.6984L86.5566 71.7336C100.142 68.0294 114.765 66.0128 130 66.0128C145.239 66.0128 159.865 68.0306 173.453 71.7365L243.212 2.71207C249.085 -3.14676 259.854 1.24698 259.854 9.05875V161.26C259.949 162.835 260 164.42 260 166.013C260 221.241 201.797 266.013 130 266.013C58.203 266.013 0 221.241 0 166.013C1.54644e-06 164.42 0.0506677 162.835 0.146484 161.26V9.04605ZM100.287 187.013L120.892 207.087V208.903C120.892 217.907 114.199 225.23 105.974 225.231H91.0049C87.1409 225.231 84.0001 228.319 84 232.118C84 235.918 87.1446 239.013 91.0049 239.013H105.974C114.534 239.013 122.574 235.049 128.02 228.383C133.461 235.045 141.502 239.013 150.065 239.013C166.019 239.013 179 225.506 179 208.903C179 205.104 175.856 202.013 171.992 202.013C168.128 202.013 164.984 205.104 164.983 208.903C164.983 217.907 158.291 225.231 150.065 225.231C141.84 225.231 135.147 217.907 135.147 208.903V207.049L155.713 187.013H100.287ZM70.4697 140.12L52.4219 122.072L44 130.495L62.0469 148.542L44.0596 166.53L52.4824 174.953L70.4697 156.965L88.5176 175.013L96.9404 166.591L78.8916 148.542L97 130.435L88.5781 122.013L70.4697 140.12ZM195.367 123.557C200.554 128.783 204 138.006 204 148.513C204 158.3 201.01 166.973 196.408 172.339C216.243 169.73 231 159.83 231 148.013C231 135.99 215.724 125.951 195.367 123.557ZM175.489 123.7C155.707 126.33 141 136.217 141 148.013C141 159.603 155.197 169.349 174.456 172.181C169.931 166.803 167 158.204 167 148.513C167 138.102 170.382 128.951 175.489 123.7Z" />
+        </svg>
+        <div>
+          <h2 className="text-2xl font-semibold text-white">
+            Welcome to Deadcat
+          </h2>
+          <p className="mt-1 text-sm text-slate-400">
+            Trade prediction markets on Liquid with self-custody and Nostr
+            identity.
+          </p>
+        </div>
+      </div>
+      {errorHtml && <div className="mb-5">{errorHtml}</div>}
+      <div className="space-y-3">
         <button
           type="button"
           onClick={handleGenerate}
           disabled={loading}
           className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 transition"
         >
-          {loading ? "Generating..." : "Generate new identity"}
+          {loading ? "Creating..." : "Create new account"}
         </button>
         <button
           type="button"
           onClick={() =>
             useStore.setState({
-              onboardingNostrMode: "import",
+              onboardingNostrMode: "restore",
               onboardingError: "",
             })
           }
           className="w-full rounded-lg border border-slate-700 px-4 py-3.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:border-slate-600 transition"
         >
-          Import existing identity
+          Restore existing account
         </button>
       </div>
     </div>

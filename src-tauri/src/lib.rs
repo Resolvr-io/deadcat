@@ -1,6 +1,7 @@
 mod chain_adapter;
 pub mod commands;
 pub mod discovery;
+pub mod identity_file;
 mod payments;
 pub mod state;
 pub mod wallet;
@@ -1380,6 +1381,8 @@ pub fn run() {
             commands::remove_relay,
             commands::fetch_nostr_profile,
             commands::publish_nostr_profile,
+            commands::export_identity_file,
+            commands::import_identity_file,
             commands::create_contract_onchain,
             commands::issue_tokens,
             commands::cancel_tokens,

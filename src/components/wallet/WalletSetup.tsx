@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback } from "react";
 import {
   useCreateWallet,
@@ -52,11 +51,6 @@ export function WalletSetup({
   const walletPassword = useStore((s) => s.walletPassword);
   const walletPasswordConfirm = useStore((s) => s.walletPasswordConfirm);
   const walletRestoreMnemonic = useStore((s) => s.walletRestoreMnemonic);
-  const nostrNpub = useStore((s) => s.nostrNpub);
-  const nostrBackupNsecInput = useStore((s) => s.nostrBackupNsecInput ?? "");
-  const nostrBackupNsecPrompt = useStore(
-    (s) => s.nostrBackupNsecPrompt ?? false,
-  );
 
   const createWallet = useCreateWallet();
   const restoreWallet = useRestoreWallet();
@@ -79,12 +73,12 @@ export function WalletSetup({
     createWallet.mutate(
       { password: walletPassword },
       {
-        onSuccess: () => {
+        onSuccess: (data) => {
           useStore.setState({
             walletStatus: "unlocked",
+            walletMnemonic: data.mnemonic,
             walletPassword: "",
             walletPasswordConfirm: "",
-            walletShowCreate: false,
             walletLoading: false,
           });
         },
@@ -124,6 +118,9 @@ export function WalletSetup({
             walletPassword: "",
             walletLoading: false,
             walletStatus: "unlocked",
+            walletShowRestore: false,
+            setupModalOpen: false,
+            walletOpen: false,
           });
         },
         onError: (e) => {
@@ -142,7 +139,13 @@ export function WalletSetup({
   ]);
 
   const handleDismissMnemonic = useCallback(() => {
-    useStore.setState({ walletMnemonic: "", walletPassword: "" });
+    useStore.setState({
+      walletMnemonic: "",
+      walletPassword: "",
+      walletShowCreate: false,
+      setupModalOpen: false,
+      walletOpen: false,
+    });
   }, []);
 
   const handleCopyMnemonic = useCallback(() => {
@@ -155,64 +158,6 @@ export function WalletSetup({
       walletError: "",
     });
   }, [walletShowRestore]);
-
-  const handleNostrRestore = useCallback(() => {
-    if (!nostrNpub) {
-      useStore.setState({ nostrBackupNsecPrompt: true, walletError: "" });
-      return;
-    }
-    void (async () => {
-      useStore.setState({ walletLoading: true, walletError: "" });
-      try {
-        const mnemonic = await invoke<string>("restore_mnemonic_from_nostr", {
-          walletName: "My Wallet",
-        });
-        useStore.setState({
-          walletShowRestore: true,
-          walletRestoreMnemonic: mnemonic,
-          walletLoading: false,
-        });
-      } catch (e) {
-        useStore.setState({
-          walletError: `No backup found: ${String(e)}`,
-          walletLoading: false,
-        });
-      }
-    })();
-  }, [nostrNpub]);
-
-  const handleImportNsecAndRestore = useCallback(() => {
-    const nsec = nostrBackupNsecInput.trim();
-    if (!nsec) return;
-    void (async () => {
-      useStore.setState({ walletLoading: true, walletError: "" });
-      try {
-        const identity = await invoke<{ pubkey_hex: string; npub: string }>(
-          "import_nostr_nsec",
-          { nsec },
-        );
-        useStore.setState({
-          nostrPubkey: identity.pubkey_hex,
-          nostrNpub: identity.npub,
-          nostrBackupNsecPrompt: false,
-          nostrBackupNsecInput: "",
-        });
-        const mnemonic = await invoke<string>("restore_mnemonic_from_nostr", {
-          walletName: "My Wallet",
-        });
-        useStore.setState({
-          walletShowRestore: true,
-          walletRestoreMnemonic: mnemonic,
-          walletLoading: false,
-        });
-      } catch (e) {
-        useStore.setState({
-          walletError: `Restore failed: ${String(e)}`,
-          walletLoading: false,
-        });
-      }
-    })();
-  }, [nostrBackupNsecInput]);
 
   const errorHtml = walletError ? (
     <div className="rounded-lg border border-red-500/30 bg-red-900/20 px-4 py-3 text-sm text-red-300">
@@ -228,10 +173,14 @@ export function WalletSetup({
           <h2 className="flex items-center gap-2 text-xl font-medium text-slate-100">
             Wallet Created {networkBadge}
           </h2>
-          <div className="rounded-lg border border-slate-600 bg-slate-900/40 p-4 space-y-3">
-            <p className="text-sm font-medium text-slate-200">
-              Back up your recovery phrase in a safe place.
+          <div className="rounded-lg border border-amber-700/30 bg-amber-950/20 px-4 py-3">
+            <p className="text-xs text-amber-300/90 leading-relaxed">
+              Write down these 12 words and store them safely. This is the only
+              way to recover your wallet. Your Nostr key backup does NOT contain
+              your wallet.
             </p>
+          </div>
+          <div className="rounded-lg border border-slate-600 bg-slate-900/40 p-4 space-y-3">
             <MnemonicGrid mnemonic={walletMnemonic} />
             <button
               type="button"
@@ -287,11 +236,7 @@ export function WalletSetup({
           </div>
           {errorHtml}
 
-          {/* Wallet Only */}
           <div className="space-y-3">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
-              Wallet Only
-            </p>
             <button
               type="button"
               onClick={() =>
@@ -359,151 +304,6 @@ export function WalletSetup({
                 </div>
               </div>
             </button>
-          </div>
-
-          {/* Nostr Identity */}
-          <div className="space-y-3">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
-              Nostr Identity
-            </p>
-            <button
-              type="button"
-              onClick={handleNostrRestore}
-              className="w-full rounded-xl border border-slate-700 bg-slate-900/50 p-4 text-left transition hover:border-slate-500"
-            >
-              <div className="flex items-center gap-3">
-                <svg
-                  aria-hidden="true"
-                  className="h-6 w-6 text-slate-500 shrink-0"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"
-                  />
-                </svg>
-                <div>
-                  <p className="text-sm font-medium text-slate-200">
-                    Restore from Nostr Backup
-                  </p>
-                  <p className="mt-0.5 text-xs text-slate-500">
-                    {nostrNpub
-                      ? "Fetch encrypted backup from your relays"
-                      : "Import your nsec to restore from relay backup"}
-                  </p>
-                </div>
-              </div>
-            </button>
-            {nostrBackupNsecPrompt && !nostrNpub && (
-              <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-900/50 p-4">
-                <p className="text-xs text-slate-400">
-                  Enter your Nostr private key to fetch the encrypted wallet
-                  backup from relays.
-                </p>
-                <input
-                  type="password"
-                  value={nostrBackupNsecInput}
-                  onChange={(e) =>
-                    useStore.setState({ nostrBackupNsecInput: e.target.value })
-                  }
-                  placeholder="nsec1..."
-                  className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm mono outline-none ring-emerald-400 focus:ring-2"
-                />
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={handleImportNsecAndRestore}
-                    disabled={!nostrBackupNsecInput.trim()}
-                    className="flex-1 rounded-lg bg-emerald-400 px-4 py-2.5 text-sm font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Restore
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      useStore.setState({
-                        nostrBackupNsecPrompt: false,
-                        nostrBackupNsecInput: "",
-                      })
-                    }
-                    className="shrink-0 rounded-lg border border-slate-700 px-4 py-2.5 text-sm text-slate-400 hover:bg-slate-800 transition"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
-            {!nostrNpub ? (
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    const id = await invoke<{
-                      pubkey_hex: string;
-                      npub: string;
-                    }>("generate_nostr_identity");
-                    useStore.setState({
-                      nostrPubkey: id.pubkey_hex,
-                      nostrNpub: id.npub,
-                    });
-                  } catch (e) {
-                    useStore.setState({ walletError: `Failed: ${String(e)}` });
-                  }
-                }}
-                className="w-full rounded-xl border border-slate-700 bg-slate-900/50 p-4 text-left transition hover:border-slate-500"
-              >
-                <div className="flex items-center gap-3">
-                  <svg
-                    aria-hidden="true"
-                    className="h-6 w-6 text-slate-500 shrink-0"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"
-                    />
-                  </svg>
-                  <div>
-                    <p className="text-sm font-medium text-slate-200">
-                      Generate New Identity
-                    </p>
-                    <p className="mt-0.5 text-xs text-slate-500">
-                      Create a new Nostr keypair for relay backup and social
-                      features
-                    </p>
-                  </div>
-                </div>
-              </button>
-            ) : (
-              <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-4 py-2.5 text-xs">
-                <svg
-                  aria-hidden="true"
-                  className="h-4 w-4 shrink-0 text-emerald-400"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M5 13l4 4L19 7"
-                  />
-                </svg>
-                <span className="text-emerald-300">Connected</span>
-                <span className="mono min-w-0 truncate text-slate-500">
-                  {nostrNpub}
-                </span>
-              </div>
-            )}
           </div>
         </div>
       </div>

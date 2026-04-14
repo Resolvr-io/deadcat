@@ -174,7 +174,7 @@ export interface OnboardingSlice {
   setupModalOpen: boolean;
   setupRequires: "wallet" | "identity+wallet" | null;
   onboardingStep: "nostr" | "wallet" | null;
-  onboardingNostrMode: "generate" | "import";
+  onboardingNostrMode: "generate" | "import" | "restore";
   onboardingNostrNsec: string;
   onboardingNostrGeneratedNsec: string;
   onboardingNsecRevealed: boolean;
@@ -186,6 +186,10 @@ export interface OnboardingSlice {
   onboardingNostrDisplayName: string;
   onboardingProfilePhotoDataUrl: string;
   onboardingKeysOpen: boolean;
+  onboardingRestoreFileContent: string;
+  onboardingRestorePassword: string;
+  onboardingRestoreMnemonic: string;
+  onboardingRestoreNsec: string;
   onboardingWalletMode: "create" | "restore" | "nostr-restore";
   onboardingWalletPasswordStep: boolean;
   onboardingWalletPassword: string;
@@ -404,6 +408,10 @@ export const useStore = create<StoreState>()(() => ({
   onboardingNostrDisplayName: "",
   onboardingProfilePhotoDataUrl: "",
   onboardingKeysOpen: false,
+  onboardingRestoreFileContent: "",
+  onboardingRestorePassword: "",
+  onboardingRestoreMnemonic: "",
+  onboardingRestoreNsec: "",
   onboardingWalletMode: "create",
   onboardingWalletPasswordStep: false,
   onboardingWalletPassword: "",

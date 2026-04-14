@@ -116,23 +116,21 @@ export default function OnboardingOverlay() {
         <button
           type="button"
           onClick={handleClose}
-          className="absolute -top-10 right-0 flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition"
+          className="absolute -top-12 right-0 flex h-8 w-8 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
+          title="Close"
         >
           <svg
             className="h-4 w-4"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
-            strokeWidth={2}
+            strokeWidth={3.5}
+            strokeLinecap="round"
+            strokeLinejoin="round"
             aria-hidden="true"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M6 18L18 6M6 6l12 12"
-            />
+            <path d="M18 6L6 18M6 6l12 12" />
           </svg>
-          Close
         </button>
         {onboardingStep === "nostr" ? (
           <NostrSetupStep stepIndicator={stepIndicator} />
