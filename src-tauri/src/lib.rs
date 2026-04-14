@@ -1250,6 +1250,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
@@ -1377,6 +1379,7 @@ pub fn run() {
             commands::add_relay,
             commands::remove_relay,
             commands::fetch_nostr_profile,
+            commands::publish_nostr_profile,
             commands::create_contract_onchain,
             commands::issue_tokens,
             commands::cancel_tokens,

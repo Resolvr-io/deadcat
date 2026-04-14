@@ -421,7 +421,7 @@ function WalletButton() {
     return (
       <button
         type="button"
-        onClick={openWallet}
+        onClick={() => useStore.setState({ setupModalOpen: true, onboardingStep: "nostr" })}
         className="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-300 transition"
       >
         Get started

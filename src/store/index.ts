@@ -182,6 +182,10 @@ export interface OnboardingSlice {
   onboardingNostrDone: boolean;
   onboardingPendingPubkey: string;
   onboardingPendingNpub: string;
+  onboardingProfileStep: boolean;
+  onboardingNostrDisplayName: string;
+  onboardingProfilePhotoDataUrl: string;
+  onboardingKeysOpen: boolean;
   onboardingWalletMode: "create" | "restore" | "nostr-restore";
   onboardingWalletPasswordStep: boolean;
   onboardingWalletPassword: string;
@@ -396,6 +400,10 @@ export const useStore = create<StoreState>()(() => ({
   onboardingNostrDone: false,
   onboardingPendingPubkey: "",
   onboardingPendingNpub: "",
+  onboardingProfileStep: false,
+  onboardingNostrDisplayName: "",
+  onboardingProfilePhotoDataUrl: "",
+  onboardingKeysOpen: false,
   onboardingWalletMode: "create",
   onboardingWalletPasswordStep: false,
   onboardingWalletPassword: "",

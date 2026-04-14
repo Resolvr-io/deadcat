@@ -784,6 +784,16 @@ pub async fn fetch_nostr_profile(
     discovery::fetch_profile(&client, &keys.public_key()).await
 }
 
+#[tauri::command]
+pub async fn publish_nostr_profile(
+    app: tauri::AppHandle,
+    name: String,
+    picture: Option<String>,
+) -> Result<(), String> {
+    let (keys, client) = get_keys_and_client(&app).await?;
+    discovery::publish_profile(&keys, &client, &name, picture.as_deref()).await
+}
+
 // =========================================================================
 // Contract discovery commands
 // =========================================================================

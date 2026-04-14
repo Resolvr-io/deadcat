@@ -391,6 +391,29 @@ pub async fn fetch_profile(
     Ok(result)
 }
 
+/// Publish a kind 0 metadata event with the given display name and optional picture URL.
+pub async fn publish_profile(
+    keys: &Keys,
+    client: &Client,
+    name: &str,
+    picture: Option<&str>,
+) -> Result<(), String> {
+    let mut meta = serde_json::json!({ "name": name, "display_name": name });
+    if let Some(url) = picture.filter(|s| !s.is_empty()) {
+        meta["picture"] = serde_json::Value::String(url.to_string());
+    }
+    let content = meta.to_string();
+    let event = EventBuilder::new(Kind::Metadata, content)
+        .sign(keys)
+        .await
+        .map_err(|e| format!("failed to sign profile event: {e}"))?;
+    client
+        .send_event(event)
+        .await
+        .map_err(|e| format!("failed to publish profile: {e}"))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Identity persistence (app-layer concern)
 // ---------------------------------------------------------------------------
