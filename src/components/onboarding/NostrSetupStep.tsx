@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { readFile } from "@tauri-apps/plugin-fs";
-import { type ReactNode, useCallback, useState } from "react";
+import { readFile, readTextFile } from "@tauri-apps/plugin-fs";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { useStore } from "../../store";
 import type { IdentityResponse, NostrProfile } from "../../types";
 import { generateAvatarDataUri } from "../../utils-react/avatar";
@@ -148,6 +149,7 @@ interface NostrSetupStepProps {
 
 export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const [showPassword, setShowPassword] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const nostrMode = useStore((s) => s.onboardingNostrMode);
   const nostrDone = useStore((s) => s.onboardingNostrDone);
   const loading = useStore((s) => s.onboardingLoading);
@@ -174,6 +176,36 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const restorePassword = useStore((s) => s.onboardingRestorePassword);
   const restoreMnemonic = useStore((s) => s.onboardingRestoreMnemonic);
   const restoreNsec = useStore((s) => s.onboardingRestoreNsec);
+
+  // Tauri native file drop listener for restore flow
+  useEffect(() => {
+    if (nostrMode !== "restore") return;
+    let unlisten: (() => void) | null = null;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "enter") {
+          setDragOver(true);
+        } else if (event.payload.type === "leave") {
+          setDragOver(false);
+        } else if (event.payload.type === "drop") {
+          setDragOver(false);
+          const path = event.payload.paths[0];
+          if (path) {
+            readTextFile(path)
+              .then((content) => {
+                useStore.setState({ onboardingRestoreFileContent: content });
+              })
+              .catch(() => {});
+          }
+        }
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => {
+      unlisten?.();
+    };
+  }, [nostrMode]);
 
   const errorHtml = error ? (
     <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3">
@@ -1106,35 +1138,18 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     const hasFile = restoreFileContent.length > 0;
     const isManual = restoreNsec.length > 0 || restoreMnemonic.length > 0;
 
-    const handleFileDrop = (e: React.DragEvent) => {
-      e.preventDefault();
-      const file = e.dataTransfer.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        useStore.setState({
-          onboardingRestoreFileContent: reader.result as string,
+    const handleFileSelect = async () => {
+      try {
+        const path = await open({
+          multiple: false,
+          filters: [{ name: "Deadcat Identity", extensions: ["dcid", "json"] }],
         });
-      };
-      reader.readAsText(file);
-    };
-
-    const handleFileSelect = () => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = ".dcid,.json";
-      input.onchange = () => {
-        const file = input.files?.[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-          useStore.setState({
-            onboardingRestoreFileContent: reader.result as string,
-          });
-        };
-        reader.readAsText(file);
-      };
-      input.click();
+        if (!path) return;
+        const content = await readTextFile(path);
+        useStore.setState({ onboardingRestoreFileContent: content });
+      } catch {
+        // User cancelled
+      }
     };
 
     const handleFileRestore = async () => {
@@ -1250,9 +1265,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             Import Deadcat Identity
           </p>
           <div
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={handleFileDrop}
-            className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed ${hasFile ? "border-emerald-500/50 bg-emerald-500/5" : "border-slate-700"} px-6 py-8 text-center transition`}
+            className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed ${hasFile ? "border-emerald-500/50 bg-emerald-500/5" : dragOver ? "border-emerald-400 bg-emerald-500/10" : "border-slate-700"} px-6 py-8 text-center transition`}
           >
             {hasFile ? (
               <p className="text-sm text-emerald-300">File loaded</p>

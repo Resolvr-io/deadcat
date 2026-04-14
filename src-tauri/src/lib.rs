@@ -1433,6 +1433,13 @@ pub fn run() {
             wallet_store::wallet_new_address,
             wallet_store::wallet_signer_id,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Prevent immediate close — let the frontend handle confirmation
+                api.prevent_close();
+                let _ = window.emit("close-requested", ());
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -164,10 +164,17 @@ function LogoutModal() {
   const walletSessionPassword = useStore((s) => s.walletSessionPassword);
   const walletStatus = useStore((s) => s.walletStatus);
   const logoutPasswordInput = useStore((s) => s.logoutPasswordInput ?? "");
+  const logoutBackupDownloaded = useStore((s) => s.logoutBackupDownloaded);
   const needsPassword = walletStatus === "locked" || !walletSessionPassword;
 
   const closeLogout = useCallback(() => {
-    useStore.setState({ logoutOpen: false, logoutBackedUp: false });
+    useStore.setState({
+      logoutOpen: false,
+      logoutBackedUp: false,
+      logoutBackupDownloaded: false,
+      logoutBackupError: "",
+      logoutPasswordInput: "",
+    });
   }, []);
 
   const confirmLogout = useCallback(async () => {
@@ -262,90 +269,115 @@ function LogoutModal() {
               you can restore your account later.
             </p>
           </div>
-          {needsPassword && (
-            <input
-              type="password"
-              value={logoutPasswordInput}
-              onChange={(e) =>
-                useStore.setState({ logoutPasswordInput: e.target.value })
-              }
-              placeholder="Enter your wallet password"
-              className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
-            />
+          {logoutBackupDownloaded ? (
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-300">
+              <svg
+                aria-hidden="true"
+                className="h-5 w-5 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M5 13l4 4L19 7"
+                />
+              </svg>
+              Backup file downloaded
+            </div>
+          ) : (
+            <>
+              {needsPassword && (
+                <input
+                  type="password"
+                  value={logoutPasswordInput}
+                  onChange={(e) =>
+                    useStore.setState({ logoutPasswordInput: e.target.value })
+                  }
+                  placeholder="Enter your wallet password"
+                  className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+                />
+              )}
+              {logoutBackupError && (
+                <div className="rounded-lg border border-amber-700/30 bg-amber-950/20 px-3 py-2">
+                  <p className="text-xs text-amber-300/80">
+                    {logoutBackupError}
+                  </p>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const nsec = await invoke<string>("export_nostr_nsec");
+                    const pw = needsPassword
+                      ? useStore.getState().logoutPasswordInput
+                      : useStore.getState().walletSessionPassword;
+                    if (!pw) {
+                      useStore.setState({
+                        logoutBackupError:
+                          "Enter your wallet password to create the backup.",
+                      });
+                      return;
+                    }
+                    let mnemonic: string;
+                    try {
+                      mnemonic = await invoke<string>("get_cached_mnemonic");
+                    } catch {
+                      mnemonic = await invoke<string>("get_wallet_mnemonic", {
+                        password: pw,
+                      });
+                    }
+                    const name =
+                      useStore.getState().nostrProfile?.display_name ||
+                      useStore.getState().nostrProfile?.name ||
+                      "unnamed";
+                    useStore.setState({ logoutBackupError: "" });
+                    const fileContent = await invoke<string>(
+                      "export_identity_file",
+                      { password: pw, nsec, mnemonic, displayName: name },
+                    );
+                    const blob = new Blob([fileContent], {
+                      type: "application/json",
+                    });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `deadcat-${name}.dcid`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    useStore.setState({
+                      logoutPasswordInput: "",
+                      logoutBackupDownloaded: true,
+                    });
+                  } catch (e) {
+                    useStore.setState({
+                      logoutBackupError: `Could not create backup: ${String(e)}`,
+                    });
+                  }
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-300 transition hover:bg-emerald-500/20"
+              >
+                <svg
+                  aria-hidden="true"
+                  className="h-4 w-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                  />
+                </svg>
+                Download backup file
+              </button>
+            </>
           )}
-          {logoutBackupError && (
-            <p className="text-xs text-red-400">{logoutBackupError}</p>
-          )}
-          <button
-            type="button"
-            onClick={async () => {
-              try {
-                const nsec = await invoke<string>("export_nostr_nsec");
-                const pw = needsPassword
-                  ? useStore.getState().logoutPasswordInput
-                  : useStore.getState().walletSessionPassword;
-                if (!pw) {
-                  useStore.setState({
-                    logoutBackupError: "Password is required.",
-                  });
-                  return;
-                }
-                let mnemonic: string;
-                try {
-                  mnemonic = await invoke<string>("get_cached_mnemonic");
-                } catch {
-                  mnemonic = await invoke<string>("get_wallet_mnemonic", {
-                    password: pw,
-                  });
-                }
-                const name =
-                  useStore.getState().nostrProfile?.display_name ||
-                  useStore.getState().nostrProfile?.name ||
-                  "unnamed";
-                useStore.setState({ logoutBackupError: "" });
-                const fileContent = await invoke<string>(
-                  "export_identity_file",
-                  {
-                    password: pw,
-                    nsec,
-                    mnemonic,
-                    displayName: name,
-                  },
-                );
-                const blob = new Blob([fileContent], {
-                  type: "application/json",
-                });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = `deadcat-${name}.dcid`;
-                a.click();
-                URL.revokeObjectURL(url);
-                useStore.setState({ logoutPasswordInput: "" });
-              } catch (e) {
-                useStore.setState({
-                  logoutBackupError: `Backup failed: ${String(e)}`,
-                });
-              }
-            }}
-            className="flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-300 transition hover:bg-emerald-500/20"
-          >
-            <svg
-              aria-hidden="true"
-              className="h-4 w-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-              />
-            </svg>
-            Download backup file
-          </button>
           <label className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-300">
             <input
               type="checkbox"
