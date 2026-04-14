@@ -59,11 +59,16 @@ export function WalletSetup({
     walletLoading || createWallet.isPending || restoreWallet.isPending;
 
   const handleCreate = useCallback(() => {
-    if (!walletPassword || walletPassword !== walletPasswordConfirm) {
+    if (
+      !walletPassword ||
+      walletPassword.length < 4 ||
+      walletPassword !== walletPasswordConfirm
+    ) {
       useStore.setState({
-        walletError: !walletPassword
-          ? "Password is required."
-          : "Passwords do not match.",
+        walletError:
+          !walletPassword || walletPassword.length < 4
+            ? "Password must be at least 4 characters."
+            : "Passwords do not match.",
         walletPassword: "",
         walletPasswordConfirm: "",
       });

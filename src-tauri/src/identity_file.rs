@@ -14,6 +14,9 @@ const IDENTITY_FILE_VERSION: u8 = 1;
 /// The encrypted file envelope (written to disk / downloaded).
 #[derive(Serialize, Deserialize)]
 pub struct IdentityFileEnvelope {
+    pub app: String,
+    pub url: String,
+    pub description: String,
     pub version: u8,
     pub salt: String,
     pub nonce: String,
@@ -52,6 +55,9 @@ pub fn export_identity_file(
         .map_err(|e| format!("encrypt: {e}"))?;
 
     let envelope = IdentityFileEnvelope {
+        app: "Deadcat Live".to_string(),
+        url: "https://deadcat.live/".to_string(),
+        description: "Encrypted Deadcat Live identity backup. Contains Nostr keys and wallet recovery phrase, protected by your account password. Import this file at https://deadcat.live/ to restore your account.".to_string(),
         version: IDENTITY_FILE_VERSION,
         salt: BASE64.encode(salt),
         nonce: BASE64.encode(nonce_bytes),

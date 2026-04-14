@@ -46,8 +46,10 @@ export function useCreateWallet() {
 export function useUnlockWallet() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (params: { password: string }): Promise<void> =>
-      tauriApi.unlockWallet(params.password),
+    mutationFn: async (params: { password: string }): Promise<void> => {
+      await tauriApi.unlockWallet(params.password);
+      useStore.setState({ walletSessionPassword: params.password });
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["walletStatus"] });
       void queryClient.invalidateQueries({ queryKey: ["walletSnapshot"] });

@@ -51,7 +51,9 @@ export interface NavigationSlice {
   settingsOpen: boolean;
   settingsSection: Record<string, boolean>;
   logoutOpen: boolean;
+  walletSessionPassword: string;
   logoutBackedUp: boolean;
+  logoutBackupError: string;
   showMiniWallet: boolean;
   showLbtcLabel: boolean;
   marketMakerMode: boolean;
@@ -190,6 +192,8 @@ export interface OnboardingSlice {
   onboardingRestorePassword: string;
   onboardingRestoreMnemonic: string;
   onboardingRestoreNsec: string;
+  onboardingBackupDownloaded: boolean;
+  onboardingBackupFileContent: string;
   onboardingWalletMode: "create" | "restore" | "nostr-restore";
   onboardingWalletPasswordStep: boolean;
   onboardingWalletPassword: string;
@@ -283,7 +287,9 @@ export const useStore = create<StoreState>()(() => ({
   settingsOpen: false,
   settingsSection: { nostr: true, relays: false, wallet: false, dev: false },
   logoutOpen: false,
+  walletSessionPassword: "",
   logoutBackedUp: false,
+  logoutBackupError: "",
   showMiniWallet: true,
   showLbtcLabel: false,
   marketMakerMode: false,
@@ -412,6 +418,8 @@ export const useStore = create<StoreState>()(() => ({
   onboardingRestorePassword: "",
   onboardingRestoreMnemonic: "",
   onboardingRestoreNsec: "",
+  onboardingBackupDownloaded: false,
+  onboardingBackupFileContent: "",
   onboardingWalletMode: "create",
   onboardingWalletPasswordStep: false,
   onboardingWalletPassword: "",

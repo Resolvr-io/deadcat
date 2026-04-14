@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useStore } from "../../store";
 import { WalletLocked } from "./WalletLocked";
 import { WalletSetup } from "./WalletSetup";
@@ -21,6 +21,17 @@ export function WalletPage() {
     },
     [],
   );
+
+  useEffect(() => {
+    if (walletOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [walletOpen]);
 
   if (!walletOpen) return null;
 

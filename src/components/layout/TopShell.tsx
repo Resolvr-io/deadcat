@@ -160,6 +160,7 @@ function HelpModal() {
 function LogoutModal() {
   const logoutOpen = useStore((s) => s.logoutOpen);
   const logoutBackedUp = useStore((s) => s.logoutBackedUp);
+  const logoutBackupError = useStore((s) => s.logoutBackupError);
 
   const closeLogout = useCallback(() => {
     useStore.setState({ logoutOpen: false, logoutBackedUp: false });
@@ -203,6 +204,7 @@ function LogoutModal() {
       walletRestoreMnemonic: "",
       walletError: "",
       walletOpen: false,
+      walletSessionPassword: "",
       // Clear relays
       relays: [],
       relayInput: "",
@@ -247,50 +249,79 @@ function LogoutModal() {
         </div>
         <div className="mt-5 space-y-4">
           <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
-            <p className="text-sm font-medium text-slate-200">
-              Logging out will <strong>remove your Nostr key and wallet</strong>{" "}
-              from this device. Make sure you have:
+            <p className="text-sm text-slate-300 leading-relaxed">
+              Logging out will{" "}
+              <strong className="text-slate-100">
+                permanently remove your Nostr keys and wallet
+              </strong>{" "}
+              from this device. Download your backup file before logging out so
+              you can restore your account later.
             </p>
-            <ul className="mt-3 space-y-2 text-sm text-slate-400">
-              {[
-                <>
-                  Saved your{" "}
-                  <strong className="text-slate-200">nsec (secret key)</strong>{" "}
-                  -- you&apos;ll need it to log back in and resolve your markets
-                </>,
-                <>
-                  Backed up your{" "}
-                  <strong className="text-slate-200">
-                    wallet recovery phrase
-                  </strong>{" "}
-                  -- your wallet remains encrypted on this device
-                </>,
-                <>
-                  Backed up your{" "}
-                  <strong className="text-slate-200">Nostr private key</strong>{" "}
-                  locally so you can restore your identity
-                </>,
-              ].map((text, i) => (
-                <li key={i} className="flex items-start gap-2">
-                  <svg
-                    aria-hidden="true"
-                    className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                  </svg>
-                  <span>{text}</span>
-                </li>
-              ))}
-            </ul>
           </div>
+          {logoutBackupError && (
+            <p className="text-xs text-red-400">{logoutBackupError}</p>
+          )}
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                const nsec = await invoke<string>("export_nostr_nsec");
+                const mnemonic = await invoke<string>("get_cached_mnemonic");
+                const name =
+                  useStore.getState().nostrProfile?.display_name ||
+                  useStore.getState().nostrProfile?.name ||
+                  "unnamed";
+                const logoutPw = useStore.getState().walletSessionPassword;
+                if (!logoutPw) {
+                  useStore.setState({
+                    logoutBackupError:
+                      "Session password not available. Try unlocking your wallet first.",
+                  });
+                  return;
+                }
+                useStore.setState({ logoutBackupError: "" });
+                const fileContent = await invoke<string>(
+                  "export_identity_file",
+                  {
+                    password: logoutPw,
+                    nsec,
+                    mnemonic,
+                    displayName: name,
+                  },
+                );
+                const blob = new Blob([fileContent], {
+                  type: "application/json",
+                });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `deadcat-${name}.dcid`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch (e) {
+                useStore.setState({
+                  logoutBackupError: `Backup failed: ${String(e)}`,
+                });
+              }
+            }}
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-300 transition hover:bg-emerald-500/20"
+          >
+            <svg
+              aria-hidden="true"
+              className="h-4 w-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+              />
+            </svg>
+            Download backup file
+          </button>
           <label className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-300">
             <input
               type="checkbox"
@@ -300,18 +331,14 @@ function LogoutModal() {
               }
               className="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-950 text-rose-400 focus:ring-rose-400"
             />
-            <span>
-              I backed up my recovery phrase, unlock password, and Nostr key
-              locally before removing them from this device.
-            </span>
+            <span>I have downloaded my backup or already have one saved.</span>
           </label>
           <p className="text-xs text-slate-500">
             <strong className="text-slate-300">
-              Deadcat.live does not hold user funds.
+              Deadcat Live does not hold user funds.
             </strong>{" "}
-            Your keys and wallet data will be permanently removed from this
-            device. If you lose your recovery phrase and password, your funds
-            cannot be recovered.
+            If you lose your backup file and password, your funds cannot be
+            recovered.
           </p>
           <div className="flex gap-3">
             <button

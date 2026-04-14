@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useStore } from "../../store";
 import NostrSetupStep from "./NostrSetupStep";
 import WalletSetupStep from "./WalletSetupStep";
@@ -8,6 +8,21 @@ export default function OnboardingOverlay() {
   const onboardingStep = useStore((s) => s.onboardingStep);
   const onboardingNostrDone = useStore((s) => s.onboardingNostrDone);
   const onboardingWalletOnly = useStore((s) => s.onboardingWalletOnly);
+  const backupFileContent = useStore((s) => s.onboardingBackupFileContent);
+  const backupDownloaded = useStore((s) => s.onboardingBackupDownloaded);
+  const backupPending = !!backupFileContent && !backupDownloaded;
+
+  // Lock background scroll when modal is open
+  useEffect(() => {
+    if (setupModalOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [setupModalOpen]);
 
   const handleClose = useCallback(() => {
     useStore.setState({
@@ -116,7 +131,7 @@ export default function OnboardingOverlay() {
         <button
           type="button"
           onClick={handleClose}
-          className="absolute -top-12 right-0 flex h-8 w-8 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
+          className={`absolute -top-12 right-0 flex h-8 w-8 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${backupPending ? "hidden" : ""}`}
           title="Close"
         >
           <svg

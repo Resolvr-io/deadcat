@@ -742,6 +742,24 @@ async fn send_lbtc(
     })
 }
 
+/// Return the cached mnemonic if the wallet is unlocked (no password needed).
+#[tauri::command]
+async fn get_cached_mnemonic(app: AppHandle) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        let persister = mgr.persister().ok_or("Persister not initialized")?;
+        persister
+            .cached()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Wallet is locked — mnemonic not cached".to_string())
+    })
+    .await
+    .map_err(|e| format!("cached mnemonic task failed: {e}"))?
+}
+
 #[tauri::command]
 async fn get_wallet_mnemonic(password: String, app: AppHandle) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
@@ -1345,6 +1363,7 @@ pub fn run() {
             get_wallet_address,
             get_wallet_transactions,
             get_wallet_mnemonic,
+            get_cached_mnemonic,
             get_mnemonic_word_count,
             get_mnemonic_word,
             send_lbtc,
