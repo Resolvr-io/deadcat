@@ -161,6 +161,10 @@ function LogoutModal() {
   const logoutOpen = useStore((s) => s.logoutOpen);
   const logoutBackedUp = useStore((s) => s.logoutBackedUp);
   const logoutBackupError = useStore((s) => s.logoutBackupError);
+  const walletSessionPassword = useStore((s) => s.walletSessionPassword);
+  const walletStatus = useStore((s) => s.walletStatus);
+  const logoutPasswordInput = useStore((s) => s.logoutPasswordInput ?? "");
+  const needsPassword = walletStatus === "locked" || !walletSessionPassword;
 
   const closeLogout = useCallback(() => {
     useStore.setState({ logoutOpen: false, logoutBackedUp: false });
@@ -258,6 +262,17 @@ function LogoutModal() {
               you can restore your account later.
             </p>
           </div>
+          {needsPassword && (
+            <input
+              type="password"
+              value={logoutPasswordInput}
+              onChange={(e) =>
+                useStore.setState({ logoutPasswordInput: e.target.value })
+              }
+              placeholder="Enter your wallet password"
+              className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+            />
+          )}
           {logoutBackupError && (
             <p className="text-xs text-red-400">{logoutBackupError}</p>
           )}
@@ -266,24 +281,32 @@ function LogoutModal() {
             onClick={async () => {
               try {
                 const nsec = await invoke<string>("export_nostr_nsec");
-                const mnemonic = await invoke<string>("get_cached_mnemonic");
+                const pw = needsPassword
+                  ? useStore.getState().logoutPasswordInput
+                  : useStore.getState().walletSessionPassword;
+                if (!pw) {
+                  useStore.setState({
+                    logoutBackupError: "Password is required.",
+                  });
+                  return;
+                }
+                let mnemonic: string;
+                try {
+                  mnemonic = await invoke<string>("get_cached_mnemonic");
+                } catch {
+                  mnemonic = await invoke<string>("get_wallet_mnemonic", {
+                    password: pw,
+                  });
+                }
                 const name =
                   useStore.getState().nostrProfile?.display_name ||
                   useStore.getState().nostrProfile?.name ||
                   "unnamed";
-                const logoutPw = useStore.getState().walletSessionPassword;
-                if (!logoutPw) {
-                  useStore.setState({
-                    logoutBackupError:
-                      "Session password not available. Try unlocking your wallet first.",
-                  });
-                  return;
-                }
                 useStore.setState({ logoutBackupError: "" });
                 const fileContent = await invoke<string>(
                   "export_identity_file",
                   {
-                    password: logoutPw,
+                    password: pw,
                     nsec,
                     mnemonic,
                     displayName: name,
@@ -298,6 +321,7 @@ function LogoutModal() {
                 a.download = `deadcat-${name}.dcid`;
                 a.click();
                 URL.revokeObjectURL(url);
+                useStore.setState({ logoutPasswordInput: "" });
               } catch (e) {
                 useStore.setState({
                   logoutBackupError: `Backup failed: ${String(e)}`,
