@@ -456,6 +456,7 @@ export function getFilteredMarkets(
   search: string,
   activeCategory: import("../types").NavCategory,
   nostrPubkey: string | null,
+  walletData?: WalletData | null,
 ): Market[] {
   const lowered = search.trim().toLowerCase();
   return markets
@@ -464,6 +465,10 @@ export function getFilteredMarkets(
       if (activeCategory === "Resolved") return settled;
       if (activeCategory === "My Markets") {
         return nostrPubkey != null && market.oraclePubkey === nostrPubkey;
+      }
+      if (activeCategory === "Portfolio") {
+        const pos = getPositionContracts(market, walletData ?? null);
+        return pos.yes > 0 || pos.no > 0;
       }
       if (settled) return false;
       const categoryMatch =

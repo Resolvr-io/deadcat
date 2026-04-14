@@ -1,7 +1,13 @@
-import { useMemo } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useMemo } from "react";
+import {
+  useRedeemExpiredTokens,
+  useRedeemTokens,
+} from "../../queries/mutations/useMarketOps";
 import { useMarketOrders, useMarkets } from "../../queries/useMarkets";
 import { usePriceHistory } from "../../queries/usePools";
 import { useStore } from "../../store";
+import type { AttestationResult } from "../../types";
 import { hexToNpub } from "../../utils/crypto";
 import { formatSats } from "../../utils-react/format";
 import {
@@ -11,6 +17,7 @@ import {
   isExpired,
   stateLabel,
 } from "../../utils-react/market";
+import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
 import MarketChart from "../chart/MarketChart";
 import MarketHeader from "./MarketHeader";
 import TradingPanel from "./TradingPanel";
@@ -23,6 +30,9 @@ export default function DetailPage() {
   const walletData = useStore((s) => s.walletData);
   const attestationLoading = useStore((s) => s.attestationLoading);
 
+  const redeemMutation = useRedeemTokens();
+  const redeemExpiredMutation = useRedeemExpiredTokens();
+
   const { data: markets = [] } = useMarkets();
   const market = useMemo(
     () => getMarketById(selectedMarketId, markets),
@@ -31,7 +41,42 @@ export default function DetailPage() {
 
   useMarketOrders(market?.marketId ?? null);
 
-  const { data: priceHistory = [] } = usePriceHistory(market?.marketId ?? null);
+  const { data: rawPriceHistory = [] } = usePriceHistory(
+    market?.marketId ?? null,
+  );
+  const priceHistory =
+    rawPriceHistory.length > 0 && market
+      ? rawPriceHistory
+      : market
+        ? generateMockPriceHistory(market)
+        : [];
+
+  const handleOracleResolve = useCallback(
+    async (outcomeYes: boolean) => {
+      if (!market?.anchor) return;
+      useStore.setState({ attestationLoading: true });
+      try {
+        const attestation = await invoke<AttestationResult>("oracle_attest", {
+          marketIdHex: market.marketId,
+          outcomeYes,
+        });
+        await invoke("resolve_market", {
+          contractParamsJson: JSON.stringify(market.anchor),
+          anchor: market.anchor,
+          outcomeYes,
+          oracleSignatureHex: attestation.signature_hex,
+          txOptions: {
+            feePolicy: { kind: "confirmation_target_blocks", blocks: 2 },
+          },
+        });
+      } catch (e) {
+        console.error("Oracle resolve failed:", e);
+      } finally {
+        useStore.setState({ attestationLoading: false });
+      }
+    },
+    [market],
+  );
 
   if (!market) {
     return (
@@ -105,8 +150,19 @@ export default function DetailPage() {
               <button
                 type="button"
                 onClick={() => {
-                  // TODO: wire to redeem mutation
+                  if (isResolved) {
+                    redeemMutation.mutate({ market, tokens: redeemableTokens });
+                  } else {
+                    redeemExpiredMutation.mutate({
+                      market,
+                      tokenAssetHex: market.yesAssetId,
+                      tokens: redeemableTokens,
+                    });
+                  }
                 }}
+                disabled={
+                  redeemMutation.isPending || redeemExpiredMutation.isPending
+                }
                 className="w-full rounded-lg bg-emerald-300 px-4 py-2 text-sm font-semibold text-slate-950"
               >
                 {isResolved
@@ -130,6 +186,7 @@ export default function DetailPage() {
                 <button
                   type="button"
                   disabled={attestationLoading}
+                  onClick={() => void handleOracleResolve(true)}
                   className={`rounded-lg ${attestationLoading ? "bg-slate-600 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 text-sm font-semibold`}
                 >
                   {attestationLoading ? "Attesting..." : "Resolve YES"}
@@ -137,6 +194,7 @@ export default function DetailPage() {
                 <button
                   type="button"
                   disabled={attestationLoading}
+                  onClick={() => void handleOracleResolve(false)}
                   className={`rounded-lg ${attestationLoading ? "bg-slate-600 text-slate-400" : "bg-rose-400 text-slate-950"} px-4 py-2 text-sm font-semibold`}
                 >
                   {attestationLoading ? "Attesting..." : "Resolve NO"}

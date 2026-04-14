@@ -114,6 +114,7 @@ export interface WalletUiSlice {
   walletMnemonic: string;
   walletRestoreMnemonic: string;
   walletShowRestore: boolean;
+  walletShowCreate: boolean;
   walletUtxosExpanded: boolean;
   walletError: string;
   walletLoading: boolean;
@@ -121,6 +122,9 @@ export interface WalletUiSlice {
   walletBalanceHidden: boolean;
   walletDeletePrompt: boolean;
   walletDeleteConfirm: string;
+  nostrBackupNsecInput: string;
+  nostrBackupNsecPrompt: boolean;
+  nostrSetupExpanded: boolean;
 }
 
 // ── Wallet modals slice ─────────────────────────────────────────────
@@ -330,6 +334,7 @@ export const useStore = create<StoreState>()(() => ({
   walletMnemonic: "",
   walletRestoreMnemonic: "",
   walletShowRestore: false,
+  walletShowCreate: false,
   walletUtxosExpanded: false,
   walletError: "",
   walletLoading: false,
@@ -337,6 +342,9 @@ export const useStore = create<StoreState>()(() => ({
   walletBalanceHidden: false,
   walletDeletePrompt: false,
   walletDeleteConfirm: "",
+  nostrBackupNsecInput: "",
+  nostrBackupNsecPrompt: false,
+  nostrSetupExpanded: false,
 
   // ── Wallet modals ───────────────────────────────────────────────
   walletModal: "none",

@@ -2,6 +2,7 @@ export type NavCategory =
   | "Trending"
   | "Ending Soon"
   | "New"
+  | "Portfolio"
   | "My Markets"
   | "Resolved"
   | "Politics"
@@ -12,7 +13,7 @@ export type NavCategory =
   | "Macro";
 export type MarketCategory = Exclude<
   NavCategory,
-  "Trending" | "Ending Soon" | "New" | "My Markets" | "Resolved"
+  "Trending" | "Ending Soon" | "New" | "Portfolio" | "My Markets" | "Resolved"
 >;
 export type ViewMode = "home" | "detail" | "create";
 export type Side = "yes" | "no";
@@ -286,6 +287,10 @@ export type Market = {
   change24h: number;
   volumeBtc: number;
   liquidityBtc: number;
+  traderCount: number;
+  openInterestBtc: number;
+  createdAt: number;
+  creatorPubkey: string;
   dormantTxid: string | null;
   unresolvedTxid: string | null;
   resolvedYesTxid: string | null;

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef } from "react";
 import { useStore } from "../store";
-import type { IdentityResponse } from "../types";
+import type { IdentityResponse, NostrProfile } from "../types";
 
 function dismissSplash(): void {
   const splash = document.getElementById("splash");
@@ -37,7 +37,22 @@ export function useBootstrap(): void {
         console.warn("Failed to load nostr identity:", error);
       }
 
-      // 2. Set default relays if no identity
+      // 2. Fetch Nostr profile (kind 0 metadata)
+      const { nostrPubkey: loadedPubkey } = useStore.getState();
+      if (loadedPubkey) {
+        try {
+          const profile = await invoke<NostrProfile | null>(
+            "fetch_nostr_profile",
+          );
+          if (profile) {
+            useStore.setState({ nostrProfile: profile });
+          }
+        } catch {
+          // Profile fetch is best-effort
+        }
+      }
+
+      // Set default relays if no identity
       const { nostrNpub } = useStore.getState();
       if (!nostrNpub) {
         useStore.setState({
@@ -57,8 +72,19 @@ export function useBootstrap(): void {
             policyAssetId: string;
           };
         }>("get_app_state");
+        const { nostrPubkey: currentPubkey } = useStore.getState();
+        // If wallet is locked but no identity exists, the wallet can't be
+        // unlocked (the node requires an identity first). Treat as not_created
+        // so the user sees wallet setup instead of an unlock prompt.
+        const effectiveStatus =
+          appState.walletStatus === "locked" && !currentPubkey
+            ? "not_created"
+            : appState.walletStatus;
         useStore.setState({
-          walletStatus: appState.walletStatus,
+          walletStatus: effectiveStatus as
+            | "not_created"
+            | "locked"
+            | "unlocked",
           walletNetwork: appState.networkStatus.network,
           walletPolicyAssetId: appState.networkStatus.policyAssetId,
         });

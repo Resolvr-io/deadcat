@@ -8,6 +8,7 @@ export const categories: NavCategory[] = [
   "Trending",
   "Ending Soon",
   "New",
+  "Portfolio",
   "Politics",
   "Sports",
   "Culture",

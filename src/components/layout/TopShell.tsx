@@ -166,11 +166,53 @@ function LogoutModal() {
   }, []);
 
   const confirmLogout = useCallback(async () => {
+    // Lock first to ensure clean state, then delete
     try {
-      await invoke("user_logout");
-    } catch {
-      /* ignore */
+      await invoke("lock_wallet");
+    } catch (e) {
+      console.warn("lock_wallet:", e);
     }
+    try {
+      await invoke("delete_wallet");
+    } catch (e) {
+      console.warn("delete_wallet:", e);
+    }
+    try {
+      await invoke("delete_nostr_identity");
+    } catch (e) {
+      console.warn("delete_nostr_identity:", e);
+    }
+    useStore.setState({
+      // Clear identity
+      nostrPubkey: null,
+      nostrNpub: null,
+      nostrProfile: null,
+      nostrNsecRevealed: null,
+      nostrImportNsec: "",
+      nostrBackupStatus: null,
+      nostrBackupPassword: "",
+      nostrBackupPrompt: false,
+      nostrBackupNsecInput: "",
+      nostrBackupNsecPrompt: false,
+      // Clear wallet
+      walletStatus: "not_created",
+      walletData: null,
+      walletPassword: "",
+      walletPasswordConfirm: "",
+      walletMnemonic: "",
+      walletRestoreMnemonic: "",
+      walletError: "",
+      walletOpen: false,
+      // Clear relays
+      relays: [],
+      relayInput: "",
+      // Clear UI
+      logoutOpen: false,
+      logoutBackedUp: false,
+      profilePicError: false,
+    });
+    localStorage.removeItem("deadcat_tx_labels");
+    window.location.reload();
   }, []);
 
   if (!logoutOpen) return null;
@@ -283,7 +325,7 @@ function LogoutModal() {
               type="button"
               onClick={confirmLogout}
               disabled={!logoutBackedUp}
-              className={`flex-1 rounded-xl py-2.5 text-sm font-medium transition ${logoutBackedUp ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "cursor-not-allowed border border-slate-800 text-slate-600"}`}
+              className={`flex-1 rounded-xl py-2.5 text-sm font-medium transition ${logoutBackedUp ? "bg-rose-500 text-white hover:bg-rose-400" : "cursor-not-allowed border border-slate-800 text-slate-600"}`}
             >
               Log Out
             </button>
@@ -302,7 +344,9 @@ function CategoryBar() {
   const marketMakerMode = useStore((s) => s.marketMakerMode);
 
   const filteredCategories = categories.filter(
-    (category) => category !== "My Markets" || (nostrPubkey && marketMakerMode),
+    (category) =>
+      category !== "Portfolio" &&
+      (category !== "My Markets" || (nostrPubkey && marketMakerMode)),
   );
 
   return (
@@ -365,7 +409,6 @@ function CategoryBar() {
 function WalletButton() {
   const nostrPubkey = useStore((s) => s.nostrPubkey);
   const walletStatus = useStore((s) => s.walletStatus);
-  const showMiniWallet = useStore((s) => s.showMiniWallet);
   const walletData = useStore((s) => s.walletData);
   const walletPolicyAssetId = useStore((s) => s.walletPolicyAssetId);
   const walletBalanceHidden = useStore((s) => s.walletBalanceHidden);
@@ -399,10 +442,7 @@ function WalletButton() {
   }
 
   const showBalance =
-    showMiniWallet &&
-    walletStatus === "unlocked" &&
-    walletData?.balance &&
-    !walletBalanceHidden;
+    walletStatus === "unlocked" && walletData?.balance && !walletBalanceHidden;
 
   return (
     <button
@@ -505,6 +545,7 @@ function Logo() {
 export function TopShell() {
   const view = useStore((s) => s.view);
   const nostrPubkey = useStore((s) => s.nostrPubkey);
+  const activeCategory = useStore((s) => s.activeCategory);
 
   const goHome = useCallback(() => {
     useStore.setState({ view: "home", selectedMarketId: "" });
@@ -548,6 +589,32 @@ export function TopShell() {
             {/* Right side: search + wallet + user menu */}
             <div className="ml-auto flex shrink-0 items-center gap-2 pb-[5px]">
               <SearchBar />
+              <button
+                type="button"
+                onClick={() =>
+                  useStore.setState({
+                    view: "home",
+                    activeCategory: "Portfolio",
+                  })
+                }
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 transition ${activeCategory === "Portfolio" ? "border-slate-500 text-slate-100" : "text-slate-400 hover:border-slate-500 hover:text-slate-200"}`}
+                title="Portfolio"
+              >
+                <svg
+                  aria-hidden="true"
+                  className="h-[18px] w-[18px]"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M3 3v18h18" />
+                  <rect x="7" y="13" width="9" height="4" rx="1" />
+                  <rect x="7" y="5" width="12" height="4" rx="1" />
+                </svg>
+              </button>
               <WalletButton />
               {nostrPubkey && <UserMenu />}
             </div>

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback } from "react";
 import { baseCurrencyOptions } from "../../constants";
+import { queryClient } from "../../queries/queryClient";
 import { useStore } from "../../store";
 import type { BaseCurrency, RelayEntry } from "../../types";
 import { btcLabel } from "../../utils-react/wallet";
@@ -107,7 +108,7 @@ function NostrSection() {
 
   const revealNsec = useCallback(async () => {
     try {
-      const nsec = await invoke<string>("reveal_nostr_nsec");
+      const nsec = await invoke<string>("export_nostr_nsec");
       useStore.setState({ nostrNsecRevealed: nsec });
     } catch {
       /* ignore */
@@ -129,7 +130,7 @@ function NostrSection() {
 
   const generateKey = useCallback(async () => {
     try {
-      await invoke("generate_nostr_key");
+      await invoke("generate_nostr_identity");
     } catch {
       /* ignore */
     }
@@ -320,6 +321,24 @@ function WalletSection() {
   const showPasswordPrompt = nostrBackupPrompt && walletStatus !== "unlocked";
   const hasBackup = nostrBackupStatus?.has_backup ?? false;
 
+  const doBackup = useCallback(async () => {
+    const password = useStore.getState().nostrBackupPassword;
+    useStore.setState({ nostrBackupLoading: true });
+    try {
+      await invoke("backup_mnemonic_to_nostr", { password });
+      const status =
+        await invoke<typeof nostrBackupStatus>("check_nostr_backup");
+      useStore.setState({
+        nostrBackupStatus: status,
+        nostrBackupPrompt: false,
+      });
+    } catch (e) {
+      console.error("Backup failed:", e);
+    } finally {
+      useStore.setState({ nostrBackupLoading: false });
+    }
+  }, []);
+
   if (walletStatus === "not_created") {
     return (
       <div className="space-y-3">
@@ -471,7 +490,7 @@ function WalletSection() {
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => invoke("settings_backup_wallet")}
+                      onClick={() => void doBackup()}
                       disabled={nostrBackupLoading}
                       className="flex-1 rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition"
                     >
@@ -492,7 +511,7 @@ function WalletSection() {
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => invoke("settings_backup_wallet")}
+                    onClick={() => void doBackup()}
                     disabled={nostrBackupLoading}
                     className="flex-1 rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
                   >
@@ -528,7 +547,7 @@ function WalletSection() {
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => invoke("settings_backup_wallet")}
+                  onClick={() => void doBackup()}
                   disabled={nostrBackupLoading}
                   className="flex-1 rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition"
                 >
@@ -553,7 +572,7 @@ function WalletSection() {
               </p>
               <button
                 type="button"
-                onClick={() => invoke("settings_backup_wallet")}
+                onClick={() => void doBackup()}
                 disabled={nostrBackupLoading}
                 className="w-full rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition"
               >
@@ -616,7 +635,19 @@ function WalletSection() {
             />
             <button
               type="button"
-              onClick={() => invoke("wallet_delete_confirm")}
+              onClick={async () => {
+                try {
+                  await invoke("delete_wallet");
+                  useStore.setState({
+                    walletStatus: "not_created",
+                    walletData: null,
+                    walletDeletePrompt: false,
+                    walletDeleteConfirm: "",
+                  });
+                } catch {
+                  /* ignore */
+                }
+              }}
               disabled={!canConfirmDelete}
               className={`shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${canConfirmDelete ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`}
             >
@@ -677,7 +708,11 @@ function RelaysSection() {
 
   const resetRelays = useCallback(async () => {
     try {
-      await invoke("reset_relays");
+      const defaults = ["wss://relay.damus.io", "wss://relay.primal.net"];
+      await invoke("set_relay_list", { relays: defaults });
+      useStore.setState({
+        relays: defaults.map((url) => ({ url, has_backup: false })),
+      });
     } catch {
       /* ignore */
     }
@@ -777,14 +812,20 @@ function DevSection() {
     <div className="space-y-2">
       <button
         type="button"
-        onClick={() => invoke("load_demo_markets")}
+        onClick={() => {
+          void queryClient.invalidateQueries({ queryKey: ["markets"] });
+          useStore.setState({
+            settingsOpen: false,
+            activeCategory: "Trending",
+          });
+        }}
         className="w-full rounded-lg border border-emerald-700/40 px-4 py-2 text-xs text-emerald-400 hover:bg-emerald-900/20 transition"
       >
-        Load Demo Markets
+        Refresh Markets
       </button>
       <button
         type="button"
-        onClick={() => invoke("dev_restart")}
+        onClick={() => window.location.reload()}
         className="w-full rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-400 hover:bg-slate-800 transition"
       >
         Restart App
@@ -808,7 +849,29 @@ function DevSection() {
             />
             <button
               type="button"
-              onClick={() => invoke("dev_reset_confirm")}
+              onClick={async () => {
+                try {
+                  await invoke("delete_wallet");
+                } catch {
+                  /* */
+                }
+                try {
+                  await invoke("delete_nostr_identity");
+                } catch {
+                  /* */
+                }
+                useStore.setState({
+                  nostrPubkey: null,
+                  nostrNpub: null,
+                  nostrProfile: null,
+                  walletStatus: "not_created",
+                  walletData: null,
+                  settingsOpen: false,
+                  devResetPrompt: false,
+                  devResetConfirm: "",
+                });
+                window.location.reload();
+              }}
               disabled={!canConfirmReset}
               className={`shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${canConfirmReset ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`}
             >
@@ -863,7 +926,7 @@ function NostrReplacePanel() {
 
   const generateKey = useCallback(async () => {
     try {
-      await invoke("generate_nostr_key");
+      await invoke("generate_nostr_identity");
     } catch {
       /* ignore */
     }

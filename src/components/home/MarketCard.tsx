@@ -238,7 +238,12 @@ export default function MarketCard({
         </span>
       </div>
       <p className="mt-2 text-xs text-slate-500">
-        {formatVolumeBtc(market.volumeBtc)} vol · {timeLeft}
+        {formatVolumeBtc(market.volumeBtc)} vol
+        {market.traderCount > 0 && (
+          <> · {market.traderCount.toLocaleString()} traders</>
+        )}
+        {" · "}
+        {timeLeft}
       </p>
     </div>
   );

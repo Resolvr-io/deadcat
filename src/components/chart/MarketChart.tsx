@@ -526,24 +526,26 @@ export default function MarketChart({
             ))}
 
             {/* Series lines */}
-            <polyline
-              fill="none"
-              stroke="#5eead4"
-              strokeOpacity="0.64"
-              strokeWidth="1.08"
-              points={yesLinePoints}
-            />
-            <polyline
-              fill="none"
-              stroke="#fb7185"
-              strokeOpacity="0.6"
-              strokeWidth="1.08"
-              points={noLinePoints}
-            />
-
-            {/* Paw trails */}
-            {yesPawTrail}
-            {noPawTrail}
+            {hasPrice && (
+              <>
+                <polyline
+                  fill="none"
+                  stroke="#5eead4"
+                  strokeOpacity="0.64"
+                  strokeWidth="1.08"
+                  points={yesLinePoints}
+                />
+                <polyline
+                  fill="none"
+                  stroke="#fb7185"
+                  strokeOpacity="0.6"
+                  strokeWidth="1.08"
+                  points={noLinePoints}
+                />
+                {yesPawTrail}
+                {noPawTrail}
+              </>
+            )}
 
             {/* Hover fade + crosshair */}
             {hoverAvailable && (
@@ -569,7 +571,7 @@ export default function MarketChart({
             )}
 
             {/* Pulse animation at current point */}
-            {showCurrentPulse && (
+            {hasPrice && showCurrentPulse && (
               <>
                 {pulseSvg(yesEnd.x, yesEnd.y, "chartLivePulseYes")}
                 {pulseSvg(noEnd.x, noEnd.y, "chartLivePulseNo")}
@@ -577,10 +579,12 @@ export default function MarketChart({
             )}
 
             {/* Endpoint markers */}
-            <g opacity={endpointOpacity}>
-              {markerSvg(yesEnd.x, yesEnd.y, "#5eead4")}
-              {markerSvg(noEnd.x, noEnd.y, "#fb7185")}
-            </g>
+            {hasPrice && (
+              <g opacity={endpointOpacity}>
+                {markerSvg(yesEnd.x, yesEnd.y, "#5eead4")}
+                {markerSvg(noEnd.x, noEnd.y, "#fb7185")}
+              </g>
+            )}
 
             {/* Hover markers */}
             {hoverAvailable && (
@@ -625,7 +629,7 @@ export default function MarketChart({
             )}
 
             {/* Readout labels */}
-            {readoutNoPct != null ? (
+            {readoutNoPct != null && (
               <>
                 <text
                   x={readoutX}
@@ -688,25 +692,25 @@ export default function MarketChart({
                   {readoutYesPct}%
                 </text>
               </>
-            ) : (
-              <text
-                x={readoutX}
-                y={(readoutNoPctY + readoutYesPctY) / 2}
-                fill="#64748b"
-                fontSize={readoutLabelFont}
-                fontWeight="480"
-                style={{
-                  paintOrder: "stroke",
-                  stroke: "#020617",
-                  strokeWidth: readoutStrokeWidth,
-                  strokeOpacity: 0.82,
-                }}
-              >
-                No price data
-              </text>
             )}
           </svg>
         </div>
+
+        {/* No price data overlay */}
+        {!hasPrice && (
+          <div className="pointer-events-none absolute inset-x-3 top-10 bottom-8 flex flex-col items-center justify-center gap-2">
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 260 267"
+              className="h-12 w-12 opacity-30"
+            >
+              <path d={CHART_LOGO_PATH} fill="#64748b" />
+            </svg>
+            <span className="text-sm font-medium text-slate-600">
+              No price data
+            </span>
+          </div>
+        )}
 
         {/* Hover interaction overlay */}
         <div

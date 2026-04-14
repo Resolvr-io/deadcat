@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { tauriApi } from "../../api/tauri";
 import { DEFAULT_TX_OPTIONS } from "../../services/tx";
+import { useStore } from "../../store";
 import type {
   BoltzChainSwapCreated,
   BoltzChainSwapPairInfo,
@@ -20,6 +21,19 @@ export function useCreateWallet() {
       const mnemonic = await invoke<string>("create_wallet", {
         password: params.password,
       });
+      // Ensure a Nostr node exists before unlocking (unlock_wallet requires it)
+      if (!useStore.getState().nostrPubkey) {
+        const identity = await invoke<{ pubkey_hex: string; npub: string }>(
+          "generate_nostr_identity",
+        );
+        useStore.setState({
+          nostrPubkey: identity.pubkey_hex,
+          nostrNpub: identity.npub,
+        });
+      } else {
+        // Re-initialize existing identity so the node is available
+        await invoke("init_nostr_identity");
+      }
       await tauriApi.unlockWallet(params.password);
       return { mnemonic };
     },
@@ -51,6 +65,18 @@ export function useRestoreWallet() {
     }): Promise<void> => {
       await tauriApi.restoreWallet(params.mnemonic.trim(), params.password);
       if (params.unlock !== false) {
+        // Ensure a Nostr node exists before unlocking
+        if (!useStore.getState().nostrPubkey) {
+          const identity = await invoke<{ pubkey_hex: string; npub: string }>(
+            "generate_nostr_identity",
+          );
+          useStore.setState({
+            nostrPubkey: identity.pubkey_hex,
+            nostrNpub: identity.npub,
+          });
+        } else {
+          await invoke("init_nostr_identity");
+        }
         await tauriApi.unlockWallet(params.password);
       }
       await tauriApi.syncWallet();
@@ -102,12 +128,10 @@ export function useSendLiquid() {
       amountSat: number;
       txOptions?: TxOptions;
     }): Promise<LiquidSendResult> =>
-      invoke("send_liquid", {
-        request: {
-          address: params.address,
-          amount_sat: params.amountSat,
-          tx_options: params.txOptions ?? DEFAULT_TX_OPTIONS,
-        },
+      invoke("send_lbtc", {
+        address: params.address,
+        amountSat: params.amountSat,
+        txOptions: params.txOptions ?? DEFAULT_TX_OPTIONS,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["walletSnapshot"] });
@@ -165,6 +189,12 @@ export function useCreateBitcoinSend() {
 
 export function useGenerateLiquidAddress() {
   return useMutation({
-    mutationFn: (): Promise<string> => invoke("get_receive_address"),
+    mutationFn: async (): Promise<string> => {
+      const result = await invoke<{ index: number; address: string }>(
+        "get_wallet_address",
+        {},
+      );
+      return result.address;
+    },
   });
 }
