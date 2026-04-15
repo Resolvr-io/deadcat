@@ -181,7 +181,7 @@ export interface OnboardingSlice {
   setupModalOpen: boolean;
   setupRequires: "wallet" | "identity+wallet" | null;
   onboardingStep: "nostr" | "wallet" | null;
-  onboardingNostrMode: "generate" | "import" | "restore";
+  onboardingNostrMode: "generate" | "import" | "restore" | "manual-restore";
   onboardingNostrNsec: string;
   onboardingNostrGeneratedNsec: string;
   onboardingNsecRevealed: boolean;

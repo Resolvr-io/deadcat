@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import {
   useCreateWallet,
   useRestoreWallet,
@@ -44,6 +44,7 @@ export function WalletSetup({
 }: {
   networkBadge: React.ReactNode;
 }) {
+  const [showPw, setShowPw] = useState(false);
   const walletMnemonic = useStore((s) => s.walletMnemonic);
   const walletShowRestore = useStore((s) => s.walletShowRestore);
   const walletShowCreate = useStore((s) => s.walletShowCreate);
@@ -52,6 +53,7 @@ export function WalletSetup({
   const walletPassword = useStore((s) => s.walletPassword);
   const walletPasswordConfirm = useStore((s) => s.walletPasswordConfirm);
   const walletRestoreMnemonic = useStore((s) => s.walletRestoreMnemonic);
+  const nostrNpub = useStore((s) => s.nostrNpub);
 
   const createWallet = useCreateWallet();
   const restoreWallet = useRestoreWallet();
@@ -222,24 +224,16 @@ export function WalletSetup({
     return (
       <div className="px-6 py-6">
         <div className="space-y-6">
-          <div className="flex items-start gap-4">
-            <svg
-              aria-hidden="true"
-              className="h-10 w-10 shrink-0 text-emerald-400"
-              viewBox="0 0 260 267"
-              fill="currentColor"
-            >
-              <path d="M0.146484 9.04605C0.146484 1.23441 10.9146 -3.16002 16.7881 2.6984L86.5566 71.7336C100.142 68.0294 114.765 66.0128 130 66.0128C145.239 66.0128 159.865 68.0306 173.453 71.7365L243.212 2.71207C249.085 -3.14676 259.854 1.24698 259.854 9.05875V161.26C259.949 162.835 260 164.42 260 166.013C260 221.241 201.797 266.013 130 266.013C58.203 266.013 0 221.241 0 166.013C1.54644e-06 164.42 0.0506677 162.835 0.146484 161.26V9.04605ZM100.287 187.013L120.892 207.087V208.903C120.892 217.907 114.199 225.23 105.974 225.231H91.0049C87.1409 225.231 84.0001 228.319 84 232.118C84 235.918 87.1446 239.013 91.0049 239.013H105.974C114.534 239.013 122.574 235.049 128.02 228.383C133.461 235.045 141.502 239.013 150.065 239.013C166.019 239.013 179 225.506 179 208.903C179 205.104 175.856 202.013 171.992 202.013C168.128 202.013 164.984 205.104 164.983 208.903C164.983 217.907 158.291 225.231 150.065 225.231C141.84 225.231 135.147 217.907 135.147 208.903V207.049L155.713 187.013H100.287ZM70.4697 140.12L52.4219 122.072L44 130.495L62.0469 148.542L44.0596 166.53L52.4824 174.953L70.4697 156.965L88.5176 175.013L96.9404 166.591L78.8916 148.542L97 130.435L88.5781 122.013L70.4697 140.12ZM195.367 123.557C200.554 128.783 204 138.006 204 148.513C204 158.3 201.01 166.973 196.408 172.339C216.243 169.73 231 159.83 231 148.013C231 135.99 215.724 125.951 195.367 123.557ZM175.489 123.7C155.707 126.33 141 136.217 141 148.013C141 159.603 155.197 169.349 174.456 172.181C169.931 166.803 167 158.204 167 148.513C167 138.102 170.382 128.951 175.489 123.7Z" />
-            </svg>
-            <div>
-              <h2 className="text-xl font-medium text-slate-100">
-                Welcome to Deadcat {networkBadge}
-              </h2>
-              <p className="mt-1 text-sm text-slate-400">
-                Set up a self-custody Liquid wallet to start trading prediction
-                markets.
-              </p>
-            </div>
+          <div>
+            <h2 className="text-xl font-medium text-slate-100">
+              {nostrNpub ? "Set Up Wallet" : "Welcome to Deadcat"}{" "}
+              {networkBadge}
+            </h2>
+            <p className="mt-1 text-sm text-slate-400">
+              {nostrNpub
+                ? "Create a new wallet or restore from a recovery phrase."
+                : "Set up a self-custody Liquid wallet to start trading prediction markets."}
+            </p>
           </div>
           {errorHtml}
 
@@ -319,6 +313,14 @@ export function WalletSetup({
 
   // Create / Restore form — shown after selecting an option
   const isRestore = walletShowRestore;
+  const pwValid = walletPassword.length >= 4;
+  const pwMatch = walletPassword === walletPasswordConfirm;
+  const canSubmit =
+    !loading &&
+    pwValid &&
+    pwMatch &&
+    (!isRestore || walletRestoreMnemonic.trim().length > 0);
+
   const backToWelcome = () =>
     useStore.setState({
       walletShowCreate: false,
@@ -331,7 +333,7 @@ export function WalletSetup({
 
   return (
     <div className="px-6 py-6">
-      <div className="space-y-6">
+      <div className="space-y-5">
         <div>
           <button
             type="button"
@@ -362,13 +364,10 @@ export function WalletSetup({
           <div>
             <label
               htmlFor="wallet-restore-mnemonic"
-              className="text-xs font-medium text-slate-400"
+              className="text-xs font-medium text-slate-400 uppercase tracking-wide"
             >
               Recovery Phrase
             </label>
-            <p className="mt-0.5 text-xs text-slate-500">
-              Enter your 12-word recovery phrase.
-            </p>
             <textarea
               id="wallet-restore-mnemonic"
               placeholder="word1 word2 word3 ..."
@@ -377,7 +376,7 @@ export function WalletSetup({
               onChange={(e) =>
                 useStore.setState({ walletRestoreMnemonic: e.target.value })
               }
-              className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm outline-none ring-emerald-400 focus:ring-2 mono disabled:opacity-50"
+              className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm outline-none ring-emerald-400 focus:ring-2 mono disabled:opacity-50"
               disabled={loading}
             />
           </div>
@@ -386,56 +385,135 @@ export function WalletSetup({
         <div>
           <label
             htmlFor="wallet-password"
-            className="text-xs font-medium text-slate-400"
+            className="text-xs font-medium text-slate-400 uppercase tracking-wide"
           >
-            Encryption Password
+            Password
           </label>
-          <p className="mt-0.5 text-xs text-slate-500">
-            Used to encrypt your wallet on this device.
-          </p>
-          <input
-            id="wallet-password"
-            type="password"
-            maxLength={32}
-            value={walletPassword}
-            onChange={(e) =>
-              useStore.setState({ walletPassword: e.target.value })
-            }
-            placeholder="Enter a password"
-            autoComplete="new-password"
-            onPaste={(e) => e.preventDefault()}
-            className="mt-2 h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50"
-            disabled={loading}
-          />
-          <input
-            id="wallet-password-confirm"
-            type="password"
-            maxLength={32}
-            value={walletPasswordConfirm}
-            onChange={(e) =>
-              useStore.setState({ walletPasswordConfirm: e.target.value })
-            }
-            placeholder="Confirm password"
-            autoComplete="new-password"
-            onPaste={(e) => e.preventDefault()}
-            className={`mt-2 h-11 w-full rounded-lg border ${walletPasswordConfirm && walletPassword !== walletPasswordConfirm ? "border-red-500/50" : "border-slate-700"} bg-slate-900 px-4 text-sm outline-none ring-emerald-400 focus:ring-2 disabled:opacity-50`}
-            disabled={loading}
-          />
+          <div className="relative mt-1.5">
+            <input
+              id="wallet-password"
+              type={showPw ? "text" : "password"}
+              minLength={4}
+              maxLength={32}
+              value={walletPassword}
+              onChange={(e) =>
+                useStore.setState({ walletPassword: e.target.value })
+              }
+              placeholder="Enter a password"
+              autoComplete="new-password"
+              className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 pr-11 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+              disabled={loading}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPw((v) => !v)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition"
+              tabIndex={-1}
+            >
+              {showPw ? (
+                <svg
+                  aria-hidden="true"
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88"
+                  />
+                </svg>
+              ) : (
+                <svg
+                  aria-hidden="true"
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                  />
+                </svg>
+              )}
+            </button>
+          </div>
+          <div className="relative mt-2">
+            <input
+              id="wallet-password-confirm"
+              type={showPw ? "text" : "password"}
+              maxLength={32}
+              value={walletPasswordConfirm}
+              onChange={(e) =>
+                useStore.setState({ walletPasswordConfirm: e.target.value })
+              }
+              placeholder="Confirm password"
+              autoComplete="new-password"
+              className={`h-11 w-full rounded-lg border ${walletPasswordConfirm && !pwMatch ? "border-red-500/50" : "border-slate-700"} bg-slate-900 px-4 pr-11 text-sm outline-none ring-emerald-400 transition focus:ring-2`}
+              disabled={loading}
+            />
+          </div>
+          <div className="mt-1.5 h-5">
+            {walletPassword && !pwValid ? (
+              <p className="text-xs text-amber-300">Minimum 4 characters</p>
+            ) : walletPasswordConfirm && !pwMatch ? (
+              <p className="text-xs text-rose-400">
+                Passwords don&apos;t match
+              </p>
+            ) : null}
+          </div>
+          <div className="mt-2 flex gap-2 rounded-lg border border-amber-700/30 bg-amber-950/20 px-3 py-2.5">
+            <svg
+              aria-hidden="true"
+              className="h-4 w-4 shrink-0 text-amber-400 mt-0.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
+              />
+            </svg>
+            <p className="text-xs text-amber-300/90 leading-relaxed">
+              You&apos;ll need this password to unlock your wallet and to
+              restore from your backup file.
+            </p>
+          </div>
         </div>
 
         <button
           type="button"
           onClick={isRestore ? handleRestore : handleCreate}
-          className="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
-          disabled={loading}
+          disabled={!canSubmit}
+          className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {loading
-            ? isRestore
-              ? "Restoring..."
-              : "Creating..."
-            : isRestore
-              ? "Restore Wallet"
-              : "Create Wallet"}
+          {loading ? (
+            <span className="inline-flex items-center">
+              {isRestore ? "Restoring" : "Creating"}
+              <span className="ml-0.5 inline-flex">
+                <span className="loading-dot">.</span>
+                <span className="loading-dot">.</span>
+                <span className="loading-dot">.</span>
+              </span>
+            </span>
+          ) : isRestore ? (
+            "Restore Wallet"
+          ) : (
+            "Create Wallet"
+          )}
         </button>
       </div>
     </div>

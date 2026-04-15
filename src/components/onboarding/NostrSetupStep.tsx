@@ -1095,10 +1095,231 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     );
   }
 
+  // ── Manual restore sub-page ─────────────────────────────────────────
+  if (nostrMode === "manual-restore") {
+    const hasNsec = restoreNsec.trim().length > 0;
+    const hasMnemonic = restoreMnemonic.trim().length > 0;
+    const hasPassword = restorePassword.length >= 4;
+
+    const buttonLabel =
+      hasNsec && hasMnemonic
+        ? "Restore Account"
+        : hasNsec
+          ? "Import Identity"
+          : hasMnemonic
+            ? "Restore Wallet"
+            : "Restore";
+
+    const canSubmit = (hasNsec || hasMnemonic) && (!hasMnemonic || hasPassword);
+
+    const handleManualRestore = async () => {
+      useStore.setState({ onboardingLoading: true, onboardingError: "" });
+      try {
+        if (hasNsec && hasMnemonic) {
+          // Path C — both nsec + mnemonic
+          const identity = await invoke<IdentityResponse>("import_nostr_nsec", {
+            nsec: restoreNsec.trim(),
+          });
+          useStore.setState({
+            nostrPubkey: identity.pubkey_hex,
+            nostrNpub: identity.npub,
+          });
+          await invoke("restore_wallet", {
+            mnemonic: restoreMnemonic.trim(),
+            password: restorePassword,
+          });
+          await invoke("init_nostr_identity");
+          await invoke<void>("unlock_wallet", { password: restorePassword });
+          useStore.setState({
+            walletStatus: "unlocked",
+            walletSessionPassword: restorePassword,
+          });
+        } else if (hasNsec) {
+          // Path A — nsec only
+          const identity = await invoke<IdentityResponse>("import_nostr_nsec", {
+            nsec: restoreNsec.trim(),
+          });
+          useStore.setState({
+            nostrPubkey: identity.pubkey_hex,
+            nostrNpub: identity.npub,
+          });
+        } else {
+          // Path B — mnemonic only
+          await invoke("restore_wallet", {
+            mnemonic: restoreMnemonic.trim(),
+            password: restorePassword,
+          });
+          const identity = await invoke<IdentityResponse>(
+            "generate_nostr_identity",
+          );
+          useStore.setState({
+            nostrPubkey: identity.pubkey_hex,
+            nostrNpub: identity.npub,
+          });
+          await invoke("init_nostr_identity");
+          await invoke<void>("unlock_wallet", { password: restorePassword });
+          useStore.setState({
+            walletStatus: "unlocked",
+            walletSessionPassword: restorePassword,
+          });
+        }
+        // Clean up and close
+        useStore.setState({
+          onboardingLoading: false,
+          setupModalOpen: false,
+          onboardingRestoreNsec: "",
+          onboardingRestoreMnemonic: "",
+          onboardingRestorePassword: "",
+        });
+        // Fetch kind 0 profile from relays in background
+        void invoke<import("../../types").NostrProfile | null>(
+          "fetch_nostr_profile",
+        )
+          .then((profile) => {
+            if (profile) useStore.setState({ nostrProfile: profile });
+          })
+          .catch(() => {});
+      } catch (e) {
+        useStore.setState({
+          onboardingError: String(e),
+          onboardingLoading: false,
+        });
+      }
+    };
+
+    return (
+      <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
+        <BackButton
+          onClick={() =>
+            useStore.setState({
+              onboardingNostrMode: "restore",
+              onboardingError: "",
+              onboardingRestoreNsec: "",
+              onboardingRestoreMnemonic: "",
+              onboardingRestorePassword: "",
+            })
+          }
+        />
+        <h2 className="text-2xl font-semibold text-white">Manual restore</h2>
+        <p className="mt-3 text-sm text-slate-400 leading-relaxed">
+          Enter your Nostr key, wallet recovery phrase, or both. You can import
+          just one and add the other later.
+        </p>
+        {errorHtml && <div className="mt-4">{errorHtml}</div>}
+
+        <div className="mt-6 space-y-5">
+          {/* Nostr Identity */}
+          <div>
+            <label
+              htmlFor="manual-restore-nsec"
+              className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
+            >
+              Nostr Private Key
+            </label>
+            <input
+              id="manual-restore-nsec"
+              type="text"
+              value={restoreNsec}
+              onChange={(e) =>
+                useStore.setState({ onboardingRestoreNsec: e.target.value })
+              }
+              placeholder="nsec1..."
+              autoComplete="off"
+              spellCheck={false}
+              className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
+              disabled={loading}
+            />
+            <p className="mt-1.5 text-xs text-slate-600">
+              Import your Nostr identity. You can add a wallet later.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="h-px flex-1 bg-slate-800" />
+            <span className="text-xs text-slate-600">and / or</span>
+            <div className="h-px flex-1 bg-slate-800" />
+          </div>
+
+          {/* Liquid Wallet */}
+          <div>
+            <label
+              htmlFor="manual-restore-mnemonic"
+              className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
+            >
+              Wallet Recovery Phrase
+            </label>
+            <textarea
+              id="manual-restore-mnemonic"
+              value={restoreMnemonic}
+              onChange={(e) =>
+                useStore.setState({
+                  onboardingRestoreMnemonic: e.target.value,
+                })
+              }
+              placeholder="Enter your 12-word phrase..."
+              rows={3}
+              className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
+              disabled={loading}
+            />
+            <p className="mt-1.5 text-xs text-slate-600">
+              Restore your Liquid wallet. A temporary identity will be created.
+            </p>
+          </div>
+
+          {/* Password — only when mnemonic is present */}
+          {hasMnemonic && (
+            <div>
+              <label
+                htmlFor="manual-restore-password"
+                className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
+              >
+                Wallet Password
+              </label>
+              <input
+                id="manual-restore-password"
+                type="password"
+                value={restorePassword}
+                onChange={(e) =>
+                  useStore.setState({
+                    onboardingRestorePassword: e.target.value,
+                  })
+                }
+                placeholder="Set a password (min 4 characters)"
+                minLength={4}
+                maxLength={32}
+                className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+                disabled={loading}
+              />
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={handleManualRestore}
+            disabled={loading || !canSubmit}
+            className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed transition"
+          >
+            {loading ? (
+              <span className="inline-flex items-center">
+                Restoring
+                <span className="ml-0.5 inline-flex">
+                  <span className="loading-dot">.</span>
+                  <span className="loading-dot">.</span>
+                  <span className="loading-dot">.</span>
+                </span>
+              </span>
+            ) : (
+              buttonLabel
+            )}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ── Restore sub-page ────────────────────────────────────────────────
   if (nostrMode === "restore") {
     const hasFile = restoreFileContent.length > 0;
-    const isManual = restoreNsec.length > 0 || restoreMnemonic.length > 0;
 
     const handleFileSelect = async () => {
       try {
@@ -1151,54 +1372,6 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           onboardingRestorePassword: "",
         });
         // Fetch full kind 0 profile from relays
-        void (async () => {
-          try {
-            const profile = await invoke<
-              import("../../types").NostrProfile | null
-            >("fetch_nostr_profile");
-            if (profile) useStore.setState({ nostrProfile: profile });
-          } catch {
-            // Best effort
-          }
-        })();
-      } catch (e) {
-        useStore.setState({
-          onboardingError: String(e),
-          onboardingLoading: false,
-        });
-      }
-    };
-
-    const handleManualRestore = async () => {
-      if (!restoreNsec || !restoreMnemonic || !restorePassword) {
-        useStore.setState({ onboardingError: "All fields are required." });
-        return;
-      }
-      useStore.setState({ onboardingLoading: true, onboardingError: "" });
-      try {
-        const identity = await invoke<IdentityResponse>("import_nostr_nsec", {
-          nsec: restoreNsec,
-        });
-        useStore.setState({
-          nostrPubkey: identity.pubkey_hex,
-          nostrNpub: identity.npub,
-        });
-        await invoke("restore_wallet", {
-          mnemonic: restoreMnemonic,
-          password: restorePassword,
-        });
-        await invoke("init_nostr_identity");
-        await invoke<void>("unlock_wallet", { password: restorePassword });
-        useStore.setState({
-          walletStatus: "unlocked",
-          walletSessionPassword: restorePassword,
-          onboardingLoading: false,
-          setupModalOpen: false,
-          onboardingRestoreNsec: "",
-          onboardingRestoreMnemonic: "",
-          onboardingRestorePassword: "",
-        });
-        // Fetch kind 0 profile from relays
         void (async () => {
           try {
             const profile = await invoke<
@@ -1303,58 +1476,37 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           )}
         </div>
 
-        {/* Manual entry */}
-        <div className="mt-8 space-y-4">
-          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
-            Or enter manually
-          </p>
-          <input
-            type="text"
-            value={restoreNsec}
-            onChange={(e) =>
-              useStore.setState({ onboardingRestoreNsec: e.target.value })
-            }
-            placeholder="nsec1..."
-            autoComplete="off"
-            spellCheck={false}
-            className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
-            disabled={loading || hasFile}
-          />
-          <textarea
-            value={restoreMnemonic}
-            onChange={(e) =>
-              useStore.setState({ onboardingRestoreMnemonic: e.target.value })
-            }
-            placeholder="12-word recovery phrase..."
-            rows={3}
-            className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
-            disabled={loading || hasFile}
-          />
-          {isManual && !hasFile && (
-            <>
-              <input
-                type="password"
-                value={restorePassword}
-                onChange={(e) =>
-                  useStore.setState({
-                    onboardingRestorePassword: e.target.value,
-                  })
-                }
-                placeholder="Set a wallet password"
-                className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
-                disabled={loading}
-              />
-              <button
-                type="button"
-                onClick={handleManualRestore}
-                disabled={loading || !restorePassword}
-                className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed transition"
+        {/* Manual entry link */}
+        {!hasFile && (
+          <div className="mt-8 border-t border-slate-800 pt-6">
+            <button
+              type="button"
+              onClick={() =>
+                useStore.setState({
+                  onboardingNostrMode: "manual-restore",
+                  onboardingError: "",
+                })
+              }
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-700 px-4 py-3.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:border-slate-600 transition"
+            >
+              <svg
+                aria-hidden="true"
+                className="h-4 w-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2"
               >
-                {loading ? "Restoring..." : "Restore Account"}
-              </button>
-            </>
-          )}
-        </div>
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"
+                />
+              </svg>
+              Enter keys manually
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -1402,6 +1554,13 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           className="w-full rounded-lg border border-slate-700 px-4 py-3.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:border-slate-600 transition"
         >
           Restore existing account
+        </button>
+        <button
+          type="button"
+          onClick={() => showToast("Remote signer support coming soon")}
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-800 px-4 py-3.5 text-sm font-medium text-slate-500 hover:bg-slate-900 hover:text-slate-400 transition"
+        >
+          Connect remote signer
         </button>
       </div>
     </div>
