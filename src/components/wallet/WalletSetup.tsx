@@ -364,7 +364,7 @@ export function WalletSetup({
             >
               Recovery Phrase
             </label>
-            <p className="mt-0.5 text-[11px] text-slate-500">
+            <p className="mt-0.5 text-xs text-slate-500">
               Enter your 12-word recovery phrase.
             </p>
             <textarea
@@ -388,7 +388,7 @@ export function WalletSetup({
           >
             Encryption Password
           </label>
-          <p className="mt-0.5 text-[11px] text-slate-500">
+          <p className="mt-0.5 text-xs text-slate-500">
             Used to encrypt your wallet on this device.
           </p>
           <input

@@ -1401,6 +1401,7 @@ pub fn run() {
             commands::fetch_nostr_profile,
             commands::publish_nostr_profile,
             commands::export_identity_file,
+            commands::open_downloads_folder,
             commands::import_identity_file,
             commands::create_contract_onchain,
             commands::issue_tokens,

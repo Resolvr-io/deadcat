@@ -789,9 +789,25 @@ pub async fn publish_nostr_profile(
     app: tauri::AppHandle,
     name: String,
     picture: Option<String>,
+    display_name: Option<String>,
+    about: Option<String>,
+    website: Option<String>,
+    nip05: Option<String>,
+    lud16: Option<String>,
 ) -> Result<(), String> {
     let (keys, client) = get_keys_and_client(&app).await?;
-    discovery::publish_profile(&keys, &client, &name, picture.as_deref()).await
+    discovery::publish_profile(
+        &keys,
+        &client,
+        &name,
+        picture.as_deref(),
+        display_name.as_deref(),
+        about.as_deref(),
+        website.as_deref(),
+        nip05.as_deref(),
+        lud16.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -816,6 +832,17 @@ pub fn import_identity_file(
     password: String,
 ) -> Result<crate::identity_file::IdentityFilePayload, String> {
     crate::identity_file::import_identity_file(&file_content, &password)
+}
+
+#[tauri::command]
+pub fn open_downloads_folder() -> Result<(), String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let downloads = std::path::Path::new(&home).join("Downloads");
+    std::process::Command::new("open")
+        .arg(downloads)
+        .spawn()
+        .map_err(|e| format!("failed to open Downloads: {e}"))?;
+    Ok(())
 }
 
 // =========================================================================

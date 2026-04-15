@@ -495,7 +495,7 @@ export default function MarketChart({
           </span>
           <span className="text-slate-500">Yes + No = {fc} sats</span>
           {market.isLive && (
-            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-400">
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-rose-400">
               <span className="liveIndicatorDot" />
               Live · Round 1
             </span>
@@ -741,7 +741,7 @@ export default function MarketChart({
           {xLabels.map((label) => (
             <span key={label}>#{label.toLocaleString()}</span>
           ))}
-          <span className="ml-2 text-[11px] uppercase tracking-wide text-slate-600">
+          <span className="ml-2 text-xs uppercase tracking-wide text-slate-600">
             BLOCK
           </span>
         </div>

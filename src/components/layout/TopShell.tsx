@@ -286,6 +286,15 @@ function LogoutModal() {
                 />
               </svg>
               Backup file downloaded
+              <button
+                type="button"
+                onClick={() => {
+                  void invoke("open_downloads_folder").catch(() => {});
+                }}
+                className="ml-auto shrink-0 text-xs text-slate-400 underline hover:text-slate-200 transition"
+              >
+                Open folder
+              </button>
             </div>
           ) : (
             <>

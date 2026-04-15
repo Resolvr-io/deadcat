@@ -37,19 +37,21 @@ export function useBootstrap(): void {
         console.warn("Failed to load nostr identity:", error);
       }
 
-      // 2. Fetch Nostr profile (kind 0 metadata)
+      // 2. Fetch Nostr profile (kind 0 metadata) — delay for relay connections
       const { nostrPubkey: loadedPubkey } = useStore.getState();
       if (loadedPubkey) {
-        try {
-          const profile = await invoke<NostrProfile | null>(
-            "fetch_nostr_profile",
-          );
-          if (profile) {
-            useStore.setState({ nostrProfile: profile });
+        setTimeout(async () => {
+          try {
+            const profile = await invoke<NostrProfile | null>(
+              "fetch_nostr_profile",
+            );
+            if (profile) {
+              useStore.setState({ nostrProfile: profile });
+            }
+          } catch {
+            // Profile fetch is best-effort
           }
-        } catch {
-          // Profile fetch is best-effort
-        }
+        }, 1500);
       }
 
       // Set default relays if no identity

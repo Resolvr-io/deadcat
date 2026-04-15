@@ -170,7 +170,6 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const walletPasswordConfirm = useStore(
     (s) => s.onboardingWalletPasswordConfirm,
   );
-  const backupDownloaded = useStore((s) => s.onboardingBackupDownloaded);
   const backupFileContent = useStore((s) => s.onboardingBackupFileContent);
   const restoreFileContent = useStore((s) => s.onboardingRestoreFileContent);
   const restorePassword = useStore((s) => s.onboardingRestorePassword);
@@ -379,21 +378,6 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const handleCreateAccount = useCallback(async () => {
     const s = useStore.getState();
     const password = s.onboardingWalletPassword;
-    const passwordConfirm = s.onboardingWalletPasswordConfirm;
-    if (!password || password.length < 4) {
-      useStore.setState({
-        onboardingError: "Password must be at least 4 characters.",
-      });
-      return;
-    }
-    if (password !== passwordConfirm) {
-      useStore.setState({
-        onboardingError: "Passwords do not match.",
-        onboardingWalletPassword: "",
-        onboardingWalletPasswordConfirm: "",
-      });
-      return;
-    }
     useStore.setState({ onboardingLoading: true, onboardingError: "" });
     try {
       // 1. Commit identity
@@ -412,11 +396,16 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
       await invoke("init_nostr_identity");
       await invoke<void>("unlock_wallet", { password });
       useStore.setState({ walletSessionPassword: password });
-      // 4. Publish kind 0 (fire-and-forget)
-      void invoke("publish_nostr_profile", {
-        name: s.onboardingNostrDisplayName,
-        picture: s.onboardingProfilePhotoDataUrl || null,
-      }).catch(() => {});
+      // 4. Publish kind 0 — wait briefly for relay connections then publish
+      try {
+        await new Promise((r) => setTimeout(r, 1000));
+        await invoke("publish_nostr_profile", {
+          name: s.onboardingNostrDisplayName,
+          picture: s.onboardingProfilePhotoDataUrl || null,
+        });
+      } catch (e) {
+        console.warn("Failed to publish profile:", e);
+      }
       // 5. Generate backup file and show download screen
       const nsec = s.onboardingNostrGeneratedNsec;
       const displayNameVal = s.onboardingNostrDisplayName || "unnamed";
@@ -485,12 +474,12 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const npubDisplay = pendingNpub || nostrNpub || "";
 
   // ── Backup download screen (after account creation) ─────────────────
-  if (backupFileContent && !backupDownloaded) {
+  if (backupFileContent) {
     const currentDisplayName =
       displayName ||
       useStore.getState().nostrProfile?.display_name ||
       "unnamed";
-    const handleDownload = () => {
+    const handleDownloadAndFinish = () => {
       const blob = new Blob([backupFileContent], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -498,7 +487,18 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
       a.download = `deadcat-${currentDisplayName}.dcid`;
       a.click();
       URL.revokeObjectURL(url);
-      useStore.setState({ onboardingBackupDownloaded: true });
+      useStore.setState({
+        onboardingBackupFileContent: "",
+        onboardingBackupDownloaded: false,
+        onboardingPendingPubkey: "",
+        onboardingPendingNpub: "",
+        onboardingNostrDisplayName: "",
+        onboardingProfilePhotoDataUrl: "",
+        onboardingKeysOpen: false,
+        onboardingNsecRevealed: false,
+        onboardingNostrGeneratedNsec: "",
+        setupModalOpen: false,
+      });
     };
 
     return (
@@ -525,18 +525,18 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           Account created
         </h2>
         <p className="mt-3 text-sm text-slate-400 text-center leading-relaxed">
-          Download your encrypted backup file. This file contains your identity
-          and wallet keys, protected by your password.
+          Download your encrypted backup file. You can also download it later
+          from Settings.
         </p>
         <div className="mt-6 rounded-lg border border-amber-700/30 bg-amber-950/20 px-4 py-3">
-          <p className="text-xs text-amber-300/80 leading-relaxed">
-            Store this file safely. You&apos;ll need it and your password to
-            restore your account on a new device.
+          <p className="text-xs text-amber-300/90 leading-relaxed">
+            You&apos;ll need this file and your password to restore your account
+            on a new device.
           </p>
         </div>
         <button
           type="button"
-          onClick={handleDownload}
+          onClick={handleDownloadAndFinish}
           className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
         >
           <svg
@@ -553,62 +553,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
             />
           </svg>
-          Download deadcat-{currentDisplayName}.dcid
-        </button>
-      </div>
-    );
-  }
-
-  // ── Backup downloaded — show continue button ──────────────────────
-  if (backupFileContent && backupDownloaded) {
-    const handleFinish = () => {
-      useStore.setState({
-        onboardingBackupFileContent: "",
-        onboardingBackupDownloaded: false,
-        onboardingPendingPubkey: "",
-        onboardingPendingNpub: "",
-        onboardingNostrDisplayName: "",
-        onboardingProfilePhotoDataUrl: "",
-        onboardingKeysOpen: false,
-        onboardingNsecRevealed: false,
-        onboardingNostrGeneratedNsec: "",
-        setupModalOpen: false,
-      });
-    };
-
-    return (
-      <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
-        <div className="flex justify-center mb-6">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full border border-emerald-500/30 bg-emerald-500/10">
-            <svg
-              aria-hidden="true"
-              className="h-8 w-8 text-emerald-400"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M5 13l4 4L19 7"
-              />
-            </svg>
-          </div>
-        </div>
-        <h2 className="text-2xl font-semibold text-white text-center">
-          You&apos;re all set
-        </h2>
-        <p className="mt-3 text-sm text-slate-400 text-center leading-relaxed">
-          Your backup file has been downloaded. Keep it safe — you can use it to
-          restore your account anytime.
-        </p>
-        <button
-          type="button"
-          onClick={handleFinish}
-          className="mt-6 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
-        >
-          Start trading
+          Download &amp; continue
         </button>
       </div>
     );
@@ -618,7 +563,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   if (profileStep && !nostrDone) {
     const avatarSrc =
       profilePhoto ||
-      generateAvatarDataUri(pendingNpub || displayName || "default");
+      generateAvatarDataUri(displayName || pendingNpub || "default");
 
     return (
       <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
@@ -669,16 +614,45 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           >
             Display Name
           </label>
-          <input
-            id="onboarding-display-name"
-            type="text"
-            maxLength={50}
-            value={displayName}
-            onChange={(e) =>
-              useStore.setState({ onboardingNostrDisplayName: e.target.value })
-            }
-            className="mt-1.5 h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
-          />
+          <div className="mt-1.5 flex gap-2">
+            <input
+              id="onboarding-display-name"
+              type="text"
+              maxLength={50}
+              value={displayName}
+              onChange={(e) =>
+                useStore.setState({
+                  onboardingNostrDisplayName: e.target.value,
+                })
+              }
+              className="h-11 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+            />
+            <button
+              type="button"
+              onClick={() =>
+                useStore.setState({
+                  onboardingNostrDisplayName: randomName(),
+                })
+              }
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
+              title="Randomize"
+            >
+              <svg
+                aria-hidden="true"
+                className="h-5 w-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3"
+                />
+              </svg>
+            </button>
+          </div>
         </div>
 
         {/* Keys accordion — hidden at signup, available in settings later */}
@@ -873,6 +847,16 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               disabled={loading}
             />
           </div>
+          <div className="mt-1.5 h-5">
+            {walletPassword && walletPassword.length < 4 ? (
+              <p className="text-xs text-amber-300">Minimum 4 characters</p>
+            ) : walletPasswordConfirm &&
+              walletPassword !== walletPasswordConfirm ? (
+              <p className="text-xs text-rose-400">
+                Passwords don&apos;t match
+              </p>
+            ) : null}
+          </div>
           <div className="mt-3 flex gap-2 rounded-lg border border-amber-700/30 bg-amber-950/20 px-3 py-2.5">
             <svg
               aria-hidden="true"
@@ -888,9 +872,9 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                 d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
               />
             </svg>
-            <p className="text-[11px] text-amber-300/80 leading-relaxed">
-              Remember this password. It cannot be reset without re-importing
-              your wallet recovery phrase.
+            <p className="text-xs text-amber-300/90 leading-relaxed">
+              You&apos;ll need this password to unlock your wallet and to
+              restore from your backup file.
             </p>
           </div>
         </div>
@@ -900,10 +884,26 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         <button
           type="button"
           onClick={handleCreateAccount}
-          disabled={loading}
+          disabled={
+            loading ||
+            !walletPassword ||
+            walletPassword.length < 4 ||
+            walletPassword !== walletPasswordConfirm
+          }
           className="mt-5 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {loading ? "Creating account..." : "Create Account"}
+          {loading ? (
+            <span className="inline-flex items-center">
+              Creating account
+              <span className="ml-0.5 inline-flex">
+                <span className="loading-dot">.</span>
+                <span className="loading-dot">.</span>
+                <span className="loading-dot">.</span>
+              </span>
+            </span>
+          ) : (
+            "Create Account"
+          )}
         </button>
       </div>
     );
@@ -980,7 +980,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                     nostrProfile?.name ||
                     "No display name"}
                 </p>
-                <p className="mt-0.5 text-[11px] text-slate-600 mono truncate">
+                <p className="mt-0.5 text-xs text-slate-600 mono truncate">
                   {truncatedNpub}
                 </p>
               </div>
@@ -1191,10 +1191,13 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           onboardingRestoreFileContent: "",
           onboardingRestorePassword: "",
         });
-        void invoke("publish_nostr_profile", {
-          name: payload.display_name,
-          picture: null,
-        }).catch(() => {});
+        // Publish kind 0 after relay connection
+        setTimeout(() => {
+          void invoke("publish_nostr_profile", {
+            name: payload.display_name,
+            picture: null,
+          }).catch((e) => console.warn("Failed to publish profile:", e));
+        }, 1000);
       } catch (e) {
         useStore.setState({
           onboardingError: String(e),

@@ -130,7 +130,16 @@ function NostrSection() {
 
   const generateKey = useCallback(async () => {
     try {
-      await invoke("generate_nostr_identity");
+      const identity = await invoke<{ pubkey_hex: string; npub: string }>(
+        "generate_nostr_identity",
+      );
+      useStore.setState({
+        nostrPubkey: identity.pubkey_hex,
+        nostrNpub: identity.npub,
+        nostrReplacePanel: false,
+        nostrReplacePrompt: false,
+        nostrReplaceConfirm: "",
+      });
     } catch {
       /* ignore */
     }
@@ -198,7 +207,7 @@ function NostrSection() {
 
       {nostrNpub && (
         <div className="rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2">
-          <p className="text-[11px] text-amber-300/90">
+          <p className="text-xs text-amber-300/90">
             Back up your nsec. You need it to resolve markets you create.
           </p>
         </div>
@@ -245,7 +254,7 @@ function NostrSection() {
         </div>
       ) : nostrReplacePrompt ? (
         <div className="rounded-lg border border-rose-700/40 bg-rose-950/20 p-3 space-y-2">
-          <p className="text-[11px] text-rose-300">
+          <p className="text-xs text-rose-300">
             This will permanently erase your current Nostr identity. Type{" "}
             <strong>DELETE</strong> to confirm.
           </p>
@@ -358,6 +367,64 @@ function WalletSection() {
 
   return (
     <div className="space-y-3">
+      {/* Download backup file */}
+      <button
+        type="button"
+        onClick={async () => {
+          try {
+            const nsec = await invoke<string>("export_nostr_nsec");
+            let mnemonic: string;
+            try {
+              mnemonic = await invoke<string>("get_cached_mnemonic");
+            } catch {
+              const pw = useStore.getState().walletSessionPassword;
+              if (!pw) return;
+              mnemonic = await invoke<string>("get_wallet_mnemonic", {
+                password: pw,
+              });
+            }
+            const pw = useStore.getState().walletSessionPassword;
+            if (!pw) return;
+            const name =
+              useStore.getState().nostrProfile?.display_name ||
+              useStore.getState().nostrProfile?.name ||
+              "unnamed";
+            const fileContent = await invoke<string>("export_identity_file", {
+              password: pw,
+              nsec,
+              mnemonic,
+              displayName: name,
+            });
+            const blob = new Blob([fileContent], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `deadcat-${name}.dcid`;
+            a.click();
+            URL.revokeObjectURL(url);
+          } catch (e) {
+            console.warn("Backup download failed:", e);
+          }
+        }}
+        className="flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-2.5 text-xs font-medium text-emerald-300 transition hover:bg-emerald-500/20"
+      >
+        <svg
+          aria-hidden="true"
+          className="h-4 w-4"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth="2"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+          />
+        </svg>
+        Download backup file (.dcid)
+      </button>
+
       {/* Show balance in nav bar */}
       <div className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2.5">
         <div>
@@ -393,7 +460,7 @@ function WalletSection() {
 
       {/* Display currency */}
       <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">
-        <p className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+        <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
           Display Currency
         </p>
         <p className="text-[10px] text-slate-500">
@@ -436,7 +503,7 @@ function WalletSection() {
       {/* Nostr Relay Backup */}
       {nostrNpub && (
         <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">
-          <p className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+          <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
             Nostr Relay Backup
           </p>
           {hasBackup ? (
@@ -583,10 +650,10 @@ function WalletSection() {
             </>
           )}
           <details className="group">
-            <summary className="cursor-pointer text-[11px] text-slate-500 hover:text-slate-400 transition select-none">
+            <summary className="cursor-pointer text-xs text-slate-500 hover:text-slate-400 transition select-none">
               Why is this secure?
             </summary>
-            <div className="mt-2 space-y-1.5 text-[11px] text-slate-500">
+            <div className="mt-2 space-y-1.5 text-xs text-slate-500">
               <p>
                 <strong className="text-slate-400">NIP-44 encryption</strong> --
                 Recovery phrase is encrypted using XChaCha20 + secp256k1 ECDH.
@@ -618,7 +685,7 @@ function WalletSection() {
       </p>
       {walletDeletePrompt ? (
         <div className="rounded-lg border border-rose-700/40 bg-rose-950/20 p-3 space-y-2">
-          <p className="text-[11px] text-rose-300">
+          <p className="text-xs text-rose-300">
             This will permanently remove your wallet. Type{" "}
             <strong>DELETE</strong> to confirm.
           </p>
@@ -832,7 +899,7 @@ function DevSection() {
       </button>
       {devResetPrompt ? (
         <div className="rounded-lg border border-rose-700/40 bg-rose-950/20 p-3 space-y-2">
-          <p className="text-[11px] text-rose-300">
+          <p className="text-xs text-rose-300">
             This will erase your <strong>Nostr identity</strong> and{" "}
             <strong>wallet</strong>. Type <strong>RESET</strong> to confirm.
           </p>
@@ -864,6 +931,9 @@ function DevSection() {
                   nostrPubkey: null,
                   nostrNpub: null,
                   nostrProfile: null,
+                  nostrReplacePanel: false,
+                  nostrReplacePrompt: false,
+                  nostrReplaceConfirm: "",
                   walletStatus: "not_created",
                   walletData: null,
                   settingsOpen: false,
@@ -926,7 +996,16 @@ function NostrReplacePanel() {
 
   const generateKey = useCallback(async () => {
     try {
-      await invoke("generate_nostr_identity");
+      const identity = await invoke<{ pubkey_hex: string; npub: string }>(
+        "generate_nostr_identity",
+      );
+      useStore.setState({
+        nostrPubkey: identity.pubkey_hex,
+        nostrNpub: identity.npub,
+        nostrReplacePanel: false,
+        nostrReplacePrompt: false,
+        nostrReplaceConfirm: "",
+      });
     } catch {
       /* ignore */
     }

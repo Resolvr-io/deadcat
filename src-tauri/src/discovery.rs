@@ -148,6 +148,10 @@ pub struct NostrProfile {
     pub picture: Option<String>,
     pub name: Option<String>,
     pub display_name: Option<String>,
+    pub about: Option<String>,
+    pub website: Option<String>,
+    pub nip05: Option<String>,
+    pub lud16: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -370,19 +374,17 @@ pub async fn fetch_profile(
         if let Some(event) = iter.next() {
             let parsed: serde_json::Value = serde_json::from_str(&event.content)
                 .map_err(|e| format!("failed to parse profile JSON: {e}"))?;
+            let str_field = |key: &str| -> Option<String> {
+                parsed.get(key).and_then(|v| v.as_str()).map(String::from)
+            };
             Some(NostrProfile {
-                picture: parsed
-                    .get("picture")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-                name: parsed
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-                display_name: parsed
-                    .get("display_name")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
+                picture: str_field("picture"),
+                name: str_field("name"),
+                display_name: str_field("display_name"),
+                about: str_field("about"),
+                website: str_field("website"),
+                nip05: str_field("nip05"),
+                lud16: str_field("lud16"),
             })
         } else {
             None
@@ -391,16 +393,38 @@ pub async fn fetch_profile(
     Ok(result)
 }
 
-/// Publish a kind 0 metadata event with the given display name and optional picture URL.
+/// Publish a kind 0 metadata event with profile fields.
 pub async fn publish_profile(
     keys: &Keys,
     client: &Client,
     name: &str,
     picture: Option<&str>,
+    display_name: Option<&str>,
+    about: Option<&str>,
+    website: Option<&str>,
+    nip05: Option<&str>,
+    lud16: Option<&str>,
 ) -> Result<(), String> {
-    let mut meta = serde_json::json!({ "name": name, "display_name": name });
-    if let Some(url) = picture.filter(|s| !s.is_empty()) {
-        meta["picture"] = serde_json::Value::String(url.to_string());
+    let mut meta = serde_json::json!({ "name": name });
+    if let Some(v) = display_name.filter(|s| !s.is_empty()) {
+        meta["display_name"] = serde_json::Value::String(v.to_string());
+    } else {
+        meta["display_name"] = serde_json::Value::String(name.to_string());
+    }
+    if let Some(v) = picture.filter(|s| !s.is_empty()) {
+        meta["picture"] = serde_json::Value::String(v.to_string());
+    }
+    if let Some(v) = about.filter(|s| !s.is_empty()) {
+        meta["about"] = serde_json::Value::String(v.to_string());
+    }
+    if let Some(v) = website.filter(|s| !s.is_empty()) {
+        meta["website"] = serde_json::Value::String(v.to_string());
+    }
+    if let Some(v) = nip05.filter(|s| !s.is_empty()) {
+        meta["nip05"] = serde_json::Value::String(v.to_string());
+    }
+    if let Some(v) = lud16.filter(|s| !s.is_empty()) {
+        meta["lud16"] = serde_json::Value::String(v.to_string());
     }
     let content = meta.to_string();
     let event = EventBuilder::new(Kind::Metadata, content)

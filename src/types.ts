@@ -15,7 +15,7 @@ export type MarketCategory = Exclude<
   NavCategory,
   "Trending" | "Ending Soon" | "New" | "Portfolio" | "My Markets" | "Resolved"
 >;
-export type ViewMode = "home" | "detail" | "create";
+export type ViewMode = "home" | "detail" | "create" | "profile";
 export type Side = "yes" | "no";
 export type OrderType = "market" | "limit";
 export type ActionTab = "trade" | "issue" | "redeem" | "cancel";
@@ -249,6 +249,10 @@ export type NostrProfile = {
   picture?: string;
   name?: string;
   display_name?: string;
+  about?: string;
+  website?: string;
+  nip05?: string;
+  lud16?: string;
 };
 
 export type AttestationResult = {

@@ -57,6 +57,7 @@ export interface NavigationSlice {
   logoutPasswordInput: string;
   logoutBackupDownloaded: boolean;
   closeConfirmOpen: boolean;
+  onboardingSuccess: boolean;
   showMiniWallet: boolean;
   showLbtcLabel: boolean;
   marketMakerMode: boolean;
@@ -296,6 +297,7 @@ export const useStore = create<StoreState>()(() => ({
   logoutPasswordInput: "",
   logoutBackupDownloaded: false,
   closeConfirmOpen: false,
+  onboardingSuccess: false,
   showMiniWallet: true,
   showLbtcLabel: false,
   marketMakerMode: false,

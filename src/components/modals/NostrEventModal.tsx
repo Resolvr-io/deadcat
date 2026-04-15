@@ -288,14 +288,14 @@ export function NostrEventModal() {
                     Content{" "}
                     <span className="text-slate-600">-- click to expand</span>
                   </summary>
-                  <pre className="mt-1 max-h-48 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-[11px] text-slate-200 leading-relaxed">
+                  <pre className="mt-1 max-h-48 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-xs text-slate-200 leading-relaxed">
                     {contentPretty}
                   </pre>
                 </details>
               )}
             </>
           ) : (
-            <pre className="max-h-96 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-[11px] text-slate-200 leading-relaxed">
+            <pre className="max-h-96 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-xs text-slate-200 leading-relaxed">
               {nostrEventJson}
             </pre>
           )}

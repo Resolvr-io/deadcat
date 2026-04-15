@@ -132,7 +132,7 @@ export default function MarketHeader({ market }: { market: Market }) {
       {/* Market stats */}
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2.5">
-          <p className="text-[11px] uppercase tracking-wider text-slate-500">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
             Volume
           </p>
           <p className="text-base font-semibold text-slate-200">
@@ -140,7 +140,7 @@ export default function MarketHeader({ market }: { market: Market }) {
           </p>
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2.5">
-          <p className="text-[11px] uppercase tracking-wider text-slate-500">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
             Traders
           </p>
           <p className="text-base font-semibold text-slate-200">
@@ -150,7 +150,7 @@ export default function MarketHeader({ market }: { market: Market }) {
           </p>
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2.5">
-          <p className="text-[11px] uppercase tracking-wider text-slate-500">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
             Liquidity
           </p>
           <p className="text-base font-semibold text-slate-200">
@@ -158,7 +158,7 @@ export default function MarketHeader({ market }: { market: Market }) {
           </p>
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2.5">
-          <p className="text-[11px] uppercase tracking-wider text-slate-500">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
             Ends
           </p>
           <p className="text-base font-semibold text-slate-200">

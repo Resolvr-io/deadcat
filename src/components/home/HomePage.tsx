@@ -408,7 +408,7 @@ function PortfolioView({ markets }: { markets: Market[] }) {
 
       <div className="mb-6 grid gap-3 sm:grid-cols-3">
         <div className="rounded-xl border border-slate-800 bg-slate-950/45 px-4 py-3">
-          <p className="text-[11px] uppercase tracking-wider text-slate-500">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
             Portfolio Value
           </p>
           <p className="text-2xl font-semibold text-slate-100">
@@ -416,7 +416,7 @@ function PortfolioView({ markets }: { markets: Market[] }) {
           </p>
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-950/45 px-4 py-3">
-          <p className="text-[11px] uppercase tracking-wider text-slate-500">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
             Active Positions
           </p>
           <p className="text-2xl font-semibold text-emerald-300">
@@ -424,7 +424,7 @@ function PortfolioView({ markets }: { markets: Market[] }) {
           </p>
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-950/45 px-4 py-3">
-          <p className="text-[11px] uppercase tracking-wider text-slate-500">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
             Settled
           </p>
           <p className="text-2xl font-semibold text-slate-400">

@@ -7,6 +7,7 @@ import HomePage from "./components/home/HomePage";
 import { TopShell } from "./components/layout/TopShell";
 import { NostrEventModal } from "./components/modals/NostrEventModal";
 import OnboardingOverlay from "./components/onboarding/OnboardingOverlay";
+import ProfilePage from "./components/profile/ProfilePage";
 import { OverlayLoader } from "./components/shared/OverlayLoader";
 import { ToastContainer } from "./components/shared/Toast";
 import { WalletPage } from "./components/wallet/WalletPage";
@@ -88,6 +89,7 @@ export default function App() {
           {view === "home" && <HomePage />}
           {view === "detail" && <DetailPage />}
           {view === "create" && <CreateMarketPage />}
+          {view === "profile" && <ProfilePage />}
         </main>
       </div>
 
