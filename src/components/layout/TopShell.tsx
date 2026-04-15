@@ -4,6 +4,7 @@ import { categories } from "../../constants";
 import { useStore } from "../../store";
 import type { NavCategory } from "../../types";
 import { formatCompactSats } from "../../utils-react/wallet";
+import { CloseButton } from "../shared/CloseButton";
 import { SearchBar } from "./SearchBar";
 import { SettingsPanel } from "./SettingsPanel";
 import { UserMenu } from "./UserMenu";
@@ -160,95 +161,251 @@ function HelpModal() {
 function LogoutModal() {
   const logoutOpen = useStore((s) => s.logoutOpen);
   const logoutBackedUp = useStore((s) => s.logoutBackedUp);
+  const logoutBackupError = useStore((s) => s.logoutBackupError);
+  const walletSessionPassword = useStore((s) => s.walletSessionPassword);
+  const walletStatus = useStore((s) => s.walletStatus);
+  const logoutPasswordInput = useStore((s) => s.logoutPasswordInput ?? "");
+  const logoutBackupDownloaded = useStore((s) => s.logoutBackupDownloaded);
+  const needsPassword = walletStatus === "locked" || !walletSessionPassword;
 
   const closeLogout = useCallback(() => {
-    useStore.setState({ logoutOpen: false, logoutBackedUp: false });
+    useStore.setState({
+      logoutOpen: false,
+      logoutBackedUp: false,
+      logoutBackupDownloaded: false,
+      logoutBackupError: "",
+      logoutPasswordInput: "",
+    });
   }, []);
 
   const confirmLogout = useCallback(async () => {
+    // Lock first to ensure clean state, then delete
     try {
-      await invoke("user_logout");
-    } catch {
-      /* ignore */
+      await invoke("lock_wallet");
+    } catch (e) {
+      console.warn("lock_wallet:", e);
     }
+    try {
+      await invoke("delete_wallet");
+    } catch (e) {
+      console.warn("delete_wallet:", e);
+    }
+    try {
+      await invoke("delete_nostr_identity");
+    } catch (e) {
+      console.warn("delete_nostr_identity:", e);
+    }
+    useStore.setState({
+      // Clear identity
+      nostrPubkey: null,
+      nostrNpub: null,
+      nostrProfile: null,
+      nostrNsecRevealed: null,
+      nostrImportNsec: "",
+      nostrBackupStatus: null,
+      nostrBackupPassword: "",
+      nostrBackupPrompt: false,
+      nostrBackupNsecInput: "",
+      nostrBackupNsecPrompt: false,
+      // Clear wallet
+      walletStatus: "not_created",
+      walletData: null,
+      walletPassword: "",
+      walletPasswordConfirm: "",
+      walletMnemonic: "",
+      walletRestoreMnemonic: "",
+      walletError: "",
+      walletOpen: false,
+      walletSessionPassword: "",
+      // Clear relays
+      relays: [],
+      relayInput: "",
+      // Clear UI
+      logoutOpen: false,
+      logoutBackedUp: false,
+      profilePicError: false,
+    });
+    localStorage.removeItem("deadcat_tx_labels");
+    window.location.reload();
   }, []);
 
   if (!logoutOpen) return null;
 
+  const hasWallet = walletStatus !== "not_created";
+
+  // Simple logout for identity-only (no wallet)
+  if (!hasWallet) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+        <div className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-950 p-8">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-medium text-slate-100">Log Out</h2>
+            <CloseButton onClick={closeLogout} />
+          </div>
+          <div className="mt-5 space-y-4">
+            <p className="text-sm text-slate-400 leading-relaxed">
+              This will remove your Nostr identity from this device. Make sure
+              you have your nsec saved if you want to log back in.
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={closeLogout}
+                className="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmLogout}
+                className="flex-1 rounded-xl bg-rose-500 py-2.5 text-sm font-medium text-white transition hover:bg-rose-400"
+              >
+                Log Out
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Full logout with backup flow when wallet exists
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
       <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-8">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-medium text-slate-100">
-            Log Out of Nostr
-          </h2>
-          <button
-            type="button"
-            onClick={closeLogout}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
-          >
-            <svg
-              aria-hidden="true"
-              className="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
-          </button>
+          <h2 className="text-lg font-medium text-slate-100">Log Out</h2>
+          <CloseButton onClick={closeLogout} />
         </div>
         <div className="mt-5 space-y-4">
           <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
-            <p className="text-sm font-medium text-slate-200">
-              Logging out will <strong>remove your Nostr key and wallet</strong>{" "}
-              from this device. Make sure you have:
+            <p className="text-sm text-slate-300 leading-relaxed">
+              Logging out will{" "}
+              <strong className="text-slate-100">
+                permanently remove your Nostr keys and wallet
+              </strong>{" "}
+              from this device. Download your backup file before logging out so
+              you can restore your account later.
             </p>
-            <ul className="mt-3 space-y-2 text-sm text-slate-400">
-              {[
-                <>
-                  Saved your{" "}
-                  <strong className="text-slate-200">nsec (secret key)</strong>{" "}
-                  -- you&apos;ll need it to log back in and resolve your markets
-                </>,
-                <>
-                  Backed up your{" "}
-                  <strong className="text-slate-200">
-                    wallet recovery phrase
-                  </strong>{" "}
-                  -- your wallet remains encrypted on this device
-                </>,
-                <>
-                  Backed up your{" "}
-                  <strong className="text-slate-200">Nostr private key</strong>{" "}
-                  locally so you can restore your identity
-                </>,
-              ].map((text, i) => (
-                <li key={i} className="flex items-start gap-2">
-                  <svg
-                    aria-hidden="true"
-                    className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                  </svg>
-                  <span>{text}</span>
-                </li>
-              ))}
-            </ul>
           </div>
+          {logoutBackupDownloaded ? (
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-300">
+              <svg
+                aria-hidden="true"
+                className="h-5 w-5 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M5 13l4 4L19 7"
+                />
+              </svg>
+              Backup file downloaded
+              <button
+                type="button"
+                onClick={() => {
+                  void invoke("open_downloads_folder").catch(() => {});
+                }}
+                className="ml-auto shrink-0 text-xs text-slate-400 underline hover:text-slate-200 transition"
+              >
+                Open folder
+              </button>
+            </div>
+          ) : (
+            <>
+              {needsPassword && (
+                <input
+                  type="password"
+                  value={logoutPasswordInput}
+                  onChange={(e) =>
+                    useStore.setState({ logoutPasswordInput: e.target.value })
+                  }
+                  placeholder="Enter your wallet password"
+                  className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+                />
+              )}
+              {logoutBackupError && (
+                <div className="rounded-lg border border-amber-700/30 bg-amber-950/20 px-3 py-2">
+                  <p className="text-xs text-amber-300/80">
+                    {logoutBackupError}
+                  </p>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const nsec = await invoke<string>("export_nostr_nsec");
+                    const pw = needsPassword
+                      ? useStore.getState().logoutPasswordInput
+                      : useStore.getState().walletSessionPassword;
+                    if (!pw) {
+                      useStore.setState({
+                        logoutBackupError:
+                          "Enter your wallet password to create the backup.",
+                      });
+                      return;
+                    }
+                    let mnemonic: string;
+                    try {
+                      mnemonic = await invoke<string>("get_cached_mnemonic");
+                    } catch {
+                      mnemonic = await invoke<string>("get_wallet_mnemonic", {
+                        password: pw,
+                      });
+                    }
+                    const name =
+                      useStore.getState().nostrProfile?.display_name ||
+                      useStore.getState().nostrProfile?.name ||
+                      "unnamed";
+                    useStore.setState({ logoutBackupError: "" });
+                    const fileContent = await invoke<string>(
+                      "export_identity_file",
+                      { password: pw, nsec, mnemonic, displayName: name },
+                    );
+                    const blob = new Blob([fileContent], {
+                      type: "application/json",
+                    });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `deadcat-${name}.dcid`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    useStore.setState({
+                      logoutPasswordInput: "",
+                      logoutBackupDownloaded: true,
+                    });
+                  } catch (e) {
+                    useStore.setState({
+                      logoutBackupError: `Could not create backup: ${String(e)}`,
+                    });
+                  }
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-300 transition hover:bg-emerald-500/20"
+              >
+                <svg
+                  aria-hidden="true"
+                  className="h-4 w-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                  />
+                </svg>
+                Download backup file
+              </button>
+            </>
+          )}
           <label className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-300">
             <input
               type="checkbox"
@@ -258,18 +415,14 @@ function LogoutModal() {
               }
               className="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-950 text-rose-400 focus:ring-rose-400"
             />
-            <span>
-              I backed up my recovery phrase, unlock password, and Nostr key
-              locally before removing them from this device.
-            </span>
+            <span>I have downloaded my backup or already have one saved.</span>
           </label>
           <p className="text-xs text-slate-500">
             <strong className="text-slate-300">
-              Deadcat.live does not hold user funds.
+              Deadcat Live does not hold user funds.
             </strong>{" "}
-            Your keys and wallet data will be permanently removed from this
-            device. If you lose your recovery phrase and password, your funds
-            cannot be recovered.
+            If you lose your backup file and password, your funds cannot be
+            recovered.
           </p>
           <div className="flex gap-3">
             <button
@@ -283,7 +436,7 @@ function LogoutModal() {
               type="button"
               onClick={confirmLogout}
               disabled={!logoutBackedUp}
-              className={`flex-1 rounded-xl py-2.5 text-sm font-medium transition ${logoutBackedUp ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "cursor-not-allowed border border-slate-800 text-slate-600"}`}
+              className={`flex-1 rounded-xl py-2.5 text-sm font-medium transition ${logoutBackedUp ? "bg-rose-500 text-white hover:bg-rose-400" : "cursor-not-allowed border border-slate-800 text-slate-600"}`}
             >
               Log Out
             </button>
@@ -302,7 +455,9 @@ function CategoryBar() {
   const marketMakerMode = useStore((s) => s.marketMakerMode);
 
   const filteredCategories = categories.filter(
-    (category) => category !== "My Markets" || (nostrPubkey && marketMakerMode),
+    (category) =>
+      category !== "Portfolio" &&
+      (category !== "My Markets" || (nostrPubkey && marketMakerMode)),
   );
 
   return (
@@ -365,7 +520,6 @@ function CategoryBar() {
 function WalletButton() {
   const nostrPubkey = useStore((s) => s.nostrPubkey);
   const walletStatus = useStore((s) => s.walletStatus);
-  const showMiniWallet = useStore((s) => s.showMiniWallet);
   const walletData = useStore((s) => s.walletData);
   const walletPolicyAssetId = useStore((s) => s.walletPolicyAssetId);
   const walletBalanceHidden = useStore((s) => s.walletBalanceHidden);
@@ -378,7 +532,9 @@ function WalletButton() {
     return (
       <button
         type="button"
-        onClick={openWallet}
+        onClick={() =>
+          useStore.setState({ setupModalOpen: true, onboardingStep: "nostr" })
+        }
         className="shrink-0 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-300 transition"
       >
         Get started
@@ -399,16 +555,14 @@ function WalletButton() {
   }
 
   const showBalance =
-    showMiniWallet &&
-    walletStatus === "unlocked" &&
-    walletData?.balance &&
-    !walletBalanceHidden;
+    walletStatus === "unlocked" && walletData?.balance && !walletBalanceHidden;
+  const isLocked = walletStatus === "locked";
 
   return (
     <button
       type="button"
       onClick={openWallet}
-      className={`flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${showBalance ? "gap-1.5 px-3" : "w-9"}`}
+      className={`flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${isLocked ? "gap-1 px-3" : showBalance ? "gap-1.5 px-3" : "w-9"}`}
     >
       <svg
         aria-hidden="true"
@@ -427,6 +581,19 @@ function WalletButton() {
         <span className="text-xs font-medium text-slate-300">
           {formatCompactSats(walletData?.balance[walletPolicyAssetId] ?? 0)}
         </span>
+      )}
+      {isLocked && (
+        <svg
+          aria-hidden="true"
+          className="h-3.5 w-3.5 shrink-0 text-slate-500"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+        >
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+          <path d="M7 11V7a5 5 0 0110 0v4" />
+        </svg>
       )}
     </button>
   );
@@ -505,6 +672,7 @@ function Logo() {
 export function TopShell() {
   const view = useStore((s) => s.view);
   const nostrPubkey = useStore((s) => s.nostrPubkey);
+  const activeCategory = useStore((s) => s.activeCategory);
 
   const goHome = useCallback(() => {
     useStore.setState({ view: "home", selectedMarketId: "" });
@@ -548,6 +716,34 @@ export function TopShell() {
             {/* Right side: search + wallet + user menu */}
             <div className="ml-auto flex shrink-0 items-center gap-2 pb-[5px]">
               <SearchBar />
+              {nostrPubkey && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    useStore.setState({
+                      view: "home",
+                      activeCategory: "Portfolio",
+                    })
+                  }
+                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 transition ${activeCategory === "Portfolio" ? "border-slate-500 text-slate-100" : "text-slate-400 hover:border-slate-500 hover:text-slate-200"}`}
+                  title="Portfolio"
+                >
+                  <svg
+                    aria-hidden="true"
+                    className="h-[18px] w-[18px]"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M3 3v18h18" />
+                    <rect x="7" y="13" width="9" height="4" rx="1" />
+                    <rect x="7" y="5" width="12" height="4" rx="1" />
+                  </svg>
+                </button>
+              )}
               <WalletButton />
               {nostrPubkey && <UserMenu />}
             </div>

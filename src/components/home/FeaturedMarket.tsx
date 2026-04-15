@@ -4,6 +4,7 @@ import { useStore } from "../../store";
 import type { Market } from "../../types";
 import { formatTimeRemaining, formatVolumeBtc } from "../../utils-react/format";
 import { stateLabel } from "../../utils-react/market";
+import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
 import MarketChart from "../chart/MarketChart";
 import { openMarket, TrendIndicator } from "./MarketCard";
 
@@ -38,7 +39,11 @@ export default function FeaturedMarket({
   trending: Market[];
 }) {
   const trendingIndex = useStore((s) => s.trendingIndex);
-  const { data: priceHistory } = usePriceHistory(market.marketId);
+  const { data: rawPriceHistory } = usePriceHistory(market.marketId);
+  const priceHistory =
+    rawPriceHistory && rawPriceHistory.length > 0
+      ? rawPriceHistory
+      : generateMockPriceHistory(market);
 
   const featuredNo = market.yesPrice != null ? 1 - market.yesPrice : null;
   const featuredYesPct =
@@ -164,11 +169,7 @@ export default function FeaturedMarket({
 
       {/* Chart — real price history */}
       <div>
-        <MarketChart
-          market={market}
-          priceHistory={priceHistory ?? []}
-          mode="home"
-        />
+        <MarketChart market={market} priceHistory={priceHistory} mode="home" />
       </div>
     </div>
   );

@@ -7,6 +7,7 @@ import {
 } from "../../queries/mutations/useWalletOps";
 import { useStore } from "../../store";
 import { btcLabel } from "../../utils-react/wallet";
+import { showToast } from "../shared/Toast";
 
 const QR_LOGO_SVG =
   "data:image/svg+xml;base64," +
@@ -48,6 +49,7 @@ async function generateQr(value: string): Promise<string> {
 function Copyable({ value, label }: { value: string; label: string }) {
   const handleCopy = useCallback(() => {
     void navigator.clipboard.writeText(value);
+    showToast("Copied to clipboard");
   }, [value]);
 
   return (

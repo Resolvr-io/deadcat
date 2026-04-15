@@ -1,5 +1,6 @@
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useStore } from "../../store";
+import { CloseButton } from "../shared/CloseButton";
 import { WalletLocked } from "./WalletLocked";
 import { WalletSetup } from "./WalletSetup";
 import { WalletUnlocked } from "./WalletUnlocked";
@@ -22,6 +23,20 @@ export function WalletPage() {
     [],
   );
 
+  useEffect(() => {
+    if (walletOpen) {
+      document.body.style.overflow = "hidden";
+      document.documentElement.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    }
+    return () => {
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    };
+  }, [walletOpen]);
+
   if (!walletOpen) return null;
 
   const networkBadge =
@@ -35,7 +50,7 @@ export function WalletPage() {
   if (walletStatus === "not_created") {
     content = <WalletSetup networkBadge={networkBadge} />;
   } else if (walletStatus === "locked") {
-    content = <WalletLocked networkBadge={networkBadge} />;
+    content = <WalletLocked />;
   } else {
     content = <WalletUnlocked networkBadge={networkBadge} />;
   }
@@ -46,30 +61,18 @@ export function WalletPage() {
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 backdrop-blur-sm"
     >
       <div className="relative mx-4 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
-          <h2 className="text-lg font-medium text-slate-100">Wallet</h2>
-          <button
-            type="button"
+        {walletStatus !== "not_created" && (
+          <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
+            <h2 className="text-lg font-medium text-slate-100">Wallet</h2>
+            <CloseButton onClick={close} />
+          </div>
+        )}
+        {walletStatus === "not_created" && (
+          <CloseButton
             onClick={close}
-            className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-          >
-            <svg
-              aria-hidden="true"
-              xmlns="http://www.w3.org/2000/svg"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
+            className="absolute right-4 top-4 z-10"
+          />
+        )}
         <div className="flex-1 overflow-y-auto">{content}</div>
       </div>
     </div>

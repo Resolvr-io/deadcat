@@ -382,7 +382,7 @@ export default function SettlementPicker() {
             {DAY_NAMES.map((d) => (
               <div
                 key={d}
-                className="flex h-9 w-9 items-center justify-center text-[11px] font-medium uppercase text-slate-500"
+                className="flex h-9 w-9 items-center justify-center text-xs font-medium uppercase text-slate-500"
               >
                 {d}
               </div>

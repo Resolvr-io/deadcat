@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef } from "react";
 import { useStore } from "../store";
-import type { IdentityResponse } from "../types";
+import type { IdentityResponse, NostrProfile } from "../types";
 
 function dismissSplash(): void {
   const splash = document.getElementById("splash");
@@ -37,9 +37,64 @@ export function useBootstrap(): void {
         console.warn("Failed to load nostr identity:", error);
       }
 
-      // 2. Set default relays if no identity
+      // 2. Fetch Nostr profile (kind 0 metadata)
+      const { nostrPubkey: loadedPubkey } = useStore.getState();
+      if (loadedPubkey) {
+        // First attempt — may fail if relays aren't connected yet
+        let fetched = false;
+        try {
+          const profile = await invoke<NostrProfile | null>(
+            "fetch_nostr_profile",
+          );
+          if (profile) {
+            useStore.setState({ nostrProfile: profile });
+            fetched = true;
+          }
+        } catch {
+          // Will retry below
+        }
+        // If first attempt failed, retry in background after relays settle
+        if (!fetched) {
+          setTimeout(async () => {
+            try {
+              const profile = await invoke<NostrProfile | null>(
+                "fetch_nostr_profile",
+              );
+              if (profile) useStore.setState({ nostrProfile: profile });
+            } catch {
+              // Give up
+            }
+          }, 3000);
+        }
+      }
+
+      // Load relay list
       const { nostrNpub } = useStore.getState();
-      if (!nostrNpub) {
+      if (nostrNpub) {
+        try {
+          const relays =
+            await invoke<{ url: string; has_backup: boolean }[]>(
+              "get_relay_list",
+            );
+          if (relays.length > 0) {
+            useStore.setState({ relays });
+          } else {
+            useStore.setState({
+              relays: [
+                { url: "wss://relay.damus.io", has_backup: false },
+                { url: "wss://relay.primal.net", has_backup: false },
+              ],
+            });
+          }
+        } catch {
+          useStore.setState({
+            relays: [
+              { url: "wss://relay.damus.io", has_backup: false },
+              { url: "wss://relay.primal.net", has_backup: false },
+            ],
+          });
+        }
+      } else {
         useStore.setState({
           relays: [
             { url: "wss://relay.damus.io", has_backup: false },
@@ -57,8 +112,19 @@ export function useBootstrap(): void {
             policyAssetId: string;
           };
         }>("get_app_state");
+        const { nostrPubkey: currentPubkey } = useStore.getState();
+        // If wallet is locked but no identity exists, the wallet can't be
+        // unlocked (the node requires an identity first). Treat as not_created
+        // so the user sees wallet setup instead of an unlock prompt.
+        const effectiveStatus =
+          appState.walletStatus === "locked" && !currentPubkey
+            ? "not_created"
+            : appState.walletStatus;
         useStore.setState({
-          walletStatus: appState.walletStatus,
+          walletStatus: effectiveStatus as
+            | "not_created"
+            | "locked"
+            | "unlocked",
           walletNetwork: appState.networkStatus.network,
           walletPolicyAssetId: appState.networkStatus.policyAssetId,
         });

@@ -146,8 +146,13 @@ pub struct RelayBackupResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NostrProfile {
     pub picture: Option<String>,
+    pub banner: Option<String>,
     pub name: Option<String>,
     pub display_name: Option<String>,
+    pub about: Option<String>,
+    pub website: Option<String>,
+    pub nip05: Option<String>,
+    pub lud16: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -370,25 +375,99 @@ pub async fn fetch_profile(
         if let Some(event) = iter.next() {
             let parsed: serde_json::Value = serde_json::from_str(&event.content)
                 .map_err(|e| format!("failed to parse profile JSON: {e}"))?;
+            let str_field = |key: &str| -> Option<String> {
+                parsed.get(key).and_then(|v| v.as_str()).map(String::from)
+            };
             Some(NostrProfile {
-                picture: parsed
-                    .get("picture")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-                name: parsed
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-                display_name: parsed
-                    .get("display_name")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
+                picture: str_field("picture"),
+                banner: str_field("banner"),
+                name: str_field("name"),
+                display_name: str_field("display_name"),
+                about: str_field("about"),
+                website: str_field("website"),
+                nip05: str_field("nip05"),
+                lud16: str_field("lud16"),
             })
         } else {
             None
         }
     };
     Ok(result)
+}
+
+/// Publish a kind 0 metadata event with profile fields.
+/// Fetches the existing kind 0 first and merges to avoid clobbering unset fields.
+pub async fn publish_profile(
+    keys: &Keys,
+    client: &Client,
+    profile: &NostrProfile,
+) -> Result<(), String> {
+    let name = profile
+        .name
+        .as_deref()
+        .ok_or_else(|| "profile name is required".to_string())?;
+
+    // Fetch existing kind 0 to merge with
+    let mut meta = {
+        let filter = Filter::new()
+            .kind(Kind::Metadata)
+            .author(keys.public_key())
+            .limit(1);
+        let events = client
+            .fetch_events(vec![filter], Duration::from_secs(5))
+            .await
+            .ok();
+        events
+            .and_then(|evts| {
+                evts.iter()
+                    .next()
+                    .and_then(|e| serde_json::from_str::<serde_json::Value>(&e.content).ok())
+            })
+            .unwrap_or_else(|| serde_json::json!({}))
+    };
+
+    // Always set name
+    meta["name"] = serde_json::Value::String(name.to_string());
+
+    // Merge provided fields — only overwrite if Some (empty string clears the field)
+    if let Some(v) = profile.display_name.as_deref() {
+        if v.is_empty() {
+            meta.as_object_mut().map(|m| m.remove("display_name"));
+        } else {
+            meta["display_name"] = serde_json::Value::String(v.to_string());
+        }
+    }
+    if profile.display_name.is_none() && meta.get("display_name").is_none() {
+        meta["display_name"] = serde_json::Value::String(name.to_string());
+    }
+    for (key, val) in [
+        ("picture", profile.picture.as_deref()),
+        ("about", profile.about.as_deref()),
+        ("website", profile.website.as_deref()),
+        ("nip05", profile.nip05.as_deref()),
+        ("lud16", profile.lud16.as_deref()),
+        ("banner", profile.banner.as_deref()),
+    ] {
+        if let Some(v) = val {
+            if v.is_empty() {
+                meta.as_object_mut().map(|m| m.remove(key));
+            } else {
+                meta[key] = serde_json::Value::String(v.to_string());
+            }
+        }
+        // If None, leave existing value untouched
+    }
+
+    let content = meta.to_string();
+    let event = EventBuilder::new(Kind::Metadata, content)
+        .sign(keys)
+        .await
+        .map_err(|e| format!("failed to sign profile event: {e}"))?;
+    client
+        .send_event(event)
+        .await
+        .map_err(|e| format!("failed to publish profile: {e}"))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

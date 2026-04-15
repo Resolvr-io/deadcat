@@ -1,5 +1,6 @@
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useStore } from "../../store";
+import { CloseButton } from "../shared/CloseButton";
 import NostrSetupStep from "./NostrSetupStep";
 import WalletSetupStep from "./WalletSetupStep";
 
@@ -8,6 +9,21 @@ export default function OnboardingOverlay() {
   const onboardingStep = useStore((s) => s.onboardingStep);
   const onboardingNostrDone = useStore((s) => s.onboardingNostrDone);
   const onboardingWalletOnly = useStore((s) => s.onboardingWalletOnly);
+  const backupFileContent = useStore((s) => s.onboardingBackupFileContent);
+  // Lock background scroll when modal is open
+  useEffect(() => {
+    if (setupModalOpen) {
+      document.body.style.overflow = "hidden";
+      document.documentElement.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    }
+    return () => {
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    };
+  }, [setupModalOpen]);
 
   const handleClose = useCallback(() => {
     useStore.setState({
@@ -33,15 +49,6 @@ export default function OnboardingOverlay() {
       onboardingPasswordRevealed: false,
     });
   }, []);
-
-  const handleBackdropClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (e.target === e.currentTarget) {
-        handleClose();
-      }
-    },
-    [handleClose],
-  );
 
   if (!setupModalOpen) return null;
 
@@ -106,34 +113,16 @@ export default function OnboardingOverlay() {
   return (
     <div
       role="presentation"
-      onClick={handleBackdropClick}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") handleClose();
-      }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm"
     >
       <div className="relative w-full max-w-[432px] mx-4">
-        <button
-          type="button"
-          onClick={handleClose}
-          className="absolute -top-10 right-0 flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition"
-        >
-          <svg
-            className="h-4 w-4"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2}
-            aria-hidden="true"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M6 18L18 6M6 6l12 12"
-            />
-          </svg>
-          Close
-        </button>
+        {!backupFileContent && (
+          <CloseButton
+            onClick={handleClose}
+            variant="overlay"
+            className="absolute -top-12 right-0"
+          />
+        )}
         {onboardingStep === "nostr" ? (
           <NostrSetupStep stepIndicator={stepIndicator} />
         ) : onboardingStep === "wallet" ? (

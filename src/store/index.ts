@@ -51,7 +51,14 @@ export interface NavigationSlice {
   settingsOpen: boolean;
   settingsSection: Record<string, boolean>;
   logoutOpen: boolean;
+  walletSessionPassword: string;
   logoutBackedUp: boolean;
+  logoutBackupError: string;
+  logoutPasswordInput: string;
+  logoutBackupDownloaded: boolean;
+  profileOpen: boolean;
+  closeConfirmOpen: boolean;
+  onboardingSuccess: boolean;
   showMiniWallet: boolean;
   showLbtcLabel: boolean;
   marketMakerMode: boolean;
@@ -114,6 +121,7 @@ export interface WalletUiSlice {
   walletMnemonic: string;
   walletRestoreMnemonic: string;
   walletShowRestore: boolean;
+  walletShowCreate: boolean;
   walletUtxosExpanded: boolean;
   walletError: string;
   walletLoading: boolean;
@@ -121,6 +129,9 @@ export interface WalletUiSlice {
   walletBalanceHidden: boolean;
   walletDeletePrompt: boolean;
   walletDeleteConfirm: string;
+  nostrBackupNsecInput: string;
+  nostrBackupNsecPrompt: boolean;
+  nostrSetupExpanded: boolean;
 }
 
 // ── Wallet modals slice ─────────────────────────────────────────────
@@ -170,7 +181,7 @@ export interface OnboardingSlice {
   setupModalOpen: boolean;
   setupRequires: "wallet" | "identity+wallet" | null;
   onboardingStep: "nostr" | "wallet" | null;
-  onboardingNostrMode: "generate" | "import";
+  onboardingNostrMode: "generate" | "import" | "restore" | "manual-restore";
   onboardingNostrNsec: string;
   onboardingNostrGeneratedNsec: string;
   onboardingNsecRevealed: boolean;
@@ -178,6 +189,17 @@ export interface OnboardingSlice {
   onboardingNostrDone: boolean;
   onboardingPendingPubkey: string;
   onboardingPendingNpub: string;
+  onboardingProfileStep: boolean;
+  onboardingNostrDisplayName: string;
+  onboardingProfilePhotoDataUrl: string;
+  onboardingKeysOpen: boolean;
+  onboardingRestoreFileContent: string;
+  onboardingRestoreFileName: string;
+  onboardingRestorePassword: string;
+  onboardingRestoreMnemonic: string;
+  onboardingRestoreNsec: string;
+  onboardingBackupDownloaded: boolean;
+  onboardingBackupFileContent: string;
   onboardingWalletMode: "create" | "restore" | "nostr-restore";
   onboardingWalletPasswordStep: boolean;
   onboardingWalletPassword: string;
@@ -271,7 +293,14 @@ export const useStore = create<StoreState>()(() => ({
   settingsOpen: false,
   settingsSection: { nostr: true, relays: false, wallet: false, dev: false },
   logoutOpen: false,
+  walletSessionPassword: "",
   logoutBackedUp: false,
+  logoutBackupError: "",
+  logoutPasswordInput: "",
+  logoutBackupDownloaded: false,
+  profileOpen: false,
+  closeConfirmOpen: false,
+  onboardingSuccess: false,
   showMiniWallet: true,
   showLbtcLabel: false,
   marketMakerMode: false,
@@ -330,6 +359,7 @@ export const useStore = create<StoreState>()(() => ({
   walletMnemonic: "",
   walletRestoreMnemonic: "",
   walletShowRestore: false,
+  walletShowCreate: false,
   walletUtxosExpanded: false,
   walletError: "",
   walletLoading: false,
@@ -337,6 +367,9 @@ export const useStore = create<StoreState>()(() => ({
   walletBalanceHidden: false,
   walletDeletePrompt: false,
   walletDeleteConfirm: "",
+  nostrBackupNsecInput: "",
+  nostrBackupNsecPrompt: false,
+  nostrSetupExpanded: false,
 
   // ── Wallet modals ───────────────────────────────────────────────
   walletModal: "none",
@@ -388,6 +421,17 @@ export const useStore = create<StoreState>()(() => ({
   onboardingNostrDone: false,
   onboardingPendingPubkey: "",
   onboardingPendingNpub: "",
+  onboardingProfileStep: false,
+  onboardingNostrDisplayName: "",
+  onboardingProfilePhotoDataUrl: "",
+  onboardingKeysOpen: false,
+  onboardingRestoreFileContent: "",
+  onboardingRestoreFileName: "",
+  onboardingRestorePassword: "",
+  onboardingRestoreMnemonic: "",
+  onboardingRestoreNsec: "",
+  onboardingBackupDownloaded: false,
+  onboardingBackupFileContent: "",
   onboardingWalletMode: "create",
   onboardingWalletPasswordStep: false,
   onboardingWalletPassword: "",

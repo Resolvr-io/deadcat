@@ -1,6 +1,7 @@
 mod chain_adapter;
 pub mod commands;
 pub mod discovery;
+pub mod identity_file;
 mod payments;
 pub mod state;
 pub mod wallet;
@@ -11,6 +12,7 @@ use std::sync::Mutex;
 use deadcat_sdk::elements::hashes::Hash as _;
 use deadcat_store::ChainSource;
 use serde::Deserialize;
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager};
 
 use state::{AppState, AppStateManager, PaymentSwap, AUTO_LOCK_TIMEOUT_SECS};
@@ -741,6 +743,24 @@ async fn send_lbtc(
     })
 }
 
+/// Return the cached mnemonic if the wallet is unlocked (no password needed).
+#[tauri::command]
+async fn get_cached_mnemonic(app: AppHandle) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        let persister = mgr.persister().ok_or("Persister not initialized")?;
+        persister
+            .cached()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Wallet is locked — mnemonic not cached".to_string())
+    })
+    .await
+    .map_err(|e| format!("cached mnemonic task failed: {e}"))?
+}
+
 #[tauri::command]
 async fn get_wallet_mnemonic(password: String, app: AppHandle) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
@@ -1239,6 +1259,12 @@ fn emit_state(app: &AppHandle, state: &AppState) {
     let _ = app.emit(APP_STATE_UPDATED_EVENT, state);
 }
 
+/// Exit the application (called after user confirms quit).
+#[tauri::command]
+fn confirm_quit(app: AppHandle) {
+    app.exit(0);
+}
+
 // ============================================================================
 // App Entry Point
 // ============================================================================
@@ -1250,6 +1276,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
@@ -1280,6 +1308,23 @@ pub fn run() {
             app.manage(NodeState::default());
             app.manage(NostrAppState::default());
             app.manage(WalletStoreState::default());
+
+            // Custom macOS menu — Cmd+Q routes through frontend quit confirmation
+            let quit_item = MenuItemBuilder::with_id("confirm-quit", "Quit Deadcat Live")
+                .accelerator("CmdOrCtrl+Q")
+                .build(app)?;
+            let app_submenu = SubmenuBuilder::new(app, "Deadcat Live")
+                .items(&[&quit_item])
+                .build()?;
+            let menu = MenuBuilder::new(app).item(&app_submenu).build()?;
+            app.set_menu(menu)?;
+            app.on_menu_event(move |app, event| {
+                if event.id() == "confirm-quit" {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("close-requested", ());
+                    }
+                }
+            });
 
             // Spawn auto-lock background timer
             let app_handle = app.handle().clone();
@@ -1342,6 +1387,7 @@ pub fn run() {
             get_wallet_address,
             get_wallet_transactions,
             get_wallet_mnemonic,
+            get_cached_mnemonic,
             get_mnemonic_word_count,
             get_mnemonic_word,
             send_lbtc,
@@ -1357,6 +1403,7 @@ pub fn run() {
             refresh_payment_swap_status,
             // Legacy
             fetch_chain_tip,
+            confirm_quit,
             // SDK / Nostr
             commands::init_nostr_identity,
             commands::generate_nostr_identity,
@@ -1377,6 +1424,11 @@ pub fn run() {
             commands::add_relay,
             commands::remove_relay,
             commands::fetch_nostr_profile,
+            commands::publish_nostr_profile,
+            commands::create_nip98_auth,
+            commands::export_identity_file,
+            commands::open_downloads_folder,
+            commands::import_identity_file,
             commands::create_contract_onchain,
             commands::issue_tokens,
             commands::cancel_tokens,
@@ -1408,6 +1460,13 @@ pub fn run() {
             wallet_store::wallet_new_address,
             wallet_store::wallet_signer_id,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Prevent immediate close — let the frontend handle confirmation
+                api.prevent_close();
+                let _ = window.emit("close-requested", ());
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

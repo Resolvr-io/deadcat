@@ -1,6 +1,8 @@
 import { useCallback } from "react";
 import { useStore } from "../../store";
 import { hexToNpub } from "../../utils/crypto";
+import { CloseButton } from "../shared/CloseButton";
+import { showToast } from "../shared/Toast";
 
 function truncHex(v: string): string {
   return v.length > 16 ? `${v.slice(0, 8)}\u2026${v.slice(-8)}` : v;
@@ -19,6 +21,7 @@ function CopyableField({
 }) {
   const handleCopy = useCallback(() => {
     void navigator.clipboard.writeText(value);
+    showToast("Copied to clipboard");
   }, [value]);
 
   const display = displayValue ? truncBech32(displayValue) : truncHex(value);
@@ -76,12 +79,14 @@ export function NostrEventModal() {
   const handleCopyJson = useCallback(() => {
     if (nostrEventJson) {
       void navigator.clipboard.writeText(nostrEventJson);
+      showToast("Copied event JSON");
     }
   }, [nostrEventJson]);
 
   const handleCopyNevent = useCallback(() => {
     if (nostrEventNevent) {
       void navigator.clipboard.writeText(nostrEventNevent);
+      showToast("Copied event ID");
     }
   }, [nostrEventNevent]);
 
@@ -147,27 +152,7 @@ export function NostrEventModal() {
             </div>
             <h3 className="text-lg font-medium text-slate-100">Nostr Event</h3>
           </div>
-          <button
-            type="button"
-            onClick={handleClose}
-            className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-          >
-            <svg
-              aria-hidden="true"
-              xmlns="http://www.w3.org/2000/svg"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+          <CloseButton onClick={handleClose} />
         </div>
         <div className="flex flex-col gap-3 p-6 max-h-[70vh] overflow-y-auto">
           {parsed ? (
@@ -288,14 +273,14 @@ export function NostrEventModal() {
                     Content{" "}
                     <span className="text-slate-600">-- click to expand</span>
                   </summary>
-                  <pre className="mt-1 max-h-48 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-[11px] text-slate-200 leading-relaxed">
+                  <pre className="mt-1 max-h-48 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-xs text-slate-200 leading-relaxed">
                     {contentPretty}
                   </pre>
                 </details>
               )}
             </>
           ) : (
-            <pre className="max-h-96 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-[11px] text-slate-200 leading-relaxed">
+            <pre className="max-h-96 overflow-auto rounded-lg bg-slate-800 p-3 font-mono text-xs text-slate-200 leading-relaxed">
               {nostrEventJson}
             </pre>
           )}

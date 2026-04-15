@@ -129,12 +129,86 @@ export default function MarketHeader({ market }: { market: Market }) {
         </button>
       </div>
 
-      {/* Volume + settlement info */}
-      <p className="mb-4 text-xs text-slate-500">
-        {formatVolumeBtc(market.volumeBtc)} vol · Est. by{" "}
-        {formatSettlementDateTime(estimatedSettlementDate)} ·{" "}
-        {formatTimeRemaining(market.expiryHeight - market.currentHeight)}
-      </p>
+      {/* Market stats */}
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2.5">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
+            Volume
+          </p>
+          <p className="text-base font-semibold text-slate-200">
+            {formatVolumeBtc(market.volumeBtc)}
+          </p>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2.5">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
+            Traders
+          </p>
+          <p className="text-base font-semibold text-slate-200">
+            {market.traderCount > 0
+              ? market.traderCount.toLocaleString()
+              : "\u2014"}
+          </p>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2.5">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
+            Liquidity
+          </p>
+          <p className="text-base font-semibold text-slate-200">
+            {formatVolumeBtc(market.liquidityBtc)}
+          </p>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2.5">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
+            Ends
+          </p>
+          <p className="text-base font-semibold text-slate-200">
+            {formatTimeRemaining(market.expiryHeight - market.currentHeight)}
+          </p>
+        </div>
+      </div>
+
+      {/* Resolution rules */}
+      <div className="mb-4 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+        <div className="mb-2 flex items-center gap-2">
+          <svg
+            aria-hidden="true"
+            className="h-4 w-4 text-slate-400"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="16" y1="13" x2="8" y2="13" />
+            <line x1="16" y1="17" x2="8" y2="17" />
+          </svg>
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+            Resolution Rules
+          </span>
+        </div>
+        <p className="mb-2 text-sm text-slate-300">{market.description}</p>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+          <span>
+            Source:{" "}
+            <span className="text-slate-300">{market.resolutionSource}</span>
+          </span>
+          <span>
+            Deadline:{" "}
+            <span className="text-slate-300">
+              Est. {formatSettlementDateTime(estimatedSettlementDate)}
+            </span>
+          </span>
+          <span>
+            Block:{" "}
+            <span className="text-slate-300">
+              {market.expiryHeight.toLocaleString()}
+            </span>
+          </span>
+        </div>
+      </div>
 
       {/* Position display */}
       {(positions.yes > 0 || positions.no > 0) && (

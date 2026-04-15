@@ -4,6 +4,8 @@ import { useStore } from "../../store";
 import type { CovenantState, Market, NavCategory } from "../../types";
 import {
   formatProbabilityWithPercent,
+  formatSats,
+  formatTimeRemaining,
   formatVolumeBtc,
 } from "../../utils-react/format";
 import {
@@ -11,6 +13,7 @@ import {
   getEndingSoonMarkets,
   getFilteredMarkets,
   getNewMarkets,
+  getPositionContracts,
   getTrendingMarkets,
   isExpired,
 } from "../../utils-react/market";
@@ -54,6 +57,14 @@ function CategoryIcon({
       return (
         <svg aria-hidden="true" {...props}>
           <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+        </svg>
+      );
+    case "Portfolio":
+      return (
+        <svg aria-hidden="true" {...props}>
+          <path d="M3 3v18h18" />
+          <rect x="7" y="13" width="9" height="4" rx="1" />
+          <rect x="7" y="5" width="12" height="4" rx="1" />
         </svg>
       );
     case "My Markets":
@@ -231,25 +242,24 @@ function EmptyState() {
 
   return (
     <div className="phi-container py-16 text-center">
+      <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full border border-slate-700 bg-slate-900/60">
+        <CategoryIcon category="Trending" className="h-9 w-9" />
+      </div>
       <h2 className="mb-3 text-2xl font-semibold text-slate-100">
-        No markets discovered
+        No markets yet
       </h2>
-      <p className="mb-6 text-base text-slate-400">
-        Be the first to create a prediction market on Liquid Testnet.
+      <p className="mx-auto mb-6 max-w-md text-base text-slate-400">
+        Prediction markets on Liquid will appear here once they're published to
+        Nostr relays.
       </p>
       {walletStatus !== "unlocked" && (
-        <>
-          <p className="mb-4 text-sm text-amber-300">
-            Set up your wallet first to start trading
-          </p>
-          <button
-            type="button"
-            onClick={() => useStore.setState({ walletOpen: true })}
-            className="mr-3 rounded-xl border border-slate-600 px-6 py-3 text-base font-medium text-slate-200"
-          >
-            Set Up Wallet
-          </button>
-        </>
+        <button
+          type="button"
+          onClick={() => useStore.setState({ walletOpen: true })}
+          className="mr-3 rounded-xl border border-slate-600 px-6 py-3 text-base font-medium text-slate-200"
+        >
+          Set Up Wallet
+        </button>
       )}
       {marketMakerMode && (
         <button
@@ -257,7 +267,7 @@ function EmptyState() {
           onClick={() => useStore.setState({ view: "create" })}
           className="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950"
         >
-          <span className="mr-1">+</span> Create New Market
+          <span className="mr-1">+</span> Create Market
         </button>
       )}
       {nostrPubkey && (
@@ -280,10 +290,22 @@ function SortedView({
   if (sortedMarkets.length === 0) {
     return (
       <div className="phi-container py-16 text-center">
+        <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full border border-slate-700 bg-slate-900/60">
+          <CategoryIcon category={title} className="h-9 w-9" />
+        </div>
         <h2 className="mb-3 text-2xl font-semibold text-slate-100">
           No {title.toLowerCase()} markets
         </h2>
-        <p className="text-base text-slate-400">Check back soon for updates.</p>
+        <p className="mx-auto mb-4 max-w-md text-base text-slate-400">
+          Markets matching this filter will appear here.
+        </p>
+        <button
+          type="button"
+          onClick={() => useStore.setState({ activeCategory: "Trending" })}
+          className="rounded-xl border border-slate-600 px-6 py-3 text-base font-medium text-slate-200"
+        >
+          Browse All Markets
+        </button>
       </div>
     );
   }
@@ -309,6 +331,217 @@ function SortedView({
   );
 }
 
+// ── Portfolio view ───────────────────────────────────────────────────
+function PortfolioView({ markets }: { markets: Market[] }) {
+  const walletData = useStore((s) => s.walletData);
+  const walletStatus = useStore((s) => s.walletStatus);
+
+  const positions = useMemo(
+    () => getFilteredMarkets(markets, "", "Portfolio", null, walletData),
+    [markets, walletData],
+  );
+
+  if (positions.length === 0) {
+    const hasWallet = walletStatus === "unlocked";
+    return (
+      <div className="phi-container py-16 text-center">
+        <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full border border-slate-700 bg-slate-900/60">
+          <CategoryIcon category="Portfolio" className="h-9 w-9" />
+        </div>
+        <h2 className="mb-3 text-2xl font-semibold text-slate-100">
+          No positions yet
+        </h2>
+        <p className="mx-auto mb-6 max-w-md text-base text-slate-400">
+          {hasWallet
+            ? "When you buy Yes or No on a market, your positions and P&L will appear here."
+            : "Set up a wallet and start trading to track your portfolio."}
+        </p>
+        <button
+          type="button"
+          onClick={() => useStore.setState({ activeCategory: "Trending" })}
+          className="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950"
+        >
+          Browse Markets
+        </button>
+      </div>
+    );
+  }
+
+  const positionCards = positions.map((market) => {
+    const pos = getPositionContracts(market, walletData);
+    const fc = fullContractSats(market);
+    const yesPriceSats =
+      market.yesPrice != null ? Math.round(market.yesPrice * fc) : null;
+    const noPriceSats = yesPriceSats != null ? fc - yesPriceSats : null;
+    const yesValue = yesPriceSats != null ? pos.yes * yesPriceSats : 0;
+    const noValue = noPriceSats != null ? pos.no * noPriceSats : 0;
+    const totalValue = yesValue + noValue;
+    const isResolved = market.state === 2 || market.state === 3;
+    const winningSide =
+      market.state === 2 ? "yes" : market.state === 3 ? "no" : null;
+    return {
+      market,
+      pos,
+      yesPriceSats,
+      noPriceSats,
+      totalValue,
+      isResolved,
+      winningSide,
+    };
+  });
+
+  const totalPortfolioValue = positionCards.reduce(
+    (sum, p) => sum + p.totalValue,
+    0,
+  );
+  const activePositions = positionCards.filter((p) => !p.isResolved);
+  const settledPositions = positionCards.filter((p) => p.isResolved);
+
+  return (
+    <div className="phi-container py-6 lg:py-8">
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="flex items-center gap-2 text-xl font-medium text-slate-100">
+          <CategoryIcon category="Portfolio" className="h-5 w-5" />
+          Portfolio
+        </h1>
+      </div>
+
+      <div className="mb-6 grid gap-3 sm:grid-cols-3">
+        <div className="rounded-xl border border-slate-800 bg-slate-950/45 px-4 py-3">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
+            Portfolio Value
+          </p>
+          <p className="text-2xl font-semibold text-slate-100">
+            {formatSats(totalPortfolioValue)}
+          </p>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-950/45 px-4 py-3">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
+            Active Positions
+          </p>
+          <p className="text-2xl font-semibold text-emerald-300">
+            {activePositions.length}
+          </p>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-950/45 px-4 py-3">
+          <p className="text-xs uppercase tracking-wider text-slate-500">
+            Settled
+          </p>
+          <p className="text-2xl font-semibold text-slate-400">
+            {settledPositions.length}
+          </p>
+        </div>
+      </div>
+
+      {activePositions.length > 0 && (
+        <>
+          <h3 className="mb-3 text-sm font-medium uppercase tracking-wider text-slate-400">
+            Active
+          </h3>
+          <div className="mb-6 space-y-3">
+            {activePositions.map((p) => {
+              const blocksLeft = p.market.expiryHeight - p.market.currentHeight;
+              const timeLeft =
+                blocksLeft > 0 ? formatTimeRemaining(blocksLeft) : "Expired";
+              return (
+                <button
+                  type="button"
+                  key={p.market.id}
+                  onClick={() => openMarket(p.market)}
+                  className="block w-full rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600"
+                >
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-xs text-slate-500">
+                      {p.market.category} · {timeLeft}
+                    </span>
+                  </div>
+                  <p className="mb-3 text-sm text-slate-200">
+                    {p.market.question}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {p.pos.yes > 0 && (
+                      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5">
+                        <span className="text-xs text-slate-400">YES</span>
+                        <span className="ml-1 text-sm font-semibold text-emerald-300">
+                          {p.pos.yes.toLocaleString()}
+                        </span>
+                        {p.yesPriceSats != null && (
+                          <span className="ml-2 text-xs text-slate-500">
+                            @ {p.yesPriceSats} sats
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {p.pos.no > 0 && (
+                      <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5">
+                        <span className="text-xs text-slate-400">NO</span>
+                        <span className="ml-1 text-sm font-semibold text-rose-300">
+                          {p.pos.no.toLocaleString()}
+                        </span>
+                        {p.noPriceSats != null && (
+                          <span className="ml-2 text-xs text-slate-500">
+                            @ {p.noPriceSats} sats
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <span className="ml-auto text-sm font-medium text-slate-300">
+                      {formatSats(p.totalValue)}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {settledPositions.length > 0 && (
+        <>
+          <h3 className="mb-3 text-sm font-medium uppercase tracking-wider text-slate-400">
+            Settled
+          </h3>
+          <div className="space-y-3">
+            {settledPositions.map((p) => {
+              const won =
+                p.winningSide === "yes" ? p.pos.yes > 0 : p.pos.no > 0;
+              return (
+                <button
+                  type="button"
+                  key={p.market.id}
+                  onClick={() => openMarket(p.market)}
+                  className="block w-full rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600"
+                >
+                  <p className="mb-3 text-sm text-slate-200">
+                    {p.market.question}
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <span
+                      className={`rounded-full px-3 py-1 text-xs font-medium ${won ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"}`}
+                    >
+                      {won ? "Won" : "Lost"}
+                    </span>
+                    {p.pos.yes > 0 && (
+                      <span className="text-xs text-slate-400">
+                        YES: {p.pos.yes.toLocaleString()}
+                      </span>
+                    )}
+                    {p.pos.no > 0 && (
+                      <span className="text-xs text-slate-400">
+                        NO: {p.pos.no.toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── My Markets view ──────────────────────────────────────────────────
 function MyMarketsView({ markets }: { markets: Market[] }) {
   const marketMakerMode = useStore((s) => s.marketMakerMode);
@@ -322,19 +555,25 @@ function MyMarketsView({ markets }: { markets: Market[] }) {
   if (myMarkets.length === 0) {
     return (
       <div className="phi-container py-16 text-center">
+        <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full border border-slate-700 bg-slate-900/60">
+          <CategoryIcon category="My Markets" className="h-9 w-9" />
+        </div>
         <h2 className="mb-3 text-2xl font-semibold text-slate-100">
           No markets created yet
         </h2>
-        <p className="mb-6 text-base text-slate-400">
-          Markets you create as oracle will appear here.
+        <p className="mx-auto mb-6 max-w-md text-base text-slate-400">
+          Markets you create as oracle will appear here. Create your first
+          market to get started.
         </p>
-        <button
-          type="button"
-          onClick={() => useStore.setState({ view: "create" })}
-          className="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950"
-        >
-          <span className="mr-1">+</span> Create New Market
-        </button>
+        {marketMakerMode && (
+          <button
+            type="button"
+            onClick={() => useStore.setState({ view: "create" })}
+            className="rounded-xl bg-emerald-300 px-6 py-3 text-base font-semibold text-slate-950"
+          >
+            <span className="mr-1">+</span> Create Market
+          </button>
+        )}
       </div>
     );
   }
@@ -777,6 +1016,7 @@ export default function HomePage() {
     activeCategory === "Trending" ||
     activeCategory === "Ending Soon" ||
     activeCategory === "New" ||
+    activeCategory === "Portfolio" ||
     activeCategory === "My Markets";
 
   // Category pages (Politics, Sports, Culture, Bitcoin, Weather, Macro, Resolved)
@@ -789,6 +1029,11 @@ export default function HomePage() {
         nostrPubkey={nostrPubkey}
       />
     );
+  }
+
+  // Portfolio
+  if (activeCategory === "Portfolio") {
+    return <PortfolioView markets={markets} />;
   }
 
   // My Markets

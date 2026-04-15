@@ -784,6 +784,95 @@ pub async fn fetch_nostr_profile(
     discovery::fetch_profile(&client, &keys.public_key()).await
 }
 
+#[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Tauri command arguments intentionally mirror the frontend invoke payload"
+)]
+pub async fn publish_nostr_profile(
+    app: tauri::AppHandle,
+    name: String,
+    picture: Option<String>,
+    display_name: Option<String>,
+    about: Option<String>,
+    website: Option<String>,
+    nip05: Option<String>,
+    lud16: Option<String>,
+    banner: Option<String>,
+) -> Result<(), String> {
+    let (keys, client) = get_keys_and_client(&app).await?;
+    let profile = discovery::NostrProfile {
+        picture,
+        banner,
+        name: Some(name),
+        display_name,
+        about,
+        website,
+        nip05,
+        lud16,
+    };
+    discovery::publish_profile(&keys, &client, &profile).await
+}
+
+/// Create a NIP-98 HTTP Auth header (kind 27235) for authenticated uploads.
+#[tauri::command]
+pub async fn create_nip98_auth(
+    app: tauri::AppHandle,
+    url: String,
+    method: String,
+) -> Result<String, String> {
+    let (keys, _client) = get_keys_and_client(&app).await?;
+    use nostr_sdk::prelude::*;
+    let event = EventBuilder::new(Kind::Custom(27235), "")
+        .tags(vec![
+            Tag::parse(vec!["u".to_string(), url]).map_err(|e| format!("tag error: {e}"))?,
+            Tag::parse(vec!["method".to_string(), method.to_uppercase()])
+                .map_err(|e| format!("tag error: {e}"))?,
+        ])
+        .sign(&keys)
+        .await
+        .map_err(|e| format!("sign error: {e}"))?;
+    let json = event.as_json();
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(json.as_bytes());
+    Ok(format!("Nostr {b64}"))
+}
+
+#[tauri::command]
+pub fn export_identity_file(
+    password: String,
+    nsec: String,
+    mnemonic: String,
+    display_name: String,
+) -> Result<String, String> {
+    let payload = crate::identity_file::IdentityFilePayload {
+        nsec,
+        mnemonic,
+        display_name,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    crate::identity_file::export_identity_file(&payload, &password)
+}
+
+#[tauri::command]
+pub fn import_identity_file(
+    file_content: String,
+    password: String,
+) -> Result<crate::identity_file::IdentityFilePayload, String> {
+    crate::identity_file::import_identity_file(&file_content, &password)
+}
+
+#[tauri::command]
+pub fn open_downloads_folder() -> Result<(), String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let downloads = std::path::Path::new(&home).join("Downloads");
+    std::process::Command::new("open")
+        .arg(downloads)
+        .spawn()
+        .map_err(|e| format!("failed to open Downloads: {e}"))?;
+    Ok(())
+}
+
 // =========================================================================
 // Contract discovery commands
 // =========================================================================
