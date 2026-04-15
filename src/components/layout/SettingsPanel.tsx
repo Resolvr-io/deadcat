@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { baseCurrencyOptions } from "../../constants";
 import { queryClient } from "../../queries/queryClient";
 import { useStore } from "../../store";
@@ -1048,6 +1048,20 @@ function NostrReplacePanel() {
 export function SettingsPanel() {
   const settingsOpen = useStore((s) => s.settingsOpen);
   const nostrReplacePanel = useStore((s) => s.nostrReplacePanel);
+
+  useEffect(() => {
+    if (settingsOpen) {
+      document.body.style.overflow = "hidden";
+      document.documentElement.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    }
+    return () => {
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    };
+  }, [settingsOpen]);
 
   if (!settingsOpen) return null;
 
