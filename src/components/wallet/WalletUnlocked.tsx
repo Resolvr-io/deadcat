@@ -194,7 +194,6 @@ export function WalletUnlocked({
     useStore.setState({ walletUnit: unit });
   }, []);
 
-
   const handleOpenExplorerAsset = useCallback(
     (assetId: string) => {
       const base =
@@ -639,10 +638,7 @@ export function WalletUnlocked({
         )}
 
         {/* Transactions */}
-        <ActivityList
-          walletData={walletData}
-          markets={markets}
-        />
+        <ActivityList walletData={walletData} markets={markets} />
 
         {/* Swaps */}
         {(walletData?.swaps ?? []).length > 0 && (
@@ -715,7 +711,6 @@ export function WalletUnlocked({
 
       {/* Wallet modal (receive/send) */}
       {walletModal !== "none" && <WalletModal />}
-
     </div>
   );
 }

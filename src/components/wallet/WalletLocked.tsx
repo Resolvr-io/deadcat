@@ -109,8 +109,10 @@ export function WalletLocked() {
               The password encrypts your wallet on this device only. If
               you&apos;ve forgotten it, you can delete the wallet and re-create
               it from your{" "}
-              <strong className="text-slate-300">12-word recovery phrase</strong>.
-              Your funds are safe as long as you have that phrase.
+              <strong className="text-slate-300">
+                12-word recovery phrase
+              </strong>
+              . Your funds are safe as long as you have that phrase.
             </p>
             <p className="text-xs text-slate-400">
               After deleting, the onboarding flow will let you restore your
