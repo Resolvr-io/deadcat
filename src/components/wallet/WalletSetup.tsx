@@ -69,8 +69,8 @@ export function WalletSetup({
     ) {
       useStore.setState({
         walletError:
-          !walletPassword || walletPassword.length < 4
-            ? "Password must be at least 4 characters."
+          !walletPassword || walletPassword.length < 8
+            ? "Password must be at least 8 characters."
             : "Passwords do not match.",
         walletPassword: "",
         walletPasswordConfirm: "",
@@ -313,7 +313,7 @@ export function WalletSetup({
 
   // Create / Restore form — shown after selecting an option
   const isRestore = walletShowRestore;
-  const pwValid = walletPassword.length >= 4;
+  const pwValid = walletPassword.length >= 8;
   const pwMatch = walletPassword === walletPasswordConfirm;
   const canSubmit =
     !loading &&
@@ -393,7 +393,7 @@ export function WalletSetup({
             <input
               id="wallet-password"
               type={showPw ? "text" : "password"}
-              minLength={4}
+              minLength={8}
               maxLength={32}
               value={walletPassword}
               onChange={(e) =>

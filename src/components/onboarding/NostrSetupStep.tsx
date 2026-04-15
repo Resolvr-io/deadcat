@@ -8,6 +8,7 @@ import type { IdentityResponse, NostrProfile } from "../../types";
 import { generateAvatarDataUri } from "../../utils-react/avatar";
 import { randomCatName } from "../../utils-react/random-name";
 import { showToast } from "../shared/Toast";
+import { PasswordFields } from "./WalletSetupStep";
 
 function BackButton({ onClick }: { onClick: () => void }) {
   return (
@@ -42,6 +43,8 @@ interface NostrSetupStepProps {
 export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [mnemonicExpanded, setMnemonicExpanded] = useState(false);
+  const [restorePasswordRevealed, setRestorePasswordRevealed] = useState(false);
   const nostrMode = useStore((s) => s.onboardingNostrMode);
   const nostrDone = useStore((s) => s.onboardingNostrDone);
   const loading = useStore((s) => s.onboardingLoading);
@@ -69,6 +72,43 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const restorePassword = useStore((s) => s.onboardingRestorePassword);
   const restoreMnemonic = useStore((s) => s.onboardingRestoreMnemonic);
   const restoreNsec = useStore((s) => s.onboardingRestoreNsec);
+
+  // Preview profile when a valid nsec is entered (import or manual-restore)
+  const [importPreview, setImportPreview] = useState<NostrProfile | null>(null);
+  const [importPreviewLoading, setImportPreviewLoading] = useState(false);
+  const activeNsec =
+    nostrMode === "import"
+      ? onboardingNostrNsec
+      : nostrMode === "manual-restore"
+        ? restoreNsec
+        : "";
+  useEffect(() => {
+    const nsec = activeNsec.trim();
+    if (!nsec.startsWith("nsec1") || nsec.length < 60) {
+      setImportPreview(null);
+      setImportPreviewLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setImportPreviewLoading(true);
+    (async () => {
+      try {
+        const npub = await invoke<string>("derive_npub_from_nsec", { nsec });
+        const profile = await invoke<NostrProfile | null>(
+          "preview_nostr_profile",
+          { npub },
+        );
+        if (!cancelled && profile) setImportPreview(profile);
+      } catch {
+        // Invalid nsec or relay error — ignore
+      } finally {
+        if (!cancelled) setImportPreviewLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeNsec]);
 
   // Tauri native file drop listener for restore flow
   useEffect(() => {
@@ -190,8 +230,10 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         onboardingPendingNpub: identity.npub,
         onboardingNostrDone: true,
         onboardingLoading: false,
+        // Set preview profile immediately so avatar shows in corner
+        ...(importPreview ? { nostrProfile: importPreview } : {}),
       });
-      // Fetch profile in background
+      // Fetch full profile from relays in background (updates if newer)
       invoke<NostrProfile | null>("fetch_nostr_profile")
         .then((profile) => {
           if (profile) {
@@ -204,7 +246,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
       useStore.setState({ onboardingError: String(e) });
     }
     useStore.setState({ onboardingLoading: false });
-  }, [onboardingNostrNsec]);
+  }, [onboardingNostrNsec, importPreview]);
 
   // ── Continue to wallet handler ──────────────────────────────────────
   const handleContinue = useCallback(async () => {
@@ -747,7 +789,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             <input
               id="onboarding-password"
               type={showPassword ? "text" : "password"}
-              minLength={4}
+              minLength={8}
               maxLength={32}
               value={walletPassword}
               onChange={(e) =>
@@ -1092,6 +1134,36 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 mono"
             />
           </div>
+          {importPreviewLoading && (
+            <p className="text-xs text-slate-500 animate-pulse">
+              Looking up profile...
+            </p>
+          )}
+          {importPreview && (
+            <div className="flex items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+              {importPreview.picture ? (
+                <img
+                  src={importPreview.picture}
+                  alt=""
+                  className="h-10 w-10 shrink-0 rounded-full object-cover"
+                />
+              ) : (
+                <div className="h-10 w-10 shrink-0 rounded-full bg-slate-800" />
+              )}
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-slate-200">
+                  {importPreview.display_name ||
+                    importPreview.name ||
+                    "Anonymous"}
+                </p>
+                {importPreview.nip05 && (
+                  <p className="truncate text-xs text-slate-500">
+                    {importPreview.nip05}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
           <button
             type="button"
             onClick={handleImport}
@@ -1109,7 +1181,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   if (nostrMode === "manual-restore") {
     const hasNsec = restoreNsec.trim().length > 0;
     const hasMnemonic = restoreMnemonic.trim().length > 0;
-    const hasPassword = restorePassword.length >= 4;
+    const hasPassword = restorePassword.length >= 8;
 
     const buttonLabel =
       hasNsec && hasMnemonic
@@ -1120,7 +1192,8 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             ? "Restore Wallet"
             : "Restore";
 
-    const canSubmit = (hasNsec || hasMnemonic) && hasPassword;
+    const passwordsMatch = restorePassword === walletPasswordConfirm;
+    const canSubmit = (hasNsec || hasMnemonic) && hasPassword && passwordsMatch;
 
     const handleManualRestore = async () => {
       useStore.setState({ onboardingLoading: true, onboardingError: "" });
@@ -1190,6 +1263,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           onboardingRestoreNsec: "",
           onboardingRestoreMnemonic: "",
           onboardingRestorePassword: "",
+          onboardingWalletPasswordConfirm: "",
         });
         // Fetch kind 0 profile from relays in background
         void invoke<import("../../types").NostrProfile | null>(
@@ -1217,6 +1291,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               onboardingRestoreNsec: "",
               onboardingRestoreMnemonic: "",
               onboardingRestorePassword: "",
+              onboardingWalletPasswordConfirm: "",
             })
           }
         />
@@ -1252,6 +1327,36 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             <p className="mt-1.5 text-xs text-slate-600">
               A new wallet will be created automatically.
             </p>
+            {importPreviewLoading && (
+              <p className="mt-2 text-xs text-slate-500 animate-pulse">
+                Looking up profile...
+              </p>
+            )}
+            {importPreview && (
+              <div className="mt-2 flex items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                {importPreview.picture ? (
+                  <img
+                    src={importPreview.picture}
+                    alt=""
+                    className="h-10 w-10 shrink-0 rounded-full object-cover"
+                  />
+                ) : (
+                  <div className="h-10 w-10 shrink-0 rounded-full bg-slate-800" />
+                )}
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-slate-200">
+                    {importPreview.display_name ||
+                      importPreview.name ||
+                      "Anonymous"}
+                  </p>
+                  {importPreview.nip05 && (
+                    <p className="truncate text-xs text-slate-500">
+                      {importPreview.nip05}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -1260,57 +1365,63 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             <div className="h-px flex-1 bg-slate-800" />
           </div>
 
-          {/* Liquid Wallet */}
-          <div>
-            <label
-              htmlFor="manual-restore-mnemonic"
-              className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
+          {/* Liquid Wallet — collapsed until active */}
+          {!mnemonicExpanded && !hasMnemonic ? (
+            <button
+              type="button"
+              onClick={() => setMnemonicExpanded(true)}
+              className="w-full rounded-lg border border-dashed border-slate-700 px-4 py-3 text-sm text-slate-500 transition hover:border-slate-600 hover:text-slate-400"
             >
-              Wallet Recovery Phrase
-            </label>
-            <textarea
-              id="manual-restore-mnemonic"
-              value={restoreMnemonic}
-              onChange={(e) =>
-                useStore.setState({
-                  onboardingRestoreMnemonic: e.target.value,
-                })
-              }
-              placeholder="Enter your 12-word phrase..."
-              rows={3}
-              className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
-              disabled={loading}
-            />
-            <p className="mt-1.5 text-xs text-slate-600">
-              A new Nostr identity will be generated for you.
-            </p>
-          </div>
+              + Add wallet recovery phrase
+            </button>
+          ) : (
+            <div>
+              <label
+                htmlFor="manual-restore-mnemonic"
+                className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
+              >
+                Wallet Recovery Phrase
+              </label>
+              <textarea
+                id="manual-restore-mnemonic"
+                value={restoreMnemonic}
+                onChange={(e) =>
+                  useStore.setState({
+                    onboardingRestoreMnemonic: e.target.value,
+                  })
+                }
+                placeholder="Enter your 12-word phrase..."
+                rows={3}
+                className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
+                disabled={loading}
+                ref={(el) => {
+                  if (mnemonicExpanded && el) el.focus();
+                }}
+                onBlur={() => {
+                  if (!restoreMnemonic.trim()) setMnemonicExpanded(false);
+                }}
+              />
+              <p className="mt-1.5 text-xs text-slate-600">
+                A new Nostr identity will be generated for you.
+              </p>
+            </div>
+          )}
 
           {/* Password — required for wallet (new or restored) */}
           {(hasNsec || hasMnemonic) && (
-            <div>
-              <label
-                htmlFor="manual-restore-password"
-                className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
-              >
-                Wallet Password
-              </label>
-              <input
-                id="manual-restore-password"
-                type="password"
-                value={restorePassword}
-                onChange={(e) =>
-                  useStore.setState({
-                    onboardingRestorePassword: e.target.value,
-                  })
-                }
-                placeholder="Set a password (min 4 characters)"
-                minLength={4}
-                maxLength={32}
-                className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
-                disabled={loading}
-              />
-            </div>
+            <PasswordFields
+              password={restorePassword}
+              confirm={walletPasswordConfirm}
+              revealed={restorePasswordRevealed}
+              disabled={loading}
+              onPasswordChange={(val) =>
+                useStore.setState({ onboardingRestorePassword: val })
+              }
+              onConfirmChange={(val) =>
+                useStore.setState({ onboardingWalletPasswordConfirm: val })
+              }
+              onToggleReveal={() => setRestorePasswordRevealed((r) => !r)}
+            />
           )}
 
           <button
@@ -1379,6 +1490,11 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           nostrPubkey: identity.pubkey_hex,
           nostrNpub: identity.npub,
         });
+        // Fetch profile preview while wallet restores (non-blocking)
+        const profilePromise = invoke<NostrProfile | null>(
+          "preview_nostr_profile",
+          { npub: identity.npub },
+        ).catch(() => null);
         // Restore wallet
         await invoke("restore_wallet", {
           mnemonic: payload.mnemonic,
@@ -1386,7 +1502,8 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         });
         await invoke("init_nostr_identity");
         await invoke<void>("unlock_wallet", { password: restorePassword });
-        // Done — don't set nostrProfile here, let the relay fetch populate it
+        // Set preview profile immediately so avatar shows in the corner
+        const previewProfile = await profilePromise;
         useStore.setState({
           walletStatus: "unlocked",
           walletSessionPassword: restorePassword,
@@ -1395,18 +1512,32 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           onboardingRestoreFileContent: "",
           onboardingRestoreFileName: "",
           onboardingRestorePassword: "",
+          onboardingWalletPasswordConfirm: "",
+          ...(previewProfile ? { nostrProfile: previewProfile } : {}),
         });
-        // Fetch full kind 0 profile from relays
-        void (async () => {
+        // Also fetch via the node's client (may have newer data once relays connect)
+        const fetchProfile = async () => {
           try {
             const profile = await invoke<
               import("../../types").NostrProfile | null
             >("fetch_nostr_profile");
             if (profile) useStore.setState({ nostrProfile: profile });
+            else throw new Error("no profile");
           } catch {
-            // Best effort
+            // Retry once after relays settle
+            setTimeout(async () => {
+              try {
+                const profile = await invoke<
+                  import("../../types").NostrProfile | null
+                >("fetch_nostr_profile");
+                if (profile) useStore.setState({ nostrProfile: profile });
+              } catch {
+                // Give up
+              }
+            }, 3000);
           }
-        })();
+        };
+        void fetchProfile();
       } catch (e) {
         useStore.setState({
           onboardingError: String(e),
@@ -1425,6 +1556,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               onboardingRestoreFileContent: "",
               onboardingRestoreFileName: "",
               onboardingRestorePassword: "",
+              onboardingWalletPasswordConfirm: "",
               onboardingRestoreNsec: "",
               onboardingRestoreMnemonic: "",
             })

@@ -59,7 +59,7 @@ function MnemonicGrid({ mnemonic }: { mnemonic: string }) {
 }
 
 // ── Password fields ─────────────────────────────────────────────────
-function PasswordFields({
+export function PasswordFields({
   password,
   confirm,
   revealed,

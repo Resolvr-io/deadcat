@@ -1,3 +1,4 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useStore } from "../../store";
 import type { Market } from "../../types";
 import {
@@ -37,6 +38,7 @@ function stateBadge(state: number) {
 
 export default function MarketHeader({ market }: { market: Market }) {
   const walletData = useStore((s) => s.walletData);
+  const walletNetwork = useStore((s) => s.walletNetwork);
 
   const noPrice = market.yesPrice != null ? 1 - market.yesPrice : null;
   const estimatedSettlementDate = getEstimatedSettlementDate(market);
@@ -75,6 +77,13 @@ export default function MarketHeader({ market }: { market: Market }) {
           <span className="h-3.5 w-px bg-slate-700" />
           <button
             type="button"
+            onClick={() =>
+              useStore.setState({
+                nostrEventModal: true,
+                nostrEventJson: market.nostrEventJson,
+                nostrEventNevent: market.nevent,
+              })
+            }
             className="text-xs text-slate-400 transition hover:text-slate-200"
           >
             Nostr Event
@@ -82,6 +91,13 @@ export default function MarketHeader({ market }: { market: Market }) {
           {market.creationTxid && (
             <button
               type="button"
+              onClick={() => {
+                const base =
+                  walletNetwork === "testnet"
+                    ? "https://blockstream.info/liquidtestnet"
+                    : "https://blockstream.info/liquid";
+                void openUrl(`${base}/tx/${market.creationTxid}`);
+              }}
               className="text-xs text-slate-400 transition hover:text-slate-200"
             >
               Creation TX

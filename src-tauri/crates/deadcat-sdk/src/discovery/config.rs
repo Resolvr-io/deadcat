@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use nostr_sdk::PublicKey;
+
 use super::DEFAULT_RELAYS;
 
 /// Configuration for the `DiscoveryService`.
@@ -11,6 +13,8 @@ pub struct DiscoveryConfig {
     pub network_tag: String,
     /// Timeout for one-shot fetch operations.
     pub fetch_timeout: Duration,
+    /// When set, only discover markets published by this author.
+    pub source_author: Option<PublicKey>,
 }
 
 impl Default for DiscoveryConfig {
@@ -19,6 +23,7 @@ impl Default for DiscoveryConfig {
             relays: DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect(),
             network_tag: super::NETWORK_TAG.to_string(),
             fetch_timeout: Duration::from_secs(5),
+            source_author: None,
         }
     }
 }

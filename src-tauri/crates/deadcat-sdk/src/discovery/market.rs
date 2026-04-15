@@ -128,8 +128,13 @@ fn event_network_tag(event: &Event) -> Option<String> {
 }
 
 /// Build a Nostr filter for fetching contract announcements.
-pub fn build_contract_filter() -> Filter {
-    Filter::new().kind(APP_EVENT_KIND).hashtag(CONTRACT_TAG)
+/// When `source_author` is provided, only events from that pubkey are returned.
+pub fn build_contract_filter(source_author: Option<&PublicKey>) -> Filter {
+    let mut f = Filter::new().kind(APP_EVENT_KIND).hashtag(CONTRACT_TAG);
+    if let Some(author) = source_author {
+        f = f.author(*author);
+    }
+    f
 }
 
 /// Parse a Nostr event into a DiscoveredMarket.
@@ -271,7 +276,7 @@ mod tests {
 
     #[test]
     fn contract_filter_construction() {
-        let filter = build_contract_filter();
+        let filter = build_contract_filter(None);
         assert!(format!("{filter:?}").contains("30078"));
     }
 

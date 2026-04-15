@@ -86,6 +86,7 @@ pub use deadcat_sdk::{
     CONTRACT_ANNOUNCEMENT_VERSION,
     CONTRACT_TAG,
     DEFAULT_RELAYS,
+    DEFAULT_SOURCE_NPUB,
     NETWORK_TAG,
 };
 pub use deadcat_sdk::{ContractAnnouncement, ContractMetadata, DiscoveredOrder};
@@ -553,7 +554,7 @@ mod tests {
 
     #[test]
     fn contract_filter_construction() {
-        let filter = build_contract_filter();
+        let filter = build_contract_filter(None);
         // Filter should target kind 30078 with deadcat-contract hashtag
         assert!(format!("{filter:?}").contains("30078"));
     }

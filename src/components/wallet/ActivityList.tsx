@@ -1,3 +1,4 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useMemo } from "react";
 import { useStore } from "../../store";
 import type { Market, WalletData, WalletTransaction } from "../../types";
@@ -70,7 +71,7 @@ function TransactionRow({
       walletNetwork === "testnet"
         ? "https://blockstream.info/liquidtestnet"
         : "https://blockstream.info/liquid";
-    window.open(`${base}/tx/${tx.txid}`, "_blank");
+    void openUrl(`${base}/tx/${tx.txid}`);
   }, [tx.txid, walletNetwork]);
 
   return (

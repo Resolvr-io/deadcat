@@ -107,6 +107,7 @@ pub use discovery::{
     CONTRACT_TAG,
     ContractMetadataInput,
     DEFAULT_RELAYS,
+    DEFAULT_SOURCE_NPUB,
     DiscoveredMarket,
     DiscoveredOrder,
     DiscoveredPool,

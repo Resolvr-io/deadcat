@@ -54,6 +54,10 @@ pub const DEFAULT_RELAYS: &[&str] = &[
     "wss://relay.primal.net",
 ];
 
+/// Default npub for the market data source. Override via `DEADCAT_SOURCE_NPUB` env var.
+pub const DEFAULT_SOURCE_NPUB: &str =
+    "npub1deadcat0qanhns8rxp7tqz8h0vptf2a8d7cvkfjfnkwcflrkh8nq0p9tyj";
+
 // ---------------------------------------------------------------------------
 // Re-exports: market
 // ---------------------------------------------------------------------------
@@ -551,7 +555,7 @@ pub async fn fetch_announcements(
     client: &Client,
     expected_network_tag: &str,
 ) -> Result<Vec<DiscoveredMarket>, String> {
-    let filter = build_contract_filter();
+    let filter = build_contract_filter(None);
     let events = client
         .fetch_events(vec![filter], Duration::from_secs(15))
         .await

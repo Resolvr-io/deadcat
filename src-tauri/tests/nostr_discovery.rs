@@ -189,7 +189,7 @@ async fn publish_discover_roundtrip() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Fetch announcements
-    let filter = build_contract_filter();
+    let filter = build_contract_filter(None);
     let events = client
         .fetch_events(vec![filter], Duration::from_secs(5))
         .await
