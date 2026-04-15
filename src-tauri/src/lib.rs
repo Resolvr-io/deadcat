@@ -13,6 +13,7 @@ use deadcat_sdk::elements::hashes::Hash as _;
 use deadcat_store::ChainSource;
 use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 
 use state::{AppState, AppStateManager, PaymentSwap, AUTO_LOCK_TIMEOUT_SECS};
@@ -1305,6 +1306,23 @@ pub fn run() {
             app.manage(NostrAppState::default());
             app.manage(WalletStoreState::default());
             app.manage(QuitFlag(AtomicBool::new(false)));
+
+            // Custom macOS menu — Cmd+Q routes through frontend quit confirmation
+            let quit_item = MenuItemBuilder::with_id("confirm-quit", "Quit Deadcat Live")
+                .accelerator("CmdOrCtrl+Q")
+                .build(app)?;
+            let app_submenu = SubmenuBuilder::new(app, "Deadcat Live")
+                .items(&[&quit_item])
+                .build()?;
+            let menu = MenuBuilder::new(app).item(&app_submenu).build()?;
+            app.set_menu(menu)?;
+            app.on_menu_event(move |app, event| {
+                if event.id() == "confirm-quit" {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("close-requested", ());
+                    }
+                }
+            });
 
             // Spawn auto-lock background timer
             let app_handle = app.handle().clone();
