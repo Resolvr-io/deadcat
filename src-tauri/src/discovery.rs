@@ -396,6 +396,7 @@ pub async fn fetch_profile(
 }
 
 /// Publish a kind 0 metadata event with profile fields.
+/// Fetches the existing kind 0 first and merges to avoid clobbering unset fields.
 pub async fn publish_profile(
     keys: &Keys,
     client: &Client,
@@ -408,30 +409,57 @@ pub async fn publish_profile(
     lud16: Option<&str>,
     banner: Option<&str>,
 ) -> Result<(), String> {
-    let mut meta = serde_json::json!({ "name": name });
-    if let Some(v) = display_name.filter(|s| !s.is_empty()) {
-        meta["display_name"] = serde_json::Value::String(v.to_string());
-    } else {
+    // Fetch existing kind 0 to merge with
+    let mut meta = {
+        let filter = Filter::new()
+            .kind(Kind::Metadata)
+            .author(keys.public_key())
+            .limit(1);
+        let events = client
+            .fetch_events(vec![filter], Duration::from_secs(5))
+            .await
+            .ok();
+        events
+            .and_then(|evts| {
+                evts.iter()
+                    .next()
+                    .and_then(|e| serde_json::from_str::<serde_json::Value>(&e.content).ok())
+            })
+            .unwrap_or_else(|| serde_json::json!({}))
+    };
+
+    // Always set name
+    meta["name"] = serde_json::Value::String(name.to_string());
+
+    // Merge provided fields — only overwrite if Some (empty string clears the field)
+    if let Some(v) = display_name {
+        if v.is_empty() {
+            meta.as_object_mut().map(|m| m.remove("display_name"));
+        } else {
+            meta["display_name"] = serde_json::Value::String(v.to_string());
+        }
+    }
+    if display_name.is_none() && meta.get("display_name").is_none() {
         meta["display_name"] = serde_json::Value::String(name.to_string());
     }
-    if let Some(v) = picture.filter(|s| !s.is_empty()) {
-        meta["picture"] = serde_json::Value::String(v.to_string());
+    for (key, val) in [
+        ("picture", picture),
+        ("about", about),
+        ("website", website),
+        ("nip05", nip05),
+        ("lud16", lud16),
+        ("banner", banner),
+    ] {
+        if let Some(v) = val {
+            if v.is_empty() {
+                meta.as_object_mut().map(|m| m.remove(key));
+            } else {
+                meta[key] = serde_json::Value::String(v.to_string());
+            }
+        }
+        // If None, leave existing value untouched
     }
-    if let Some(v) = about.filter(|s| !s.is_empty()) {
-        meta["about"] = serde_json::Value::String(v.to_string());
-    }
-    if let Some(v) = website.filter(|s| !s.is_empty()) {
-        meta["website"] = serde_json::Value::String(v.to_string());
-    }
-    if let Some(v) = nip05.filter(|s| !s.is_empty()) {
-        meta["nip05"] = serde_json::Value::String(v.to_string());
-    }
-    if let Some(v) = lud16.filter(|s| !s.is_empty()) {
-        meta["lud16"] = serde_json::Value::String(v.to_string());
-    }
-    if let Some(v) = banner.filter(|s| !s.is_empty()) {
-        meta["banner"] = serde_json::Value::String(v.to_string());
-    }
+
     let content = meta.to_string();
     let event = EventBuilder::new(Kind::Metadata, content)
         .sign(keys)

@@ -98,6 +98,12 @@ export default function ProfilePage() {
     if (profileOpen) {
       document.body.style.overflow = "hidden";
       document.documentElement.style.overflow = "hidden";
+      // Fetch latest profile from relays
+      invoke<import("../../types").NostrProfile | null>("fetch_nostr_profile")
+        .then((profile) => {
+          if (profile) useStore.setState({ nostrProfile: profile });
+        })
+        .catch(() => {});
     } else {
       document.body.style.overflow = "";
       document.documentElement.style.overflow = "";

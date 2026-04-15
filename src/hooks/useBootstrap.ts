@@ -54,9 +54,33 @@ export function useBootstrap(): void {
         }, 1500);
       }
 
-      // Set default relays if no identity
+      // Load relay list
       const { nostrNpub } = useStore.getState();
-      if (!nostrNpub) {
+      if (nostrNpub) {
+        try {
+          const relays =
+            await invoke<{ url: string; has_backup: boolean }[]>(
+              "get_relay_list",
+            );
+          if (relays.length > 0) {
+            useStore.setState({ relays });
+          } else {
+            useStore.setState({
+              relays: [
+                { url: "wss://relay.damus.io", has_backup: false },
+                { url: "wss://relay.primal.net", has_backup: false },
+              ],
+            });
+          }
+        } catch {
+          useStore.setState({
+            relays: [
+              { url: "wss://relay.damus.io", has_backup: false },
+              { url: "wss://relay.primal.net", has_backup: false },
+            ],
+          });
+        }
+      } else {
         useStore.setState({
           relays: [
             { url: "wss://relay.damus.io", has_backup: false },

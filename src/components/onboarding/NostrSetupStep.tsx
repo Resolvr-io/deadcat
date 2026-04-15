@@ -1182,6 +1182,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         // Done
         useStore.setState({
           walletStatus: "unlocked",
+          walletSessionPassword: restorePassword,
           nostrProfile: {
             name: payload.display_name,
             display_name: payload.display_name,
@@ -1191,13 +1192,17 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           onboardingRestoreFileContent: "",
           onboardingRestorePassword: "",
         });
-        // Publish kind 0 after relay connection
-        setTimeout(() => {
-          void invoke("publish_nostr_profile", {
-            name: payload.display_name,
-            picture: null,
-          }).catch((e) => console.warn("Failed to publish profile:", e));
-        }, 1000);
+        // Fetch full kind 0 profile from relays after connection
+        setTimeout(async () => {
+          try {
+            const profile = await invoke<
+              import("../../types").NostrProfile | null
+            >("fetch_nostr_profile");
+            if (profile) useStore.setState({ nostrProfile: profile });
+          } catch {
+            // Best effort
+          }
+        }, 2000);
       } catch (e) {
         useStore.setState({
           onboardingError: String(e),
@@ -1228,12 +1233,24 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         await invoke<void>("unlock_wallet", { password: restorePassword });
         useStore.setState({
           walletStatus: "unlocked",
+          walletSessionPassword: restorePassword,
           onboardingLoading: false,
           setupModalOpen: false,
           onboardingRestoreNsec: "",
           onboardingRestoreMnemonic: "",
           onboardingRestorePassword: "",
         });
+        // Fetch kind 0 profile from relays
+        setTimeout(async () => {
+          try {
+            const profile = await invoke<
+              import("../../types").NostrProfile | null
+            >("fetch_nostr_profile");
+            if (profile) useStore.setState({ nostrProfile: profile });
+          } catch {
+            // Best effort
+          }
+        }, 2000);
       } catch (e) {
         useStore.setState({
           onboardingError: String(e),
