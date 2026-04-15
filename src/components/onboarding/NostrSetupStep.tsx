@@ -94,7 +94,10 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     (async () => {
       try {
         const npub = await invoke<string>("derive_npub_from_nsec", { nsec });
-        const profile = await invoke<NostrProfile | null>("preview_nostr_profile", { npub });
+        const profile = await invoke<NostrProfile | null>(
+          "preview_nostr_profile",
+          { npub },
+        );
         if (!cancelled && profile) setImportPreview(profile);
       } catch {
         // Invalid nsec or relay error — ignore
@@ -102,7 +105,9 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         if (!cancelled) setImportPreviewLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [activeNsec]);
 
   // Tauri native file drop listener for restore flow
@@ -1147,7 +1152,9 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               )}
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-slate-200">
-                  {importPreview.display_name || importPreview.name || "Anonymous"}
+                  {importPreview.display_name ||
+                    importPreview.name ||
+                    "Anonymous"}
                 </p>
                 {importPreview.nip05 && (
                   <p className="truncate text-xs text-slate-500">
@@ -1338,7 +1345,9 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                 )}
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-slate-200">
-                    {importPreview.display_name || importPreview.name || "Anonymous"}
+                    {importPreview.display_name ||
+                      importPreview.name ||
+                      "Anonymous"}
                   </p>
                   {importPreview.nip05 && (
                     <p className="truncate text-xs text-slate-500">
@@ -1385,8 +1394,12 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                 rows={3}
                 className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
                 disabled={loading}
-                autoFocus={mnemonicExpanded}
-                onBlur={() => { if (!restoreMnemonic.trim()) setMnemonicExpanded(false); }}
+                ref={(el) => {
+                  if (mnemonicExpanded && el) el.focus();
+                }}
+                onBlur={() => {
+                  if (!restoreMnemonic.trim()) setMnemonicExpanded(false);
+                }}
               />
               <p className="mt-1.5 text-xs text-slate-600">
                 A new Nostr identity will be generated for you.

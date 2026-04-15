@@ -64,9 +64,7 @@ impl Default for NostrAppState {
                     .map(|s| s.to_string())
                     .collect(),
             ),
-            source_npub: std::sync::RwLock::new(
-                discovery::DEFAULT_SOURCE_NPUB.to_string(),
-            ),
+            source_npub: std::sync::RwLock::new(discovery::DEFAULT_SOURCE_NPUB.to_string()),
         }
     }
 }

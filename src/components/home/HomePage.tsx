@@ -255,7 +255,9 @@ function EmptyState() {
       {walletStatus === "not_created" && !nostrPubkey && (
         <button
           type="button"
-          onClick={() => useStore.setState({ setupModalOpen: true, onboardingStep: "nostr" })}
+          onClick={() =>
+            useStore.setState({ setupModalOpen: true, onboardingStep: "nostr" })
+          }
           className="mr-3 rounded-xl border border-slate-600 px-6 py-3 text-base font-medium text-slate-200"
         >
           Set Up Account

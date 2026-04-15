@@ -726,7 +726,12 @@ export default function TradingPanel({ market }: { market: Market }) {
               </p>
               <button
                 type="button"
-                onClick={() => useStore.setState({ setupModalOpen: true, onboardingStep: "nostr" })}
+                onClick={() =>
+                  useStore.setState({
+                    setupModalOpen: true,
+                    onboardingStep: "nostr",
+                  })
+                }
                 className="mt-3 w-full rounded-lg bg-emerald-400 px-4 py-2.5 font-semibold text-slate-950 transition hover:bg-emerald-300"
               >
                 Set up account

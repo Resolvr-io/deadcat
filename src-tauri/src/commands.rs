@@ -658,8 +658,7 @@ pub fn get_source_npub(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub fn set_source_npub(npub: String, app: tauri::AppHandle) -> Result<(), String> {
     // Validate the npub before accepting it
-    nostr_sdk::PublicKey::from_bech32(&npub)
-        .map_err(|e| format!("invalid npub: {e}"))?;
+    nostr_sdk::PublicKey::from_bech32(&npub).map_err(|e| format!("invalid npub: {e}"))?;
 
     // Update in-memory state
     {
@@ -858,24 +857,23 @@ pub async fn fetch_nostr_profile(
 pub async fn preview_nostr_profile(
     npub: String,
 ) -> Result<Option<discovery::NostrProfile>, String> {
-    let pubkey = nostr_sdk::PublicKey::from_bech32(&npub)
-        .map_err(|e| format!("invalid npub: {e}"))?;
+    let pubkey =
+        nostr_sdk::PublicKey::from_bech32(&npub).map_err(|e| format!("invalid npub: {e}"))?;
     let client = nostr_sdk::Client::default();
     for url in discovery::DEFAULT_RELAYS {
         let _ = client.add_relay(*url).await;
     }
-    client
-        .connect_with_timeout(Duration::from_secs(2))
-        .await;
-    let filter =
-        nostr_sdk::Filter::new().kind(nostr_sdk::Kind::Metadata).author(pubkey).limit(1);
+    client.connect_with_timeout(Duration::from_secs(2)).await;
+    let filter = nostr_sdk::Filter::new()
+        .kind(nostr_sdk::Kind::Metadata)
+        .author(pubkey)
+        .limit(1);
     let events = client
         .fetch_events(vec![filter], Duration::from_secs(3))
         .await
         .map_err(|e| format!("failed to fetch profile: {e}"))?;
     let result = events.iter().next().map(|event| {
-        let parsed: serde_json::Value =
-            serde_json::from_str(&event.content).unwrap_or_default();
+        let parsed: serde_json::Value = serde_json::from_str(&event.content).unwrap_or_default();
         let f = |key: &str| parsed.get(key).and_then(|v| v.as_str()).map(String::from);
         discovery::NostrProfile {
             picture: f("picture"),
