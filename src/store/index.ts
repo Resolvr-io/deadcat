@@ -240,6 +240,9 @@ export interface OnboardingSlice {
   relays: RelayEntry[];
   relayInput: string;
   relayLoading: boolean;
+  sourceNpub: string;
+  sourceNpubInput: string;
+  sourceNpubSaving: boolean;
   nostrProfile: NostrProfile | null;
   profilePicError: boolean;
   nostrEventModal: boolean;
@@ -466,6 +469,9 @@ export const useStore = create<StoreState>()(() => ({
   relays: [],
   relayInput: "",
   relayLoading: false,
+  sourceNpub: "",
+  sourceNpubInput: "",
+  sourceNpubSaving: false,
   nostrProfile: null,
   profilePicError: false,
   nostrEventModal: false,

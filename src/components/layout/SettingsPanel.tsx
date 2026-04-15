@@ -787,6 +787,83 @@ function RelaysSection() {
   );
 }
 
+/* ── Data Source section ───────────────────────────────────────────── */
+
+function DataSourceSection() {
+  const sourceNpub = useStore((s) => s.sourceNpub);
+  const sourceNpubInput = useStore((s) => s.sourceNpubInput);
+  const sourceNpubSaving = useStore((s) => s.sourceNpubSaving);
+
+  const isChanged = sourceNpubInput !== sourceNpub;
+
+  const saveSourceNpub = useCallback(async () => {
+    const npub = useStore.getState().sourceNpubInput.trim();
+    if (!npub) return;
+    useStore.setState({ sourceNpubSaving: true });
+    try {
+      await invoke("set_source_npub", { npub });
+      useStore.setState({ sourceNpub: npub });
+      showToast("Source npub saved — restart to apply");
+    } catch (e) {
+      showToast(`Invalid npub: ${e}`);
+    } finally {
+      useStore.setState({ sourceNpubSaving: false });
+    }
+  }, []);
+
+  const resetToDefault = useCallback(async () => {
+    try {
+      const defaultNpub = await invoke<string>("get_default_source_npub");
+      useStore.setState({ sourceNpubInput: defaultNpub });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-500">
+        Markets are sourced from a single Nostr pubkey. Change this to view
+        markets published by a different account.
+      </p>
+      <div className="space-y-2">
+        <label
+          htmlFor="source-npub-input"
+          className="block text-[10px] font-medium uppercase tracking-wider text-slate-500"
+        >
+          Source npub
+        </label>
+        <input
+          id="source-npub-input"
+          value={sourceNpubInput}
+          onChange={(e) =>
+            useStore.setState({ sourceNpubInput: e.target.value })
+          }
+          placeholder="npub1..."
+          className="h-9 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2 mono"
+        />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={saveSourceNpub}
+            disabled={sourceNpubSaving || !isChanged}
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:bg-slate-800 disabled:opacity-40"
+          >
+            {sourceNpubSaving ? "Saving..." : "Save"}
+          </button>
+          <button
+            type="button"
+            onClick={resetToDefault}
+            className="text-[10px] text-slate-500 hover:text-slate-300 transition"
+          >
+            Reset to default
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Dev section ───────────────────────────────────────────────────── */
 
 function DevSection() {
@@ -1089,6 +1166,9 @@ export function SettingsPanel() {
               </SettingsAccordion>
               <SettingsAccordion sectionKey="relays" title="Relays">
                 <RelaysSection />
+              </SettingsAccordion>
+              <SettingsAccordion sectionKey="dataSource" title="Data Source">
+                <DataSourceSection />
               </SettingsAccordion>
               {DEV_MODE && (
                 <SettingsAccordion sectionKey="dev" title="Dev">

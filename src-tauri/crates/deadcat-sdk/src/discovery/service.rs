@@ -143,9 +143,10 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
         let store = self.store.clone();
         let tx = self.tx.clone();
         let network_tag = self.config.network_tag.clone();
+        let source_author = self.config.source_author;
 
         let handle = tokio::spawn(async move {
-            run_subscription_loop(client, store, tx, network_tag).await;
+            run_subscription_loop(client, store, tx, network_tag, source_author).await;
         });
 
         Ok(handle)
@@ -155,7 +156,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
     pub async fn fetch_markets(&self) -> Result<Vec<DiscoveredMarket>, String> {
         self.ensure_connected().await?;
 
-        let filter = build_contract_filter();
+        let filter = build_contract_filter(self.config.source_author.as_ref());
         let events = self
             .client
             .fetch_events(vec![filter], self.config.fetch_timeout)
@@ -518,11 +519,12 @@ async fn run_subscription_loop<S: DiscoveryStore>(
     store: Option<Arc<Mutex<S>>>,
     tx: broadcast::Sender<DiscoveryEvent>,
     network_tag: String,
+    source_author: Option<PublicKey>,
 ) {
     // Set up the notification receiver BEFORE subscribing so we don't miss events
     let mut notifications = client.notifications();
 
-    let market_filter = build_contract_filter();
+    let market_filter = build_contract_filter(source_author.as_ref());
     let order_filter = build_order_filter(None);
     let order_delete_filter = build_order_deletion_filter(None);
     let attestation_filter = build_attestation_subscription_filter();

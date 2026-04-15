@@ -153,18 +153,27 @@ async fn construct_and_store_node(
         (crate::state::to_sdk_network(network), store)
     };
 
-    let relays = {
+    let (relays, source_author) = {
         let nostr_state = app.state::<NostrAppState>();
-        let guard = nostr_state
+        let relays = nostr_state
             .relay_list
             .read()
-            .map_err(|_| "failed to read relay_list".to_string())?;
-        guard.clone()
+            .map_err(|_| "failed to read relay_list".to_string())?
+            .clone();
+        let npub_str = nostr_state
+            .source_npub
+            .read()
+            .map_err(|_| "failed to read source_npub".to_string())?
+            .clone();
+        let author = nostr_sdk::PublicKey::from_bech32(&npub_str)
+            .map_err(|e| format!("invalid source npub '{npub_str}': {e}"))?;
+        (relays, Some(author))
     };
 
     let config = deadcat_sdk::DiscoveryConfig {
         relays,
         network_tag: sdk_network.discovery_tag().to_string(),
+        source_author,
         ..Default::default()
     };
 
@@ -350,6 +359,18 @@ pub async fn get_nostr_identity(app: tauri::AppHandle) -> Result<Option<Identity
         }
         None => Ok(None),
     }
+}
+
+/// Derive the npub from an nsec without persisting anything.
+/// Used for profile preview before import.
+#[tauri::command]
+pub fn derive_npub_from_nsec(nsec: String) -> Result<String, String> {
+    let secret_key =
+        SecretKey::from_bech32(nsec.trim()).map_err(|e| format!("invalid nsec: {e}"))?;
+    let keys = Keys::new(secret_key);
+    keys.public_key()
+        .to_bech32()
+        .map_err(|e| format!("bech32 error: {e}"))
 }
 
 #[tauri::command]
@@ -620,6 +641,52 @@ pub async fn delete_nostr_backup(app: tauri::AppHandle) -> Result<String, String
 }
 
 // =========================================================================
+// Source npub (market data author filter)
+// =========================================================================
+
+#[tauri::command]
+pub fn get_source_npub(app: tauri::AppHandle) -> Result<String, String> {
+    let nostr_state = app.state::<NostrAppState>();
+    let npub = nostr_state
+        .source_npub
+        .read()
+        .map_err(|_| "failed to read source_npub".to_string())?
+        .clone();
+    Ok(npub)
+}
+
+#[tauri::command]
+pub fn set_source_npub(npub: String, app: tauri::AppHandle) -> Result<(), String> {
+    // Validate the npub before accepting it
+    nostr_sdk::PublicKey::from_bech32(&npub)
+        .map_err(|e| format!("invalid npub: {e}"))?;
+
+    // Update in-memory state
+    {
+        let nostr_state = app.state::<NostrAppState>();
+        let mut guard = nostr_state
+            .source_npub
+            .write()
+            .map_err(|_| "failed to write source_npub".to_string())?;
+        *guard = npub.clone();
+    }
+
+    // Persist to disk
+    let manager = app.state::<Mutex<AppStateManager>>();
+    let mgr = manager
+        .lock()
+        .map_err(|_| "state lock failed".to_string())?;
+    mgr.save_source_npub(&npub);
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_default_source_npub() -> String {
+    discovery::DEFAULT_SOURCE_NPUB.to_string()
+}
+
+// =========================================================================
 // NIP-65 relay management commands
 // =========================================================================
 
@@ -782,6 +849,46 @@ pub async fn fetch_nostr_profile(
 ) -> Result<Option<discovery::NostrProfile>, String> {
     let (keys, client) = get_keys_and_client(&app).await?;
     discovery::fetch_profile(&client, &keys.public_key()).await
+}
+
+/// Fetch a kind 0 profile for an arbitrary npub without requiring a node.
+/// Used for previewing a profile before importing an identity.
+/// Uses shorter timeouts than the normal fetch for a snappier UI.
+#[tauri::command]
+pub async fn preview_nostr_profile(
+    npub: String,
+) -> Result<Option<discovery::NostrProfile>, String> {
+    let pubkey = nostr_sdk::PublicKey::from_bech32(&npub)
+        .map_err(|e| format!("invalid npub: {e}"))?;
+    let client = nostr_sdk::Client::default();
+    for url in discovery::DEFAULT_RELAYS {
+        let _ = client.add_relay(*url).await;
+    }
+    client
+        .connect_with_timeout(Duration::from_secs(2))
+        .await;
+    let filter =
+        nostr_sdk::Filter::new().kind(nostr_sdk::Kind::Metadata).author(pubkey).limit(1);
+    let events = client
+        .fetch_events(vec![filter], Duration::from_secs(3))
+        .await
+        .map_err(|e| format!("failed to fetch profile: {e}"))?;
+    let result = events.iter().next().map(|event| {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&event.content).unwrap_or_default();
+        let f = |key: &str| parsed.get(key).and_then(|v| v.as_str()).map(String::from);
+        discovery::NostrProfile {
+            picture: f("picture"),
+            banner: f("banner"),
+            name: f("name"),
+            display_name: f("display_name"),
+            about: f("about"),
+            website: f("website"),
+            nip05: f("nip05"),
+            lud16: f("lud16"),
+        }
+    });
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2175,14 +2282,26 @@ fn pool_spot_prices(pool: &deadcat_store::LmsrPoolInfo) -> Option<(u16, u16)> {
 
 #[tauri::command]
 pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
-    let store_arc = {
+    let (store_arc, source_pubkey_hex) = {
         let state_handle = app.state::<Mutex<AppStateManager>>();
         let mgr = state_handle
             .lock()
             .map_err(|_| "state lock failed".to_string())?;
-        mgr.store()
+        let store = mgr
+            .store()
             .cloned()
-            .ok_or_else(|| "Store not initialized".to_string())?
+            .ok_or_else(|| "Store not initialized".to_string())?;
+
+        let nostr_state = app.state::<NostrAppState>();
+        let npub_str = nostr_state
+            .source_npub
+            .read()
+            .map_err(|_| "failed to read source_npub".to_string())?
+            .clone();
+        let pubkey_hex = nostr_sdk::PublicKey::from_bech32(&npub_str)
+            .map(|pk| pk.to_hex())
+            .ok();
+        (store, pubkey_hex)
     };
 
     let mut store = store_arc
@@ -2192,6 +2311,21 @@ pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, St
     let infos = store
         .list_markets(&MarketFilter::default())
         .map_err(|e| format!("list markets: {e}"))?;
+
+    // Filter by source author if configured
+    let infos: Vec<_> = if let Some(ref author_hex) = source_pubkey_hex {
+        infos
+            .into_iter()
+            .filter(|info| {
+                info.creator_pubkey
+                    .as_ref()
+                    .map(|pk| hex::encode(pk) == *author_hex)
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        infos
+    };
 
     // Build market_id → pool lookup for spot price computation.
     let pools = store

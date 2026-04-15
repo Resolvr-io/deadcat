@@ -252,13 +252,13 @@ function EmptyState() {
         Prediction markets on Liquid will appear here once they're published to
         Nostr relays.
       </p>
-      {walletStatus !== "unlocked" && (
+      {walletStatus === "not_created" && !nostrPubkey && (
         <button
           type="button"
-          onClick={() => useStore.setState({ walletOpen: true })}
+          onClick={() => useStore.setState({ setupModalOpen: true, onboardingStep: "nostr" })}
           className="mr-3 rounded-xl border border-slate-600 px-6 py-3 text-base font-medium text-slate-200"
         >
-          Set Up Wallet
+          Set Up Account
         </button>
       )}
       {marketMakerMode && (
@@ -269,11 +269,6 @@ function EmptyState() {
         >
           <span className="mr-1">+</span> Create Market
         </button>
-      )}
-      {nostrPubkey && (
-        <p className="mt-4 text-xs text-slate-500">
-          Identity: {nostrPubkey.slice(0, 8)}...{nostrPubkey.slice(-8)}
-        </p>
       )}
     </div>
   );

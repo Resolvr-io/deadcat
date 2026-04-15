@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use deadcat_sdk::elements::hashes::Hash as _;
 use deadcat_store::ChainSource;
 use serde::Deserialize;
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager};
 
 use state::{AppState, AppStateManager, PaymentSwap, AUTO_LOCK_TIMEOUT_SECS};
@@ -48,9 +48,11 @@ pub struct WalletStoreState {
     pub wallet_store: wallet_store::WalletStore,
 }
 
-/// App-layer Nostr state: relay list (keys come from the node).
+/// App-layer Nostr state: relay list and source npub (keys come from the node).
 pub struct NostrAppState {
     pub relay_list: std::sync::RwLock<Vec<String>>,
+    /// The npub whose market announcements we subscribe to.
+    pub source_npub: std::sync::RwLock<String>,
 }
 
 impl Default for NostrAppState {
@@ -61,6 +63,9 @@ impl Default for NostrAppState {
                     .iter()
                     .map(|s| s.to_string())
                     .collect(),
+            ),
+            source_npub: std::sync::RwLock::new(
+                discovery::DEFAULT_SOURCE_NPUB.to_string(),
             ),
         }
     }
@@ -1304,9 +1309,22 @@ pub fn run() {
                 manager.set_network(Network::Testnet);
             }
 
+            // Load source npub from config file (creates default if missing)
+            let source_npub = manager.load_source_npub();
+
+            let nostr_state = NostrAppState {
+                relay_list: std::sync::RwLock::new(
+                    discovery::DEFAULT_RELAYS
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                ),
+                source_npub: std::sync::RwLock::new(source_npub),
+            };
+
             app.manage(Mutex::new(manager));
             app.manage(NodeState::default());
-            app.manage(NostrAppState::default());
+            app.manage(nostr_state);
             app.manage(WalletStoreState::default());
 
             // Custom macOS menu — Cmd+Q routes through frontend quit confirmation
@@ -1316,7 +1334,21 @@ pub fn run() {
             let app_submenu = SubmenuBuilder::new(app, "Deadcat Live")
                 .items(&[&quit_item])
                 .build()?;
-            let menu = MenuBuilder::new(app).item(&app_submenu).build()?;
+            let edit_submenu = SubmenuBuilder::new(app, "Edit")
+                .items(&[
+                    &PredefinedMenuItem::undo(app, None)?,
+                    &PredefinedMenuItem::redo(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, None)?,
+                    &PredefinedMenuItem::copy(app, None)?,
+                    &PredefinedMenuItem::paste(app, None)?,
+                    &PredefinedMenuItem::select_all(app, None)?,
+                ])
+                .build()?;
+            let menu = MenuBuilder::new(app)
+                .item(&app_submenu)
+                .item(&edit_submenu)
+                .build()?;
             app.set_menu(menu)?;
             app.on_menu_event(move |app, event| {
                 if event.id() == "confirm-quit" {
@@ -1418,12 +1450,17 @@ pub fn run() {
             commands::restore_mnemonic_from_nostr,
             commands::check_nostr_backup,
             commands::delete_nostr_backup,
+            commands::get_source_npub,
+            commands::set_source_npub,
+            commands::get_default_source_npub,
             commands::get_relay_list,
             commands::set_relay_list,
             commands::fetch_nip65_relay_list,
             commands::add_relay,
             commands::remove_relay,
             commands::fetch_nostr_profile,
+            commands::preview_nostr_profile,
+            commands::derive_npub_from_nsec,
             commands::publish_nostr_profile,
             commands::create_nip98_auth,
             commands::export_identity_file,

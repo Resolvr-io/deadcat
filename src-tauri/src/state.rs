@@ -16,6 +16,7 @@ pub const AUTO_LOCK_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
 const LOCAL_STATE_FILE: &str = "deadcat_state.json";
 const CONFIG_FILE: &str = "network_config.json";
+const SOURCE_CONFIG_FILE: &str = "source_config.json";
 const STORE_CUTOVER_MARKER_FILE: &str = "deadcat_store_cutover_v3.marker";
 
 // ============================================================================
@@ -397,6 +398,38 @@ impl AppStateManager {
     fn save_local_state(&self) {
         let path = self.app_data_dir.join(LOCAL_STATE_FILE);
         if let Ok(json) = serde_json::to_string_pretty(&self.local_state) {
+            let _ = fs::write(path, json);
+        }
+    }
+
+    // --- Source npub config ---
+
+    /// Load the source npub from `source_config.json`, creating the file with
+    /// the hardcoded default if it doesn't exist yet.
+    pub fn load_source_npub(&self) -> String {
+        let path = self.app_data_dir.join(SOURCE_CONFIG_FILE);
+        if let Ok(contents) = fs::read_to_string(&path) {
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if let Some(npub) = config.get("source_npub").and_then(|v| v.as_str()) {
+                    if !npub.is_empty() {
+                        return npub.to_string();
+                    }
+                }
+            }
+        }
+        // File missing or invalid — write the default and return it.
+        let default = deadcat_sdk::DEFAULT_SOURCE_NPUB.to_string();
+        self.save_source_npub(&default);
+        default
+    }
+
+    pub fn save_source_npub(&self, npub: &str) {
+        let path = self.app_data_dir.join(SOURCE_CONFIG_FILE);
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let config = serde_json::json!({ "source_npub": npub });
+        if let Ok(json) = serde_json::to_string_pretty(&config) {
             let _ = fs::write(path, json);
         }
     }

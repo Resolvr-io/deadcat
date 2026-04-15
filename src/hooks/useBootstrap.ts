@@ -103,6 +103,14 @@ export function useBootstrap(): void {
         });
       }
 
+      // Load source npub
+      try {
+        const npub = await invoke<string>("get_source_npub");
+        useStore.setState({ sourceNpub: npub, sourceNpubInput: npub });
+      } catch {
+        /* use default from store */
+      }
+
       // 3. Fetch wallet status
       try {
         const appState = await invoke<{
