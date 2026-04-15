@@ -274,9 +274,7 @@ function LogoutModal() {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
       <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-8">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-medium text-slate-100">
-            Log Out
-          </h2>
+          <h2 className="text-lg font-medium text-slate-100">Log Out</h2>
           <CloseButton onClick={closeLogout} />
         </div>
         <div className="mt-5 space-y-4">
@@ -564,7 +562,7 @@ function WalletButton() {
     <button
       type="button"
       onClick={openWallet}
-      className={`flex h-9 shrink-0 items-center justify-center rounded-full border transition hover:border-slate-500 hover:text-slate-200 ${isLocked ? "gap-1 border-amber-500/40 px-3 text-slate-400" : showBalance ? "gap-1.5 border-slate-700 px-3 text-slate-400" : "w-9 border-slate-700 text-slate-400"}`}
+      className={`flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${isLocked ? "gap-1 px-3" : showBalance ? "gap-1.5 px-3" : "w-9"}`}
     >
       <svg
         aria-hidden="true"
@@ -587,7 +585,7 @@ function WalletButton() {
       {isLocked && (
         <svg
           aria-hidden="true"
-          className="h-3.5 w-3.5 shrink-0 text-amber-400"
+          className="h-3.5 w-3.5 shrink-0 text-slate-500"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
