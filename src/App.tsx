@@ -1,5 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect } from "react";
 import CreateMarketPage from "./components/create/CreateMarketPage";
 import DetailPage from "./components/detail/DetailPage";
@@ -24,7 +24,7 @@ function CloseConfirmDialog() {
   }, []);
 
   const handleQuit = useCallback(() => {
-    getCurrentWindow().destroy();
+    void invoke("confirm_quit");
   }, []);
 
   if (!open) return null;

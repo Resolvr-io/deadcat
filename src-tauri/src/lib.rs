@@ -12,9 +12,8 @@ use std::sync::Mutex;
 use deadcat_sdk::elements::hashes::Hash as _;
 use deadcat_store::ChainSource;
 use serde::Deserialize;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::{AppHandle, Emitter, Manager, RunEvent};
+use tauri::{AppHandle, Emitter, Manager};
 
 use state::{AppState, AppStateManager, PaymentSwap, AUTO_LOCK_TIMEOUT_SECS};
 
@@ -1260,11 +1259,15 @@ fn emit_state(app: &AppHandle, state: &AppState) {
     let _ = app.emit(APP_STATE_UPDATED_EVENT, state);
 }
 
+/// Exit the application (called after user confirms quit).
+#[tauri::command]
+fn confirm_quit(app: AppHandle) {
+    app.exit(0);
+}
+
 // ============================================================================
 // App Entry Point
 // ============================================================================
-
-struct QuitFlag(AtomicBool);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -1305,7 +1308,6 @@ pub fn run() {
             app.manage(NodeState::default());
             app.manage(NostrAppState::default());
             app.manage(WalletStoreState::default());
-            app.manage(QuitFlag(AtomicBool::new(false)));
 
             // Custom macOS menu — Cmd+Q routes through frontend quit confirmation
             let quit_item = MenuItemBuilder::with_id("confirm-quit", "Quit Deadcat Live")
@@ -1401,6 +1403,7 @@ pub fn run() {
             refresh_payment_swap_status,
             // Legacy
             fetch_chain_tip,
+            confirm_quit,
             // SDK / Nostr
             commands::init_nostr_identity,
             commands::generate_nostr_identity,
@@ -1463,27 +1466,7 @@ pub fn run() {
                 api.prevent_close();
                 let _ = window.emit("close-requested", ());
             }
-            if let tauri::WindowEvent::Destroyed = event {
-                // Window was destroyed by frontend (user confirmed quit) — allow exit
-                window
-                    .app_handle()
-                    .state::<QuitFlag>()
-                    .0
-                    .store(true, Ordering::SeqCst);
-            }
         })
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|app, event| {
-            if let RunEvent::ExitRequested { api, .. } = &event {
-                if app.state::<QuitFlag>().0.load(Ordering::SeqCst) {
-                    return; // Allow exit
-                }
-                // Prevent Cmd+Q from killing the app — route through frontend confirmation
-                api.prevent_exit();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.emit("close-requested", ());
-                }
-            }
-        });
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
