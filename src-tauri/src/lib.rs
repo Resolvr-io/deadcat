@@ -12,7 +12,8 @@ use std::sync::Mutex;
 use deadcat_sdk::elements::hashes::Hash as _;
 use deadcat_store::ChainSource;
 use serde::Deserialize;
-use tauri::{AppHandle, Emitter, Manager};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{AppHandle, Emitter, Manager, RunEvent};
 
 use state::{AppState, AppStateManager, PaymentSwap, AUTO_LOCK_TIMEOUT_SECS};
 
@@ -1262,6 +1263,8 @@ fn emit_state(app: &AppHandle, state: &AppState) {
 // App Entry Point
 // ============================================================================
 
+struct QuitFlag(AtomicBool);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Install the rustls CryptoProvider before any TLS connections.
@@ -1301,6 +1304,7 @@ pub fn run() {
             app.manage(NodeState::default());
             app.manage(NostrAppState::default());
             app.manage(WalletStoreState::default());
+            app.manage(QuitFlag(AtomicBool::new(false)));
 
             // Spawn auto-lock background timer
             let app_handle = app.handle().clone();
@@ -1441,7 +1445,27 @@ pub fn run() {
                 api.prevent_close();
                 let _ = window.emit("close-requested", ());
             }
+            if let tauri::WindowEvent::Destroyed = event {
+                // Window was destroyed by frontend (user confirmed quit) — allow exit
+                window
+                    .app_handle()
+                    .state::<QuitFlag>()
+                    .0
+                    .store(true, Ordering::SeqCst);
+            }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let RunEvent::ExitRequested { api, .. } = &event {
+                if app.state::<QuitFlag>().0.load(Ordering::SeqCst) {
+                    return; // Allow exit
+                }
+                // Prevent Cmd+Q from killing the app — route through frontend confirmation
+                api.prevent_exit();
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("close-requested", ());
+                }
+            }
+        });
 }
