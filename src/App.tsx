@@ -89,10 +89,10 @@ export default function App() {
           {view === "home" && <HomePage />}
           {view === "detail" && <DetailPage />}
           {view === "create" && <CreateMarketPage />}
-          {view === "profile" && <ProfilePage />}
         </main>
       </div>
 
+      <ProfilePage />
       {walletOpen && <WalletPage />}
       {setupModalOpen && <OnboardingOverlay />}
       {nostrEventModal && <NostrEventModal />}

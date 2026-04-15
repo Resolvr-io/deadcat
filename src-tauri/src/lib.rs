@@ -1400,6 +1400,7 @@ pub fn run() {
             commands::remove_relay,
             commands::fetch_nostr_profile,
             commands::publish_nostr_profile,
+            commands::create_nip98_auth,
             commands::export_identity_file,
             commands::open_downloads_folder,
             commands::import_identity_file,

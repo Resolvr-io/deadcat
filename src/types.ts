@@ -15,7 +15,7 @@ export type MarketCategory = Exclude<
   NavCategory,
   "Trending" | "Ending Soon" | "New" | "Portfolio" | "My Markets" | "Resolved"
 >;
-export type ViewMode = "home" | "detail" | "create" | "profile";
+export type ViewMode = "home" | "detail" | "create";
 export type Side = "yes" | "no";
 export type OrderType = "market" | "limit";
 export type ActionTab = "trade" | "issue" | "redeem" | "cancel";
@@ -247,6 +247,7 @@ export type NostrBackupStatus = {
 };
 export type NostrProfile = {
   picture?: string;
+  banner?: string;
   name?: string;
   display_name?: string;
   about?: string;

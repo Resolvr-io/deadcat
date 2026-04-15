@@ -112,7 +112,7 @@ export function UserMenu() {
             <button
               type="button"
               onClick={() => {
-                useStore.setState({ view: "profile", userMenuOpen: false });
+                useStore.setState({ profileOpen: true, userMenuOpen: false });
               }}
               className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-800 hover:text-slate-100"
             >

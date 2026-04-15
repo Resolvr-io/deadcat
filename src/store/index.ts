@@ -56,6 +56,7 @@ export interface NavigationSlice {
   logoutBackupError: string;
   logoutPasswordInput: string;
   logoutBackupDownloaded: boolean;
+  profileOpen: boolean;
   closeConfirmOpen: boolean;
   onboardingSuccess: boolean;
   showMiniWallet: boolean;
@@ -296,6 +297,7 @@ export const useStore = create<StoreState>()(() => ({
   logoutBackupError: "",
   logoutPasswordInput: "",
   logoutBackupDownloaded: false,
+  profileOpen: false,
   closeConfirmOpen: false,
   onboardingSuccess: false,
   showMiniWallet: true,

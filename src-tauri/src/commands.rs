@@ -794,6 +794,7 @@ pub async fn publish_nostr_profile(
     website: Option<String>,
     nip05: Option<String>,
     lud16: Option<String>,
+    banner: Option<String>,
 ) -> Result<(), String> {
     let (keys, client) = get_keys_and_client(&app).await?;
     discovery::publish_profile(
@@ -806,8 +807,32 @@ pub async fn publish_nostr_profile(
         website.as_deref(),
         nip05.as_deref(),
         lud16.as_deref(),
+        banner.as_deref(),
     )
     .await
+}
+
+/// Create a NIP-98 HTTP Auth header (kind 27235) for authenticated uploads.
+#[tauri::command]
+pub async fn create_nip98_auth(
+    app: tauri::AppHandle,
+    url: String,
+    method: String,
+) -> Result<String, String> {
+    let (keys, _client) = get_keys_and_client(&app).await?;
+    use nostr_sdk::prelude::*;
+    let event = EventBuilder::new(Kind::Custom(27235), "")
+        .tags(vec![
+            Tag::parse(vec!["u".to_string(), url]).map_err(|e| format!("tag error: {e}"))?,
+            Tag::parse(vec!["method".to_string(), method.to_uppercase()]).map_err(|e| format!("tag error: {e}"))?,
+        ])
+        .sign(&keys)
+        .await
+        .map_err(|e| format!("sign error: {e}"))?;
+    let json = event.as_json();
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(json.as_bytes());
+    Ok(format!("Nostr {b64}"))
 }
 
 #[tauri::command]

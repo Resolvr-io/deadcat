@@ -146,6 +146,7 @@ pub struct RelayBackupResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NostrProfile {
     pub picture: Option<String>,
+    pub banner: Option<String>,
     pub name: Option<String>,
     pub display_name: Option<String>,
     pub about: Option<String>,
@@ -379,6 +380,7 @@ pub async fn fetch_profile(
             };
             Some(NostrProfile {
                 picture: str_field("picture"),
+                banner: str_field("banner"),
                 name: str_field("name"),
                 display_name: str_field("display_name"),
                 about: str_field("about"),
@@ -404,6 +406,7 @@ pub async fn publish_profile(
     website: Option<&str>,
     nip05: Option<&str>,
     lud16: Option<&str>,
+    banner: Option<&str>,
 ) -> Result<(), String> {
     let mut meta = serde_json::json!({ "name": name });
     if let Some(v) = display_name.filter(|s| !s.is_empty()) {
@@ -425,6 +428,9 @@ pub async fn publish_profile(
     }
     if let Some(v) = lud16.filter(|s| !s.is_empty()) {
         meta["lud16"] = serde_json::Value::String(v.to_string());
+    }
+    if let Some(v) = banner.filter(|s| !s.is_empty()) {
+        meta["banner"] = serde_json::Value::String(v.to_string());
     }
     let content = meta.to_string();
     let event = EventBuilder::new(Kind::Metadata, content)
