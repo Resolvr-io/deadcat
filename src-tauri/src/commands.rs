@@ -785,6 +785,10 @@ pub async fn fetch_nostr_profile(
 }
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Tauri command arguments intentionally mirror the frontend invoke payload"
+)]
 pub async fn publish_nostr_profile(
     app: tauri::AppHandle,
     name: String,
@@ -797,19 +801,17 @@ pub async fn publish_nostr_profile(
     banner: Option<String>,
 ) -> Result<(), String> {
     let (keys, client) = get_keys_and_client(&app).await?;
-    discovery::publish_profile(
-        &keys,
-        &client,
-        &name,
-        picture.as_deref(),
-        display_name.as_deref(),
-        about.as_deref(),
-        website.as_deref(),
-        nip05.as_deref(),
-        lud16.as_deref(),
-        banner.as_deref(),
-    )
-    .await
+    let profile = discovery::NostrProfile {
+        picture,
+        banner,
+        name: Some(name),
+        display_name,
+        about,
+        website,
+        nip05,
+        lud16,
+    };
+    discovery::publish_profile(&keys, &client, &profile).await
 }
 
 /// Create a NIP-98 HTTP Auth header (kind 27235) for authenticated uploads.
@@ -824,7 +826,8 @@ pub async fn create_nip98_auth(
     let event = EventBuilder::new(Kind::Custom(27235), "")
         .tags(vec![
             Tag::parse(vec!["u".to_string(), url]).map_err(|e| format!("tag error: {e}"))?,
-            Tag::parse(vec!["method".to_string(), method.to_uppercase()]).map_err(|e| format!("tag error: {e}"))?,
+            Tag::parse(vec!["method".to_string(), method.to_uppercase()])
+                .map_err(|e| format!("tag error: {e}"))?,
         ])
         .sign(&keys)
         .await

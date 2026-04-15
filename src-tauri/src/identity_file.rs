@@ -46,8 +46,7 @@ pub fn export_identity_file(
         .hash_password_into(password.as_bytes(), &salt, &mut key_bytes)
         .map_err(|e| format!("argon2 KDF: {e}"))?;
 
-    let cipher =
-        Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| format!("cipher init: {e}"))?;
+    let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| format!("cipher init: {e}"))?;
     let nonce_bytes: [u8; 12] = rand::random();
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
@@ -90,8 +89,7 @@ pub fn import_identity_file(
         .hash_password_into(password.as_bytes(), &salt, &mut key_bytes)
         .map_err(|e| format!("argon2 KDF: {e}"))?;
 
-    let cipher =
-        Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| format!("cipher init: {e}"))?;
+    let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| format!("cipher init: {e}"))?;
     let nonce_bytes = BASE64
         .decode(&envelope.nonce)
         .map_err(|e| format!("decode nonce: {e}"))?;
@@ -104,8 +102,7 @@ pub fn import_identity_file(
         .decrypt(nonce, ciphertext.as_ref())
         .map_err(|_| "wrong password or corrupted file".to_string())?;
 
-    let payload_str =
-        String::from_utf8(plaintext).map_err(|e| format!("invalid UTF-8: {e}"))?;
+    let payload_str = String::from_utf8(plaintext).map_err(|e| format!("invalid UTF-8: {e}"))?;
 
     serde_json::from_str(&payload_str).map_err(|e| format!("invalid payload: {e}"))
 }

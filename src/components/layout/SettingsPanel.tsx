@@ -440,7 +440,9 @@ function WalletSection() {
         </p>
         <button
           type="button"
-          onClick={() => useStore.setState({ walletOpen: true, settingsOpen: false })}
+          onClick={() =>
+            useStore.setState({ walletOpen: true, settingsOpen: false })
+          }
           className="w-full rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
         >
           Set Up Wallet

@@ -83,7 +83,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         } else if (event.payload.type === "drop") {
           setDragOver(false);
           const path = event.payload.paths[0];
-          if (path && path.endsWith(".dcid")) {
+          if (path?.endsWith(".dcid")) {
             const fileName = path.split(/[\\/]/).pop() ?? "backup file";
             readTextFile(path)
               .then((content) => {

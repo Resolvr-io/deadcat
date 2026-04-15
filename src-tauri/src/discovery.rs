@@ -400,15 +400,13 @@ pub async fn fetch_profile(
 pub async fn publish_profile(
     keys: &Keys,
     client: &Client,
-    name: &str,
-    picture: Option<&str>,
-    display_name: Option<&str>,
-    about: Option<&str>,
-    website: Option<&str>,
-    nip05: Option<&str>,
-    lud16: Option<&str>,
-    banner: Option<&str>,
+    profile: &NostrProfile,
 ) -> Result<(), String> {
+    let name = profile
+        .name
+        .as_deref()
+        .ok_or_else(|| "profile name is required".to_string())?;
+
     // Fetch existing kind 0 to merge with
     let mut meta = {
         let filter = Filter::new()
@@ -432,23 +430,23 @@ pub async fn publish_profile(
     meta["name"] = serde_json::Value::String(name.to_string());
 
     // Merge provided fields — only overwrite if Some (empty string clears the field)
-    if let Some(v) = display_name {
+    if let Some(v) = profile.display_name.as_deref() {
         if v.is_empty() {
             meta.as_object_mut().map(|m| m.remove("display_name"));
         } else {
             meta["display_name"] = serde_json::Value::String(v.to_string());
         }
     }
-    if display_name.is_none() && meta.get("display_name").is_none() {
+    if profile.display_name.is_none() && meta.get("display_name").is_none() {
         meta["display_name"] = serde_json::Value::String(name.to_string());
     }
     for (key, val) in [
-        ("picture", picture),
-        ("about", about),
-        ("website", website),
-        ("nip05", nip05),
-        ("lud16", lud16),
-        ("banner", banner),
+        ("picture", profile.picture.as_deref()),
+        ("about", profile.about.as_deref()),
+        ("website", profile.website.as_deref()),
+        ("nip05", profile.nip05.as_deref()),
+        ("lud16", profile.lud16.as_deref()),
+        ("banner", profile.banner.as_deref()),
     ] {
         if let Some(v) = val {
             if v.is_empty() {
