@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useStore } from "../../store";
+import { CloseButton } from "../shared/CloseButton";
 import { ReceiveModal } from "./ReceiveModal";
 import { SendModal } from "./SendModal";
 
@@ -74,27 +75,7 @@ export function WalletModal() {
             <h3 className="text-lg font-medium text-slate-100">{title}</h3>
             <p className="text-xs text-slate-400">{subtitle}</p>
           </div>
-          <button
-            type="button"
-            onClick={handleClose}
-            className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-          >
-            <svg
-              aria-hidden="true"
-              xmlns="http://www.w3.org/2000/svg"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+          <CloseButton onClick={handleClose} />
         </div>
         <div className="space-y-4 p-6">
           {/* Tab bar */}

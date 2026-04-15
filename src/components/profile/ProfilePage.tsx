@@ -4,6 +4,7 @@ import { readFile } from "@tauri-apps/plugin-fs";
 import { useCallback, useEffect, useState } from "react";
 import { useStore } from "../../store";
 import { generateAvatarDataUri } from "../../utils-react/avatar";
+import { CloseButton } from "../shared/CloseButton";
 import { showToast } from "../shared/Toast";
 
 const NOSTR_BUILD_URL = "https://nostr.build/api/v2/upload/files";
@@ -178,25 +179,7 @@ export default function ProfilePage() {
               <span className="text-lg font-medium text-white drop-shadow-md">
                 Edit Profile
               </span>
-              <button
-                type="button"
-                onClick={close}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-950/60 text-slate-300 backdrop-blur transition hover:bg-slate-950/80 hover:text-white"
-              >
-                <svg
-                  aria-hidden="true"
-                  className="h-4 w-4"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
+              <CloseButton onClick={close} variant="overlay" />
             </div>
             {banner && (
               <img

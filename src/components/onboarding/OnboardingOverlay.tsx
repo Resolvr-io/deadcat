@@ -1,5 +1,6 @@
 import { useCallback, useEffect } from "react";
 import { useStore } from "../../store";
+import { CloseButton } from "../shared/CloseButton";
 import NostrSetupStep from "./NostrSetupStep";
 import WalletSetupStep from "./WalletSetupStep";
 
@@ -128,25 +129,13 @@ export default function OnboardingOverlay() {
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm"
     >
       <div className="relative w-full max-w-[432px] mx-4">
-        <button
-          type="button"
-          onClick={handleClose}
-          className={`absolute -top-12 right-0 flex h-8 w-8 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${backupFileContent ? "hidden" : ""}`}
-          title="Close"
-        >
-          <svg
-            className="h-4 w-4"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={3.5}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
-        </button>
+        {!backupFileContent && (
+          <CloseButton
+            onClick={handleClose}
+            variant="overlay"
+            className="absolute -top-12 right-0"
+          />
+        )}
         {onboardingStep === "nostr" ? (
           <NostrSetupStep stepIndicator={stepIndicator} />
         ) : onboardingStep === "wallet" ? (
