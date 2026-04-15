@@ -1179,21 +1179,17 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         });
         await invoke("init_nostr_identity");
         await invoke<void>("unlock_wallet", { password: restorePassword });
-        // Done
+        // Done — don't set nostrProfile here, let the relay fetch populate it
         useStore.setState({
           walletStatus: "unlocked",
           walletSessionPassword: restorePassword,
-          nostrProfile: {
-            name: payload.display_name,
-            display_name: payload.display_name,
-          },
           onboardingLoading: false,
           setupModalOpen: false,
           onboardingRestoreFileContent: "",
           onboardingRestorePassword: "",
         });
-        // Fetch full kind 0 profile from relays after connection
-        setTimeout(async () => {
+        // Fetch full kind 0 profile from relays
+        void (async () => {
           try {
             const profile = await invoke<
               import("../../types").NostrProfile | null
@@ -1202,7 +1198,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           } catch {
             // Best effort
           }
-        }, 2000);
+        })();
       } catch (e) {
         useStore.setState({
           onboardingError: String(e),
@@ -1241,7 +1237,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           onboardingRestorePassword: "",
         });
         // Fetch kind 0 profile from relays
-        setTimeout(async () => {
+        void (async () => {
           try {
             const profile = await invoke<
               import("../../types").NostrProfile | null
@@ -1250,7 +1246,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           } catch {
             // Best effort
           }
-        }, 2000);
+        })();
       } catch (e) {
         useStore.setState({
           onboardingError: String(e),
