@@ -719,17 +719,17 @@ export default function TradingPanel({ market }: { market: Market }) {
           {walletStatus !== "unlocked" ? (
             <div className="mt-4 rounded-lg border border-slate-700 bg-slate-900/60 p-4 text-center">
               <p className="text-sm font-medium text-slate-300">
-                Create a wallet to trade
+                Create an account to trade
               </p>
               <p className="mt-1 text-xs text-slate-500">
                 Your quote will be preserved
               </p>
               <button
                 type="button"
-                onClick={() => useStore.setState({ walletOpen: true })}
+                onClick={() => useStore.setState({ setupModalOpen: true, onboardingStep: "nostr" })}
                 className="mt-3 w-full rounded-lg bg-emerald-400 px-4 py-2.5 font-semibold text-slate-950 transition hover:bg-emerald-300"
               >
-                Set up wallet
+                Set up account
               </button>
             </div>
           ) : (

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useMemo } from "react";
 import {
   useLockWallet,
@@ -200,7 +201,7 @@ export function WalletUnlocked({
         walletNetwork === "testnet"
           ? "https://blockstream.info/liquidtestnet"
           : "https://blockstream.info/liquid";
-      window.open(`${base}/asset/${assetId}`, "_blank");
+      void openUrl(`${base}/asset/${assetId}`);
     },
     [walletNetwork],
   );
