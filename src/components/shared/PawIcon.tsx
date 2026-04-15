@@ -1,4 +1,8 @@
-export function PawIcon({ className = "h-[1em] w-[1em]" }: { className?: string }) {
+export function PawIcon({
+  className = "h-[1em] w-[1em]",
+}: {
+  className?: string;
+}) {
   return (
     <svg
       aria-hidden="true"
