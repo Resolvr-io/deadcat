@@ -6,116 +6,8 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { useStore } from "../../store";
 import type { IdentityResponse, NostrProfile } from "../../types";
 import { generateAvatarDataUri } from "../../utils-react/avatar";
+import { randomCatName } from "../../utils-react/random-name";
 import { showToast } from "../shared/Toast";
-
-const ADJECTIVES = [
-  "sleepy",
-  "sneaky",
-  "fuzzy",
-  "lazy",
-  "curious",
-  "shadow",
-  "midnight",
-  "pouncy",
-  "fluffy",
-  "stealthy",
-  "prowling",
-  "purring",
-  "crafty",
-  "nimble",
-  "slinky",
-  "feisty",
-  "rogue",
-  "silent",
-  "velvet",
-  "ghostly",
-  "feral",
-  "savage",
-  "golden",
-  "silver",
-  "copper",
-  "ember",
-  "frost",
-  "storm",
-  "lunar",
-  "solar",
-  "misty",
-  "dusky",
-  "smoky",
-  "inky",
-  "ashen",
-  "crimson",
-  "scarlet",
-  "onyx",
-  "scruffy",
-  "rusty",
-  "mossy",
-  "sandy",
-  "wild",
-  "lone",
-  "swift",
-  "bold",
-  "keen",
-  "sly",
-  "wily",
-];
-const NOUNS = [
-  "cat",
-  "kitten",
-  "tabby",
-  "calico",
-  "panther",
-  "lynx",
-  "tomcat",
-  "mouser",
-  "paws",
-  "whiskers",
-  "chonk",
-  "neko",
-  "lion",
-  "tiger",
-  "jaguar",
-  "leopard",
-  "cheetah",
-  "cougar",
-  "puma",
-  "bobcat",
-  "ocelot",
-  "serval",
-  "caracal",
-  "margay",
-  "manul",
-  "wildcat",
-  "civet",
-  "genet",
-  "sphinx",
-  "bengal",
-  "maine",
-  "siamese",
-  "persian",
-  "ragdoll",
-  "abyssinian",
-  "birman",
-  "burmese",
-  "korat",
-  "chartreux",
-  "savannah",
-  "toyger",
-  "ocicat",
-  "claw",
-  "fang",
-  "stripe",
-  "prowler",
-  "stalker",
-  "hunter",
-  "shadow",
-];
-
-function randomName(): string {
-  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
-  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
-  return `${adj}-${noun}`;
-}
 
 function BackButton({ onClick }: { onClick: () => void }) {
   return (
@@ -171,6 +63,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     (s) => s.onboardingWalletPasswordConfirm,
   );
   const backupFileContent = useStore((s) => s.onboardingBackupFileContent);
+  const backupDownloaded = useStore((s) => s.onboardingBackupDownloaded);
   const restoreFileContent = useStore((s) => s.onboardingRestoreFileContent);
   const restorePassword = useStore((s) => s.onboardingRestorePassword);
   const restoreMnemonic = useStore((s) => s.onboardingRestoreMnemonic);
@@ -256,7 +149,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         onboardingPendingNpub: identity.npub,
         onboardingNostrGeneratedNsec: nsec,
         onboardingProfileStep: true,
-        onboardingNostrDisplayName: randomName(),
+        onboardingNostrDisplayName: randomCatName(),
       });
     } catch (e) {
       useStore.setState({ onboardingError: String(e) });
@@ -396,7 +289,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
       await invoke("init_nostr_identity");
       await invoke<void>("unlock_wallet", { password });
       useStore.setState({ walletSessionPassword: password });
-      // 4. Publish kind 0 — wait briefly for relay connections then publish
+      // 4. Publish kind 0 with name (avatar is DiceBear, generated client-side)
       try {
         await new Promise((r) => setTimeout(r, 1000));
         await invoke("publish_nostr_profile", {
@@ -479,7 +372,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
       displayName ||
       useStore.getState().nostrProfile?.display_name ||
       "unnamed";
-    const handleDownloadAndFinish = () => {
+    const handleDownload = () => {
       const blob = new Blob([backupFileContent], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -487,6 +380,9 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
       a.download = `deadcat-${currentDisplayName}.dcid`;
       a.click();
       URL.revokeObjectURL(url);
+      useStore.setState({ onboardingBackupDownloaded: true });
+    };
+    const handleFinish = () => {
       useStore.setState({
         onboardingBackupFileContent: "",
         onboardingBackupDownloaded: false,
@@ -534,27 +430,79 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             on a new device.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={handleDownloadAndFinish}
-          className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
-        >
-          <svg
-            aria-hidden="true"
-            className="h-5 w-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth="2"
+        {!backupDownloaded ? (
+          <button
+            type="button"
+            onClick={handleDownload}
+            className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-            />
-          </svg>
-          Download &amp; continue
-        </button>
+            <svg
+              aria-hidden="true"
+              className="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+              />
+            </svg>
+            Download backup
+          </button>
+        ) : (
+          <>
+            <div className="mt-6 flex items-center gap-2 text-sm text-emerald-300">
+              <svg
+                aria-hidden="true"
+                className="h-5 w-5 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M5 13l4 4L19 7"
+                />
+              </svg>
+              Backup file downloaded
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                void invoke("open_downloads_folder").catch(() => {})
+              }
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-slate-700 px-4 py-3 text-sm text-slate-300 hover:bg-slate-800 transition"
+            >
+              <svg
+                aria-hidden="true"
+                className="h-4 w-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                />
+              </svg>
+              Open Downloads folder
+            </button>
+            <button
+              type="button"
+              onClick={handleFinish}
+              className="mt-3 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
+            >
+              Start trading
+            </button>
+          </>
+        )}
       </div>
     );
   }
@@ -563,7 +511,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   if (profileStep && !nostrDone) {
     const avatarSrc =
       profilePhoto ||
-      generateAvatarDataUri(displayName || pendingNpub || "default");
+      generateAvatarDataUri(pendingNpub || displayName || "default");
 
     return (
       <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
@@ -629,11 +577,25 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             />
             <button
               type="button"
-              onClick={() =>
-                useStore.setState({
-                  onboardingNostrDisplayName: randomName(),
-                })
-              }
+              onClick={async () => {
+                try {
+                  const identity = await invoke<IdentityResponse>(
+                    "generate_nostr_identity",
+                  );
+                  const nsec = await invoke<string>("export_nostr_nsec");
+                  useStore.setState({
+                    onboardingPendingPubkey: identity.pubkey_hex,
+                    onboardingPendingNpub: identity.npub,
+                    onboardingNostrGeneratedNsec: nsec,
+                    onboardingNostrDisplayName: randomCatName(),
+                  });
+                } catch {
+                  // Fallback: just change the name
+                  useStore.setState({
+                    onboardingNostrDisplayName: randomCatName(),
+                  });
+                }
+              }}
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
               title="Randomize"
             >

@@ -4,7 +4,9 @@ import { baseCurrencyOptions } from "../../constants";
 import { queryClient } from "../../queries/queryClient";
 import { useStore } from "../../store";
 import type { BaseCurrency, RelayEntry } from "../../types";
+import { randomCatName } from "../../utils-react/random-name";
 import { btcLabel } from "../../utils-react/wallet";
+import { CloseButton } from "../shared/CloseButton";
 import { showToast } from "../shared/Toast";
 
 const DEV_MODE = import.meta.env.DEV;
@@ -32,15 +34,13 @@ function SettingsAccordion({
   }, [sectionKey]);
 
   return (
-    <div className="rounded-lg border border-slate-800 overflow-hidden">
+    <div>
       <button
         type="button"
         onClick={toggle}
-        className="w-full flex items-center justify-between px-4 py-3 text-left transition-colors hover:bg-slate-900/50"
+        className="w-full flex items-center justify-between py-3 text-left"
       >
-        <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
-          {title}
-        </span>
+        <span className="text-sm font-semibold text-slate-200">{title}</span>
         <svg
           aria-hidden="true"
           className={`h-4 w-4 text-slate-500 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
@@ -56,11 +56,8 @@ function SettingsAccordion({
           />
         </svg>
       </button>
-      {open && (
-        <div className="px-4 pb-4 pt-3 border-t border-slate-800">
-          {children}
-        </div>
-      )}
+      {open && <div className="pb-4">{children}</div>}
+      <div className="border-b border-slate-800" />
     </div>
   );
 }
@@ -92,10 +89,6 @@ function Toggle({
 function NostrSection() {
   const nostrNpub = useStore((s) => s.nostrNpub);
   const nostrNsecRevealed = useStore((s) => s.nostrNsecRevealed);
-  const nostrImportNsec = useStore((s) => s.nostrImportNsec);
-  const nostrImporting = useStore((s) => s.nostrImporting);
-  const nostrReplacePrompt = useStore((s) => s.nostrReplacePrompt);
-  const nostrReplaceConfirm = useStore((s) => s.nostrReplaceConfirm);
 
   const copyNpub = useCallback(async () => {
     const npub = useStore.getState().nostrNpub;
@@ -109,6 +102,7 @@ function NostrSection() {
     const nsec = useStore.getState().nostrNsecRevealed;
     if (nsec) {
       await navigator.clipboard.writeText(nsec);
+      useStore.setState({ nostrNsecRevealed: null });
       showToast("Copied nsec to clipboard");
     }
   }, []);
@@ -122,203 +116,110 @@ function NostrSection() {
     }
   }, []);
 
-  const importNsec = useCallback(async () => {
-    const nsec = useStore.getState().nostrImportNsec.trim();
-    if (!nsec) return;
-    useStore.setState({ nostrImporting: true });
-    try {
-      const identity = await invoke<{ pubkey_hex: string; npub: string }>(
-        "import_nostr_nsec",
-        { nsec },
-      );
-      useStore.setState({
-        nostrPubkey: identity.pubkey_hex,
-        nostrNpub: identity.npub,
-        nostrImportNsec: "",
-        nostrReplacePanel: false,
-        nostrReplacePrompt: false,
-        nostrReplaceConfirm: "",
-      });
-    } catch {
-      /* ignore */
-    } finally {
-      useStore.setState({ nostrImporting: false });
-    }
-  }, []);
-
-  const generateKey = useCallback(async () => {
-    try {
-      const identity = await invoke<{ pubkey_hex: string; npub: string }>(
-        "generate_nostr_identity",
-      );
-      useStore.setState({
-        nostrPubkey: identity.pubkey_hex,
-        nostrNpub: identity.npub,
-        nostrReplacePanel: false,
-        nostrReplacePrompt: false,
-        nostrReplaceConfirm: "",
-      });
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const canConfirmReplace =
-    nostrReplaceConfirm.trim().toUpperCase() === "DELETE";
-
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <p className="text-xs text-slate-500">
-        Used to publish markets and oracle attestations on Nostr.
+        Your Nostr keypair is used to publish markets and sign attestations.
       </p>
-      <div className="space-y-2">
+
+      {/* npub */}
+      <div>
+        <p className="text-xs text-slate-500 mb-1">Public Key</p>
         <div className="flex items-center gap-2">
-          <div className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
-            <div className="text-[10px] text-slate-500">npub (public)</div>
-            <div className="mono truncate text-xs text-slate-300">
-              {nostrNpub ?? "Not initialized"}
-            </div>
-          </div>
+          <p className="mono text-xs text-slate-300 min-w-0 truncate">
+            {nostrNpub ?? "Not initialized"}
+          </p>
           {nostrNpub && (
             <button
               type="button"
               onClick={copyNpub}
-              className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
+              className="shrink-0 text-xs text-slate-500 hover:text-slate-300 transition"
             >
-              Copy
+              <svg
+                aria-hidden="true"
+                className="h-3.5 w-3.5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
             </button>
           )}
         </div>
-
-        {nostrNpub && (
-          <div className="flex items-center gap-2">
-            <div className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
-              <div className="text-[10px] text-slate-500">nsec (secret)</div>
-              {nostrNsecRevealed ? (
-                <div className="mono truncate text-xs text-rose-300">
-                  {nostrNsecRevealed}
-                </div>
-              ) : (
-                <div className="text-xs text-slate-500">Hidden</div>
-              )}
-            </div>
-            {nostrNsecRevealed ? (
-              <button
-                type="button"
-                onClick={copyNsec}
-                className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
-              >
-                Copy
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={revealNsec}
-                className="shrink-0 rounded-lg border border-amber-700/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-300 hover:bg-amber-900/30 transition"
-              >
-                Reveal
-              </button>
-            )}
-          </div>
-        )}
       </div>
 
+      {/* nsec */}
       {nostrNpub && (
-        <div className="rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2">
-          <p className="text-xs text-amber-300/90">
-            Back up your nsec. You need it to resolve markets you create.
-          </p>
+        <div>
+          <p className="text-xs text-slate-500 mb-1">Secret Key</p>
+          <div className="flex items-center gap-2">
+            {nostrNsecRevealed ? (
+              <>
+                <p className="mono text-xs text-rose-300 min-w-0 truncate">
+                  {nostrNsecRevealed}
+                </p>
+                <button
+                  type="button"
+                  onClick={copyNsec}
+                  className="shrink-0 text-xs text-slate-500 hover:text-slate-300 transition"
+                >
+                  <svg
+                    aria-hidden="true"
+                    className="h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-slate-600 italic">
+                  Hidden for your protection
+                </p>
+                <button
+                  type="button"
+                  onClick={revealNsec}
+                  className="shrink-0 text-xs text-amber-300 hover:text-amber-200 transition"
+                >
+                  Reveal
+                </button>
+              </>
+            )}
+          </div>
         </div>
       )}
 
+      {nostrNpub && (
+        <p className="text-xs text-amber-300/70">
+          Back up your nsec. You need it to resolve markets you create.
+        </p>
+      )}
+
       {!nostrNpub ? (
-        <div className="space-y-3">
-          <div>
-            <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500">
-              Import existing nsec
-            </p>
-            <div className="mt-1 flex items-center gap-2">
-              <input
-                type="password"
-                value={nostrImportNsec}
-                onChange={(e) =>
-                  useStore.setState({ nostrImportNsec: e.target.value })
-                }
-                placeholder="nsec1..."
-                className="h-9 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2 mono"
-              />
-              <button
-                type="button"
-                onClick={importNsec}
-                disabled={nostrImporting}
-                className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
-              >
-                {nostrImporting ? "Importing..." : "Import"}
-              </button>
-            </div>
-          </div>
-          <div className="border-t border-slate-800 pt-3">
-            <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500">
-              Or generate a fresh keypair
-            </p>
-            <button
-              type="button"
-              onClick={generateKey}
-              className="mt-1 w-full rounded-lg bg-emerald-400 px-4 py-2.5 text-sm font-medium text-slate-950 hover:bg-emerald-300 transition"
-            >
-              Generate New Keypair
-            </button>
-          </div>
-        </div>
-      ) : nostrReplacePrompt ? (
-        <div className="rounded-lg border border-rose-700/40 bg-rose-950/20 p-3 space-y-2">
-          <p className="text-xs text-rose-300">
-            This will permanently erase your current Nostr identity. Type{" "}
-            <strong>DELETE</strong> to confirm.
-          </p>
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={nostrReplaceConfirm}
-              onChange={(e) =>
-                useStore.setState({ nostrReplaceConfirm: e.target.value })
-              }
-              placeholder="Type DELETE"
-              className="h-9 min-w-0 flex-1 rounded-lg border border-rose-700/40 bg-slate-900 px-3 text-xs text-rose-300 outline-none ring-rose-400 transition focus:ring-2 uppercase"
-              autoComplete="off"
-            />
-            <button
-              type="button"
-              onClick={() =>
-                useStore.setState({
-                  nostrReplacePrompt: false,
-                  nostrReplacePanel: true,
-                })
-              }
-              disabled={!canConfirmReplace}
-              className={`shrink-0 rounded-lg border border-rose-700/60 px-3 py-2 text-xs transition ${canConfirmReplace ? "bg-rose-500/20 text-rose-300 hover:bg-rose-500/30" : "text-slate-600 cursor-not-allowed"}`}
-            >
-              Continue
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                useStore.setState({
-                  nostrReplacePrompt: false,
-                  nostrReplaceConfirm: "",
-                })
-              }
-              className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 transition"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
+        <button
+          type="button"
+          onClick={() => useStore.setState({ nostrReplacePanel: true })}
+          className="w-full rounded-lg border border-slate-700 px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 transition"
+        >
+          Set up identity
+        </button>
       ) : (
         <button
           type="button"
-          onClick={() => useStore.setState({ nostrReplacePrompt: true })}
-          className="w-full rounded-lg border border-rose-700/40 px-4 py-2 text-xs text-rose-400 hover:bg-rose-900/20 transition"
+          onClick={() => useStore.setState({ nostrReplacePanel: true })}
+          className="text-xs text-rose-400 hover:text-rose-300 transition"
         >
           Replace Nostr Keys
         </button>
@@ -330,11 +231,13 @@ function NostrSection() {
 /* ── Wallet section ────────────────────────────────────────────────── */
 
 function SeedPhraseReveal() {
+  const walletStatus = useStore((s) => s.walletStatus);
   const [revealed, setRevealed] = useState(false);
   const [words, setWords] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
   const handleReveal = useCallback(async () => {
+    if (walletStatus !== "unlocked") return;
     setLoading(true);
     try {
       let mnemonic: string;
@@ -356,11 +259,13 @@ function SeedPhraseReveal() {
       // Failed
     }
     setLoading(false);
-  }, []);
+  }, [walletStatus]);
 
   const handleCopy = useCallback(() => {
     if (words.length > 0) {
       void navigator.clipboard.writeText(words.join(" "));
+      setRevealed(false);
+      setWords([]);
       showToast("Copied recovery phrase");
     }
   }, [words]);
@@ -436,10 +341,14 @@ function SeedPhraseReveal() {
           <button
             type="button"
             onClick={handleReveal}
-            disabled={loading}
-            className="w-full rounded-lg border border-amber-700/40 px-4 py-2 text-xs text-amber-300 hover:bg-amber-900/20 transition disabled:opacity-50"
+            disabled={loading || walletStatus !== "unlocked"}
+            className="w-full rounded-lg border border-amber-700/40 px-4 py-2 text-xs text-amber-300 hover:bg-amber-900/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? "Decrypting..." : "Reveal Recovery Phrase"}
+            {walletStatus !== "unlocked"
+              ? "Unlock wallet to reveal"
+              : loading
+                ? "Decrypting..."
+                : "Reveal Recovery Phrase"}
           </button>
         </>
       )}
@@ -447,8 +356,72 @@ function SeedPhraseReveal() {
   );
 }
 
+function InlineUnlock() {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [unlocking, setUnlocking] = useState(false);
+
+  const handleUnlock = useCallback(async () => {
+    if (!password) return;
+    setUnlocking(true);
+    setError("");
+    try {
+      // Init nostr node if identity exists (required for wallet unlock)
+      try {
+        await invoke("init_nostr_identity");
+      } catch {
+        // Identity may not exist — generate one for wallet access
+        await invoke("generate_nostr_identity");
+      }
+      await invoke<void>("unlock_wallet", { password });
+      useStore.setState({
+        walletStatus: "unlocked",
+        walletSessionPassword: password,
+      });
+      setPassword("");
+    } catch (e) {
+      const msg = String(e);
+      setError(
+        msg.includes("Wrong") || msg.includes("password")
+          ? "Wrong password"
+          : "Failed to unlock wallet",
+      );
+    }
+    setUnlocking(false);
+  }, [password]);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-500">
+        Wallet is locked. Enter your password to unlock.
+      </p>
+      <input
+        type="password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void handleUnlock();
+        }}
+        placeholder="Wallet password"
+        className="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+        disabled={unlocking}
+      />
+      {error && <p className="text-xs text-rose-400">{error}</p>}
+      <button
+        type="button"
+        onClick={handleUnlock}
+        disabled={unlocking || !password}
+        className="w-full rounded-lg bg-emerald-400 px-4 py-2.5 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {unlocking ? "Unlocking..." : "Unlock"}
+      </button>
+    </div>
+  );
+}
+
 function WalletSection() {
   const walletStatus = useStore((s) => s.walletStatus);
+  const nostrNpub = useStore((s) => s.nostrNpub);
   const showMiniWallet = useStore((s) => s.showMiniWallet);
   const showLbtcLabel = useStore((s) => s.showLbtcLabel);
   const baseCurrency = useStore((s) => s.baseCurrency);
@@ -476,68 +449,77 @@ function WalletSection() {
     );
   }
 
+  if (walletStatus === "locked") {
+    return <InlineUnlock />;
+  }
+
   return (
     <div className="space-y-3">
       {/* Download backup file */}
-      <button
-        type="button"
-        onClick={async () => {
-          try {
-            const nsec = await invoke<string>("export_nostr_nsec");
-            let mnemonic: string;
+      {nostrNpub && (
+        <button
+          type="button"
+          onClick={async () => {
             try {
-              mnemonic = await invoke<string>("get_cached_mnemonic");
-            } catch {
+              const nsec = await invoke<string>("export_nostr_nsec");
+              let mnemonic: string;
+              try {
+                mnemonic = await invoke<string>("get_cached_mnemonic");
+              } catch {
+                const pw = useStore.getState().walletSessionPassword;
+                if (!pw) return;
+                mnemonic = await invoke<string>("get_wallet_mnemonic", {
+                  password: pw,
+                });
+              }
               const pw = useStore.getState().walletSessionPassword;
               if (!pw) return;
-              mnemonic = await invoke<string>("get_wallet_mnemonic", {
+              const name =
+                useStore.getState().nostrProfile?.display_name ||
+                useStore.getState().nostrProfile?.name ||
+                "unnamed";
+              const fileContent = await invoke<string>("export_identity_file", {
                 password: pw,
+                nsec,
+                mnemonic,
+                displayName: name,
               });
+              const blob = new Blob([fileContent], {
+                type: "application/json",
+              });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `deadcat-${name}.dcid`;
+              a.click();
+              URL.revokeObjectURL(url);
+              showToast("Backup file downloaded");
+            } catch (e) {
+              console.warn("Backup download failed:", e);
+              showToast("Backup failed", "error");
             }
-            const pw = useStore.getState().walletSessionPassword;
-            if (!pw) return;
-            const name =
-              useStore.getState().nostrProfile?.display_name ||
-              useStore.getState().nostrProfile?.name ||
-              "unnamed";
-            const fileContent = await invoke<string>("export_identity_file", {
-              password: pw,
-              nsec,
-              mnemonic,
-              displayName: name,
-            });
-            const blob = new Blob([fileContent], { type: "application/json" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `deadcat-${name}.dcid`;
-            a.click();
-            URL.revokeObjectURL(url);
-          } catch (e) {
-            console.warn("Backup download failed:", e);
-          }
-        }}
-        className="flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-2.5 text-xs font-medium text-emerald-300 transition hover:bg-emerald-500/20"
-      >
-        <svg
-          aria-hidden="true"
-          className="h-4 w-4"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth="2"
+          }}
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-300 transition hover:bg-emerald-500/20"
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-          />
-        </svg>
-        Download backup file (.dcid)
-      </button>
-
+          <svg
+            aria-hidden="true"
+            className="h-4 w-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+            />
+          </svg>
+          Download backup file (.dcid)
+        </button>
+      )}
       {/* Show balance in nav bar */}
-      <div className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2.5">
+      <div className="flex items-center justify-between py-2.5">
         <div>
           <p className="text-xs text-slate-300">Show balance in nav bar</p>
           <p className="text-[10px] text-slate-500">
@@ -553,7 +535,7 @@ function WalletSection() {
       </div>
 
       {/* L-BTC label */}
-      <div className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2.5">
+      <div className="flex items-center justify-between py-2.5">
         <div>
           <p className="text-xs text-slate-300">Show L-BTC asset label</p>
           <p className="text-[10px] text-slate-500">
@@ -570,7 +552,7 @@ function WalletSection() {
       </div>
 
       {/* Display currency */}
-      <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">
+      <div className="py-2 space-y-2">
         <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
           Display Currency
         </p>
@@ -594,7 +576,7 @@ function WalletSection() {
       </div>
 
       {/* Market Maker mode */}
-      <div className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/50 px-3 py-2.5">
+      <div className="flex items-center justify-between py-2.5">
         <div>
           <p className="text-xs text-slate-300">Market Maker mode</p>
           <p className="text-[10px] text-slate-500">
@@ -917,7 +899,31 @@ function NostrReplacePanel() {
   const nostrImportNsec = useStore((s) => s.nostrImportNsec);
   const nostrImporting = useStore((s) => s.nostrImporting);
 
-  const importNsec = useCallback(async () => {
+  const generateKey = useCallback(async () => {
+    try {
+      const identity = await invoke<{ pubkey_hex: string; npub: string }>(
+        "generate_nostr_identity",
+      );
+      const name = randomCatName();
+      useStore.setState({
+        nostrPubkey: identity.pubkey_hex,
+        nostrNpub: identity.npub,
+        nostrProfile: { name, display_name: name },
+        nostrReplacePanel: false,
+        nostrReplacePrompt: false,
+        nostrReplaceConfirm: "",
+      });
+      // Publish kind 0 with the new name
+      setTimeout(() => {
+        void invoke("publish_nostr_profile", { name }).catch(() => {});
+      }, 1000);
+      showToast(`New identity created: ${name}`);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const importNsecAndClose = useCallback(async () => {
     const nsec = useStore.getState().nostrImportNsec.trim();
     if (!nsec) return;
     useStore.setState({ nostrImporting: true });
@@ -929,11 +935,21 @@ function NostrReplacePanel() {
       useStore.setState({
         nostrPubkey: identity.pubkey_hex,
         nostrNpub: identity.npub,
+        nostrProfile: null,
         nostrImportNsec: "",
         nostrReplacePanel: false,
         nostrReplacePrompt: false,
         nostrReplaceConfirm: "",
       });
+      // Fetch profile for imported identity
+      try {
+        const profile = await invoke<import("../../types").NostrProfile | null>(
+          "fetch_nostr_profile",
+        );
+        if (profile) useStore.setState({ nostrProfile: profile });
+      } catch {
+        /* best effort */
+      }
     } catch {
       /* ignore */
     } finally {
@@ -941,26 +957,9 @@ function NostrReplacePanel() {
     }
   }, []);
 
-  const generateKey = useCallback(async () => {
-    try {
-      const identity = await invoke<{ pubkey_hex: string; npub: string }>(
-        "generate_nostr_identity",
-      );
-      useStore.setState({
-        nostrPubkey: identity.pubkey_hex,
-        nostrNpub: identity.npub,
-        nostrReplacePanel: false,
-        nostrReplacePrompt: false,
-        nostrReplaceConfirm: "",
-      });
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
   return (
     <>
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
         <button
           type="button"
           onClick={() =>
@@ -987,42 +986,24 @@ function NostrReplacePanel() {
           </svg>
           Back
         </button>
-        <button
-          type="button"
+        <CloseButton
           onClick={() => useStore.setState({ settingsOpen: false })}
-          className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
-        >
-          <svg
-            aria-hidden="true"
-            className="h-5 w-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M6 18L18 6M6 6l12 12"
-            />
-          </svg>
-        </button>
+        />
       </div>
-      <div className="mt-5 space-y-5">
+      <div className="px-6 py-6 space-y-5">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
-            {nostrNpub ? "Replace Nostr Keys" : "Set Up Nostr Identity"}
-          </p>
-          <p className="mt-1 text-xs text-slate-400">
+          <h2 className="text-lg font-medium text-slate-100">
+            {nostrNpub ? "Replace Identity" : "Set Up Identity"}
+          </h2>
+          <p className="mt-1 text-sm text-slate-400">
             {nostrNpub
-              ? "Your current identity will be permanently deleted. Choose how to set up your new identity."
+              ? "Import a different identity or generate a new one."
               : "Import an existing key or generate a new one."}
           </p>
         </div>
-        <div className="space-y-3">
-          <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500">
-            Import existing nsec
-          </p>
+
+        <div className="space-y-2">
+          <p className="text-xs text-slate-500">Import nsec</p>
           <div className="flex items-center gap-2">
             <input
               type="password"
@@ -1031,28 +1012,30 @@ function NostrReplacePanel() {
                 useStore.setState({ nostrImportNsec: e.target.value })
               }
               placeholder="nsec1..."
-              className="h-9 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2 mono"
+              className="h-10 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 transition focus:ring-2 mono"
             />
             <button
               type="button"
-              onClick={importNsec}
+              onClick={importNsecAndClose}
               disabled={nostrImporting}
-              className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
+              className="shrink-0 rounded-lg border border-slate-700 px-3 py-2.5 text-xs text-slate-300 hover:bg-slate-800 transition"
             >
               {nostrImporting ? "Importing..." : "Import"}
             </button>
           </div>
         </div>
+
         <div className="border-t border-slate-800 pt-4 space-y-3">
-          <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500">
-            Or generate a fresh keypair
+          <p className="text-xs text-amber-300/70">
+            Generating a new keypair will permanently replace your current
+            identity. Make sure you have a backup.
           </p>
           <button
             type="button"
             onClick={generateKey}
-            className="w-full rounded-lg bg-emerald-400 px-4 py-2.5 text-sm font-medium text-slate-950 hover:bg-emerald-300 transition"
+            className="w-full rounded-lg border border-slate-700 px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 transition"
           >
-            Generate New Keypair
+            Generate new keypair
           </button>
         </div>
       </div>
@@ -1069,36 +1052,19 @@ export function SettingsPanel() {
   if (!settingsOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/80 backdrop-blur-sm py-8">
-      <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-8 my-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 backdrop-blur-sm py-8">
+      <div className="relative mx-4 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl my-auto">
         {nostrReplacePanel ? (
           <NostrReplacePanel />
         ) : (
           <>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
               <h2 className="text-lg font-medium text-slate-100">Settings</h2>
-              <button
-                type="button"
+              <CloseButton
                 onClick={() => useStore.setState({ settingsOpen: false })}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
-              >
-                <svg
-                  aria-hidden="true"
-                  className="h-5 w-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
+              />
             </div>
-            <div className="mt-3 space-y-2">
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-0">
               <SettingsAccordion sectionKey="nostr" title="Nostr Identity">
                 <NostrSection />
               </SettingsAccordion>

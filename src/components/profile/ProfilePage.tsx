@@ -126,9 +126,7 @@ export default function ProfilePage() {
     [close],
   );
 
-  const avatarSrc =
-    picture ||
-    generateAvatarDataUri(displayName || name || nostrNpub || "default");
+  const avatarSrc = picture || generateAvatarDataUri(nostrNpub || "default");
 
   const handleSave = useCallback(async () => {
     setSaving(true);
