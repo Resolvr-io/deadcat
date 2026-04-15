@@ -50,15 +50,6 @@ export default function OnboardingOverlay() {
     });
   }, []);
 
-  const handleBackdropClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (e.target === e.currentTarget) {
-        handleClose();
-      }
-    },
-    [handleClose],
-  );
-
   if (!setupModalOpen) return null;
 
   // Step indicator for multi-step onboarding (hidden in wallet-only mode)
@@ -122,10 +113,6 @@ export default function OnboardingOverlay() {
   return (
     <div
       role="presentation"
-      onClick={handleBackdropClick}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") handleClose();
-      }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm"
     >
       <div className="relative w-full max-w-[432px] mx-4">
