@@ -77,6 +77,7 @@ export default function ProfilePage() {
   const [nip05, setNip05] = useState(nostrProfile?.nip05 ?? "");
   const [lud16, setLud16] = useState(nostrProfile?.lud16 ?? "");
   const [saving, setSaving] = useState(false);
+  const [showMore, setShowMore] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
 
@@ -163,32 +164,34 @@ export default function ProfilePage() {
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 backdrop-blur-sm"
     >
       <div className="relative mx-4 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
-          <h2 className="text-lg font-medium text-slate-100">Edit Profile</h2>
-          <button
-            type="button"
-            onClick={close}
-            className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-          >
-            <svg
-              aria-hidden="true"
-              className="h-[18px] w-[18px]"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-
         <div className="flex-1 overflow-y-auto">
           {/* Banner */}
-          <div className="relative h-32 bg-slate-900">
+          <div className="relative h-40 bg-slate-900">
+            {/* Close + title overlay */}
+            <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between px-4 py-3">
+              <span className="text-lg font-medium text-white drop-shadow-md">
+                Edit Profile
+              </span>
+              <button
+                type="button"
+                onClick={close}
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-950/60 text-slate-300 backdrop-blur transition hover:bg-slate-950/80 hover:text-white"
+              >
+                <svg
+                  aria-hidden="true"
+                  className="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
             {banner && (
               <img
                 src={banner}
@@ -236,8 +239,8 @@ export default function ProfilePage() {
           </div>
 
           {/* Avatar overlapping banner */}
-          <div className="px-6">
-            <div className="relative -mt-10 mb-4 flex items-end gap-4">
+          <div className="px-6 pt-2">
+            <div className="relative -mt-8 mb-8 flex items-end gap-4">
               <div className="relative">
                 <img
                   src={avatarSrc}
@@ -286,9 +289,18 @@ export default function ProfilePage() {
                   {displayName || name || "Unnamed"}
                 </p>
                 {nostrNpub && (
-                  <p className="mono text-xs text-slate-500 truncate">
-                    {nostrNpub}
-                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(nostrNpub);
+                      showToast("Copied npub to clipboard");
+                    }}
+                    className="mt-0.5 flex items-center gap-1.5 mono text-xs text-slate-500 hover:text-slate-300 transition"
+                    title="Click to copy"
+                  >
+                    {nostrNpub.slice(0, 16)}...{nostrNpub.slice(-6)}
+                    <svg aria-hidden="true" className="h-3 w-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                  </button>
                 )}
               </div>
             </div>
@@ -301,13 +313,6 @@ export default function ProfilePage() {
                 onChange={setDisplayName}
                 placeholder="How you appear to others"
                 maxLength={50}
-              />
-              <Field
-                label="Username"
-                value={name}
-                onChange={setName}
-                placeholder="Unique handle (lowercase)"
-                maxLength={30}
               />
               <div>
                 <label
@@ -325,36 +330,70 @@ export default function ProfilePage() {
                   className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none ring-emerald-400 transition focus:ring-2"
                 />
               </div>
-              <Field
-                label="Profile Picture URL"
-                value={picture}
-                onChange={setPicture}
-                placeholder="https://..."
-              />
-              <Field
-                label="Banner URL"
-                value={banner}
-                onChange={setBanner}
-                placeholder="https://..."
-              />
-              <Field
-                label="Website"
-                value={website}
-                onChange={setWebsite}
-                placeholder="https://..."
-              />
-              <Field
-                label="NIP-05 Identifier"
-                value={nip05}
-                onChange={setNip05}
-                placeholder="you@example.com"
-              />
-              <Field
-                label="Lightning Address"
-                value={lud16}
-                onChange={setLud16}
-                placeholder="you@getalby.com"
-              />
+              <button
+                type="button"
+                onClick={() => setShowMore((v) => !v)}
+                className="flex w-full items-center justify-between rounded-lg border border-slate-800 px-4 py-3 text-left transition hover:bg-slate-900/50"
+              >
+                <span className="text-xs font-medium text-slate-400">
+                  More details
+                </span>
+                <svg
+                  aria-hidden="true"
+                  className={`h-4 w-4 text-slate-500 transition-transform ${showMore ? "rotate-180" : ""}`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M19 9l-7 7-7-7"
+                  />
+                </svg>
+              </button>
+              {showMore && (
+                <div className="space-y-5">
+                  <Field
+                    label="Username"
+                    value={name}
+                    onChange={setName}
+                    placeholder="Unique handle (lowercase)"
+                    maxLength={30}
+                  />
+                  <Field
+                    label="Profile Picture URL"
+                    value={picture}
+                    onChange={setPicture}
+                    placeholder="https://..."
+                  />
+                  <Field
+                    label="Banner URL"
+                    value={banner}
+                    onChange={setBanner}
+                    placeholder="https://..."
+                  />
+                  <Field
+                    label="Website"
+                    value={website}
+                    onChange={setWebsite}
+                    placeholder="https://..."
+                  />
+                  <Field
+                    label="NIP-05 Identifier"
+                    value={nip05}
+                    onChange={setNip05}
+                    placeholder="you@example.com"
+                  />
+                  <Field
+                    label="Lightning Address"
+                    value={lud16}
+                    onChange={setLud16}
+                    placeholder="you@getalby.com"
+                  />
+                </div>
+              )}
 
               <button
                 type="button"

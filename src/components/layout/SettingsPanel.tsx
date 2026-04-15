@@ -120,7 +120,18 @@ function NostrSection() {
     if (!nsec) return;
     useStore.setState({ nostrImporting: true });
     try {
-      await invoke("import_nostr_nsec", { nsec });
+      const identity = await invoke<{ pubkey_hex: string; npub: string }>(
+        "import_nostr_nsec",
+        { nsec },
+      );
+      useStore.setState({
+        nostrPubkey: identity.pubkey_hex,
+        nostrNpub: identity.npub,
+        nostrImportNsec: "",
+        nostrReplacePanel: false,
+        nostrReplacePrompt: false,
+        nostrReplaceConfirm: "",
+      });
     } catch {
       /* ignore */
     } finally {
@@ -986,7 +997,18 @@ function NostrReplacePanel() {
     if (!nsec) return;
     useStore.setState({ nostrImporting: true });
     try {
-      await invoke("import_nostr_nsec", { nsec });
+      const identity = await invoke<{ pubkey_hex: string; npub: string }>(
+        "import_nostr_nsec",
+        { nsec },
+      );
+      useStore.setState({
+        nostrPubkey: identity.pubkey_hex,
+        nostrNpub: identity.npub,
+        nostrImportNsec: "",
+        nostrReplacePanel: false,
+        nostrReplacePrompt: false,
+        nostrReplaceConfirm: "",
+      });
     } catch {
       /* ignore */
     } finally {
