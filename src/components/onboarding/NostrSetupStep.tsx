@@ -65,6 +65,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const backupFileContent = useStore((s) => s.onboardingBackupFileContent);
   const backupDownloaded = useStore((s) => s.onboardingBackupDownloaded);
   const restoreFileContent = useStore((s) => s.onboardingRestoreFileContent);
+  const restoreFileName = useStore((s) => s.onboardingRestoreFileName);
   const restorePassword = useStore((s) => s.onboardingRestorePassword);
   const restoreMnemonic = useStore((s) => s.onboardingRestoreMnemonic);
   const restoreNsec = useStore((s) => s.onboardingRestoreNsec);
@@ -83,9 +84,13 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           setDragOver(false);
           const path = event.payload.paths[0];
           if (path) {
+            const fileName = path.split(/[\\/]/).pop() ?? "backup file";
             readTextFile(path)
               .then((content) => {
-                useStore.setState({ onboardingRestoreFileContent: content });
+                useStore.setState({
+                  onboardingRestoreFileContent: content,
+                  onboardingRestoreFileName: fileName,
+                });
               })
               .catch(() => {});
           }
@@ -1339,7 +1344,11 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         });
         if (!path) return;
         const content = await readTextFile(path);
-        useStore.setState({ onboardingRestoreFileContent: content });
+        const fileName = path.split(/[\\/]/).pop() ?? "backup file";
+        useStore.setState({
+          onboardingRestoreFileContent: content,
+          onboardingRestoreFileName: fileName,
+        });
       } catch {
         // User cancelled
       }
@@ -1379,6 +1388,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           onboardingLoading: false,
           setupModalOpen: false,
           onboardingRestoreFileContent: "",
+          onboardingRestoreFileName: "",
           onboardingRestorePassword: "",
         });
         // Fetch full kind 0 profile from relays
@@ -1408,6 +1418,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               onboardingNostrMode: "generate",
               onboardingError: "",
               onboardingRestoreFileContent: "",
+              onboardingRestoreFileName: "",
               onboardingRestorePassword: "",
               onboardingRestoreNsec: "",
               onboardingRestoreMnemonic: "",
@@ -1429,7 +1440,37 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed ${hasFile ? "border-emerald-500/50 bg-emerald-500/5" : dragOver ? "border-emerald-400 bg-emerald-500/10" : "border-slate-700"} px-6 py-8 text-center transition`}
           >
             {hasFile ? (
-              <p className="text-sm text-emerald-300">File loaded</p>
+              <div className="flex flex-col items-center gap-1">
+                <svg
+                  aria-hidden="true"
+                  className="h-6 w-6 text-emerald-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M5 13l4 4L19 7"
+                  />
+                </svg>
+                <p className="text-sm font-medium text-emerald-300">
+                  {restoreFileName || "File loaded"}
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    useStore.setState({
+                      onboardingRestoreFileContent: "",
+                      onboardingRestoreFileName: "",
+                    })
+                  }
+                  className="text-xs text-slate-500 hover:text-slate-300 transition"
+                >
+                  Remove
+                </button>
+              </div>
             ) : (
               <>
                 <svg

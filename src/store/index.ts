@@ -194,6 +194,7 @@ export interface OnboardingSlice {
   onboardingProfilePhotoDataUrl: string;
   onboardingKeysOpen: boolean;
   onboardingRestoreFileContent: string;
+  onboardingRestoreFileName: string;
   onboardingRestorePassword: string;
   onboardingRestoreMnemonic: string;
   onboardingRestoreNsec: string;
@@ -425,6 +426,7 @@ export const useStore = create<StoreState>()(() => ({
   onboardingProfilePhotoDataUrl: "",
   onboardingKeysOpen: false,
   onboardingRestoreFileContent: "",
+  onboardingRestoreFileName: "",
   onboardingRestorePassword: "",
   onboardingRestoreMnemonic: "",
   onboardingRestoreNsec: "",
