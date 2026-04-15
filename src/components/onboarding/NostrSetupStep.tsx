@@ -1105,12 +1105,12 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
       hasNsec && hasMnemonic
         ? "Restore Account"
         : hasNsec
-          ? "Import Identity"
+          ? "Import & Create Wallet"
           : hasMnemonic
             ? "Restore Wallet"
             : "Restore";
 
-    const canSubmit = (hasNsec || hasMnemonic) && (!hasMnemonic || hasPassword);
+    const canSubmit = (hasNsec || hasMnemonic) && hasPassword;
 
     const handleManualRestore = async () => {
       useStore.setState({ onboardingLoading: true, onboardingError: "" });
@@ -1135,13 +1135,23 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             walletSessionPassword: restorePassword,
           });
         } else if (hasNsec) {
-          // Path A — nsec only
+          // Path A — nsec + new wallet
           const identity = await invoke<IdentityResponse>("import_nostr_nsec", {
             nsec: restoreNsec.trim(),
           });
           useStore.setState({
             nostrPubkey: identity.pubkey_hex,
             nostrNpub: identity.npub,
+          });
+          const mnemonic = await invoke<string>("create_wallet", {
+            password: restorePassword,
+          });
+          useStore.setState({ walletMnemonic: mnemonic });
+          await invoke("init_nostr_identity");
+          await invoke<void>("unlock_wallet", { password: restorePassword });
+          useStore.setState({
+            walletStatus: "unlocked",
+            walletSessionPassword: restorePassword,
           });
         } else {
           // Path B — mnemonic only
@@ -1202,8 +1212,8 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         />
         <h2 className="text-2xl font-semibold text-white">Manual restore</h2>
         <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-          Enter your Nostr key, wallet recovery phrase, or both. You can import
-          just one and add the other later.
+          Enter your existing Nostr key and wallet recovery phrase. If you only
+          have one, a new key or wallet will be generated for the other.
         </p>
         {errorHtml && <div className="mt-4">{errorHtml}</div>}
 
@@ -1230,7 +1240,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               disabled={loading}
             />
             <p className="mt-1.5 text-xs text-slate-600">
-              Import your Nostr identity. You can add a wallet later.
+              A new wallet will be created automatically.
             </p>
           </div>
 
@@ -1262,12 +1272,12 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               disabled={loading}
             />
             <p className="mt-1.5 text-xs text-slate-600">
-              Restore your Liquid wallet. A temporary identity will be created.
+              A new Nostr identity will be generated for you.
             </p>
           </div>
 
-          {/* Password — only when mnemonic is present */}
-          {hasMnemonic && (
+          {/* Password — required for wallet (new or restored) */}
+          {(hasNsec || hasMnemonic) && (
             <div>
               <label
                 htmlFor="manual-restore-password"

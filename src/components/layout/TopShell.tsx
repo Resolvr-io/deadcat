@@ -564,7 +564,7 @@ function WalletButton() {
     <button
       type="button"
       onClick={openWallet}
-      className={`flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${showBalance ? "gap-1.5 px-3" : isLocked ? "gap-1 px-3" : "w-9"}`}
+      className={`flex h-9 shrink-0 items-center justify-center rounded-full border transition hover:border-slate-500 hover:text-slate-200 ${isLocked ? "gap-1 border-amber-500/40 px-3 text-slate-400" : showBalance ? "gap-1.5 border-slate-700 px-3 text-slate-400" : "w-9 border-slate-700 text-slate-400"}`}
     >
       <svg
         aria-hidden="true"
@@ -587,7 +587,7 @@ function WalletButton() {
       {isLocked && (
         <svg
           aria-hidden="true"
-          className="h-3 w-3 shrink-0 text-slate-500"
+          className="h-3.5 w-3.5 shrink-0 text-amber-400"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -718,32 +718,34 @@ export function TopShell() {
             {/* Right side: search + wallet + user menu */}
             <div className="ml-auto flex shrink-0 items-center gap-2 pb-[5px]">
               <SearchBar />
-              <button
-                type="button"
-                onClick={() =>
-                  useStore.setState({
-                    view: "home",
-                    activeCategory: "Portfolio",
-                  })
-                }
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 transition ${activeCategory === "Portfolio" ? "border-slate-500 text-slate-100" : "text-slate-400 hover:border-slate-500 hover:text-slate-200"}`}
-                title="Portfolio"
-              >
-                <svg
-                  aria-hidden="true"
-                  className="h-[18px] w-[18px]"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+              {nostrPubkey && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    useStore.setState({
+                      view: "home",
+                      activeCategory: "Portfolio",
+                    })
+                  }
+                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 transition ${activeCategory === "Portfolio" ? "border-slate-500 text-slate-100" : "text-slate-400 hover:border-slate-500 hover:text-slate-200"}`}
+                  title="Portfolio"
                 >
-                  <path d="M3 3v18h18" />
-                  <rect x="7" y="13" width="9" height="4" rx="1" />
-                  <rect x="7" y="5" width="12" height="4" rx="1" />
-                </svg>
-              </button>
+                  <svg
+                    aria-hidden="true"
+                    className="h-[18px] w-[18px]"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M3 3v18h18" />
+                    <rect x="7" y="13" width="9" height="4" rx="1" />
+                    <rect x="7" y="5" width="12" height="4" rx="1" />
+                  </svg>
+                </button>
+              )}
               <WalletButton />
               {nostrPubkey && <UserMenu />}
             </div>
