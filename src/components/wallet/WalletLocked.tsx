@@ -3,16 +3,10 @@ import { useCallback, useState } from "react";
 import { useUnlockWallet } from "../../queries/mutations/useWalletOps";
 import { useStore } from "../../store";
 
-export function WalletLocked({
-  networkBadge,
-}: {
-  networkBadge: React.ReactNode;
-}) {
+export function WalletLocked() {
   const walletError = useStore((s) => s.walletError);
   const walletLoading = useStore((s) => s.walletLoading);
   const walletPassword = useStore((s) => s.walletPassword);
-  const nostrNpub = useStore((s) => s.nostrNpub);
-
   const [forgotOpen, setForgotOpen] = useState(false);
 
   const unlockWallet = useUnlockWallet();
@@ -73,9 +67,6 @@ export function WalletLocked({
   return (
     <div className="px-6 py-6">
       <div className="space-y-6">
-        <h2 className="flex items-center gap-2 text-xl font-medium text-slate-100">
-          Wallet {networkBadge}
-        </h2>
         <p className="text-sm text-slate-400">
           Wallet locked. Enter your password to unlock.
         </p>
@@ -115,61 +106,17 @@ export function WalletLocked({
           </summary>
           <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900/50 p-4 space-y-3">
             <p className="text-xs text-slate-400">
-              The password protects your wallet on this device only. If
-              you&apos;ve forgotten it, you can delete the wallet and restore it
-              using either method below.{" "}
-              <strong className="text-slate-300">Your funds are safe</strong> as
-              long as you have your recovery phrase or nsec.
+              The password encrypts your wallet on this device only. If
+              you&apos;ve forgotten it, you can delete the wallet and re-create
+              it from your{" "}
+              <strong className="text-slate-300">12-word recovery phrase</strong>.
+              Your funds are safe as long as you have that phrase.
             </p>
-            <div className="space-y-1.5">
-              {nostrNpub && (
-                <div className="flex items-start gap-2">
-                  <svg
-                    aria-hidden="true"
-                    className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
-                    />
-                  </svg>
-                  <p className="text-xs text-slate-400">
-                    <strong className="text-slate-300">
-                      Restore from Nostr backup
-                    </strong>{" "}
-                    -- If you backed up to relays, your nsec is all you need. No
-                    password required.
-                  </p>
-                </div>
-              )}
-              <div className="flex items-start gap-2">
-                <svg
-                  aria-hidden="true"
-                  className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3"
-                  />
-                </svg>
-                <p className="text-xs text-slate-400">
-                  <strong className="text-slate-300">
-                    Restore from recovery phrase
-                  </strong>{" "}
-                  -- Enter your 12-word seed phrase and set a new password.
-                </p>
-              </div>
-            </div>
+            <p className="text-xs text-slate-400">
+              After deleting, the onboarding flow will let you restore your
+              wallet and identity from a backup file or by entering your keys
+              manually.
+            </p>
             <button
               type="button"
               onClick={handleForgotDelete}

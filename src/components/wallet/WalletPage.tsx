@@ -50,7 +50,7 @@ export function WalletPage() {
   if (walletStatus === "not_created") {
     content = <WalletSetup networkBadge={networkBadge} />;
   } else if (walletStatus === "locked") {
-    content = <WalletLocked networkBadge={networkBadge} />;
+    content = <WalletLocked />;
   } else {
     content = <WalletUnlocked networkBadge={networkBadge} />;
   }

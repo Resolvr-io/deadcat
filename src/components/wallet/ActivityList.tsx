@@ -3,6 +3,7 @@ import { useStore } from "../../store";
 import type { Market, WalletData, WalletTransaction } from "../../types";
 import { satsToFiatStr } from "../../utils-react/format";
 import { formatLbtc } from "../../utils-react/wallet";
+import { PawIcon } from "../shared/PawIcon";
 
 const PAGE_SIZE = 10;
 
@@ -12,7 +13,6 @@ function TransactionRow({
   labelColor,
   labelBg,
   labelMarketId,
-  pawIcon,
   walletBalanceHidden,
   walletUnit,
   showLbtcLabel,
@@ -24,7 +24,6 @@ function TransactionRow({
   labelColor: string;
   labelBg: string;
   labelMarketId: string | null;
-  pawIcon: React.ReactNode;
   walletBalanceHidden: boolean;
   walletUnit: "sats" | "btc";
   showLbtcLabel: boolean;
@@ -108,8 +107,8 @@ function TransactionRow({
                   {formatLbtc(tx.balanceChange, walletUnit, showLbtcLabel)}
                 </span>
                 <span className="absolute inset-0 inline-flex items-center justify-end gap-0.5 text-slate-500">
-                  {pawIcon}
-                  {pawIcon}
+                  <PawIcon />
+                  <PawIcon />
                 </span>
               </>
             ) : (
@@ -161,11 +160,9 @@ function TransactionRow({
 export function ActivityList({
   walletData,
   markets,
-  pawIcon,
 }: {
   walletData: WalletData | null;
   markets: Market[];
-  pawIcon: React.ReactNode;
 }) {
   const walletTxPage = useStore((s) => s.walletTxPage);
   const walletBalanceHidden = useStore((s) => s.walletBalanceHidden);
@@ -338,7 +335,6 @@ export function ActivityList({
                 labelColor={color}
                 labelBg={bg}
                 labelMarketId={marketId}
-                pawIcon={pawIcon}
                 walletBalanceHidden={walletBalanceHidden}
                 walletUnit={walletUnit}
                 showLbtcLabel={showLbtcLabel}

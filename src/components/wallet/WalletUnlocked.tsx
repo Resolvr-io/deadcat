@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import {
   useLockWallet,
   useSyncWallet,
@@ -11,24 +11,9 @@ import { reverseHex } from "../../utils/crypto";
 import { satsToFiatStr } from "../../utils-react/format";
 import { btcLabel, formatLbtc, satsLabel } from "../../utils-react/wallet";
 import { WalletModal } from "../modals/WalletModal";
-import { showToast } from "../shared/Toast";
+import { HiddenBalance, PawIcon } from "../shared/PawIcon";
 import { ActivityList } from "./ActivityList";
 import { UtxoList } from "./UtxoList";
-
-const PAW_ICON = (
-  <svg
-    aria-hidden="true"
-    className="inline-block h-[1em] w-[1em] align-text-bottom"
-    viewBox="0 0 90 79"
-    fill="currentColor"
-  >
-    <path d="M26.62,28.27c4.09,2.84,9.4,2.58,12.27-.69,2.3-2.63,3.06-5.82,3.08-10-.35-5.03-1.89-10.34-6.28-14.44C29.51-2.63,21.1-.1,19.06,8.08c-1.74,6.91,1.71,16.11,7.56,20.18Z" />
-    <path d="M22.98,41.99c.21-1.73.04-3.62-.43-5.3-1.46-5.21-4-9.77-9.08-12.33C7.34,21.27-.31,24.39,0,32.36c-.03,7.11,5.17,14.41,11.8,16.58,5.57,1.82,10.49-1.16,11.17-6.95Z" />
-    <path d="M63.4,28.27c5.85-4.06,9.3-13.26,7.57-20.19C68.92-.12,60.51-2.64,54.33,3.13c-4.4,4.1-5.93,9.41-6.28,14.44.02,4.18.78,7.37,3.08,10,2.87,3.28,8.17,3.54,12.27.7Z" />
-    <path d="M76.54,24.36c-5.08,2.56-7.62,7.12-9.08,12.33-.47,1.68-.63,3.57-.43,5.3.69,5.79,5.61,8.77,11.16,6.96,6.63-2.17,11.83-9.47,11.8-16.58.32-7.99-7.32-11.1-13.45-8.01Z" />
-    <path d="M65.95,49.84c-2.36-2.86-4.3-6.01-6.45-9.02-.89-1.24-1.8-2.47-2.78-3.65-2.76-3.35-7.24-5.02-11.72-5.02s-8.96,1.68-11.72,5.02c-.98,1.19-1.89,2.41-2.78,3.65-2.15,3.01-4.08,6.15-6.45,9.02-1.77,2.15-4.25,3.82-6.11,5.92-4.14,4.69-4.72,9.96-1.94,15.3,2.79,5.37,8.01,7.6,14.41,7.9,4.82.23,9.23-1.95,13.98-2.16.22-.01.42-.01.62-.01s.4,0,.61.01c4.75.21,9.16,2.38,13.98,2.16,6.39-.3,11.62-2.53,14.41-7.9,2.77-5.34,2.2-10.61-1.94-15.3-1.87-2.1-4.35-3.77-6.12-5.92Z" />
-  </svg>
-);
 
 const PAGE_SIZE = 10;
 
@@ -53,7 +38,6 @@ export function WalletUnlocked({
   const walletNetwork = useStore((s) => s.walletNetwork);
   const showLbtcLabel = useStore((s) => s.showLbtcLabel);
   const baseCurrency = useStore((s) => s.baseCurrency);
-  const nostrBackupStatus = useStore((s) => s.nostrBackupStatus);
   const nostrPubkey = useStore((s) => s.nostrPubkey);
   const myPools = useStore((s) => s.myPools);
   const cancellingOrderId = useStore((s) => s.cancellingOrderId);
@@ -70,9 +54,6 @@ export function WalletUnlocked({
     walletData && walletPolicyAssetId
       ? (walletData.balance[walletPolicyAssetId] ?? 0)
       : 0;
-
-  const showBackupBadge =
-    !walletData?.backedUp && nostrBackupStatus?.has_backup === false;
 
   // Map asset IDs to labels
   const assetLabel = useMemo(() => {
@@ -213,63 +194,6 @@ export function WalletUnlocked({
     useStore.setState({ walletUnit: unit });
   }, []);
 
-  const [backupOpen, setBackupOpen] = useState(false);
-  const [backupPassword, setBackupPassword] = useState("");
-  const [backupWords, setBackupWords] = useState<string[]>([]);
-  const [backupLoading, setBackupLoading] = useState(false);
-  const [backupError, setBackupError] = useState("");
-  const [backupCopied, setBackupCopied] = useState(false);
-
-  const handleShowBackup = useCallback(() => {
-    setBackupOpen(true);
-    setBackupPassword("");
-    setBackupWords([]);
-    setBackupError("");
-    setBackupCopied(false);
-  }, []);
-
-  const handleHideBackup = useCallback(() => {
-    setBackupOpen(false);
-    setBackupPassword("");
-    setBackupWords([]);
-    setBackupError("");
-    setBackupCopied(false);
-  }, []);
-
-  const handleExportBackup = useCallback(async () => {
-    if (!backupPassword) {
-      setBackupError("Password is required to export recovery phrase.");
-      return;
-    }
-    setBackupLoading(true);
-    setBackupError("");
-    try {
-      const count = await invoke<number>("get_mnemonic_word_count", {
-        password: backupPassword,
-      });
-      const words: string[] = [];
-      for (let i = 0; i < count; i++) {
-        words.push(
-          await invoke<string>("get_mnemonic_word", {
-            password: backupPassword,
-            index: i,
-          }),
-        );
-      }
-      setBackupWords(words);
-    } catch (e) {
-      setBackupError(String(e));
-    }
-    setBackupLoading(false);
-  }, [backupPassword]);
-
-  const handleCopyBackupMnemonic = useCallback(() => {
-    if (backupWords.length > 0) {
-      void navigator.clipboard.writeText(backupWords.join(" "));
-      setBackupCopied(true);
-      showToast("Recovery phrase copied", "success");
-    }
-  }, [backupWords]);
 
   const handleOpenExplorerAsset = useCallback(
     (assetId: string) => {
@@ -318,51 +242,53 @@ export function WalletUnlocked({
   return (
     <div className="px-6 py-6">
       <div className="space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-xl font-medium text-slate-100">
-            {networkBadge}
-          </h2>
-          <div className="flex gap-2">
+        {errorHtml}
+
+        {/* Balance */}
+        <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-6 text-center relative">
+          <div className="absolute left-4 top-4">{networkBadge}</div>
+          <div className="absolute right-4 top-4 flex gap-1.5">
             <button
               type="button"
               onClick={handleSync}
-              className="relative rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
+              className="flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-800 hover:text-slate-300 transition"
               disabled={loading}
+              title="Sync wallet"
             >
-              Sync
-              {loading && (
-                <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-800">
-                  <span className="h-3.5 w-3.5 rounded-full border-2 border-transparent border-t-emerald-400 animate-[spin_0.8s_steps(8)_infinite]" />
-                </span>
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={handleShowBackup}
-              className={`rounded-lg border px-4 py-2 text-sm transition ${showBackupBadge ? "border-amber-500/40 text-amber-200 hover:bg-amber-500/10" : "border-slate-700 text-slate-300 hover:bg-slate-800"}`}
-            >
-              <span className="flex items-center gap-2">
-                <span>Backup</span>
-                {showBackupBadge && (
-                  <span className="h-2 w-2 rounded-full bg-amber-300" />
-                )}
-              </span>
+              <svg
+                aria-hidden="true"
+                className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                />
+              </svg>
             </button>
             <button
               type="button"
               onClick={handleLock}
-              className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
+              className="flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-800 hover:text-slate-300 transition"
+              title="Lock wallet"
             >
-              Lock
+              <svg
+                aria-hidden="true"
+                className="h-3.5 w-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0110 0v4" />
+              </svg>
             </button>
           </div>
-        </div>
-
-        {errorHtml}
-
-        {/* Balance */}
-        <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-6 text-center">
           <div className="flex items-center justify-center gap-2 text-sm text-slate-400">
             <span>Balance</span>
             <button
@@ -405,12 +331,7 @@ export function WalletUnlocked({
           </div>
           <div className="mt-1 font-medium tracking-tight text-slate-100 h-[2.5rem] flex items-center justify-center">
             {walletBalanceHidden ? (
-              <span className="inline-flex items-center gap-1.5 text-3xl text-slate-500">
-                {PAW_ICON}
-                {PAW_ICON}
-                {PAW_ICON}
-                {PAW_ICON}
-              </span>
+              <HiddenBalance className="text-3xl text-slate-500" />
             ) : (
               <span className="text-3xl">
                 {formatLbtc(policyBalance, walletUnit, showLbtcLabel)}
@@ -540,8 +461,8 @@ export function WalletUnlocked({
                     </div>
                     {walletBalanceHidden ? (
                       <span className="inline-flex items-center h-5 gap-0.5 text-slate-500">
-                        {PAW_ICON}
-                        {PAW_ICON}
+                        <PawIcon />
+                        <PawIcon />
                       </span>
                     ) : (
                       <span className="inline-flex items-center h-5 mono text-slate-100">
@@ -573,8 +494,8 @@ export function WalletUnlocked({
                   </div>
                   {walletBalanceHidden ? (
                     <span className="inline-flex gap-0.5 text-slate-500">
-                      {PAW_ICON}
-                      {PAW_ICON}
+                      <PawIcon />
+                      <PawIcon />
                     </span>
                   ) : (
                     <span className="mono text-slate-100">
@@ -655,8 +576,8 @@ export function WalletUnlocked({
                   <div className="flex items-center gap-3 shrink-0">
                     {walletBalanceHidden ? (
                       <span className="inline-flex items-center h-5 gap-0.5 text-slate-500">
-                        {PAW_ICON}
-                        {PAW_ICON}
+                        <PawIcon />
+                        <PawIcon />
                       </span>
                     ) : (
                       <span className="inline-flex items-center h-5 text-xs text-slate-400">
@@ -699,8 +620,8 @@ export function WalletUnlocked({
                 <div className="flex items-center gap-3 shrink-0">
                   {walletBalanceHidden ? (
                     <span className="inline-flex items-center h-5 gap-0.5 text-slate-500">
-                      {PAW_ICON}
-                      {PAW_ICON}
+                      <PawIcon />
+                      <PawIcon />
                     </span>
                   ) : (
                     <span className="inline-flex items-center h-5 text-xs text-slate-400">
@@ -721,7 +642,6 @@ export function WalletUnlocked({
         <ActivityList
           walletData={walletData}
           markets={markets}
-          pawIcon={PAW_ICON}
         />
 
         {/* Swaps */}
@@ -741,8 +661,8 @@ export function WalletUnlocked({
                   </span>
                   {walletBalanceHidden ? (
                     <span className="ml-2 inline-flex items-center h-5 gap-0.5 text-slate-500">
-                      {PAW_ICON}
-                      {PAW_ICON}
+                      <PawIcon />
+                      <PawIcon />
                     </span>
                   ) : (
                     <span className="ml-2 inline-flex items-center h-5 text-slate-500">
@@ -796,105 +716,6 @@ export function WalletUnlocked({
       {/* Wallet modal (receive/send) */}
       {walletModal !== "none" && <WalletModal />}
 
-      {/* Backup modal */}
-      {backupOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-6">
-            <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-lg font-medium text-slate-100">
-                Backup Recovery Phrase
-              </h3>
-              <button
-                type="button"
-                onClick={handleHideBackup}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
-              >
-                <svg
-                  aria-hidden="true"
-                  className="h-5 w-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
-            </div>
-
-            {backupError && (
-              <p className="mb-3 rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
-                {backupError}
-              </p>
-            )}
-
-            {backupWords.length > 0 ? (
-              <>
-                <div className="mb-4 grid grid-cols-3 gap-2">
-                  {backupWords.map((word, i) => (
-                    <div
-                      key={`backup-word-${i + 1}`}
-                      className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-center text-sm"
-                    >
-                      <span className="mr-1 text-slate-500">{i + 1}.</span>
-                      <span className="font-mono text-slate-200">{word}</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex gap-3">
-                  <button
-                    type="button"
-                    onClick={handleCopyBackupMnemonic}
-                    className={`flex-1 rounded-xl border py-2.5 text-sm font-medium transition ${
-                      backupCopied
-                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-                        : "border-slate-700 text-slate-300 hover:border-slate-500 hover:text-slate-100"
-                    }`}
-                  >
-                    {backupCopied ? "Copied" : "Copy to clipboard"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleHideBackup}
-                    className="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
-                  >
-                    Done
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="mb-3 text-sm text-slate-400">
-                  Enter your wallet password to reveal your recovery phrase.
-                </p>
-                <input
-                  type="password"
-                  maxLength={32}
-                  value={backupPassword}
-                  onChange={(e) => setBackupPassword(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void handleExportBackup();
-                  }}
-                  placeholder="Wallet password"
-                  className="mb-3 h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm text-slate-200 outline-none ring-emerald-400 transition focus:ring-2"
-                />
-                <button
-                  type="button"
-                  onClick={() => void handleExportBackup()}
-                  disabled={backupLoading || !backupPassword}
-                  className="w-full rounded-xl bg-emerald-500 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-400 disabled:opacity-50"
-                >
-                  {backupLoading ? "Decrypting..." : "Reveal Recovery Phrase"}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

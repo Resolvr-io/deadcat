@@ -4,6 +4,7 @@ import { categories } from "../../constants";
 import { useStore } from "../../store";
 import type { NavCategory } from "../../types";
 import { formatCompactSats } from "../../utils-react/wallet";
+import { CloseButton } from "../shared/CloseButton";
 import { SearchBar } from "./SearchBar";
 import { SettingsPanel } from "./SettingsPanel";
 import { UserMenu } from "./UserMenu";
@@ -230,33 +231,53 @@ function LogoutModal() {
 
   if (!logoutOpen) return null;
 
+  const hasWallet = walletStatus !== "not_created";
+
+  // Simple logout for identity-only (no wallet)
+  if (!hasWallet) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+        <div className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-950 p-8">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-medium text-slate-100">Log Out</h2>
+            <CloseButton onClick={closeLogout} />
+          </div>
+          <div className="mt-5 space-y-4">
+            <p className="text-sm text-slate-400 leading-relaxed">
+              This will remove your Nostr identity from this device. Make sure
+              you have your nsec saved if you want to log back in.
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={closeLogout}
+                className="flex-1 rounded-xl border border-slate-700 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmLogout}
+                className="flex-1 rounded-xl bg-rose-500 py-2.5 text-sm font-medium text-white transition hover:bg-rose-400"
+              >
+                Log Out
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Full logout with backup flow when wallet exists
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
       <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-8">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-medium text-slate-100">
-            Log Out of Nostr
+            Log Out
           </h2>
-          <button
-            type="button"
-            onClick={closeLogout}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
-          >
-            <svg
-              aria-hidden="true"
-              className="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
-          </button>
+          <CloseButton onClick={closeLogout} />
         </div>
         <div className="mt-5 space-y-4">
           <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
@@ -537,12 +558,13 @@ function WalletButton() {
 
   const showBalance =
     walletStatus === "unlocked" && walletData?.balance && !walletBalanceHidden;
+  const isLocked = walletStatus === "locked";
 
   return (
     <button
       type="button"
       onClick={openWallet}
-      className={`flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${showBalance ? "gap-1.5 px-3" : "w-9"}`}
+      className={`flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${showBalance ? "gap-1.5 px-3" : isLocked ? "gap-1 px-3" : "w-9"}`}
     >
       <svg
         aria-hidden="true"
@@ -561,6 +583,19 @@ function WalletButton() {
         <span className="text-xs font-medium text-slate-300">
           {formatCompactSats(walletData?.balance[walletPolicyAssetId] ?? 0)}
         </span>
+      )}
+      {isLocked && (
+        <svg
+          aria-hidden="true"
+          className="h-3 w-3 shrink-0 text-slate-500"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+        >
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+          <path d="M7 11V7a5 5 0 0110 0v4" />
+        </svg>
       )}
     </button>
   );
