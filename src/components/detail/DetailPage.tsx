@@ -19,6 +19,7 @@ import {
 } from "../../utils-react/market";
 import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
 import MarketChart from "../chart/MarketChart";
+import { showToast } from "../shared/Toast";
 import MarketHeader from "./MarketHeader";
 import TradingPanel from "./TradingPanel";
 
@@ -266,7 +267,10 @@ function AdvancedDetails({ market }: { market: import("../../types").Market }) {
             <span className="shrink-0">Oracle</span>
             <button
               type="button"
-              onClick={() => navigator.clipboard.writeText(npub)}
+              onClick={() => {
+                navigator.clipboard.writeText(npub);
+                showToast("Copied npub");
+              }}
               className="mono truncate text-right transition hover:text-slate-100"
               title={npub}
             >
@@ -277,7 +281,10 @@ function AdvancedDetails({ market }: { market: import("../../types").Market }) {
             <span className="shrink-0">Market ID</span>
             <button
               type="button"
-              onClick={() => navigator.clipboard.writeText(market.marketId)}
+              onClick={() => {
+                navigator.clipboard.writeText(market.marketId);
+                showToast("Copied market ID");
+              }}
               className="mono truncate text-right transition hover:text-slate-100"
               title={market.marketId}
             >
@@ -324,11 +331,12 @@ function AdvancedDetails({ market }: { market: import("../../types").Market }) {
                 <span className="shrink-0">Sig hash</span>
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
                     navigator.clipboard.writeText(
                       market.resolveTx?.signatureHash ?? "",
-                    )
-                  }
+                    );
+                    showToast("Copied signature hash");
+                  }}
                   className="mono truncate text-right transition hover:text-slate-100"
                   title={market.resolveTx.signatureHash}
                 >
@@ -340,9 +348,10 @@ function AdvancedDetails({ market }: { market: import("../../types").Market }) {
                 <span className="shrink-0">Resolve tx</span>
                 <button
                   type="button"
-                  onClick={() =>
-                    navigator.clipboard.writeText(market.resolveTx?.txid ?? "")
-                  }
+                  onClick={() => {
+                    navigator.clipboard.writeText(market.resolveTx?.txid ?? "");
+                    showToast("Copied txid");
+                  }}
                   className="mono truncate text-right transition hover:text-slate-100"
                   title={market.resolveTx.txid}
                 >
@@ -372,9 +381,10 @@ function AdvancedDetails({ market }: { market: import("../../types").Market }) {
             <div key={`${utxo.txid}:${utxo.vout}`} className="kv-row">
               <button
                 type="button"
-                onClick={() =>
-                  navigator.clipboard.writeText(`${utxo.txid}:${utxo.vout}`)
-                }
+                onClick={() => {
+                  navigator.clipboard.writeText(`${utxo.txid}:${utxo.vout}`);
+                  showToast("Copied outpoint");
+                }}
                 className="mono truncate transition hover:text-slate-100"
                 title={`${utxo.txid}:${utxo.vout}`}
               >

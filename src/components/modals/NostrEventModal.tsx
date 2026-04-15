@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useStore } from "../../store";
 import { hexToNpub } from "../../utils/crypto";
+import { showToast } from "../shared/Toast";
 
 function truncHex(v: string): string {
   return v.length > 16 ? `${v.slice(0, 8)}\u2026${v.slice(-8)}` : v;
@@ -19,6 +20,7 @@ function CopyableField({
 }) {
   const handleCopy = useCallback(() => {
     void navigator.clipboard.writeText(value);
+    showToast("Copied to clipboard");
   }, [value]);
 
   const display = displayValue ? truncBech32(displayValue) : truncHex(value);
@@ -76,12 +78,14 @@ export function NostrEventModal() {
   const handleCopyJson = useCallback(() => {
     if (nostrEventJson) {
       void navigator.clipboard.writeText(nostrEventJson);
+      showToast("Copied event JSON");
     }
   }, [nostrEventJson]);
 
   const handleCopyNevent = useCallback(() => {
     if (nostrEventNevent) {
       void navigator.clipboard.writeText(nostrEventNevent);
+      showToast("Copied event ID");
     }
   }, [nostrEventNevent]);
 

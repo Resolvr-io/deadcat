@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useStore } from "../../store";
+import { showToast } from "../shared/Toast";
 
 export function UserMenu() {
   const userMenuOpen = useStore((s) => s.userMenuOpen);
@@ -12,6 +13,7 @@ export function UserMenu() {
   const copyNpub = useCallback(async () => {
     if (nostrNpub) {
       await navigator.clipboard.writeText(nostrNpub);
+      showToast("Copied npub to clipboard");
     }
   }, [nostrNpub]);
 

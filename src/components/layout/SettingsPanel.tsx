@@ -5,6 +5,7 @@ import { queryClient } from "../../queries/queryClient";
 import { useStore } from "../../store";
 import type { BaseCurrency, RelayEntry } from "../../types";
 import { btcLabel } from "../../utils-react/wallet";
+import { showToast } from "../shared/Toast";
 
 const DEV_MODE = import.meta.env.DEV;
 
@@ -98,12 +99,18 @@ function NostrSection() {
 
   const copyNpub = useCallback(async () => {
     const npub = useStore.getState().nostrNpub;
-    if (npub) await navigator.clipboard.writeText(npub);
+    if (npub) {
+      await navigator.clipboard.writeText(npub);
+      showToast("Copied npub to clipboard");
+    }
   }, []);
 
   const copyNsec = useCallback(async () => {
     const nsec = useStore.getState().nostrNsecRevealed;
-    if (nsec) await navigator.clipboard.writeText(nsec);
+    if (nsec) {
+      await navigator.clipboard.writeText(nsec);
+      showToast("Copied nsec to clipboard");
+    }
   }, []);
 
   const revealNsec = useCallback(async () => {

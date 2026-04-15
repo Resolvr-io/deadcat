@@ -4,6 +4,7 @@ import {
   useRestoreWallet,
 } from "../../queries/mutations/useWalletOps";
 import { useStore } from "../../store";
+import { showToast } from "../shared/Toast";
 
 function MnemonicGrid({ mnemonic }: { mnemonic: string }) {
   const words = mnemonic.split(" ");
@@ -155,6 +156,7 @@ export function WalletSetup({
 
   const handleCopyMnemonic = useCallback(() => {
     void navigator.clipboard.writeText(walletMnemonic);
+    showToast("Copied recovery phrase");
   }, [walletMnemonic]);
 
   const handleToggleRestore = useCallback(() => {
