@@ -57,7 +57,7 @@ pub fn export_identity_file(
     let envelope = IdentityFileEnvelope {
         app: "Deadcat Live".to_string(),
         url: "https://deadcat.live/".to_string(),
-        description: "Encrypted Deadcat Live identity backup. Contains Nostr keys and wallet recovery phrase, protected by your account password. Download Deadcat Live at https://deadcat.live/ to restore your account.".to_string(),
+        description: "Encrypted Deadcat identity backup. Contains Nostr keys and wallet recovery phrase, protected by your account password. Download the Deadcat Live app from https://deadcat.live to restore your account.".to_string(),
         version: IDENTITY_FILE_VERSION,
         salt: BASE64.encode(salt),
         nonce: BASE64.encode(nonce_bytes),

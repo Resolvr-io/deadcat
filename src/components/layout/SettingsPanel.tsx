@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { baseCurrencyOptions } from "../../constants";
 import { queryClient } from "../../queries/queryClient";
 import { useStore } from "../../store";
@@ -329,42 +329,135 @@ function NostrSection() {
 
 /* ── Wallet section ────────────────────────────────────────────────── */
 
+function SeedPhraseReveal() {
+  const [revealed, setRevealed] = useState(false);
+  const [words, setWords] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const handleReveal = useCallback(async () => {
+    setLoading(true);
+    try {
+      let mnemonic: string;
+      try {
+        mnemonic = await invoke<string>("get_cached_mnemonic");
+      } catch {
+        const pw = useStore.getState().walletSessionPassword;
+        if (!pw) {
+          setLoading(false);
+          return;
+        }
+        mnemonic = await invoke<string>("get_wallet_mnemonic", {
+          password: pw,
+        });
+      }
+      setWords(mnemonic.split(" "));
+      setRevealed(true);
+    } catch {
+      // Failed
+    }
+    setLoading(false);
+  }, []);
+
+  const handleCopy = useCallback(() => {
+    if (words.length > 0) {
+      void navigator.clipboard.writeText(words.join(" "));
+      showToast("Copied recovery phrase");
+    }
+  }, [words]);
+
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">
+      <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+        Recovery Phrase
+      </p>
+      {revealed ? (
+        <>
+          <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+            <div className="grid grid-cols-3 gap-x-4 gap-y-1.5">
+              {words.map((word, i) => (
+                <div
+                  key={`${i}-${word}`}
+                  className="flex items-baseline gap-1.5"
+                >
+                  <span className="text-xs text-slate-600 shrink-0 w-4 text-right">
+                    {i + 1}.
+                  </span>
+                  <span className="mono text-xs text-slate-200">{word}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="flex-1 rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
+            >
+              Copy to clipboard
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setRevealed(false);
+                setWords([]);
+              }}
+              className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 transition"
+            >
+              Hide
+            </button>
+          </div>
+          <div className="flex gap-2 rounded-lg border border-amber-700/30 bg-amber-950/20 px-3 py-2">
+            <svg
+              aria-hidden="true"
+              className="h-4 w-4 shrink-0 text-amber-400 mt-0.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
+              />
+            </svg>
+            <p className="text-xs text-amber-300/80">
+              Never share your recovery phrase. Anyone with it can access your
+              funds.
+            </p>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="text-xs text-slate-400">
+            Your 12-word recovery phrase is the only way to restore your wallet.
+            Keep it safe and never share it.
+          </p>
+          <button
+            type="button"
+            onClick={handleReveal}
+            disabled={loading}
+            className="w-full rounded-lg border border-amber-700/40 px-4 py-2 text-xs text-amber-300 hover:bg-amber-900/20 transition disabled:opacity-50"
+          >
+            {loading ? "Decrypting..." : "Reveal Recovery Phrase"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function WalletSection() {
   const walletStatus = useStore((s) => s.walletStatus);
   const showMiniWallet = useStore((s) => s.showMiniWallet);
   const showLbtcLabel = useStore((s) => s.showLbtcLabel);
   const baseCurrency = useStore((s) => s.baseCurrency);
   const marketMakerMode = useStore((s) => s.marketMakerMode);
-  const nostrNpub = useStore((s) => s.nostrNpub);
-  const nostrBackupPrompt = useStore((s) => s.nostrBackupPrompt);
-  const nostrBackupLoading = useStore((s) => s.nostrBackupLoading);
-  const nostrBackupStatus = useStore((s) => s.nostrBackupStatus);
-  const nostrBackupPassword = useStore((s) => s.nostrBackupPassword);
   const walletDeletePrompt = useStore((s) => s.walletDeletePrompt);
   const walletDeleteConfirm = useStore((s) => s.walletDeleteConfirm);
 
   const canConfirmDelete =
     walletDeleteConfirm.trim().toUpperCase() === "DELETE";
-  const showPasswordPrompt = nostrBackupPrompt && walletStatus !== "unlocked";
-  const hasBackup = nostrBackupStatus?.has_backup ?? false;
-
-  const doBackup = useCallback(async () => {
-    const password = useStore.getState().nostrBackupPassword;
-    useStore.setState({ nostrBackupLoading: true });
-    try {
-      await invoke("backup_mnemonic_to_nostr", { password });
-      const status =
-        await invoke<typeof nostrBackupStatus>("check_nostr_backup");
-      useStore.setState({
-        nostrBackupStatus: status,
-        nostrBackupPrompt: false,
-      });
-    } catch (e) {
-      console.error("Backup failed:", e);
-    } finally {
-      useStore.setState({ nostrBackupLoading: false });
-    }
-  }, []);
 
   if (walletStatus === "not_created") {
     return (
@@ -518,188 +611,13 @@ function WalletSection() {
         />
       </div>
 
-      {/* Nostr Relay Backup */}
-      {nostrNpub && (
-        <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3 space-y-2">
-          <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
-            Nostr Relay Backup
-          </p>
-          {hasBackup ? (
-            <>
-              <div className="flex items-center gap-2">
-                <svg
-                  aria-hidden="true"
-                  className="h-4 w-4 shrink-0 text-emerald-400"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
-                  />
-                </svg>
-                <p className="text-xs text-emerald-400">
-                  Encrypted backup on{" "}
-                  {nostrBackupStatus?.relay_results?.filter((r) => r.has_backup)
-                    .length ?? 0}{" "}
-                  of {nostrBackupStatus?.relay_results?.length ?? 0} relays
-                </p>
-              </div>
-              <div className="space-y-1">
-                {nostrBackupStatus?.relay_results?.map((r) => (
-                  <div key={r.url} className="flex items-center gap-2 text-xs">
-                    <span
-                      className={`h-1.5 w-1.5 rounded-full ${r.has_backup ? "bg-emerald-400" : "bg-slate-600"}`}
-                    />
-                    <span className="mono text-slate-400">{r.url}</span>
-                  </div>
-                ))}
-              </div>
-              {showPasswordPrompt ? (
-                <div className="space-y-2">
-                  <input
-                    type="password"
-                    maxLength={32}
-                    value={nostrBackupPassword}
-                    onChange={(e) =>
-                      useStore.setState({
-                        nostrBackupPassword: e.target.value,
-                      })
-                    }
-                    placeholder="Wallet password"
-                    className="h-9 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2"
-                  />
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void doBackup()}
-                      disabled={nostrBackupLoading}
-                      className="flex-1 rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition"
-                    >
-                      {nostrBackupLoading ? "Uploading..." : "Upload"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        useStore.setState({ nostrBackupPrompt: false })
-                      }
-                      className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 transition"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void doBackup()}
-                    disabled={nostrBackupLoading}
-                    className="flex-1 rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
-                  >
-                    {nostrBackupLoading
-                      ? "Uploading..."
-                      : "Re-upload to Relays"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => invoke("delete_nostr_backup")}
-                    disabled={nostrBackupLoading}
-                    className="shrink-0 rounded-lg border border-rose-700/40 px-3 py-2 text-xs text-rose-400 hover:bg-rose-900/20 transition"
-                  >
-                    {nostrBackupLoading ? "Deleting..." : "Delete"}
-                  </button>
-                </div>
-              )}
-            </>
-          ) : showPasswordPrompt ? (
-            <div className="space-y-2">
-              <input
-                type="password"
-                maxLength={32}
-                value={nostrBackupPassword}
-                onChange={(e) =>
-                  useStore.setState({
-                    nostrBackupPassword: e.target.value,
-                  })
-                }
-                placeholder="Wallet password"
-                className="h-9 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs outline-none ring-emerald-400 transition focus:ring-2"
-              />
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => void doBackup()}
-                  disabled={nostrBackupLoading}
-                  className="flex-1 rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition"
-                >
-                  {nostrBackupLoading ? "Encrypting..." : "Upload"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    useStore.setState({ nostrBackupPrompt: false })
-                  }
-                  className="shrink-0 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 transition"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <p className="text-xs text-slate-400">
-                Encrypt your recovery phrase with NIP-44 and store it on your
-                Nostr relays. Only your nsec can decrypt it.
-              </p>
-              <button
-                type="button"
-                onClick={() => void doBackup()}
-                disabled={nostrBackupLoading}
-                className="w-full rounded-lg bg-emerald-400 px-4 py-2 text-xs font-medium text-slate-950 hover:bg-emerald-300 transition"
-              >
-                {nostrBackupLoading
-                  ? "Encrypting..."
-                  : "Encrypt & Upload to Relays"}
-              </button>
-            </>
-          )}
-          <details className="group">
-            <summary className="cursor-pointer text-xs text-slate-500 hover:text-slate-400 transition select-none">
-              Why is this secure?
-            </summary>
-            <div className="mt-2 space-y-1.5 text-xs text-slate-500">
-              <p>
-                <strong className="text-slate-400">NIP-44 encryption</strong> --
-                Recovery phrase is encrypted using XChaCha20 + secp256k1 ECDH.
-                Only your nsec can decrypt it.
-              </p>
-              <p>
-                <strong className="text-slate-400">Self-encrypted</strong> --
-                Encrypted to your own public key. Relay operators see only
-                ciphertext.
-              </p>
-              <p>
-                <strong className="text-slate-400">NIP-78 storage</strong> --
-                Published as a kind 30078 addressable event, retrievable from
-                any relay that has it.
-              </p>
-              <p>
-                <strong className="text-slate-400">Relay redundancy</strong> --
-                Sent to all your configured relays for resilience.
-              </p>
-            </div>
-          </details>
-        </div>
-      )}
+      {/* Recovery phrase */}
+      <SeedPhraseReveal />
 
       {/* Remove wallet */}
       <p className="text-xs text-slate-500">
-        Remove the current wallet from this device. You can restore from a
-        recovery phrase{nostrNpub ? " or Nostr backup" : ""}.
+        Remove the current wallet from this device. You can restore from your
+        backup file (.dcid) or recovery phrase.
       </p>
       {walletDeletePrompt ? (
         <div className="rounded-lg border border-rose-700/40 bg-rose-950/20 p-3 space-y-2">
