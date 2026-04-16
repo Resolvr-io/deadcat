@@ -605,7 +605,7 @@ pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> 
         mgr.clear_payment_swaps();
     }
 
-    // Delete key file
+    // Delete key file and NIP-46 connection
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -614,6 +614,7 @@ pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> 
     if key_path.exists() {
         std::fs::remove_file(&key_path).map_err(|e| format!("failed to delete key file: {e}"))?;
     }
+    let _ = crate::nip46::delete_connection(&app_data_dir);
 
     bump_revision_and_emit(&app).await?;
     Ok(())

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { categories } from "../../constants";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useStore } from "../../store";
@@ -148,6 +148,15 @@ function LogoutModal() {
   const logoutPasswordInput = useStore((s) => s.logoutPasswordInput ?? "");
   const logoutBackupDownloaded = useStore((s) => s.logoutBackupDownloaded);
   const needsPassword = walletStatus === "locked" || !walletSessionPassword;
+  const [isRemoteSigner, setIsRemoteSigner] = useState(false);
+
+  useEffect(() => {
+    if (logoutOpen) {
+      invoke<{ connected: boolean } | null>("get_nip46_status")
+        .then((s) => setIsRemoteSigner(s?.connected === true))
+        .catch(() => setIsRemoteSigner(false));
+    }
+  }, [logoutOpen]);
 
   const closeLogout = useCallback(() => {
     useStore.setState({
@@ -162,7 +171,27 @@ function LogoutModal() {
   useEscapeKey(logoutOpen, closeLogout);
 
   const confirmLogout = useCallback(async () => {
-    // Lock first to ensure clean state, then delete
+    if (isRemoteSigner) {
+      // NIP-46: disconnect signer but keep wallet
+      try {
+        await invoke("disconnect_nip46");
+      } catch (e) {
+        console.warn("disconnect_nip46:", e);
+      }
+      useStore.setState({
+        nostrPubkey: null,
+        nostrNpub: null,
+        nostrProfile: null,
+        nostrNsecRevealed: null,
+        logoutOpen: false,
+        logoutBackedUp: false,
+        profilePicError: false,
+      });
+      window.location.reload();
+      return;
+    }
+
+    // Local keys: full logout — lock, delete wallet, delete identity
     try {
       await invoke("lock_wallet");
     } catch (e) {
@@ -210,25 +239,28 @@ function LogoutModal() {
     });
     localStorage.removeItem("deadcat_tx_labels");
     window.location.reload();
-  }, []);
+  }, [isRemoteSigner]);
 
   if (!logoutOpen) return null;
 
   const hasWallet = walletStatus !== "not_created";
 
-  // Simple logout for identity-only (no wallet)
-  if (!hasWallet) {
+  // Simple logout for identity-only (no wallet) or remote signer
+  if (!hasWallet || isRemoteSigner) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
         <div className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-950 p-8">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-medium text-slate-100">Log Out</h2>
+            <h2 className="text-lg font-medium text-slate-100">
+              {isRemoteSigner ? "Disconnect Signer" : "Log Out"}
+            </h2>
             <CloseButton onClick={closeLogout} />
           </div>
           <div className="mt-5 space-y-4">
             <p className="text-sm text-slate-400 leading-relaxed">
-              This will remove your Nostr identity from this device. Make sure
-              you have your nsec saved if you want to log back in.
+              {isRemoteSigner
+                ? "This will disconnect the remote signer. Your wallet and funds will remain on this device. You can reconnect anytime."
+                : "This will remove your Nostr identity from this device. Make sure you have your nsec saved if you want to log back in."}
             </p>
             <div className="flex gap-3">
               <button
@@ -243,7 +275,7 @@ function LogoutModal() {
                 onClick={confirmLogout}
                 className="flex-1 rounded-xl bg-rose-500 py-2.5 text-sm font-medium text-white transition hover:bg-rose-400"
               >
-                Log Out
+                {isRemoteSigner ? "Disconnect" : "Log Out"}
               </button>
             </div>
           </div>
