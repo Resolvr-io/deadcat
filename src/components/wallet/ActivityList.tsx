@@ -48,13 +48,13 @@ function TransactionRow({
       ? "\u2193"
       : "\u2191";
 
+  const unconfirmed = tx.height == null;
   const date = tx.timestamp
     ? new Date(tx.timestamp * 1000).toLocaleString()
     : "unconfirmed";
   const shortTxid = `${tx.txid.slice(0, 10)}...${tx.txid.slice(-6)}`;
   const feeStr = formatLbtc(tx.fee, walletUnit, showLbtcLabel);
-  const confirmations =
-    tx.height != null ? `Block ${tx.height}` : "Unconfirmed";
+  const confirmations = unconfirmed ? "Unconfirmed" : `Block ${tx.height}`;
 
   const handleOpenMarket = useCallback(() => {
     if (labelMarketId) {
@@ -97,7 +97,17 @@ function TransactionRow({
               {label}
             </span>
           ) : null}
-          <span className="text-slate-500">{date}</span>
+          <span
+            className={
+              unconfirmed
+                ? tx.balanceChange >= 0
+                  ? "text-emerald-400/80"
+                  : "text-red-400/80"
+                : "text-slate-500"
+            }
+          >
+            {date}
+          </span>
         </div>
         <div className="flex items-center gap-2">
           <div className="relative text-right">
@@ -151,7 +161,17 @@ function TransactionRow({
         </div>
         <div className="flex items-center gap-2">
           <span className="text-slate-500">Status</span>
-          <span className="mono text-slate-400">{confirmations}</span>
+          <span
+            className={`mono ${
+              unconfirmed
+                ? tx.balanceChange >= 0
+                  ? "text-emerald-400/80"
+                  : "text-red-400/80"
+                : "text-slate-400"
+            }`}
+          >
+            {confirmations}
+          </span>
         </div>
       </div>
     </details>
