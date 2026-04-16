@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { categories } from "../../constants";
 import { useStore } from "../../store";
 import type { NavCategory } from "../../types";
@@ -466,9 +466,23 @@ function WalletButton() {
   const walletData = useStore((s) => s.walletData);
   const walletPolicyAssetId = useStore((s) => s.walletPolicyAssetId);
   const walletBalanceHidden = useStore((s) => s.walletBalanceHidden);
+  const walletNewTxids = useStore((s) => s.walletNewTxids);
+
+  const { hasUnconfirmedIn, hasUnconfirmedOut } = useMemo(() => {
+    const txs = walletData?.transactions ?? [];
+    return {
+      hasUnconfirmedIn: txs.some(
+        (tx) => tx.height == null && tx.balanceChange > 0,
+      ),
+      hasUnconfirmedOut: txs.some(
+        (tx) => tx.height == null && tx.balanceChange < 0,
+      ),
+    };
+  }, [walletData?.transactions]);
+  const hasNew = walletNewTxids.size > 0;
 
   const openWallet = useCallback(() => {
-    useStore.setState({ walletOpen: true });
+    useStore.setState({ walletOpen: true, walletNewTxids: new Set() });
   }, []);
 
   if (!nostrPubkey) {
@@ -501,11 +515,22 @@ function WalletButton() {
     walletStatus === "unlocked" && walletData?.balance && !walletBalanceHidden;
   const isLocked = walletStatus === "locked";
 
+  // Border: pulsing green for incoming, pulsing white for outgoing,
+  // solid green for confirmed new (until dismissed). Pulse takes
+  // priority so a new tx is always visible even if undismissed.
+  const borderClass = hasUnconfirmedIn
+    ? "animate-pulse border-emerald-400 text-emerald-300"
+    : hasUnconfirmedOut
+      ? "animate-pulse border-slate-300 text-slate-200"
+      : hasNew
+        ? "border-emerald-400 text-emerald-300"
+        : "border-slate-700 text-slate-400";
+
   return (
     <button
       type="button"
       onClick={openWallet}
-      className={`flex h-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 ${isLocked ? "gap-1 px-3" : showBalance ? "gap-1.5 px-3" : "w-9"}`}
+      className={`flex h-9 shrink-0 items-center justify-center rounded-full border transition hover:border-slate-500 hover:text-slate-200 ${borderClass} ${isLocked ? "gap-1 px-3" : showBalance ? "gap-1.5 px-3" : "w-9"}`}
     >
       <svg
         aria-hidden="true"

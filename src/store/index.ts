@@ -266,6 +266,14 @@ export interface ChartUiSlice {
   chartAspectDetail: number;
 }
 
+// ── Wallet badge slice ──────────────────────────────────────────────
+export interface WalletBadgeSlice {
+  /** Txids the user has already seen (populated on each snapshot). */
+  walletSeenTxids: Set<string>;
+  /** Txids that appeared since last dismissal — shown as green badge. */
+  walletNewTxids: Set<string>;
+}
+
 // ── Persistence ─────────────────────────────────────────────────────
 export interface PersistenceSlice {
   recentTxLabels: Map<string, { label: string; marketId: string }>;
@@ -279,6 +287,7 @@ export type StoreState = NavigationSlice &
   MarketCreationSlice &
   OnboardingSlice &
   ChartUiSlice &
+  WalletBadgeSlice &
   PersistenceSlice;
 
 const inThirtyDays = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
@@ -491,6 +500,10 @@ export const useStore = create<StoreState>()(() => ({
   chartTimescale: "25B",
   chartAspectHome: 2.8,
   chartAspectDetail: 3.35,
+
+  // ── Wallet badge ────────────────────────────────────────────────
+  walletSeenTxids: new Set(),
+  walletNewTxids: new Set(),
 
   // ── Persistence ─────────────────────────────────────────────────
   recentTxLabels: new Map(),

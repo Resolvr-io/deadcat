@@ -77,15 +77,24 @@ export function useTauriEvents(): void {
             backupCopied: false,
           };
 
-          // Toast for new transactions
-          if (base.transactions.length > 0) {
-            const knownTxids = new Set(base.transactions.map((t) => t.txid));
+          // Detect new transactions for toasts + badge
+          const { walletSeenTxids, walletNewTxids } = useStore.getState();
+          if (walletSeenTxids.size > 0) {
+            const freshNew = new Set(walletNewTxids);
             for (const tx of payload.transactions) {
-              if (!knownTxids.has(tx.txid)) {
+              if (!walletSeenTxids.has(tx.txid)) {
                 toastForNewTx(tx);
+                freshNew.add(tx.txid);
               }
             }
+            if (freshNew.size !== walletNewTxids.size) {
+              useStore.setState({ walletNewTxids: freshNew });
+            }
           }
+
+          // Update seen set to current txid list
+          const nextSeen = new Set(payload.transactions.map((t) => t.txid));
+          useStore.setState({ walletSeenTxids: nextSeen });
 
           useStore.setState({
             walletData: {
@@ -111,7 +120,11 @@ export function useTauriEvents(): void {
           if (current !== "not_created") {
             useStore.setState({ walletStatus: "locked" });
           }
-          useStore.setState({ walletData: null });
+          useStore.setState({
+            walletData: null,
+            walletSeenTxids: new Set(),
+            walletNewTxids: new Set(),
+          });
           void queryClient.invalidateQueries({
             queryKey: ["walletSnapshot"],
           });
