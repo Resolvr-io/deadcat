@@ -29,6 +29,21 @@ import {
 import OrderbookPanel from "./OrderbookPanel";
 import PoolSection from "./PoolSection";
 
+function friendlyTradeError(raw: string): string {
+  const lower = raw.toLowerCase();
+  if (lower.includes("no liquidity"))
+    return "No liquidity available for this market yet.";
+  if (lower.includes("insufficient taker funding"))
+    return "Insufficient funds to complete this trade.";
+  if (lower.includes("insufficient utxo"))
+    return "Not enough wallet outputs. Try syncing your wallet.";
+  if (lower.includes("insufficient fee"))
+    return "Not enough funds to cover the network fee.";
+  if (lower.includes("wallet locked") || lower.includes("not initialized"))
+    return "Wallet is locked. Unlock it to trade.";
+  return raw;
+}
+
 export default function TradingPanel({ market }: { market: Market }) {
   const selectedSide = useStore((s) => s.selectedSide);
   const orderType = useStore((s) => s.orderType);
@@ -101,11 +116,21 @@ export default function TradingPanel({ market }: { market: Market }) {
     ],
   );
 
+  const walletPolicyAssetId = useStore((s) => s.walletPolicyAssetId);
   const tradeBusy = tradeQuoteLoading || tradeExecuteLoading;
   const executionPriceSats = Math.round(preview.executionPriceSats);
   const ctaVerb = tradeIntent === "open" ? "Buy" : "Sell";
   const ctaTarget = selectedSide === "yes" ? "Yes" : "No";
   const ctaLabel = `${ctaVerb} ${ctaTarget}`;
+
+  const policyBalance =
+    walletData && walletPolicyAssetId
+      ? (walletData.balance[walletPolicyAssetId] ?? 0)
+      : 0;
+  const insufficientFunds =
+    walletStatus === "unlocked" &&
+    tradeIntent === "open" &&
+    policyBalance < tradeSizeSats;
 
   const yesPrice = market.yesPrice;
   const yesDisplaySats =
@@ -599,15 +624,21 @@ export default function TradingPanel({ market }: { market: Market }) {
             </div>
           </div>
           {tradeError && (
-            <p className="mt-3 text-xs text-rose-300">{tradeError}</p>
+            <p className="mt-3 text-xs text-rose-300">
+              {friendlyTradeError(tradeError)}
+            </p>
           )}
           <button
             type="button"
             onClick={handleSubmitTrade}
-            disabled={tradeBusy}
-            className={`mt-4 w-full rounded-lg ${tradeBusy ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 font-semibold`}
+            disabled={tradeBusy || insufficientFunds}
+            className={`mt-4 w-full rounded-lg ${tradeBusy || insufficientFunds ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 font-semibold`}
           >
-            {tradeExecuteLoading ? "Placing..." : `Place Limit ${ctaLabel}`}
+            {tradeExecuteLoading
+              ? "Placing..."
+              : insufficientFunds
+                ? "Insufficient funds"
+                : `Place Limit ${ctaLabel}`}
           </button>
         </>
       ) : (
@@ -713,10 +744,12 @@ export default function TradingPanel({ market }: { market: Market }) {
           )}
 
           {tradeError && (
-            <p className="mt-3 text-xs text-rose-300">{tradeError}</p>
+            <p className="mt-3 text-xs text-rose-300">
+              {friendlyTradeError(tradeError)}
+            </p>
           )}
 
-          {walletStatus !== "unlocked" ? (
+          {walletStatus === "not_created" ? (
             <div className="mt-4 rounded-lg border border-slate-700 bg-slate-900/60 p-4 text-center">
               <p className="text-sm font-medium text-slate-300">
                 Create an account to trade
@@ -737,18 +770,41 @@ export default function TradingPanel({ market }: { market: Market }) {
                 Set up account
               </button>
             </div>
+          ) : walletStatus === "locked" ? (
+            <button
+              type="button"
+              onClick={() => useStore.setState({ walletOpen: true })}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-slate-700 px-4 py-2 font-semibold text-slate-300 transition hover:bg-slate-600"
+            >
+              <svg
+                aria-hidden="true"
+                className="h-4 w-4 shrink-0 -mt-px"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0110 0v4" />
+              </svg>
+              Unlock wallet to trade
+            </button>
           ) : (
             <button
               type="button"
               onClick={handleSubmitTrade}
-              disabled={tradeBusy}
-              className={`mt-4 w-full rounded-lg ${tradeBusy ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 font-semibold`}
+              disabled={tradeBusy || insufficientFunds}
+              className={`mt-4 w-full rounded-lg ${tradeBusy || insufficientFunds ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 font-semibold`}
             >
               {tradeExecuteLoading
                 ? "Executing..."
                 : tradeQuoteLoading
                   ? "Quoting..."
-                  : ctaLabel}
+                  : insufficientFunds
+                    ? "Insufficient funds"
+                    : ctaLabel}
             </button>
           )}
         </>
