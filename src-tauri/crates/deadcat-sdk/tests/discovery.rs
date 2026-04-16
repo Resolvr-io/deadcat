@@ -27,7 +27,8 @@ async fn setup_service_with_store(
     let keys = Keys::generate();
     let store = Arc::new(Mutex::new(TestStore::default()));
     let config = discovery_config(mock_url);
-    let (service, rx) = DiscoveryService::with_store(keys.clone(), store.clone(), config);
+    let (service, rx) =
+        DiscoveryService::with_store(Arc::new(keys.clone()) as Arc<dyn NostrSigner>, store.clone(), config);
     (service, rx, store, keys)
 }
 
@@ -128,7 +129,7 @@ async fn subscription_delivers_market_events() {
     let (announcement, _params) = test_market_announcement(oracle_pubkey, 0x22);
 
     let event =
-        deadcat_sdk::build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
+        deadcat_sdk::build_announcement_event(&announcement, "liquid-testnet").unwrap().sign_with_keys(&keys).unwrap();
     publisher.send_event(event).await.unwrap();
 
     // Wait for the broadcast event
@@ -160,7 +161,7 @@ async fn subscription_delivers_order_events() {
     publisher.connect().await;
 
     let announcement = test_order_announcement("market456");
-    let event = deadcat_sdk::build_order_event(&keys, &announcement, "liquid-testnet").unwrap();
+    let event = deadcat_sdk::build_order_event(&announcement, "liquid-testnet").unwrap().sign_with_keys(&keys).unwrap();
     publisher.send_event(event).await.unwrap();
 
     let result = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
@@ -195,7 +196,7 @@ async fn store_persistence_on_discovery() {
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
     let (announcement, _params) = test_market_announcement(oracle_pubkey, 0x33);
     let event =
-        deadcat_sdk::build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
+        deadcat_sdk::build_announcement_event(&announcement, "liquid-testnet").unwrap().sign_with_keys(&keys).unwrap();
     publisher.send_event(event).await.unwrap();
 
     // Wait for broadcast
@@ -204,7 +205,7 @@ async fn store_persistence_on_discovery() {
     // Publish an order
     let order_announcement = test_order_announcement("market789");
     let order_event =
-        deadcat_sdk::build_order_event(&keys, &order_announcement, "liquid-testnet").unwrap();
+        deadcat_sdk::build_order_event(&order_announcement, "liquid-testnet").unwrap().sign_with_keys(&keys).unwrap();
     publisher.send_event(order_event).await.unwrap();
 
     let _ = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
@@ -276,10 +277,10 @@ async fn fetch_orders_ignores_foreign_nip09_deletion() {
     let (service, _rx, _store, _keys) = setup_service_with_store(&mock.url()).await;
 
     let publisher_keys = Keys::generate();
-    let (publisher, _rx) = DiscoveryService::new(publisher_keys, discovery_config(&mock.url()));
+    let (publisher, _rx) = DiscoveryService::new(Arc::new(publisher_keys) as Arc<dyn NostrSigner>, discovery_config(&mock.url()));
     let foreign_keys = Keys::generate();
     let (foreign_publisher, _rx) =
-        DiscoveryService::new(foreign_keys, discovery_config(&mock.url()));
+        DiscoveryService::new(Arc::new(foreign_keys) as Arc<dyn NostrSigner>, discovery_config(&mock.url()));
     let announcement = test_order_announcement("market-foreign-delete");
 
     let event_id = publisher.announce_order(&announcement).await.unwrap();
@@ -310,7 +311,7 @@ async fn subscription_emits_order_invalidation_for_tombstone() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let publisher_keys = Keys::generate();
-    let (publisher, _rx) = DiscoveryService::new(publisher_keys, discovery_config(&mock.url()));
+    let (publisher, _rx) = DiscoveryService::new(Arc::new(publisher_keys) as Arc<dyn NostrSigner>, discovery_config(&mock.url()));
     let announcement = test_order_announcement("market-live-tombstone");
 
     publisher.announce_order(&announcement).await.unwrap();
@@ -364,7 +365,7 @@ async fn subscription_emits_order_invalidation_for_tagged_deletion() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let publisher_keys = Keys::generate();
-    let (publisher, _rx) = DiscoveryService::new(publisher_keys, discovery_config(&mock.url()));
+    let (publisher, _rx) = DiscoveryService::new(Arc::new(publisher_keys) as Arc<dyn NostrSigner>, discovery_config(&mock.url()));
     let announcement = test_order_announcement("market-live-delete");
 
     let event_id = publisher.announce_order(&announcement).await.unwrap();
@@ -419,8 +420,13 @@ async fn attestation_roundtrip() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Publish attestation
+    let market_id_hex = hex::encode(market_id.as_bytes());
+    let (sig_bytes, msg_bytes) =
+        deadcat_sdk::sign_attestation(&keys, &market_id, true).unwrap();
+    let sig_hex = hex::encode(sig_bytes);
+    let msg_hex = hex::encode(msg_bytes);
     let result = service
-        .publish_attestation(&market_id, &ann_event_id.to_hex(), true)
+        .publish_attestation(&market_id_hex, &ann_event_id.to_hex(), true, &sig_hex, &msg_hex)
         .await
         .unwrap();
 

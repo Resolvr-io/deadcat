@@ -239,10 +239,9 @@ pub struct DiscoveredPool {
 ///
 /// Uses NIP-33 replaceable events with `d` tag = canonical `lmsr_pool_id`.
 pub fn build_pool_event(
-    keys: &Keys,
     announcement: &PoolAnnouncement,
     network_tag: &str,
-) -> Result<Event, String> {
+) -> Result<EventBuilder, String> {
     if announcement.version != LMSR_POOL_ANNOUNCEMENT_VERSION {
         return Err(format!(
             "unsupported pool announcement version: {} (expected {})",
@@ -309,12 +308,7 @@ pub fn build_pool_event(
         Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
     ];
 
-    let event = EventBuilder::new(APP_EVENT_KIND, &content)
-        .tags(tags)
-        .sign_with_keys(keys)
-        .map_err(|e| format!("failed to build event: {e}"))?;
-
-    Ok(event)
+    Ok(EventBuilder::new(APP_EVENT_KIND, &content).tags(tags))
 }
 
 /// Build a Nostr filter for fetching pool announcements.
@@ -555,7 +549,8 @@ mod tests {
         let keys = Keys::generate();
         let network_tag = "liquid-testnet";
         let announcement = test_announcement(network_tag);
-        let event = build_pool_event(&keys, &announcement, network_tag).unwrap();
+        let builder = build_pool_event(&announcement, network_tag).unwrap();
+        let event = builder.sign_with_keys(&keys).unwrap();
 
         let discovered = parse_pool_event(&event, network_tag).unwrap();
         assert_eq!(discovered.market_id, announcement.market_id);
@@ -571,43 +566,38 @@ mod tests {
 
     #[test]
     fn build_pool_event_rejects_wrong_version() {
-        let keys = Keys::generate();
         let mut announcement = test_announcement("liquid-testnet");
         announcement.version = 1;
-        let err = build_pool_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        let err = build_pool_event(&announcement, "liquid-testnet").unwrap_err();
         assert!(err.contains("unsupported pool announcement version"));
     }
 
     #[test]
     fn build_pool_event_rejects_non_canonical_pool_id() {
-        let keys = Keys::generate();
         let mut announcement = test_announcement("liquid-testnet");
         announcement.lmsr_pool_id = hex::encode([0xab; 32]).to_uppercase();
-        let err = build_pool_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        let err = build_pool_event(&announcement, "liquid-testnet").unwrap_err();
         assert!(err.contains("canonical lowercase"));
     }
 
     #[test]
     fn build_pool_event_rejects_mismatched_market_id() {
-        let keys = Keys::generate();
         let mut announcement = test_announcement("liquid-testnet");
         announcement.market_id = hex::encode([0xab; 32]);
-        let err = build_pool_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        let err = build_pool_event(&announcement, "liquid-testnet").unwrap_err();
         assert!(err.contains("market_id does not match canonical derived ID"));
     }
 
     #[test]
     fn build_pool_event_rejects_missing_anchors() {
-        let keys = Keys::generate();
         let mut announcement = test_announcement("liquid-testnet");
         announcement.initial_reserve_outpoints = vec![];
-        let err = build_pool_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        let err = build_pool_event(&announcement, "liquid-testnet").unwrap_err();
         assert!(err.contains("expected 3 LMSR initial reserve outpoints"));
     }
 
     #[test]
     fn build_pool_event_rejects_duplicate_anchor_tuples() {
-        let keys = Keys::generate();
         let mut announcement = test_announcement("liquid-testnet");
         let txid = announcement.creation_txid.clone();
         announcement.initial_reserve_outpoints = vec![
@@ -615,17 +605,16 @@ mod tests {
             format!("{txid}:0"),
             format!("{txid}:1"),
         ];
-        let err = build_pool_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        let err = build_pool_event(&announcement, "liquid-testnet").unwrap_err();
         assert!(err.contains("duplicate LMSR initial reserve outpoint"));
     }
 
     #[test]
     fn build_pool_event_rejects_non_canonical_anchor_format() {
-        let keys = Keys::generate();
         let mut announcement = test_announcement("liquid-testnet");
         let txid = announcement.creation_txid.clone();
         announcement.initial_reserve_outpoints[1] = format!("{txid}:01");
-        let err = build_pool_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        let err = build_pool_event(&announcement, "liquid-testnet").unwrap_err();
         assert!(err.contains("canonical '<lowercase_txid>:<vout>'"));
     }
 
@@ -706,7 +695,8 @@ mod tests {
         let keys = Keys::generate();
         let announcement = test_announcement("liquid-testnet");
         let event =
-            build_pool_event(&keys, &announcement, "liquid-testnet").expect("build pool event");
+            build_pool_event(&announcement, "liquid-testnet").expect("build pool event")
+                .sign_with_keys(&keys).unwrap();
         let err = parse_pool_event(&event, "liquid-regtest").unwrap_err();
         assert!(err.contains("unsupported network tag"));
     }

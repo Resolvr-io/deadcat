@@ -5,11 +5,10 @@ use nostr_sdk::prelude::*;
 use tokio::sync::broadcast;
 
 use crate::announcement::ContractAnnouncement;
-use crate::prediction_market::params::MarketId;
 
 use super::attestation::{
     AttestationContent, AttestationResult, build_attestation_event, build_attestation_filter,
-    build_attestation_subscription_filter, parse_attestation_event, sign_attestation,
+    build_attestation_subscription_filter, parse_attestation_event,
 };
 use super::config::DiscoveryConfig;
 use super::events::DiscoveryEvent;
@@ -38,7 +37,7 @@ use super::{
 /// via `tokio::broadcast`, and optionally persists discovered data to a shared store.
 pub struct DiscoveryService<S: DiscoveryStore = NoopStore> {
     client: Client,
-    keys: Keys,
+    signer: Arc<dyn NostrSigner>,
     config: DiscoveryConfig,
     store: Option<Arc<Mutex<S>>>,
     tx: broadcast::Sender<DiscoveryEvent>,
@@ -80,13 +79,16 @@ impl DiscoveryService<NoopStore> {
     /// Create a new `DiscoveryService` without store persistence.
     ///
     /// Returns the service and a broadcast receiver for discovery events.
-    pub fn new(keys: Keys, config: DiscoveryConfig) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
+    pub fn new(
+        signer: Arc<dyn NostrSigner>,
+        config: DiscoveryConfig,
+    ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
         let (tx, rx) = broadcast::channel(256);
-        let client = Client::new(keys.clone());
+        let client = ClientBuilder::new().signer(signer.clone()).build();
         (
             Self {
                 client,
-                keys,
+                signer,
                 config,
                 store: None,
                 tx,
@@ -101,16 +103,16 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
     ///
     /// Returns the service and a broadcast receiver for discovery events.
     pub fn with_store(
-        keys: Keys,
+        signer: Arc<dyn NostrSigner>,
         store: Arc<Mutex<S>>,
         config: DiscoveryConfig,
     ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
         let (tx, rx) = broadcast::channel(256);
-        let client = Client::new(keys.clone());
+        let client = ClientBuilder::new().signer(signer.clone()).build();
         (
             Self {
                 client,
-                keys,
+                signer,
                 config,
                 store: Some(store),
                 tx,
@@ -260,10 +262,10 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
     ) -> Result<EventId, String> {
         self.ensure_connected().await?;
 
-        let event = build_announcement_event(&self.keys, announcement, &self.config.network_tag)?;
+        let builder = build_announcement_event(announcement, &self.config.network_tag)?;
         let output = self
             .client
-            .send_event(event)
+            .send_event_builder(builder)
             .await
             .map_err(|e| format!("failed to send event: {e}"))?;
         Ok(*output.id())
@@ -276,10 +278,10 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
     ) -> Result<EventId, String> {
         self.ensure_connected().await?;
 
-        let event = build_order_event(&self.keys, announcement, &self.config.network_tag)?;
+        let builder = build_order_event(announcement, &self.config.network_tag)?;
         let output = self
             .client
-            .send_event(event)
+            .send_event_builder(builder)
             .await
             .map_err(|e| format!("failed to send order event: {e}"))?;
         Ok(*output.id())
@@ -296,8 +298,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
     ) -> Result<EventId, String> {
         self.ensure_connected().await?;
 
-        let event = build_order_tombstone_event(
-            &self.keys,
+        let builder = build_order_tombstone_event(
             market_id,
             maker_base_pubkey,
             order_nonce,
@@ -307,7 +308,7 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
         )?;
         let output = self
             .client
-            .send_event(event)
+            .send_event_builder(builder)
             .await
             .map_err(|e| format!("failed to send order tombstone event: {e}"))?;
         Ok(*output.id())
@@ -321,55 +322,53 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
     ) -> Result<EventId, String> {
         self.ensure_connected().await?;
 
-        let event = build_order_deletion_request_event(
-            &self.keys,
+        let builder = build_order_deletion_request_event(
             original_event_id,
             market_id,
             &self.config.network_tag,
         )?;
         let output = self
             .client
-            .send_event(event)
+            .send_event_builder(builder)
             .await
             .map_err(|e| format!("failed to send order deletion event: {e}"))?;
         Ok(*output.id())
     }
 
-    /// Sign and publish an oracle attestation.
+    /// Publish a pre-signed oracle attestation to relays.
+    ///
+    /// The caller is responsible for producing the Schnorr signature
+    /// (via [`sign_attestation`]) — this keeps secret-key access out of
+    /// the discovery service so it works with both local and remote signers.
     pub async fn publish_attestation(
         &self,
-        market_id: &MarketId,
+        market_id_hex: &str,
         announcement_event_id: &str,
         outcome_yes: bool,
+        sig_hex: &str,
+        msg_hex: &str,
     ) -> Result<AttestationResult, String> {
         self.ensure_connected().await?;
 
-        let market_id_hex = hex::encode(market_id.as_bytes());
-
-        let (sig_bytes, msg_bytes) = sign_attestation(&self.keys, market_id, outcome_yes)?;
-        let sig_hex = hex::encode(sig_bytes);
-        let msg_hex = hex::encode(msg_bytes);
-
-        let event = build_attestation_event(
-            &self.keys,
-            &market_id_hex,
+        let builder = build_attestation_event(
+            market_id_hex,
             announcement_event_id,
             outcome_yes,
-            &sig_hex,
-            &msg_hex,
+            sig_hex,
+            msg_hex,
             &self.config.network_tag,
         )?;
 
         let output = self
             .client
-            .send_event(event)
+            .send_event_builder(builder)
             .await
             .map_err(|e| format!("failed to send attestation event: {e}"))?;
 
         Ok(AttestationResult {
-            market_id: market_id_hex,
+            market_id: market_id_hex.to_string(),
             outcome_yes,
-            signature_hex: sig_hex,
+            signature_hex: sig_hex.to_string(),
             nostr_event_id: output.id().to_hex(),
         })
     }
@@ -378,10 +377,10 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
     pub async fn announce_pool(&self, announcement: &PoolAnnouncement) -> Result<EventId, String> {
         self.ensure_connected().await?;
 
-        let event = build_pool_event(&self.keys, announcement, &self.config.network_tag)?;
+        let builder = build_pool_event(announcement, &self.config.network_tag)?;
         let output = self
             .client
-            .send_event(event)
+            .send_event_builder(builder)
             .await
             .map_err(|e| format!("failed to send pool event: {e}"))?;
         Ok(*output.id())
@@ -427,9 +426,9 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
         &self.client
     }
 
-    /// Get a reference to the keys.
-    pub fn keys(&self) -> &Keys {
-        &self.keys
+    /// Get a reference to the signer.
+    pub fn signer(&self) -> &Arc<dyn NostrSigner> {
+        &self.signer
     }
 
     // --- internal helpers ---
@@ -864,7 +863,8 @@ mod tests {
     fn persist_market_uses_local_ingest_time() {
         let keys = Keys::generate();
         let (announcement, _params) = test_market_announcement([0xaa; 32], 0x19);
-        let event = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
+        let builder = build_announcement_event(&announcement, "liquid-testnet").unwrap();
+        let event = builder.sign_with_keys(&keys).unwrap();
         let mut parsed = parse_announcement_event_with_ingest(&event, "liquid-testnet").unwrap();
         parsed.market.created_at = 1;
 

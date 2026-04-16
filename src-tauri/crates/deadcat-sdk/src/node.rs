@@ -119,7 +119,7 @@ pub struct DeadcatNode<S: DiscoveryStore = NoopStore> {
     snapshot_tx: watch::Sender<Option<WalletSnapshot>>,
     snapshot_rx: watch::Receiver<Option<WalletSnapshot>>,
     discovery: DiscoveryService<S>,
-    keys: Keys,
+    signer: Arc<dyn NostrSigner>,
     network: Network,
     store: Option<Arc<Mutex<S>>>,
 }
@@ -129,12 +129,12 @@ pub struct DeadcatNode<S: DiscoveryStore = NoopStore> {
 impl DeadcatNode<NoopStore> {
     /// Create a node without store persistence.
     pub fn new(
-        keys: Keys,
+        signer: Arc<dyn NostrSigner>,
         network: Network,
         mut config: DiscoveryConfig,
     ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
         config.network_tag = network.discovery_tag().to_string();
-        let (discovery, rx) = DiscoveryService::new(keys.clone(), config);
+        let (discovery, rx) = DiscoveryService::new(signer.clone(), config);
         let (snapshot_tx, snapshot_rx) = watch::channel(None);
         (
             Self {
@@ -143,7 +143,7 @@ impl DeadcatNode<NoopStore> {
                 snapshot_tx,
                 snapshot_rx,
                 discovery,
-                keys,
+                signer,
                 network,
                 store: None,
             },
@@ -155,13 +155,14 @@ impl DeadcatNode<NoopStore> {
 impl<S: DiscoveryStore> DeadcatNode<S> {
     /// Create a node with store persistence.
     pub fn with_store(
-        keys: Keys,
+        signer: Arc<dyn NostrSigner>,
         network: Network,
         store: Arc<Mutex<S>>,
         mut config: DiscoveryConfig,
     ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
         config.network_tag = network.discovery_tag().to_string();
-        let (discovery, rx) = DiscoveryService::with_store(keys.clone(), store.clone(), config);
+        let (discovery, rx) =
+            DiscoveryService::with_store(signer.clone(), store.clone(), config);
         let (snapshot_tx, snapshot_rx) = watch::channel(None);
         (
             Self {
@@ -170,7 +171,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                 snapshot_tx,
                 snapshot_rx,
                 discovery,
-                keys,
+                signer,
                 network,
                 store: Some(store),
             },
@@ -597,7 +598,9 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             no_asset_id: bytes_to_hex(&params.no_token_asset),
             yes_reissuance_token: bytes_to_hex(&params.yes_reissuance_token),
             no_reissuance_token: bytes_to_hex(&params.no_reissuance_token),
-            creator_pubkey: self.keys.public_key().to_hex(),
+            creator_pubkey: self.public_key().await
+                .map_err(|e| NodeError::Discovery(format!("signer error: {e}")))?
+                .to_hex(),
             created_at: nostr_sdk::Timestamp::now().as_u64(),
             anchor: announcement.anchor.clone(),
             state: 0,
@@ -620,7 +623,9 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                     description: Some(announcement.metadata.description.clone()),
                     category: Some(announcement.metadata.category.clone()),
                     resolution_source: Some(announcement.metadata.resolution_source.clone()),
-                    creator_pubkey: hex::decode(self.keys.public_key().to_hex()).ok(),
+                    creator_pubkey: self.public_key().await
+                        .ok()
+                        .and_then(|pk| hex::decode(pk.to_hex()).ok()),
                     anchor: announcement.anchor.clone(),
                     nevent: Some(market.nevent.clone()),
                     nostr_event_id: Some(market.id.clone()),
@@ -882,14 +887,33 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     // ── Oracle ──────────────────────────────────────────────────────────
 
     /// Sign and publish an oracle attestation via Nostr.
+    ///
+    /// Requires a local signer (Keys) — attestation uses BIP-340 Schnorr
+    /// signing over the market ID, which cannot be delegated to a remote
+    /// signer via NIP-46.
     pub async fn attest_market(
         &self,
+        keys: &Keys,
         market_id: &MarketId,
         announcement_event_id: &str,
         outcome_yes: bool,
     ) -> Result<AttestationResult, NodeError> {
+        use crate::discovery::attestation::sign_attestation;
+
+        let market_id_hex = hex::encode(market_id.as_bytes());
+        let (sig_bytes, msg_bytes) =
+            sign_attestation(keys, market_id, outcome_yes).map_err(NodeError::Discovery)?;
+        let sig_hex = hex::encode(sig_bytes);
+        let msg_hex = hex::encode(msg_bytes);
+
         self.discovery
-            .publish_attestation(market_id, announcement_event_id, outcome_yes)
+            .publish_attestation(
+                &market_id_hex,
+                announcement_event_id,
+                outcome_yes,
+                &sig_hex,
+                &msg_hex,
+            )
             .await
             .map_err(NodeError::Discovery)
     }
@@ -1781,9 +1805,14 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
 
     // ── Accessors ───────────────────────────────────────────────────────
 
-    /// The Nostr identity keys.
-    pub fn keys(&self) -> &Keys {
-        &self.keys
+    /// The Nostr signer (local keys or remote NIP-46 signer).
+    pub fn signer(&self) -> &Arc<dyn NostrSigner> {
+        &self.signer
+    }
+
+    /// Get the signer's public key.
+    pub async fn public_key(&self) -> Result<PublicKey, SignerError> {
+        self.signer.get_public_key().await
     }
 
     /// The network this node is configured for.
@@ -2501,6 +2530,7 @@ mod tests {
             params_json: canonical_params_json(&announcement),
             lmsr_table_values: announcement.lmsr_table_values.clone(),
             nostr_event_json: None,
+            reserve_yes_outpoint: announcement.initial_reserve_outpoints[0].clone(),
         };
 
         let resolved = resolved_sync_metadata(Network::LiquidTestnet, &pool).unwrap();
@@ -2517,11 +2547,11 @@ mod tests {
     fn resolved_sync_metadata_repairs_poisoned_anchors_from_nostr_event() {
         let announcement = sample_pool_announcement();
         let event = build_pool_event(
-            &Keys::generate(),
             &announcement,
             Network::LiquidTestnet.discovery_tag(),
         )
-        .unwrap();
+        .unwrap()
+        .sign_with_keys(&Keys::generate()).unwrap();
         let pool = crate::LmsrPoolSyncInfo {
             pool_id: announcement.lmsr_pool_id.clone(),
             market_id: announcement.market_id.clone(),
@@ -2537,6 +2567,7 @@ mod tests {
             params_json: canonical_params_json(&announcement),
             lmsr_table_values: None,
             nostr_event_json: Some(serde_json::to_string(&event).unwrap()),
+            reserve_yes_outpoint: format!("{}:7", announcement.creation_txid),
         };
 
         let resolved = resolved_sync_metadata(Network::LiquidTestnet, &pool).unwrap();
@@ -2555,6 +2586,7 @@ mod tests {
     fn resolved_sync_metadata_errors_when_pool_is_unrecoverable() {
         let announcement = sample_pool_announcement();
         let params_json = canonical_params_json(&announcement);
+        let reserve_yes_outpoint = format!("{}:0", announcement.creation_txid);
         let pool = crate::LmsrPoolSyncInfo {
             pool_id: announcement.lmsr_pool_id,
             market_id: announcement.market_id,
@@ -2566,6 +2598,7 @@ mod tests {
             params_json,
             lmsr_table_values: None,
             nostr_event_json: None,
+            reserve_yes_outpoint,
         };
 
         let err = resolved_sync_metadata(Network::LiquidTestnet, &pool).unwrap_err();
@@ -2610,7 +2643,7 @@ mod order_cleanup_tests {
             ..Default::default()
         };
         let (node, _rx) =
-            DeadcatNode::with_store(keys, Network::LiquidTestnet, store.clone(), config);
+            DeadcatNode::with_store(Arc::new(keys), Network::LiquidTestnet, store.clone(), config);
 
         let announcement = test_order_announcement("market-node-delete");
         let event_id = node
@@ -2696,7 +2729,7 @@ mod order_cleanup_tests {
             ..Default::default()
         };
         let (node, _rx) =
-            DeadcatNode::with_store(keys, Network::LiquidRegtest, store.clone(), config);
+            DeadcatNode::with_store(Arc::new(keys), Network::LiquidRegtest, store.clone(), config);
 
         let wallet_dir = tempfile::tempdir().unwrap();
         node.unlock_wallet(TEST_MNEMONIC, &env.electrum_url(), wallet_dir.path())
@@ -2757,7 +2790,7 @@ mod order_cleanup_tests {
             ..Default::default()
         };
         let (node, _rx) =
-            DeadcatNode::with_store(keys, Network::LiquidRegtest, store.clone(), config);
+            DeadcatNode::with_store(Arc::new(keys), Network::LiquidRegtest, store.clone(), config);
 
         let wallet_dir = tempfile::tempdir().unwrap();
         node.unlock_wallet(TEST_MNEMONIC, &env.electrum_url(), wallet_dir.path())
@@ -2839,7 +2872,7 @@ mod order_cleanup_tests {
             network_tag: "liquid-regtest".to_string(),
             ..Default::default()
         };
-        let (node, _rx) = DeadcatNode::with_store(keys, Network::LiquidRegtest, store, config);
+        let (node, _rx) = DeadcatNode::with_store(Arc::new(keys), Network::LiquidRegtest, store, config);
 
         let wallet_dir = tempfile::tempdir().unwrap();
         node.unlock_wallet(TEST_MNEMONIC, &env.electrum_url(), wallet_dir.path())

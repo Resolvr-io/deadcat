@@ -131,26 +131,28 @@ async fn bump_revision_and_emit<R: tauri::Runtime>(
     Ok(())
 }
 
-/// Get Nostr keys and a connected client from the node.
-async fn get_keys_and_client(app: &tauri::AppHandle) -> Result<(Keys, nostr_sdk::Client), String> {
+/// Get Nostr signer and a connected client from the node.
+async fn get_signer_and_client(
+    app: &tauri::AppHandle,
+) -> Result<(std::sync::Arc<dyn NostrSigner>, nostr_sdk::Client), String> {
     let _t0 = std::time::Instant::now();
-    log::info!("[restore-trace] get_keys_and_client: acquiring NodeState lock...");
+    log::info!("[restore-trace] get_signer_and_client: acquiring NodeState lock...");
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     log::info!(
-        "[restore-trace] get_keys_and_client: got NodeState lock at {:?}",
+        "[restore-trace] get_signer_and_client: got NodeState lock at {:?}",
         _t0.elapsed()
     );
     let node = guard
         .as_ref()
         .ok_or("Node not initialized — call init_nostr_identity first")?;
-    let keys = node.keys().clone();
+    let signer = node.signer().clone();
     let client = node.discovery().client().clone();
     drop(guard);
 
     // Ensure client has relays connected
     if client.relays().await.is_empty() {
-        log::info!("[restore-trace] get_keys_and_client: no relays, connecting...");
+        log::info!("[restore-trace] get_signer_and_client: no relays, connecting...");
         let nostr_state = app.state::<NostrAppState>();
         let relays = nostr_state
             .relay_list
@@ -162,16 +164,40 @@ async fn get_keys_and_client(app: &tauri::AppHandle) -> Result<(Keys, nostr_sdk:
         }
         client.connect_with_timeout(Duration::from_secs(5)).await;
         log::info!(
-            "[restore-trace] get_keys_and_client: relay connect done at {:?}",
+            "[restore-trace] get_signer_and_client: relay connect done at {:?}",
             _t0.elapsed()
         );
     } else {
         log::info!(
-            "[restore-trace] get_keys_and_client: relays already connected at {:?}",
+            "[restore-trace] get_signer_and_client: relays already connected at {:?}",
             _t0.elapsed()
         );
     }
 
+    Ok((signer, client))
+}
+
+/// Convenience wrapper: get the signer and client, and also extract `Keys`
+/// for operations that require direct secret-key access (NIP-44 encrypt/decrypt,
+/// nsec export, oracle attestation). Returns an error if the signer is not local.
+async fn get_keys_and_client(app: &tauri::AppHandle) -> Result<(Keys, nostr_sdk::Client), String> {
+    let (signer, client) = get_signer_and_client(app).await?;
+    // Downcast: Keys implements NostrSigner with backend() == SignerBackend::Keys
+    match signer.backend() {
+        nostr_sdk::SignerBackend::Keys => {}
+        _ => {
+            return Err(
+                "This operation requires local keys (not available with remote signer)".to_string(),
+            )
+        }
+    }
+    // Load keys from disk (the signer is an Arc<dyn NostrSigner>, not directly downcastable)
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+    let keys = discovery::load_keys(&app_data_dir)?
+        .ok_or("No local keys found on disk")?;
     Ok((keys, client))
 }
 
@@ -222,7 +248,9 @@ async fn construct_and_store_node(
         ..Default::default()
     };
 
-    let (node, mut rx) = deadcat_sdk::DeadcatNode::with_store(keys, sdk_network, store_arc, config);
+    let signer: std::sync::Arc<dyn NostrSigner> = std::sync::Arc::new(keys);
+    let (node, mut rx) =
+        deadcat_sdk::DeadcatNode::with_store(signer, sdk_network, store_arc, config);
     let mut snapshot_rx = node.subscribe_snapshot();
 
     // Shut down the old node's wallet so its background sync stops ASAP
@@ -445,11 +473,13 @@ pub async fn get_nostr_identity(app: tauri::AppHandle) -> Result<Option<Identity
     let guard = node_state.node.lock().await;
     match guard.as_ref() {
         Some(node) => {
-            let keys = node.keys();
+            let pubkey = node
+                .public_key()
+                .await
+                .map_err(|e| format!("signer error: {e}"))?;
             Ok(Some(IdentityResponse {
-                pubkey_hex: keys.public_key().to_hex(),
-                npub: keys
-                    .public_key()
+                pubkey_hex: pubkey.to_hex(),
+                npub: pubkey
                     .to_bech32()
                     .map_err(|e| format!("bech32 error: {e}"))?,
             }))
@@ -502,14 +532,14 @@ pub async fn import_nostr_nsec(
 
 #[tauri::command]
 pub async fn export_nostr_nsec(app: tauri::AppHandle) -> Result<String, String> {
-    let node_state = app.state::<NodeState>();
-    let guard = node_state.node.lock().await;
-    let node = guard
-        .as_ref()
-        .ok_or_else(|| "Nostr identity not initialized".to_string())?;
-
-    node.keys()
-        .secret_key()
+    // Load keys from disk — only works for local signers
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+    let keys = discovery::load_keys(&app_data_dir)?
+        .ok_or("No local keys found — cannot export nsec with remote signer")?;
+    keys.secret_key()
         .to_bech32()
         .map_err(|e| format!("bech32 error: {e}"))
 }
@@ -662,7 +692,7 @@ pub async fn check_nostr_backup(
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
-    let keys = node.keys().clone();
+    let pubkey = node.public_key().await.map_err(|e| format!("signer error: {e}"))?;
     drop(guard);
 
     let relays = {
@@ -674,7 +704,7 @@ pub async fn check_nostr_backup(
         guard.clone()
     };
 
-    let filter = discovery::build_backup_query_filter(&keys.public_key());
+    let filter = discovery::build_backup_query_filter(&pubkey);
 
     let mut tasks = tokio::task::JoinSet::new();
     for url in relays {
@@ -829,9 +859,11 @@ pub async fn set_relay_list(relays: Vec<String>, app: tauri::AppHandle) -> Resul
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     if let Some(node) = guard.as_ref() {
-        let keys = node.keys().clone();
         let client = node.discovery().client().clone();
         drop(guard);
+
+        let app_data_dir = app.path().app_data_dir().map_err(|e| format!("{e}"))?;
+        let keys = crate::discovery::load_keys(&app_data_dir)?.ok_or("No local keys")?;
 
         // Add new relays to the client
         for url in &normalized {
@@ -891,9 +923,11 @@ pub async fn add_relay(url: String, app: tauri::AppHandle) -> Result<Vec<String>
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     if let Some(node) = guard.as_ref() {
-        let keys = node.keys().clone();
         let client = node.discovery().client().clone();
         drop(guard);
+
+        let app_data_dir = app.path().app_data_dir().map_err(|e| format!("{e}"))?;
+        let keys = crate::discovery::load_keys(&app_data_dir)?.ok_or("No local keys")?;
 
         let _ = client.add_relay(normalized.as_str()).await;
         client.connect_with_timeout(Duration::from_secs(5)).await;
@@ -928,9 +962,11 @@ pub async fn remove_relay(url: String, app: tauri::AppHandle) -> Result<Vec<Stri
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     if let Some(node) = guard.as_ref() {
-        let keys = node.keys().clone();
         let client = node.discovery().client().clone();
         drop(guard);
+
+        let app_data_dir = app.path().app_data_dir().map_err(|e| format!("{e}"))?;
+        let keys = crate::discovery::load_keys(&app_data_dir)?.ok_or("No local keys")?;
 
         let event = discovery::build_relay_list_event(&keys, &new_list)?;
         discovery::publish_event(&client, event).await?;
@@ -1173,8 +1209,8 @@ pub async fn oracle_attest(
         .map_err(|_| "market_id must be exactly 32 bytes".to_string())?;
     let market_id = deadcat_sdk::MarketId(market_id_bytes);
 
-    // Get a connected client (handles relay connection)
-    let (_keys, client) = get_keys_and_client(&app).await?;
+    // Get keys and a connected client (handles relay connection)
+    let (keys, client) = get_keys_and_client(&app).await?;
 
     // Fetch the announcement to get its event ID
     let filter = nostr_sdk::Filter::new()
@@ -1198,7 +1234,7 @@ pub async fn oracle_attest(
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
     let result = node
-        .attest_market(&market_id, &announcement_event_id, outcome_yes)
+        .attest_market(&keys, &market_id, &announcement_event_id, outcome_yes)
         .await
         .map_err(|e| format!("{e}"))?;
 
@@ -1229,7 +1265,8 @@ pub async fn create_contract_onchain(
         .ok_or("Node not initialized — call init_nostr_identity first")?;
 
     let oracle_pubkey_bytes: [u8; 32] = {
-        let hex_str = node.keys().public_key().to_hex();
+        let pubkey = node.public_key().await.map_err(|e| format!("signer error: {e}"))?;
+        let hex_str = pubkey.to_hex();
         let bytes = hex::decode(&hex_str).map_err(|e| format!("hex decode: {e}"))?;
         bytes
             .try_into()

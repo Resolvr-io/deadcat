@@ -53,6 +53,7 @@ zeroize = "1"
 deadcat-sdk = { path = "crates/deadcat-sdk" }
 deadcat-store = { path = "crates/deadcat-sdk/deadcat-store" }
 nostr-sdk = { version = "0.38", features = ["nip44"] }
+nostr-connect = "0.38"
 nostr-relay-builder = "0.38"
 
 # Misc
