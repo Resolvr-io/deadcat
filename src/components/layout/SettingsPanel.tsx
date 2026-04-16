@@ -5,7 +5,7 @@ import { baseCurrencyOptions } from "../../constants";
 import { useLockScroll } from "../../hooks/useLockScroll";
 import { queryClient } from "../../queries/queryClient";
 import { useStore } from "../../store";
-import type { BaseCurrency, RelayEntry } from "../../types";
+import type { BaseCurrency, Nip46Status, RelayEntry } from "../../types";
 import { randomCatName } from "../../utils-react/random-name";
 import { btcLabel } from "../../utils-react/wallet";
 import { CloseButton } from "../shared/CloseButton";
@@ -95,6 +95,8 @@ function NostrSection() {
   const [nsecPasswordInput, setNsecPasswordInput] = useState("");
   const [nsecPasswordPrompt, setNsecPasswordPrompt] = useState(false);
   const [nsecPasswordError, setNsecPasswordError] = useState("");
+  const [nip46Status, setNip46Status] = useState<Nip46Status | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
 
   // Auto-hide nsec when wallet locks
   useEffect(() => {
@@ -105,6 +107,14 @@ function NostrSection() {
       setNsecPasswordError("");
     }
   }, [walletStatus]);
+
+  useEffect(() => {
+    invoke<Nip46Status | null>("get_nip46_status")
+      .then((status) => setNip46Status(status))
+      .catch(() => {});
+  }, []);
+
+  const isRemoteSigner = nip46Status?.connected === true;
 
   const copyNpub = useCallback(async () => {
     const npub = useStore.getState().nostrNpub;
@@ -163,10 +173,47 @@ function NostrSection() {
     }
   }, [nsecPasswordInput]);
 
+  const handleDisconnectBunker = useCallback(async () => {
+    setDisconnecting(true);
+    try {
+      await invoke("disconnect_nip46");
+      useStore.setState({
+        nostrPubkey: null,
+        nostrNpub: null,
+        nostrProfile: null,
+      });
+      setNip46Status(null);
+      showToast("Remote signer disconnected");
+    } catch (e) {
+      showToast(`Disconnect failed: ${e}`);
+    }
+    setDisconnecting(false);
+  }, []);
+
   return (
     <div className="space-y-4">
+      {/* Signer type badge */}
+      {nostrNpub && (
+        <div className="flex items-center gap-2">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium ${
+              isRemoteSigner
+                ? "bg-blue-500/10 text-blue-300 border border-blue-500/20"
+                : "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${isRemoteSigner ? "bg-blue-400" : "bg-emerald-400"}`}
+            />
+            {isRemoteSigner ? "Remote Signer (NIP-46)" : "Local Keys"}
+          </span>
+        </div>
+      )}
+
       <p className="text-xs text-slate-500">
-        Your Nostr keypair is used to publish markets and sign attestations.
+        {isRemoteSigner
+          ? "Your keys are managed by an external signer via the NIP-46 protocol."
+          : "Your Nostr keypair is used to publish markets and sign attestations."}
       </p>
 
       {/* npub */}
@@ -200,8 +247,22 @@ function NostrSection() {
         </div>
       </div>
 
-      {/* nsec */}
-      {nostrNpub && (
+      {/* NIP-46 bunker info */}
+      {isRemoteSigner && nip46Status && (
+        <div className="rounded-lg border border-blue-700/20 bg-blue-950/10 px-3 py-2.5 space-y-1.5">
+          <div>
+            <p className="text-[10px] text-slate-500 uppercase tracking-wide">
+              Relay
+            </p>
+            <p className="mono text-xs text-slate-400 truncate">
+              {nip46Status.relayUrls[0] ?? "unknown"}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* nsec — only for local keys */}
+      {nostrNpub && !isRemoteSigner && (
         <div>
           <p className="text-xs text-slate-500 mb-1">Secret Key</p>
           <div className="flex items-center gap-2">
@@ -284,7 +345,7 @@ function NostrSection() {
         </div>
       )}
 
-      {nostrNpub && (
+      {nostrNpub && !isRemoteSigner && (
         <p className="text-xs text-amber-300/70">
           Back up your nsec. You need it to resolve markets you create.
         </p>
@@ -297,6 +358,15 @@ function NostrSection() {
           className="w-full rounded-lg border border-slate-700 px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 transition"
         >
           Set up identity
+        </button>
+      ) : isRemoteSigner ? (
+        <button
+          type="button"
+          onClick={handleDisconnectBunker}
+          disabled={disconnecting}
+          className="text-xs text-rose-400 hover:text-rose-300 transition disabled:opacity-50"
+        >
+          {disconnecting ? "Disconnecting..." : "Disconnect Remote Signer"}
         </button>
       ) : (
         <button
