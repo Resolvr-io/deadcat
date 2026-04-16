@@ -926,8 +926,8 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             />
           </div>
           <div className="mt-1.5 h-5">
-            {walletPassword && walletPassword.length < 4 ? (
-              <p className="text-xs text-amber-300">Minimum 4 characters</p>
+            {walletPassword && walletPassword.length < 8 ? (
+              <p className="text-xs text-amber-300">Minimum 8 characters</p>
             ) : walletPasswordConfirm &&
               walletPassword !== walletPasswordConfirm ? (
               <p className="text-xs text-rose-400">
@@ -965,7 +965,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           disabled={
             loading ||
             !walletPassword ||
-            walletPassword.length < 4 ||
+            walletPassword.length < 8 ||
             walletPassword !== walletPasswordConfirm
           }
           className="mt-5 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed"

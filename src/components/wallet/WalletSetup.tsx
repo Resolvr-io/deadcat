@@ -64,7 +64,7 @@ export function WalletSetup({
   const handleCreate = useCallback(() => {
     if (
       !walletPassword ||
-      walletPassword.length < 4 ||
+      walletPassword.length < 8 ||
       walletPassword !== walletPasswordConfirm
     ) {
       useStore.setState({
@@ -465,7 +465,7 @@ export function WalletSetup({
           </div>
           <div className="mt-1.5 h-5">
             {walletPassword && !pwValid ? (
-              <p className="text-xs text-amber-300">Minimum 4 characters</p>
+              <p className="text-xs text-amber-300">Minimum 8 characters</p>
             ) : walletPasswordConfirm && !pwMatch ? (
               <p className="text-xs text-rose-400">
                 Passwords don&apos;t match
