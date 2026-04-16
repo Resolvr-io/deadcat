@@ -1460,6 +1460,9 @@ pub fn run() {
             app.manage(nostr_state);
             app.manage(WalletStoreState::default());
 
+            // Load persisted relay market cache for instant cold-start display
+            commands::load_relay_cache(app.handle());
+
             // Custom macOS menu — Cmd+Q routes through frontend quit confirmation
             let quit_item = MenuItemBuilder::with_id("confirm-quit", "Quit Deadcat Live")
                 .accelerator("CmdOrCtrl+Q")
