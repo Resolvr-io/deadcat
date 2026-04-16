@@ -201,11 +201,11 @@ async fn get_keys_and_client(app: &tauri::AppHandle) -> Result<(Keys, nostr_sdk:
     Ok((keys, client))
 }
 
-/// Construct a DeadcatNode from loaded keys and store it in NodeState.
-/// Called whenever Nostr identity is loaded/generated/imported.
-async fn construct_and_store_node(
+/// Construct a DeadcatNode from a signer and store it in NodeState.
+/// Called whenever Nostr identity is loaded/generated/imported/connected.
+async fn construct_and_store_node_with_signer(
     app: &tauri::AppHandle,
-    keys: nostr_sdk::Keys,
+    signer: std::sync::Arc<dyn NostrSigner>,
 ) -> Result<(), String> {
     let _t0 = std::time::Instant::now();
     log::info!("[restore-trace] construct_and_store_node: start");
@@ -248,7 +248,6 @@ async fn construct_and_store_node(
         ..Default::default()
     };
 
-    let signer: std::sync::Arc<dyn NostrSigner> = std::sync::Arc::new(keys);
     let (node, mut rx) =
         deadcat_sdk::DeadcatNode::with_store(signer, sdk_network, store_arc, config);
     let mut snapshot_rx = node.subscribe_snapshot();
@@ -376,6 +375,15 @@ async fn construct_and_store_node(
     Ok(())
 }
 
+/// Convenience wrapper: construct a node from local `Keys`.
+async fn construct_and_store_node(
+    app: &tauri::AppHandle,
+    keys: nostr_sdk::Keys,
+) -> Result<(), String> {
+    let signer: std::sync::Arc<dyn NostrSigner> = std::sync::Arc::new(keys);
+    construct_and_store_node_with_signer(app, signer).await
+}
+
 fn market_state_to_u8(state: deadcat_sdk::MarketState) -> u8 {
     match state {
         deadcat_sdk::MarketState::Dormant => 0,
@@ -399,20 +407,47 @@ pub async fn init_nostr_identity(
         .app_data_dir()
         .map_err(|e| format!("failed to get app data dir: {e}"))?;
 
-    match discovery::load_keys(&app_data_dir)? {
-        Some(keys) => {
-            let response = IdentityResponse {
-                pubkey_hex: keys.public_key().to_hex(),
-                npub: keys
-                    .public_key()
-                    .to_bech32()
-                    .map_err(|e| format!("bech32 error: {e}"))?,
-            };
-            construct_and_store_node(&app, keys).await?;
-            Ok(Some(response))
-        }
-        None => Ok(None),
+    // 1. Check for local keys first
+    if let Some(keys) = discovery::load_keys(&app_data_dir)? {
+        let response = IdentityResponse {
+            pubkey_hex: keys.public_key().to_hex(),
+            npub: keys
+                .public_key()
+                .to_bech32()
+                .map_err(|e| format!("bech32 error: {e}"))?,
+        };
+        construct_and_store_node(&app, keys).await?;
+        return Ok(Some(response));
     }
+
+    // 2. Check for a persisted NIP-46 connection
+    if let Some(conn) = crate::nip46::load_connection(&app_data_dir) {
+        log::info!("restoring NIP-46 remote signer connection");
+        let signer = crate::nip46::restore_from_connection(&conn)?;
+        let arc_signer = crate::nip46::into_arc_signer(signer);
+
+        // Use the cached user pubkey if available, otherwise query the signer
+        let user_pubkey = match &conn.user_pubkey_hex {
+            Some(hex) => PublicKey::from_hex(hex)
+                .map_err(|e| format!("invalid cached user pubkey: {e}"))?,
+            None => arc_signer
+                .get_public_key()
+                .await
+                .map_err(|e| format!("NIP-46 get_public_key failed: {e}"))?,
+        };
+
+        let response = IdentityResponse {
+            pubkey_hex: user_pubkey.to_hex(),
+            npub: user_pubkey
+                .to_bech32()
+                .map_err(|e| format!("bech32 error: {e}"))?,
+        };
+        construct_and_store_node_with_signer(&app, arc_signer).await?;
+        return Ok(Some(response));
+    }
+
+    // 3. No identity found
+    Ok(None)
 }
 
 #[tauri::command]
@@ -585,6 +620,128 @@ pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> 
 
     bump_revision_and_emit(&app).await?;
     Ok(())
+}
+
+// =========================================================================
+// NIP-46 remote signing (Nostr Connect) commands
+// =========================================================================
+
+/// Connect to a remote signer via a `bunker://` URI.
+///
+/// Generates ephemeral app keys, performs the NIP-46 handshake, obtains the
+/// user's public key, persists the connection state, and constructs the node.
+#[tauri::command]
+pub async fn connect_nip46_bunker(
+    bunker_uri: String,
+    app: tauri::AppHandle,
+) -> Result<IdentityResponse, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+
+    // Reject if a local nsec identity already exists
+    if discovery::load_keys(&app_data_dir)?.is_some() {
+        return Err(
+            "A local Nostr identity already exists. Delete it first to use a remote signer."
+                .to_string(),
+        );
+    }
+
+    // Create the NostrConnect signer and connection state
+    let (signer, mut conn) = crate::nip46::connect_from_bunker_uri(&bunker_uri)?;
+
+    // Wrap as Arc<dyn NostrSigner> and get the user's public key.
+    // This triggers the NIP-46 handshake (connect + get_public_key).
+    let arc_signer = crate::nip46::into_arc_signer(signer);
+    let user_pubkey = arc_signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("NIP-46 handshake failed: {e}"))?;
+
+    // Update connection state with the resolved user pubkey
+    conn.user_pubkey_hex = Some(user_pubkey.to_hex());
+
+    // Persist the connection
+    crate::nip46::save_connection(&app_data_dir, &conn)?;
+
+    let response = IdentityResponse {
+        pubkey_hex: user_pubkey.to_hex(),
+        npub: user_pubkey
+            .to_bech32()
+            .map_err(|e| format!("bech32 error: {e}"))?,
+    };
+
+    // Construct the node using the remote signer
+    construct_and_store_node_with_signer(&app, arc_signer).await?;
+
+    Ok(response)
+}
+
+/// Disconnect from a remote signer and delete the persisted connection.
+#[tauri::command]
+pub async fn disconnect_nip46(app: tauri::AppHandle) -> Result<(), String> {
+    // Lock wallet and drop node
+    {
+        let node_state = app.state::<NodeState>();
+        let mut guard = node_state.node.lock().await;
+        if let Some(node) = guard.as_ref() {
+            node.lock_wallet();
+        }
+        *guard = None;
+    }
+
+    // Clear wallet state
+    {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.set_wallet_unlocked(false);
+        if let Some(persister) = mgr.persister_mut() {
+            persister.clear_cache();
+        }
+        mgr.clear_payment_swaps();
+    }
+
+    // Delete the persisted NIP-46 connection
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+    crate::nip46::delete_connection(&app_data_dir)?;
+
+    bump_revision_and_emit(&app).await?;
+    Ok(())
+}
+
+/// Get the status of the NIP-46 connection, if any.
+#[tauri::command]
+pub async fn get_nip46_status(
+    app: tauri::AppHandle,
+) -> Result<Option<crate::nip46::Nip46Status>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+
+    let conn = match crate::nip46::load_connection(&app_data_dir) {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+
+    // Check if the node is actually initialized with this connection
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let connected = guard.as_ref().is_some();
+
+    Ok(Some(crate::nip46::Nip46Status {
+        connected,
+        remote_signer_pubkey: conn.remote_signer_pubkey_hex,
+        user_pubkey: conn.user_pubkey_hex,
+        relay_urls: conn.relay_urls,
+        bunker_uri: conn.bunker_uri,
+    }))
 }
 
 // =========================================================================
