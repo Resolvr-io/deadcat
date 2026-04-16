@@ -694,9 +694,10 @@ mod tests {
     fn parse_pool_event_rejects_network_mismatch() {
         let keys = Keys::generate();
         let announcement = test_announcement("liquid-testnet");
-        let event =
-            build_pool_event(&announcement, "liquid-testnet").expect("build pool event")
-                .sign_with_keys(&keys).unwrap();
+        let event = build_pool_event(&announcement, "liquid-testnet")
+            .expect("build pool event")
+            .sign_with_keys(&keys)
+            .unwrap();
         let err = parse_pool_event(&event, "liquid-regtest").unwrap_err();
         assert!(err.contains("unsupported network tag"));
     }

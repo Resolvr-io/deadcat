@@ -653,8 +653,10 @@ mod tests {
     fn build_and_parse_order_event() {
         let keys = Keys::generate();
         let announcement = test_announcement();
-        let event = build_order_event(&announcement, "liquid-testnet").unwrap()
-            .sign_with_keys(&keys).unwrap();
+        let event = build_order_event(&announcement, "liquid-testnet")
+            .unwrap()
+            .sign_with_keys(&keys)
+            .unwrap();
         let expected_id = order_addressable_id(
             &announcement.market_id,
             &announcement.maker_base_pubkey,
@@ -701,8 +703,10 @@ mod tests {
     fn parse_order_event_rejects_network_mismatch() {
         let keys = Keys::generate();
         let announcement = test_announcement();
-        let event = build_order_event(&announcement, "liquid-testnet").unwrap()
-            .sign_with_keys(&keys).unwrap();
+        let event = build_order_event(&announcement, "liquid-testnet")
+            .unwrap()
+            .sign_with_keys(&keys)
+            .unwrap();
         let err = parse_order_event(&event, "liquid-regtest").unwrap_err();
         assert!(
             err.contains("unsupported network tag for order event"),
@@ -723,7 +727,8 @@ mod tests {
             "liquid-testnet",
         )
         .unwrap()
-        .sign_with_keys(&keys).unwrap();
+        .sign_with_keys(&keys)
+        .unwrap();
 
         assert!(is_order_tombstone_event(&event));
         assert_eq!(
@@ -736,8 +741,10 @@ mod tests {
     fn latest_order_selection_replaces_new_format_only() {
         let keys = Keys::generate();
         let announcement = test_announcement();
-        let older = build_order_event(&announcement, "liquid-testnet").unwrap()
-            .sign_with_keys(&keys).unwrap();
+        let older = build_order_event(&announcement, "liquid-testnet")
+            .unwrap()
+            .sign_with_keys(&keys)
+            .unwrap();
         let tombstone = build_order_tombstone_event(
             &announcement.market_id,
             &announcement.maker_base_pubkey,
@@ -747,7 +754,8 @@ mod tests {
             "liquid-testnet",
         )
         .unwrap()
-        .sign_with_keys(&keys).unwrap();
+        .sign_with_keys(&keys)
+        .unwrap();
         let newer = EventBuilder::new(APP_EVENT_KIND, "")
             .tags(tombstone.tags.clone())
             .custom_created_at(Timestamp::from(older.created_at.as_u64() + 1))
@@ -779,8 +787,10 @@ mod tests {
     fn select_fetchable_order_events_prefilters_wrong_network_replacements() {
         let keys = Keys::generate();
         let announcement = test_announcement();
-        let order_event = build_order_event(&announcement, "liquid-testnet").unwrap()
-            .sign_with_keys(&keys).unwrap();
+        let order_event = build_order_event(&announcement, "liquid-testnet")
+            .unwrap()
+            .sign_with_keys(&keys)
+            .unwrap();
         let wrong_network_event = EventBuilder::new(APP_EVENT_KIND, &order_event.content)
             .tags(vec![
                 Tag::identifier(order_addressable_id(
@@ -821,29 +831,34 @@ mod tests {
         let author_keys = Keys::generate();
         let other_keys = Keys::generate();
         let announcement = test_announcement();
-        let order_event = build_order_event(&announcement, "liquid-testnet").unwrap()
-            .sign_with_keys(&author_keys).unwrap();
+        let order_event = build_order_event(&announcement, "liquid-testnet")
+            .unwrap()
+            .sign_with_keys(&author_keys)
+            .unwrap();
         let foreign_delete = build_order_deletion_request_event(
             &order_event.id.to_hex(),
             &announcement.market_id,
             "liquid-testnet",
         )
         .unwrap()
-        .sign_with_keys(&other_keys).unwrap();
+        .sign_with_keys(&other_keys)
+        .unwrap();
         let author_delete = build_order_deletion_request_event(
             &order_event.id.to_hex(),
             &announcement.market_id,
             "liquid-testnet",
         )
         .unwrap()
-        .sign_with_keys(&author_keys).unwrap();
+        .sign_with_keys(&author_keys)
+        .unwrap();
         let wrong_network_delete = build_order_deletion_request_event(
             &order_event.id.to_hex(),
             &announcement.market_id,
             "liquid-regtest",
         )
         .unwrap()
-        .sign_with_keys(&author_keys).unwrap();
+        .sign_with_keys(&author_keys)
+        .unwrap();
         let missing_network_delete =
             EventBuilder::new(Kind::Custom(5), "delete limit order announcement")
                 .tags(vec![
@@ -895,15 +910,18 @@ mod tests {
     fn deletion_request_event_carries_order_market_and_network_tags() {
         let keys = Keys::generate();
         let announcement = test_announcement();
-        let order_event = build_order_event(&announcement, "liquid-testnet").unwrap()
-            .sign_with_keys(&keys).unwrap();
+        let order_event = build_order_event(&announcement, "liquid-testnet")
+            .unwrap()
+            .sign_with_keys(&keys)
+            .unwrap();
         let delete_event = build_order_deletion_request_event(
             &order_event.id.to_hex(),
             &announcement.market_id,
             "liquid-testnet",
         )
         .unwrap()
-        .sign_with_keys(&keys).unwrap();
+        .sign_with_keys(&keys)
+        .unwrap();
 
         let hashtags = event_hashtags(&delete_event);
         assert!(hashtags.iter().any(|tag| tag == ORDER_DELETE_TAG));

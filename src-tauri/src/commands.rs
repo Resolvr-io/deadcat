@@ -182,22 +182,18 @@ async fn get_signer_and_client(
 /// nsec export, oracle attestation). Returns an error if the signer is not local.
 async fn get_keys_and_client(app: &tauri::AppHandle) -> Result<(Keys, nostr_sdk::Client), String> {
     let (signer, client) = get_signer_and_client(app).await?;
-    // Downcast: Keys implements NostrSigner with backend() == SignerBackend::Keys
-    match signer.backend() {
-        nostr_sdk::SignerBackend::Keys => {}
-        _ => {
-            return Err(
-                "This operation requires local keys (not available with remote signer)".to_string(),
-            )
-        }
+    // Verify the signer is local keys, not a remote signer
+    if !matches!(signer.backend(), nostr_sdk::prelude::SignerBackend::Keys) {
+        return Err(
+            "This operation requires local keys (not available with remote signer)".to_string(),
+        );
     }
     // Load keys from disk (the signer is an Arc<dyn NostrSigner>, not directly downcastable)
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to get app data dir: {e}"))?;
-    let keys = discovery::load_keys(&app_data_dir)?
-        .ok_or("No local keys found on disk")?;
+    let keys = discovery::load_keys(&app_data_dir)?.ok_or("No local keys found on disk")?;
     Ok((keys, client))
 }
 
@@ -428,8 +424,9 @@ pub async fn init_nostr_identity(
 
         // Use the cached user pubkey if available, otherwise query the signer
         let user_pubkey = match &conn.user_pubkey_hex {
-            Some(hex) => PublicKey::from_hex(hex)
-                .map_err(|e| format!("invalid cached user pubkey: {e}"))?,
+            Some(hex) => {
+                PublicKey::from_hex(hex).map_err(|e| format!("invalid cached user pubkey: {e}"))?
+            }
             None => arc_signer
                 .get_public_key()
                 .await
@@ -849,7 +846,10 @@ pub async fn check_nostr_backup(
     let node_state = app.state::<NodeState>();
     let guard = node_state.node.lock().await;
     let node = guard.as_ref().ok_or("Node not initialized")?;
-    let pubkey = node.public_key().await.map_err(|e| format!("signer error: {e}"))?;
+    let pubkey = node
+        .public_key()
+        .await
+        .map_err(|e| format!("signer error: {e}"))?;
     drop(guard);
 
     let relays = {
@@ -1422,7 +1422,10 @@ pub async fn create_contract_onchain(
         .ok_or("Node not initialized — call init_nostr_identity first")?;
 
     let oracle_pubkey_bytes: [u8; 32] = {
-        let pubkey = node.public_key().await.map_err(|e| format!("signer error: {e}"))?;
+        let pubkey = node
+            .public_key()
+            .await
+            .map_err(|e| format!("signer error: {e}"))?;
         let hex_str = pubkey.to_hex();
         let bytes = hex::decode(&hex_str).map_err(|e| format!("hex decode: {e}"))?;
         bytes
