@@ -86,9 +86,16 @@ export function ReceiveModal() {
   const createBitcoin = useCreateBitcoinReceive();
   const generateAddress = useGenerateLiquidAddress();
 
-  // Auto-generate liquid address when tab becomes liquid
+  // Auto-generate liquid address when tab becomes liquid, or restore the
+  // QR if the address already exists but the QR was cleared by another tab.
   useEffect(() => {
-    if (walletModalTab === "liquid" && !receiveLiquidAddress) {
+    if (walletModalTab !== "liquid") return;
+    if (receiveLiquidAddress) {
+      // Address exists but QR may have been overwritten — regenerate it
+      void generateQr(receiveLiquidAddress).then((qr) => {
+        useStore.setState({ modalQr: qr });
+      });
+    } else {
       useStore.setState({ receiveLiquidLoading: true });
       generateAddress.mutate(undefined, {
         onSuccess: async (address) => {
