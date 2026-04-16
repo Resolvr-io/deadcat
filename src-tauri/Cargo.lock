@@ -1500,6 +1500,7 @@ dependencies = [
  "lwk_common",
  "lwk_signer",
  "lwk_wollet",
+ "nostr-connect",
  "nostr-relay-builder",
  "nostr-sdk",
  "once_cell",
@@ -3999,6 +4000,7 @@ version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af7c1eebe17dd785e52e1f81149c1b50fa6ec92e4ac239840934d1ffbd4f631c"
 dependencies = [
+ "aes",
  "async-trait",
  "base64 0.22.1",
  "bech32 0.11.1",
@@ -4017,6 +4019,21 @@ dependencies = [
  "serde_json",
  "unicode-normalization",
  "url",
+]
+
+[[package]]
+name = "nostr-connect"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e20ef25608a8bbecd342df678c3c93c9480f3e3e3be97cd3f140d2c52d8ab6f"
+dependencies = [
+ "async-trait",
+ "async-utility",
+ "nostr",
+ "nostr-relay-pool",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

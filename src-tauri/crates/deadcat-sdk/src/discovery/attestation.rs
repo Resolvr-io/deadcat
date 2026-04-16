@@ -28,14 +28,13 @@ pub struct AttestationResult {
 
 /// Build a Nostr event for an oracle attestation.
 pub fn build_attestation_event(
-    keys: &Keys,
     market_id_hex: &str,
     announcement_event_id: &str,
     outcome_yes: bool,
     signature_hex: &str,
     message_hex: &str,
     network_tag: &str,
-) -> Result<Event, String> {
+) -> Result<EventBuilder, String> {
     network_tag
         .parse::<Network>()
         .map_err(|e| format!("unsupported network tag '{network_tag}': {e}"))?;
@@ -62,12 +61,7 @@ pub fn build_attestation_event(
         Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
     ];
 
-    let event = EventBuilder::new(APP_EVENT_KIND, &content)
-        .tags(tags)
-        .sign_with_keys(keys)
-        .map_err(|e| format!("failed to build attestation event: {e}"))?;
-
-    Ok(event)
+    Ok(EventBuilder::new(APP_EVENT_KIND, &content).tags(tags))
 }
 
 /// Build a Nostr filter for fetching attestations for a specific market.
@@ -179,8 +173,7 @@ mod tests {
     #[test]
     fn parse_attestation_event_rejects_network_mismatch() {
         let keys = Keys::generate();
-        let event = build_attestation_event(
-            &keys,
+        let builder = build_attestation_event(
             "abcd1234",
             &EventId::all_zeros().to_hex(),
             true,
@@ -189,6 +182,7 @@ mod tests {
             "liquid-testnet",
         )
         .unwrap();
+        let event = builder.sign_with_keys(&keys).unwrap();
 
         let err = parse_attestation_event(&event, "liquid-regtest").unwrap_err();
         assert!(
