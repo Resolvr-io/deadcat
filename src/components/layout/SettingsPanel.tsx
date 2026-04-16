@@ -89,6 +89,20 @@ function Toggle({
 function NostrSection() {
   const nostrNpub = useStore((s) => s.nostrNpub);
   const nostrNsecRevealed = useStore((s) => s.nostrNsecRevealed);
+  const walletStatus = useStore((s) => s.walletStatus);
+  const [nsecPasswordInput, setNsecPasswordInput] = useState("");
+  const [nsecPasswordPrompt, setNsecPasswordPrompt] = useState(false);
+  const [nsecPasswordError, setNsecPasswordError] = useState("");
+
+  // Auto-hide nsec when wallet locks
+  useEffect(() => {
+    if (walletStatus !== "unlocked") {
+      useStore.setState({ nostrNsecRevealed: null });
+      setNsecPasswordPrompt(false);
+      setNsecPasswordInput("");
+      setNsecPasswordError("");
+    }
+  }, [walletStatus]);
 
   const copyNpub = useCallback(async () => {
     const npub = useStore.getState().nostrNpub;
@@ -103,18 +117,49 @@ function NostrSection() {
     if (nsec) {
       await navigator.clipboard.writeText(nsec);
       useStore.setState({ nostrNsecRevealed: null });
+      setNsecPasswordPrompt(false);
+      setNsecPasswordInput("");
       showToast("Copied nsec to clipboard");
     }
   }, []);
 
-  const revealNsec = useCallback(async () => {
+  const handleRevealClick = useCallback(() => {
+    // If wallet is unlocked with a session password, use it directly
+    const sessionPw = useStore.getState().walletSessionPassword;
+    if (walletStatus === "unlocked" && sessionPw) {
+      void (async () => {
+        try {
+          // Verify the session password is valid
+          await invoke<string>("get_wallet_mnemonic", {
+            password: sessionPw,
+          });
+          const nsec = await invoke<string>("export_nostr_nsec");
+          useStore.setState({ nostrNsecRevealed: nsec });
+        } catch {
+          // Session password invalid or wallet issue — fall back to prompt
+          setNsecPasswordPrompt(true);
+          setNsecPasswordError("");
+        }
+      })();
+    } else {
+      setNsecPasswordPrompt(true);
+      setNsecPasswordError("");
+    }
+  }, [walletStatus]);
+
+  const handlePasswordSubmit = useCallback(async () => {
+    if (!nsecPasswordInput) return;
     try {
+      await invoke<string>("get_wallet_mnemonic", {
+        password: nsecPasswordInput,
+      });
       const nsec = await invoke<string>("export_nostr_nsec");
       useStore.setState({ nostrNsecRevealed: nsec });
+      setNsecPasswordError("");
     } catch {
-      /* ignore */
+      setNsecPasswordError("Incorrect password");
     }
-  }, []);
+  }, [nsecPasswordInput]);
 
   return (
     <div className="space-y-4">
@@ -183,6 +228,42 @@ function NostrSection() {
                   </svg>
                 </button>
               </>
+            ) : nsecPasswordPrompt ? (
+              <div className="flex flex-col gap-1.5 w-full">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="password"
+                    value={nsecPasswordInput}
+                    onChange={(e) => setNsecPasswordInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void handlePasswordSubmit();
+                    }}
+                    placeholder="Account password"
+                    className="h-7 flex-1 min-w-0 rounded border border-slate-700 bg-slate-900 px-2 text-xs outline-none ring-emerald-400 transition focus:ring-1"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handlePasswordSubmit()}
+                    className="shrink-0 rounded border border-amber-700/40 px-2.5 py-1 text-xs text-amber-300 hover:bg-amber-900/20 transition"
+                  >
+                    Reveal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNsecPasswordPrompt(false);
+                      setNsecPasswordInput("");
+                      setNsecPasswordError("");
+                    }}
+                    className="shrink-0 text-xs text-slate-500 hover:text-slate-300 transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {nsecPasswordError && (
+                  <p className="text-xs text-rose-300">{nsecPasswordError}</p>
+                )}
+              </div>
             ) : (
               <>
                 <p className="text-xs text-slate-600 italic">
@@ -190,7 +271,7 @@ function NostrSection() {
                 </p>
                 <button
                   type="button"
-                  onClick={revealNsec}
+                  onClick={handleRevealClick}
                   className="shrink-0 text-xs text-amber-300 hover:text-amber-200 transition"
                 >
                   Reveal
