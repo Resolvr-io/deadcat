@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { useCallback, useEffect, useState } from "react";
+import { useLockScroll } from "../../hooks/useLockScroll";
 import { useStore } from "../../store";
 import { generateAvatarDataUri } from "../../utils-react/avatar";
 import { CloseButton } from "../shared/CloseButton";
@@ -95,24 +96,17 @@ export default function ProfilePage() {
     }
   }, [nostrProfile]);
 
+  useLockScroll();
+
   useEffect(() => {
     if (profileOpen) {
-      document.body.style.overflow = "hidden";
-      document.documentElement.style.overflow = "hidden";
       // Fetch latest profile from relays
       invoke<import("../../types").NostrProfile | null>("fetch_nostr_profile")
         .then((profile) => {
           if (profile) useStore.setState({ nostrProfile: profile });
         })
         .catch(() => {});
-    } else {
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
     }
-    return () => {
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-    };
   }, [profileOpen]);
 
   const close = useCallback(() => {

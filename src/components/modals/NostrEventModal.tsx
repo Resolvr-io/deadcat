@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { useLockScroll } from "../../hooks/useLockScroll";
 import { useStore } from "../../store";
 import { hexToNpub } from "../../utils/crypto";
 import { CloseButton } from "../shared/CloseButton";
@@ -54,6 +55,7 @@ function CopyableField({
 }
 
 export function NostrEventModal() {
+  useLockScroll();
   const nostrEventModal = useStore((s) => s.nostrEventModal);
   const nostrEventJson = useStore((s) => s.nostrEventJson);
   const nostrEventNevent = useStore((s) => s.nostrEventNevent);

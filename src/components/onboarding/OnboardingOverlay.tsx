@@ -1,4 +1,5 @@
-import { useCallback, useEffect } from "react";
+import { useCallback } from "react";
+import { useLockScroll } from "../../hooks/useLockScroll";
 import { useStore } from "../../store";
 import { CloseButton } from "../shared/CloseButton";
 import NostrSetupStep from "./NostrSetupStep";
@@ -10,20 +11,7 @@ export default function OnboardingOverlay() {
   const onboardingNostrDone = useStore((s) => s.onboardingNostrDone);
   const onboardingWalletOnly = useStore((s) => s.onboardingWalletOnly);
   const backupFileContent = useStore((s) => s.onboardingBackupFileContent);
-  // Lock background scroll when modal is open
-  useEffect(() => {
-    if (setupModalOpen) {
-      document.body.style.overflow = "hidden";
-      document.documentElement.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-    }
-    return () => {
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-    };
-  }, [setupModalOpen]);
+  useLockScroll();
 
   const handleClose = useCallback(() => {
     useStore.setState({
