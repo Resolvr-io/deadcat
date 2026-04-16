@@ -1732,6 +1732,15 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
     }
 
     /// Send L-BTC to an address.
+    pub async fn prepare_drain_lbtc(
+        &self,
+        address: String,
+        tx_options: TxOptions,
+    ) -> Result<PreparedSendLbtc, NodeError> {
+        self.with_sdk(move |sdk| sdk.prepare_drain_lbtc(&address, tx_options))
+            .await
+    }
+
     pub async fn prepare_send_lbtc(
         &self,
         address: String,
