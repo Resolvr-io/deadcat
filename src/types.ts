@@ -243,6 +243,14 @@ export type PreviewIdentityResponse = {
   nsec: string;
 };
 
+export type Nip46Status = {
+  connected: boolean;
+  remotSignerPubkey: string;
+  userPubkey: string | null;
+  relayUrls: string[];
+  bunkerUri: string;
+};
+
 export type RelayEntry = { url: string; has_backup: boolean };
 export type RelayBackupResult = { url: string; has_backup: boolean };
 export type WalletEntry = { name: string; d_tag: string };

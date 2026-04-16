@@ -2,6 +2,7 @@ mod chain_adapter;
 pub mod commands;
 pub mod discovery;
 pub mod identity_file;
+pub mod nip46;
 mod payments;
 pub mod state;
 pub mod wallet;
@@ -1678,6 +1679,10 @@ pub fn run() {
             commands::export_nostr_nsec,
             commands::delete_nostr_identity,
             commands::import_nostr_nsec,
+            // NIP-46 remote signing
+            commands::connect_nip46_bunker,
+            commands::disconnect_nip46,
+            commands::get_nip46_status,
             commands::discover_contracts,
             commands::publish_contract,
             commands::oracle_attest,
