@@ -8,7 +8,7 @@ import { TopShell } from "./components/layout/TopShell";
 import { NostrEventModal } from "./components/modals/NostrEventModal";
 import OnboardingOverlay from "./components/onboarding/OnboardingOverlay";
 import ProfilePage from "./components/profile/ProfilePage";
-import { OverlayLoader } from "./components/shared/OverlayLoader";
+
 import { ToastContainer } from "./components/shared/Toast";
 import { WalletPage } from "./components/wallet/WalletPage";
 import { useActivityTracking } from "./hooks/useActivityTracking";
@@ -78,7 +78,6 @@ export default function App() {
   const walletOpen = useStore((s) => s.walletOpen);
   const setupModalOpen = useStore((s) => s.setupModalOpen);
   const nostrEventModal = useStore((s) => s.nostrEventModal);
-  const marketsLoading = useStore((s) => s.marketsLoading);
 
   return (
     <>
@@ -96,7 +95,6 @@ export default function App() {
       {walletOpen && <WalletPage />}
       {setupModalOpen && <OnboardingOverlay />}
       {nostrEventModal && <NostrEventModal />}
-      {marketsLoading && <OverlayLoader message="Loading markets..." />}
       <CloseConfirmDialog />
       <ToastContainer />
     </>

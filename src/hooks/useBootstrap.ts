@@ -160,12 +160,10 @@ export function useBootstrap(): void {
         // localStorage unavailable
       }
 
-      // 5. Dismiss splash
+      // 5. Dismiss splash — skeletons handle the loading state from here.
+      // marketsLoading is only cleared when useMarkets query returns data.
       await splashReady;
       dismissSplash();
-
-      // Mark loading done
-      useStore.setState({ marketsLoading: false });
     }
 
     void boot();
