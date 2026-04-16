@@ -2260,7 +2260,8 @@ mod trade_command_tests {
         let (app, store) = mock_scan_app();
         let keys = Keys::generate();
         let (node, _rx) = deadcat_sdk::DeadcatNode::with_store(
-            keys.clone(),
+            std::sync::Arc::new(keys.clone())
+                as std::sync::Arc<dyn nostr_sdk::prelude::NostrSigner>,
             deadcat_sdk::Network::LiquidTestnet,
             store.clone(),
             deadcat_sdk::DiscoveryConfig {
@@ -2280,10 +2281,11 @@ mod trade_command_tests {
             0x51,
         );
         let event = deadcat_sdk::build_pool_event(
-            &keys,
             &announcement,
             deadcat_sdk::Network::LiquidTestnet.discovery_tag(),
         )
+        .unwrap()
+        .sign_with_keys(&keys)
         .unwrap();
         let mut ingest = deadcat_sdk::testing::test_lmsr_pool_ingest_input(
             deadcat_sdk::Network::LiquidTestnet,
@@ -2439,7 +2441,7 @@ mod limit_order_command_tests {
             ..Default::default()
         };
         let (node, _rx) = deadcat_sdk::DeadcatNode::with_store(
-            keys,
+            std::sync::Arc::new(keys) as std::sync::Arc<dyn nostr_sdk::prelude::NostrSigner>,
             deadcat_sdk::Network::LiquidTestnet,
             store.clone(),
             config,
