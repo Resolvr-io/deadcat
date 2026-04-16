@@ -18,6 +18,12 @@ use crate::{NodeState, NostrAppState};
 
 const ORDER_INDEX_AUTO_RESOLVE_SENTINEL: u32 = u32::MAX;
 
+/// Cache of markets fetched from relays but not yet promoted in the store.
+/// Persists across `discover_contracts` calls so markets don't flash and disappear.
+static RELAY_MARKET_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<Vec<DiscoveredMarket>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
 fn validate_request(request: &CreateContractRequest) -> Result<(), String> {
     if request.question.trim().is_empty() || request.question.len() > 140 {
         return Err("question must be 1-140 characters".to_string());
@@ -984,25 +990,50 @@ pub fn open_downloads_folder() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, String> {
-    // Return cached store data immediately so the UI is responsive.
-    let result = list_contracts(app.clone());
+    // Start with store data.
+    let mut result = list_contracts(app.clone()).unwrap_or_default();
+    let store_ids: std::collections::HashSet<String> =
+        result.iter().map(|m| m.market_id.clone()).collect();
 
-    // Fetch fresh data from Nostr relays in the background.
-    // New markets will appear on next render/sync cycle.
+    // Merge any cached relay markets not yet in the store.
+    if let Ok(cache) = RELAY_MARKET_CACHE.lock() {
+        for m in cache.iter() {
+            if !store_ids.contains(&m.market_id) {
+                result.push(m.clone());
+            }
+        }
+    }
+
+    // Fetch from Nostr relays in the background and update the cache.
     let node = {
         let node_state = app.state::<NodeState>();
         let guard = node_state.node.lock().await;
         guard.as_ref().cloned()
     };
     if let Some(node) = node {
+        let app_handle = app.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = node.fetch_markets().await {
-                log::warn!("Background Nostr fetch failed: {e}");
+            if let Ok(markets) = node.fetch_markets().await {
+                if let Ok(mut cache) = RELAY_MARKET_CACHE.lock() {
+                    let cached_ids: std::collections::HashSet<String> =
+                        cache.iter().map(|m| m.market_id.clone()).collect();
+                    let mut new_count = 0;
+                    for m in markets {
+                        if !cached_ids.contains(&m.market_id) {
+                            cache.push(m);
+                            new_count += 1;
+                        }
+                    }
+                    if new_count > 0 {
+                        // Signal one refresh — won't loop because cache now contains these markets
+                        let _ = app_handle.emit("discovery:market-refresh", ());
+                    }
+                }
             }
         });
     }
 
-    result
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2309,6 +2340,12 @@ pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, St
     let infos = store
         .list_markets(&MarketFilter::default())
         .map_err(|e| format!("list markets: {e}"))?;
+
+    eprintln!("[debug] list_contracts: store has {} markets, source_pubkey_hex={:?}", infos.len(), source_pubkey_hex.as_deref().map(|s| &s[..16]));
+    for info in &infos {
+        let cpk = info.creator_pubkey.as_ref().map(|pk| hex::encode(pk));
+        eprintln!("[debug]   market creator_pubkey={:?}", cpk.as_deref().map(|s| &s[..16]));
+    }
 
     // Filter by source author if configured
     let infos: Vec<_> = if let Some(ref author_hex) = source_pubkey_hex {
