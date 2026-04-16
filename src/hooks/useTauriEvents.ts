@@ -96,7 +96,7 @@ export function useTauriEvents(): void {
     );
 
     // ── discovery events ─────────────────────────────────────────
-    for (const eventName of ["discovery:market", "discovery:attestation"]) {
+    for (const eventName of ["discovery:market", "discovery:market-refresh", "discovery:attestation"]) {
       register(
         listen(eventName, () => {
           if (disposed) return;
