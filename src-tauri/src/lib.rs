@@ -1680,6 +1680,7 @@ pub fn run() {
             commands::delete_nostr_identity,
             commands::import_nostr_nsec,
             // NIP-46 remote signing
+            commands::generate_nostrconnect_uri,
             commands::connect_nip46_bunker,
             commands::disconnect_nip46,
             commands::get_nip46_status,
