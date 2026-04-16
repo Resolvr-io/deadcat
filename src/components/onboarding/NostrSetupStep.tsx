@@ -1836,7 +1836,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         </h2>
         <p className="mt-3 text-sm text-slate-400 leading-relaxed">
           Paste a <span className="text-slate-200">bunker://</span> URI from
-          your NIP-46 signer (e.g. nsec.app, Amber, or any Nostr Connect
+          your NIP-46 signer (e.g. Amber, Primal, or any Nostr Connect
           compatible app). Your keys stay on the external signer.
         </p>
         {errorHtml && <div className="mt-5">{errorHtml}</div>}
