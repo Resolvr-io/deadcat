@@ -2479,6 +2479,7 @@ mod tests {
             pool_id: announcement.lmsr_pool_id.clone(),
             market_id: announcement.market_id.clone(),
             creation_txid: announcement.creation_txid.clone(),
+            reserve_yes_outpoint: announcement.initial_reserve_outpoints[0].clone(),
             stored_initial_reserve_outpoints: Some(
                 announcement
                     .initial_reserve_outpoints
@@ -2516,6 +2517,7 @@ mod tests {
             pool_id: announcement.lmsr_pool_id.clone(),
             market_id: announcement.market_id.clone(),
             creation_txid: announcement.creation_txid.clone(),
+            reserve_yes_outpoint: announcement.initial_reserve_outpoints[0].clone(),
             stored_initial_reserve_outpoints: Some([
                 format!("{}:7", announcement.creation_txid),
                 format!("{}:8", announcement.creation_txid),
@@ -2548,6 +2550,7 @@ mod tests {
             pool_id: announcement.lmsr_pool_id,
             market_id: announcement.market_id,
             creation_txid: announcement.creation_txid,
+            reserve_yes_outpoint: announcement.initial_reserve_outpoints[0].clone(),
             stored_initial_reserve_outpoints: None,
             witness_schema_version: announcement.witness_schema_version,
             current_s_index: announcement.current_s_index,
