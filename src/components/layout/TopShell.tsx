@@ -118,44 +118,6 @@ export function categoryIcon(
   }
 }
 
-/* ── Help modal ────────────────────────────────────────────────────── */
-
-function HelpModal() {
-  const helpOpen = useStore((s) => s.helpOpen);
-  if (!helpOpen) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-8">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-medium text-slate-100">Help</h2>
-          <button
-            type="button"
-            onClick={() => useStore.setState({ helpOpen: false })}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
-          >
-            <svg
-              aria-hidden="true"
-              className="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
-          </button>
-        </div>
-        <p className="mt-4 text-sm text-slate-400">Help content coming soon.</p>
-      </div>
-    </div>
-  );
-}
-
 /* ── Logout modal ──────────────────────────────────────────────────── */
 
 function LogoutModal() {
@@ -489,26 +451,7 @@ function CategoryBar() {
               </button>
             );
           })}
-          <button
-            type="button"
-            onClick={() => useStore.setState({ helpOpen: true })}
-            className="ml-auto flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-normal text-slate-500 transition hover:text-slate-300"
-          >
-            <svg
-              aria-hidden="true"
-              className="h-4 w-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M3 11h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5Zm0 0a9 9 0 1 1 18 0m0 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z" />
-              <path d="M21 16v2a4 4 0 0 1-4 4h-5" />
-            </svg>
-            Help
-          </button>
+          {/* Help button — hidden until content is ready */}
         </div>
       </div>
     </div>
@@ -670,7 +613,6 @@ function Logo() {
 /* ── Main TopShell component ───────────────────────────────────────── */
 
 export function TopShell() {
-  const view = useStore((s) => s.view);
   const nostrPubkey = useStore((s) => s.nostrPubkey);
   const activeCategory = useStore((s) => s.activeCategory);
 
@@ -692,30 +634,13 @@ export function TopShell() {
               <Logo />
             </button>
 
-            {/* Nav links */}
-            <nav className="flex shrink-0 items-baseline gap-5 whitespace-nowrap pb-[9px] text-base text-slate-400">
-              <button
-                type="button"
-                onClick={goHome}
-                className={
-                  view === "home" || view === "detail"
-                    ? "font-medium text-slate-100"
-                    : "hover:text-slate-200"
-                }
-              >
-                Markets
-              </button>
-              <button type="button" className="hover:text-slate-200">
-                Live
-              </button>
-              <button type="button" className="hover:text-slate-200">
-                Social
-              </button>
-            </nav>
-
-            {/* Right side: search + wallet + user menu */}
-            <div className="ml-auto flex shrink-0 items-center gap-2 pb-[5px]">
+            {/* Center: search bar */}
+            <div className="flex flex-1 justify-center pb-[5px]">
               <SearchBar />
+            </div>
+
+            {/* Right side: wallet + user menu */}
+            <div className="flex shrink-0 items-center gap-2 pb-[5px]">
               {nostrPubkey && (
                 <button
                   type="button"
@@ -755,7 +680,6 @@ export function TopShell() {
       </header>
 
       {/* Modals */}
-      <HelpModal />
       <SettingsPanel />
       <LogoutModal />
     </>
