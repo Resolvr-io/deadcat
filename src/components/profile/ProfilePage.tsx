@@ -298,13 +298,13 @@ function ProfilePageContent() {
                       void navigator.clipboard.writeText(nostrNpub);
                       showToast("Copied npub to clipboard");
                     }}
-                    className="mt-0.5 flex items-center gap-1.5 mono text-xs text-slate-500 hover:text-slate-300 transition"
+                    className="group mt-0.5 flex items-center gap-1.5 mono text-xs text-slate-400 hover:text-white transition"
                     title="Click to copy"
                   >
                     {nostrNpub.slice(0, 16)}...{nostrNpub.slice(-6)}
                     <svg
                       aria-hidden="true"
-                      className="h-3 w-3 shrink-0 text-slate-500"
+                      className="h-3 w-3 shrink-0 text-slate-500 group-hover:text-slate-400"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
