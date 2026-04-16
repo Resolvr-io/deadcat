@@ -84,7 +84,11 @@ export function useTauriEvents(): void {
             for (const tx of payload.transactions) {
               if (!walletSeenTxids.has(tx.txid)) {
                 toastForNewTx(tx);
-                freshNew.add(tx.txid);
+                // Only badge for incoming funds — outgoing txs (sends,
+                // market creation, etc.) don't need a persistent badge.
+                if (tx.balanceChange > 0) {
+                  freshNew.add(tx.txid);
+                }
               }
             }
             if (freshNew.size !== walletNewTxids.size) {
