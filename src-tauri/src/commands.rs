@@ -203,16 +203,18 @@ async fn construct_and_store_node(
         _t0.elapsed()
     );
 
-    // Start the background Nostr subscription loop (guard is released)
-    if let Some(node) = node_arc.as_ref() {
-        if let Err(e) = node.start_subscription().await {
-            log::warn!("failed to start discovery subscription: {e}");
-        }
+    // Start the Nostr subscription in the background — do NOT await.
+    // This connects to relays and starts the event loop. The node is
+    // already stored in NodeState so commands like discover_contracts
+    // can use it immediately (they handle missing relay data gracefully).
+    if let Some(node) = node_arc.clone() {
+        tokio::spawn(async move {
+            if let Err(e) = node.start_subscription().await {
+                log::warn!("failed to start discovery subscription: {e}");
+            }
+            log::info!("discovery subscription started");
+        });
     }
-    log::info!(
-        "[restore-trace] construct_and_store_node: subscription started at {:?}",
-        _t0.elapsed()
-    );
 
     // Forward discovery events to the frontend
     let app_handle = app.clone();

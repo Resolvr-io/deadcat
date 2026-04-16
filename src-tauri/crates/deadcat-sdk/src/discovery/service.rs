@@ -137,7 +137,9 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
                 .await
                 .map_err(|e| format!("failed to add relay {url}: {e}"))?;
         }
-        self.client.connect().await;
+        self.client
+            .connect_with_timeout(self.config.connect_timeout)
+            .await;
 
         let client = self.client.clone();
         let store = self.store.clone();
@@ -440,7 +442,9 @@ impl<S: DiscoveryStore> DiscoveryService<S> {
                     .await
                     .map_err(|e| format!("failed to add relay {url}: {e}"))?;
             }
-            self.client.connect().await;
+            self.client
+                .connect_with_timeout(self.config.connect_timeout)
+                .await;
         }
         Ok(())
     }
