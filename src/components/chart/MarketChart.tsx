@@ -739,11 +739,8 @@ export default function MarketChart({
           style={{ textShadow: "0 1px 1px rgba(2, 6, 23, 0.35)" }}
         >
           {xLabels.map((label) => (
-            <span key={label}>#{label.toLocaleString()}</span>
+            <span key={label}>{label}</span>
           ))}
-          <span className="ml-2 text-xs uppercase tracking-wide text-slate-600">
-            BLOCK
-          </span>
         </div>
       </div>
 
@@ -753,20 +750,29 @@ export default function MarketChart({
           {volumeLabel}
         </span>
         <div className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/65 p-1 text-[12px]">
-          {(["10B", "25B", "50B", "100B"] as const).map((option) => (
+          {(
+            [
+              ["10B", "10m"],
+              ["25B", "25m"],
+              ["50B", "50m"],
+              ["100B", "100m"],
+            ] as const
+          ).map(([key, label]) => (
             <button
               type="button"
-              key={option}
+              key={key}
               onClick={() =>
-                useStore.setState({ chartTimescale: option as ChartTimescale })
+                useStore.setState({
+                  chartTimescale: key as ChartTimescale,
+                })
               }
               className={`rounded px-2 py-0.5 transition ${
-                chartTimescale === option
+                chartTimescale === key
                   ? "bg-slate-700 text-slate-100"
                   : "text-slate-500 hover:bg-slate-800/70 hover:text-slate-300"
               }`}
             >
-              {option}
+              {label}
             </button>
           ))}
         </div>
