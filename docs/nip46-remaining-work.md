@@ -7,7 +7,7 @@ The items below are polish/hardening tasks to address after manual testing.
 
 ## 1. auth_url Handler for Browser-Based Approval
 
-**Problem:** Some NIP-46 signers (nsec.app, etc.) respond to the `connect`
+**Problem:** Some NIP-46 signers respond to the `connect`
 request with an `auth_url` challenge — the user must approve the connection
 in a browser before the signer responds with `ack`. Without handling this,
 `connect_nip46_bunker` will timeout after 60 seconds.
