@@ -272,14 +272,28 @@ function ProfilePageContent() {
                   {displayName || name || "Unnamed"}
                 </p>
                 {nip05 && (
-                  <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-400">
+                  <p className="mt-1.5 flex items-center gap-1.5 text-sm text-slate-300">
                     <svg
                       aria-hidden="true"
-                      className="h-3.5 w-3.5 shrink-0 text-blue-400"
+                      className="h-4 w-4 shrink-0"
                       viewBox="0 0 24 24"
-                      fill="currentColor"
+                      fill="none"
                     >
-                      <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z" />
+                      <path
+                        d="M12 1.5l2.61 3.1 3.98.58-1.63 3.7.82 3.93L14 11.3 12 14l-2-2.7-3.78 1.51.82-3.93-1.63-3.7 3.98-.58L12 1.5z"
+                        fill="#a855f7"
+                        stroke="#a855f7"
+                        strokeWidth="0.5"
+                        transform="translate(0 3) scale(1.15)"
+                      />
+                      <path
+                        d="M9 12.5l2 2 4-4"
+                        stroke="white"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        fill="none"
+                      />
                     </svg>
                     {nip05}
                   </p>
