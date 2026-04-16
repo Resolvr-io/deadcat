@@ -93,6 +93,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const restorePassword = useStore((s) => s.onboardingRestorePassword);
   const restoreMnemonic = useStore((s) => s.onboardingRestoreMnemonic);
   const restoreNsec = useStore((s) => s.onboardingRestoreNsec);
+  const bunkerUri = useStore((s) => s.onboardingBunkerUri);
 
   // Preview profile when a valid nsec is entered (import or manual-restore)
   const [importPreview, setImportPreview] = useState<NostrProfile | null>(null);
@@ -188,9 +189,14 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         onboardingNsecAcknowledged: false,
         onboardingPendingPubkey: "",
         onboardingPendingNpub: "",
+        onboardingBunkerUri: "",
         onboardingError: "",
       });
-      void invoke("delete_nostr_identity").catch(() => {});
+      if (nostrMode === "bunker") {
+        void invoke("disconnect_nip46").catch(() => {});
+      } else {
+        void invoke("delete_nostr_identity").catch(() => {});
+      }
     } else if (nostrMode === "import") {
       // Back from import → main nostr page
       useStore.setState({
@@ -955,14 +961,23 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
 
   // ── Nostr backup / confirmation screen ──────────────────────────────
   if (nostrDone) {
-    const isImport = nostrMode === "import";
-    const eyebrow = isImport ? "Identity imported" : "Identity created";
-    const title = isImport
+    const isImport = nostrMode === "import" || nostrMode === "bunker";
+    const isBunker = nostrMode === "bunker";
+    const eyebrow = isBunker
+      ? "Remote signer connected"
+      : isImport
+        ? "Identity imported"
+        : "Identity created";
+    const title = isBunker
       ? "Confirm your identity"
-      : "Back up your secret key";
-    const description = isImport
-      ? "Your Nostr identity has been imported. Confirm your details below before continuing."
-      : "Your nsec is the only way to prove ownership of markets you create. Store it somewhere safe \u2014 it cannot be recovered if lost.";
+      : isImport
+        ? "Confirm your identity"
+        : "Back up your secret key";
+    const description = isBunker
+      ? "Connected to your remote signer via NIP-46. Your keys remain on the external device."
+      : isImport
+        ? "Your Nostr identity has been imported. Confirm your details below before continuing."
+        : "Your nsec is the only way to prove ownership of markets you create. Store it somewhere safe \u2014 it cannot be recovered if lost.";
 
     const truncatedNpub =
       npubDisplay.length > 20
@@ -1734,6 +1749,120 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     );
   }
 
+  // ── Bunker (NIP-46) sub-page ─────────────────────────────────────────
+  if (nostrMode === "bunker") {
+    const handleConnectBunker = async () => {
+      const uri = bunkerUri.trim();
+      if (!uri) {
+        useStore.setState({ onboardingError: "Paste a bunker:// URI." });
+        return;
+      }
+      if (!uri.startsWith("bunker://")) {
+        useStore.setState({
+          onboardingError: "Invalid URI. It should start with bunker://",
+        });
+        return;
+      }
+      useStore.setState({ onboardingLoading: true, onboardingError: "" });
+      try {
+        const identity = await invoke<IdentityResponse>(
+          "connect_nip46_bunker",
+          { bunkerUri: uri },
+        );
+        useStore.setState({
+          nostrPubkey: identity.pubkey_hex,
+          nostrNpub: identity.npub,
+          onboardingPendingPubkey: identity.pubkey_hex,
+          onboardingPendingNpub: identity.npub,
+          onboardingNostrDone: true,
+          onboardingLoading: false,
+        });
+        // Fetch profile from relays in background
+        invoke<NostrProfile | null>("fetch_nostr_profile")
+          .then((profile) => {
+            if (profile) useStore.setState({ nostrProfile: profile });
+          })
+          .catch(() => {});
+      } catch (e) {
+        useStore.setState({
+          onboardingError: String(e),
+          onboardingLoading: false,
+        });
+      }
+    };
+
+    return (
+      <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
+        {stepIndicator}
+        <BackButton
+          onClick={() =>
+            useStore.setState({
+              onboardingNostrMode: "generate",
+              onboardingError: "",
+              onboardingBunkerUri: "",
+            })
+          }
+        />
+        <h2 className="text-2xl font-semibold text-white">
+          Connect remote signer
+        </h2>
+        <p className="mt-3 text-sm text-slate-400 leading-relaxed">
+          Paste a <span className="text-slate-200">bunker://</span> URI from
+          your NIP-46 signer (e.g. nsec.app, Amber, or any Nostr Connect
+          compatible app). Your keys stay on the external signer.
+        </p>
+        {errorHtml && <div className="mt-5">{errorHtml}</div>}
+        <div className="mt-8 space-y-4">
+          <div className="space-y-1.5">
+            <label
+              htmlFor="bunker-uri"
+              className="text-xs font-medium text-slate-400 uppercase tracking-wide"
+            >
+              Bunker URI
+            </label>
+            <input
+              id="bunker-uri"
+              type="text"
+              placeholder="bunker://..."
+              autoComplete="off"
+              spellCheck={false}
+              value={bunkerUri}
+              onChange={(e) =>
+                useStore.setState({ onboardingBunkerUri: e.target.value })
+              }
+              className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 mono"
+            />
+          </div>
+          <div className="rounded-lg border border-blue-700/30 bg-blue-950/20 px-4 py-3">
+            <p className="text-xs text-blue-300/90 leading-relaxed">
+              Your private key never leaves the remote signer. Deadcat will
+              request signatures over Nostr relays using the NIP-46 protocol.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleConnectBunker}
+            disabled={loading}
+            className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed transition"
+          >
+            {loading ? (
+              <span className="inline-flex items-center">
+                Connecting
+                <span className="ml-0.5 inline-flex">
+                  <span className="loading-dot">.</span>
+                  <span className="loading-dot">.</span>
+                  <span className="loading-dot">.</span>
+                </span>
+              </span>
+            ) : (
+              "Connect"
+            )}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ── Main nostr step ─────────────────────────────────────────────────
   return (
     <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
@@ -1782,7 +1911,13 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         </button>
         <button
           type="button"
-          onClick={() => showToast("Remote signer support coming soon")}
+          onClick={() =>
+            useStore.setState({
+              onboardingNostrMode: "bunker",
+              onboardingError: "",
+              onboardingBunkerUri: "",
+            })
+          }
           className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-800 px-4 py-3.5 text-sm font-medium text-slate-500 hover:bg-slate-900 hover:text-slate-400 transition"
         >
           Connect remote signer

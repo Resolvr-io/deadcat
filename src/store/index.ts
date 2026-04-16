@@ -183,7 +183,13 @@ export interface OnboardingSlice {
   setupModalOpen: boolean;
   setupRequires: "wallet" | "identity+wallet" | null;
   onboardingStep: "nostr" | "wallet" | null;
-  onboardingNostrMode: "generate" | "import" | "restore" | "manual-restore";
+  onboardingNostrMode:
+    | "generate"
+    | "import"
+    | "restore"
+    | "manual-restore"
+    | "bunker";
+  onboardingBunkerUri: string;
   onboardingNostrNsec: string;
   onboardingNostrGeneratedNsec: string;
   onboardingNsecRevealed: boolean;
@@ -430,6 +436,7 @@ export const useStore = create<StoreState>()(() => ({
   setupRequires: null,
   onboardingStep: null,
   onboardingNostrMode: "generate",
+  onboardingBunkerUri: "",
   onboardingNostrNsec: "",
   onboardingNostrGeneratedNsec: "",
   onboardingNsecRevealed: false,
