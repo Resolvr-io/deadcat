@@ -20,8 +20,8 @@ const ORDER_INDEX_AUTO_RESOLVE_SENTINEL: u32 = u32::MAX;
 
 /// Cache of markets fetched from relays but not yet promoted in the store.
 /// Persists across `discover_contracts` calls so markets don't flash and disappear.
-static RELAY_MARKET_CACHE: std::sync::LazyLock<std::sync::Mutex<Vec<DiscoveredMarket>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+static RELAY_MARKET_CACHE: once_cell::sync::Lazy<std::sync::Mutex<Vec<DiscoveredMarket>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
 
 fn validate_request(request: &CreateContractRequest) -> Result<(), String> {
     if request.question.trim().is_empty() || request.question.len() > 140 {
@@ -2348,7 +2348,7 @@ pub fn list_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredMarket>, St
         source_pubkey_hex.as_deref().map(|s| &s[..16])
     );
     for info in &infos {
-        let cpk = info.creator_pubkey.as_ref().map(|pk| hex::encode(pk));
+        let cpk = info.creator_pubkey.as_ref().map(hex::encode);
         eprintln!(
             "[debug]   market creator_pubkey={:?}",
             cpk.as_deref().map(|s| &s[..16])
