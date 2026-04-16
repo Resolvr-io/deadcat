@@ -1,6 +1,6 @@
 # User Stories: Trader & Token Holder
 
-Personas covered: **Trader (Taker)** and **Token Holder (Recovery)**. See [ux-design.md](ux-design.md) for persona definitions.
+Personas covered: **Trader (Taker)** and **Token Holder (Recovery)**. See [ux-design.md](../design.md) for persona definitions.
 
 ---
 

@@ -1,8 +1,8 @@
 # User Stories: Onboarding, Wallet & Recovery
 
-Cross-cutting stories that apply to all personas. See [ux-design.md](ux-design.md) for persona definitions.
+Cross-cutting stories that apply to all personas. See [ux-design.md](../design.md) for persona definitions.
 
-**Important**: Identity and wallet setup are **not** forced on first launch. The app opens directly to the home view in guest mode. Setup is triggered when the user attempts an action that requires it. See [ux-first-use.md](ux-first-use.md) for the guest mode specification and deferred setup triggers.
+**Important**: Identity and wallet setup are **not** forced on first launch. The app opens directly to the home view in guest mode. Setup is triggered when the user attempts an action that requires it. See [ux-first-use.md](../first-use.md) for the guest mode specification and deferred setup triggers.
 
 ---
 

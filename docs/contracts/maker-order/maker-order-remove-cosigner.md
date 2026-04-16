@@ -88,7 +88,7 @@ Rename `COSIGNER_PUBKEY` to `ADMIN_PUBKEY` in `lmsr_pool.simf` and all related R
 
 This aligns with the existing "admin path" / "admin adjust" terminology used in the design doc.
 
-The pool's close path uses the same authorization model — see [lmsr-pool-close-path.md](lmsr-pool-close-path.md).
+The pool's close path uses the same authorization model — see [lmsr-pool-close-path.md](../lmsr-pool/lmsr-pool-close-path.md).
 
 ## Key Files
 

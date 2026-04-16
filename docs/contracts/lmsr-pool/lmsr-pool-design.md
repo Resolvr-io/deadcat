@@ -4,7 +4,7 @@
 
 LMSR (Logarithmic Market Scoring Rule) pools are automated market makers for binary prediction markets on Liquid/Elements. A pool holds YES tokens, NO tokens, and collateral (the market's collateral asset, e.g., L-BTC), and traders swap against it. The pool's pricing is governed by a mathematical cost function committed to at creation time via a Merkle root in the Simplicity covenant.
 
-This document specifies the pool's conceptual model, parameter design, on-chain mechanics, and wallet-layer API. It is a satellite document referenced by [deadcat-core-design.md](deadcat-core-design.md).
+This document specifies the pool's conceptual model, parameter design, on-chain mechanics, and wallet-layer API. It is a satellite document referenced by [deadcat-core-design.md](../../architecture/deadcat-core-design.md).
 
 ## How Binary LMSR Works
 
@@ -222,11 +222,11 @@ pub fn derive_pool_params(
 ) -> Result<(LmsrPoolParams, u16 /* masked_index */), ConventionError>;
 ```
 
-A standalone pure function that constructs the full `LmsrPoolParams` with all derived fields. Returns `ConventionError` if inputs violate OP_RETURN encoding conventions (`max_loss_sats` and `half_payout_sats` not in the 26-value mantissa set, `fee_bps > 4095`, `starting_price_bps` outside (0, 10000) exclusive). Called once when the user commits to creating a pool — heavier than `estimate_bootstrap` because it generates the full 65K-entry F-value table and computes the Merkle root (~80ms). The `starting_price_bps` parameter is needed to compute `initial_s_index` for the XOR mask context (see [chain-only-recovery.md](chain-only-recovery.md)). The resulting `LmsrPoolParams` is passed directly to `build_lmsr_bootstrap_pset`.
+A standalone pure function that constructs the full `LmsrPoolParams` with all derived fields. Returns `ConventionError` if inputs violate OP_RETURN encoding conventions (`max_loss_sats` and `half_payout_sats` not in the 26-value mantissa set, `fee_bps > 4095`, `starting_price_bps` outside (0, 10000) exclusive). Called once when the user commits to creating a pool — heavier than `estimate_bootstrap` because it generates the full 65K-entry F-value table and computes the Merkle root (~80ms). The `starting_price_bps` parameter is needed to compute `initial_s_index` for the XOR mask context (see [chain-only-recovery.md](../../protocol/chain-only-recovery.md)). The resulting `LmsrPoolParams` is passed directly to `build_lmsr_bootstrap_pset`.
 
 ### Trading (Swaps)
 
-Swaps are not built directly — they're part of trade transactions routed by the engine. See [trade-routing-algorithm.md](trade-routing-algorithm.md). The trade router evaluates pools alongside limit orders for best execution, factoring in both the pool's swap fee (`fee_bps`) and the transaction weight overhead.
+Swaps are not built directly — they're part of trade transactions routed by the engine. See [trade-routing-algorithm.md](../../architecture/trade-routing-algorithm.md). The trade router evaluates pools alongside limit orders for best execution, factoring in both the pool's swap fee (`fee_bps`) and the transaction weight overhead.
 
 The covenant's swap path enforces:
 - `old_s_index != new_s_index` (state must change)
@@ -324,12 +324,12 @@ The pool creation transaction includes a **41-byte** zero-value OP_RETURN output
 
 All other covenant params are derived: `b` from `max_loss_sats`, `q_step_lots` from `b` and `half_payout_sats`, `lmsr_table_root` from deterministic F-value generation, token asset IDs from the parent market, admin pubkey from the mnemonic at `pool_index`. Protocol constants require no encoding.
 
-See [chain-only-recovery.md](chain-only-recovery.md) for the exact byte layout, per-field justification, recovery flow, denomination convention specification, and XOR index masking details.
+See [chain-only-recovery.md](../../protocol/chain-only-recovery.md) for the exact byte layout, per-field justification, recovery flow, denomination convention specification, and XOR index masking details.
 
 ## Key Files
 
-- `docs/deadcat-core-design.md` — main design doc (references this satellite doc)
-- `docs/trade-routing-algorithm.md` — trade routing algorithm using LMSR pools + limit orders
-- `docs/lmsr-pool-close-path.md` — close script path covenant design
+- `docs/architecture/deadcat-core-design.md` — main design doc (references this satellite doc)
+- `docs/architecture/trade-routing-algorithm.md` — trade routing algorithm using LMSR pools + limit orders
+- `docs/contracts/lmsr-pool/lmsr-pool-close-path.md` — close script path covenant design
 - `src-tauri/crates/deadcat-sdk/src/lmsr_pool/math.rs` — current LMSR math (will move to `deadcat-core`)
 - `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — pool covenant source

@@ -21,7 +21,7 @@ pub struct PredictionMarketParams {
 }
 ```
 
-4 of 8 fields are derivable from the creation transaction's issuance entropy. The remaining 4 are stored in the OP_RETURN recovery hint. See [chain-only-recovery.md](chain-only-recovery.md).
+4 of 8 fields are derivable from the creation transaction's issuance entropy. The remaining 4 are stored in the OP_RETURN recovery hint. See [chain-only-recovery.md](../protocol/chain-only-recovery.md).
 
 **Unit convention**: All amounts (`collateral_per_pair`, `max_loss_sats`, `half_payout_sats`, token counts, reserve values) are denominated in the **smallest indivisible unit** of the respective asset — satoshis for L-BTC (10^-8 BTC), 10^-8 for USDt on Liquid, etc. The `_sats` suffix on some fields reflects the L-BTC-as-canonical-example convention, not an L-BTC-only restriction. Protocol constants like `MIN_POOL_RESERVE = 1,000` are in smallest units regardless of asset.
 
@@ -62,7 +62,7 @@ Each slot has a unique script pubkey derived from the contract params + slot ide
 | Dormant resolution (NO) | 0, 1 | none | Oracle BIP-340 signature | Both RTs consumed, no outputs |
 | Dormant expiry | 0, 1 | none | Timelock >= expiry_time | Both RTs consumed, no outputs |
 
-**Sibling UTXO check**: All transitions that co-spend RTs and collateral verify that the three covenant inputs were created in the same transaction (`input_prev_outpoint` txid match across all three). This prevents collateral substitution — an attacker cannot create a fake collateral UTXO at the covenant script address and swap it in for the real one, because the fake UTXO's `prev_txid` won't match the RTs'. See [enforcement-layers.md](enforcement-layers.md) for the full attack analysis.
+**Sibling UTXO check**: All transitions that co-spend RTs and collateral verify that the three covenant inputs were created in the same transaction (`input_prev_outpoint` txid match across all three). This prevents collateral substitution — an attacker cannot create a fake collateral UTXO at the covenant script address and swap it in for the real one, because the fake UTXO's `prev_txid` won't match the RTs'. See [enforcement-layers.md](../architecture/enforcement-layers.md) for the full attack analysis.
 
 This is a pending refactor with two parts: (1) add the `prev_txid` check to all paths that co-spend RTs and collateral, and (2) change partial cancellation to co-spend RTs. Part 2 is required because the current partial cancellation only spends the collateral slot — after such a cancellation, the collateral's `prev_txid` would differ from the RTs' (it was created in the cancellation tx, while the RTs were last created in the prior issuance tx). Co-spending the RTs during partial cancellation ensures all three outputs are always born in the same transaction.
 
@@ -75,7 +75,7 @@ market_id = SHA256(yes_token_asset_id || no_token_asset_id)
 outcome_byte = 0x01 (YES) or 0x00 (NO)
 ```
 
-See [oracle-bip340-tagged-hash.md](oracle-bip340-tagged-hash.md).
+See [oracle-bip340-tagged-hash.md](../protocol/oracle-bip340-tagged-hash.md).
 
 ### Witness Data
 
@@ -101,7 +101,7 @@ pub struct LmsrPoolParams {
 }
 ```
 
-9 fields (down from 14 in current SDK). See [lmsr-pool-design.md](lmsr-pool-design.md) for the full parameter design, derivation formulas, and protocol constants. Note: `max_loss_sats` is not a covenant parameter (the covenant only verifies Merkle proofs, never evaluates the cost function). It is included in the struct because all off-chain LMSR computation requires `b = max_loss_sats / ln(2)`, and `b` is not recoverable from the covenant params alone. The other two derived fields (`q_step_lots`, `lmsr_table_root`) are retained as compilation caches.
+9 fields (down from 14 in current SDK). See [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md) for the full parameter design, derivation formulas, and protocol constants. Note: `max_loss_sats` is not a covenant parameter (the covenant only verifies Merkle proofs, never evaluates the cost function). It is included in the struct because all off-chain LMSR computation requires `b = max_loss_sats / ln(2)`, and `b` is not recoverable from the covenant params alone. The other two derived fields (`q_step_lots`, `lmsr_table_root`) are retained as compilation caches.
 
 **Removed from params** (now protocol constants in the `.simf`):
 - `table_depth` → `TABLE_DEPTH = 16`
@@ -111,7 +111,7 @@ pub struct LmsrPoolParams {
 
 **Not in params** (derived on demand from `max_loss_sats`): `b`. Unlike `q_step_lots` and `lmsr_table_root` (which are covenant params and compilation caches), `b` is only used transiently during LMSR math and table generation — deriving it from `max_loss_sats` is trivial.
 
-**Renamed**: `cosigner_pubkey` → `admin_pubkey`. See [maker-order-remove-cosigner.md](maker-order-remove-cosigner.md).
+**Renamed**: `cosigner_pubkey` → `admin_pubkey`. See [maker-order-remove-cosigner.md](maker-order/maker-order-remove-cosigner.md).
 
 ### Covenant Structure
 
@@ -127,7 +127,7 @@ Swap and admin paths produce three consecutive reserve outputs in fixed order, a
 | Admin adjust | Admin key signature | Frozen | YES and NO deltas must be equal, reserve minimums maintained |
 | Close | Admin key signature | N/A | All 3 reserve UTXOs consumed atomically, no new covenant outputs |
 
-See [lmsr-pool-close-path.md](lmsr-pool-close-path.md) for the close path specification.
+See [lmsr-pool-close-path.md](lmsr-pool/lmsr-pool-close-path.md) for the close path specification.
 
 ### Witness Data
 
@@ -138,7 +138,7 @@ All pool transitions use **witness-based detection** via `RedeemNode::decode`:
 
 ### LMSR Math: Point Evaluation
 
-The quoting hot path (`quote_trade`) does NOT need the full 65K-entry F-value table. It uses direct cost function evaluation at specific points (~1us per evaluation, ~16us for a binary search). The full table is only needed for Merkle proof generation (`build_trade_pset`, `build_lmsr_bootstrap_pset`) and pool ingestion verification (~80ms, infrequent operations). See [lmsr-pool-design.md](lmsr-pool-design.md).
+The quoting hot path (`quote_trade`) does NOT need the full 65K-entry F-value table. It uses direct cost function evaluation at specific points (~1us per evaluation, ~16us for a binary search). The full table is only needed for Merkle proof generation (`build_trade_pset`, `build_lmsr_bootstrap_pset`) and pool ingestion verification (~80ms, infrequent operations). See [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md).
 
 ## Maker Order
 
@@ -162,9 +162,9 @@ pub struct MakerOrderParams {
 }
 ```
 
-8 fields (down from 9 in current SDK). **Removed**: `cosigner_pubkey`. See [maker-order-remove-cosigner.md](maker-order-remove-cosigner.md).
+8 fields (down from 9 in current SDK). **Removed**: `cosigner_pubkey`. See [maker-order-remove-cosigner.md](maker-order/maker-order-remove-cosigner.md).
 
-`maker_receive_spk_hash` is derived from a deterministic nonce chain: `deadcat_secret_key` + `order_index` → `order_nonce` → `order_uid` → `tweak` → `P_order` → scriptPubKey → SHA256. See [chain-only-recovery.md](chain-only-recovery.md) for the full derivation.
+`maker_receive_spk_hash` is derived from a deterministic nonce chain: `deadcat_secret_key` + `order_index` → `order_nonce` → `order_uid` → `tweak` → `P_order` → scriptPubKey → SHA256. See [chain-only-recovery.md](../protocol/chain-only-recovery.md) for the full derivation.
 
 ### Covenant Structure
 
@@ -178,7 +178,7 @@ Single UTXO at a covenant address (taproot with Simplicity script). The taproot 
 | Fill (complete) | Simplicity script-spend | Permissionless | `input_amount x PRICE` paid to maker, no remainder output, min_fill constraint |
 | Cancel | Taproot key-spend | Maker signature | No constraints (maker reclaims funds freely) |
 
-**Dependency**: This detection model (key-spend = cancel, script-spend = fill) requires the script-cancel refactor — see [maker-order-remove-script-cancel.md](maker-order-remove-script-cancel.md).
+**Dependency**: This detection model (key-spend = cancel, script-spend = fill) requires the script-cancel refactor — see [maker-order-remove-script-cancel.md](maker-order/maker-order-remove-script-cancel.md).
 
 ### Witness Data
 
@@ -205,19 +205,19 @@ These changes are specified in satellite docs but not yet applied to the `.simf`
 
 | Refactor | Satellite doc | Status | Blocks |
 |---|---|---|---|
-| `collateral_per_token` → `collateral_per_pair` | [collateral-per-pair-refactor.md](collateral-per-pair-refactor.md) | Pending | Market contract, market params |
-| Oracle BIP-340 tagged hash | [oracle-bip340-tagged-hash.md](oracle-bip340-tagged-hash.md) | Pending | Market contract, oracle attestation |
-| Remove cosigner from order fill path | [maker-order-remove-cosigner.md](maker-order-remove-cosigner.md) | Pending | Order contract, order params |
-| Rename pool `COSIGNER_PUBKEY` → `ADMIN_PUBKEY` | [maker-order-remove-cosigner.md](maker-order-remove-cosigner.md) | Pending | Pool contract, pool params |
-| Remove order script-cancel path | [maker-order-remove-script-cancel.md](maker-order-remove-script-cancel.md) | Pending | Order contract |
-| Add pool close script path | [lmsr-pool-close-path.md](lmsr-pool-close-path.md) | Pending | Pool contract |
-| Pool params → protocol constants | [lmsr-pool-design.md](lmsr-pool-design.md) | Pending | Pool contract |
-| Deterministic integer table generation | [lmsr-pool-design.md](lmsr-pool-design.md) | Pending — requires formal specification document (exact constants, algorithms, Merkle format, test vectors) | Pool math |
-| Covenant-enforced deterministic RT blinding | [deterministic-rt-blinding.md](deterministic-rt-blinding.md) | Pending | Market contract (ABF enforcement, CBF pass-through, `verify_token_commitment` refactor) |
-| Dormant terminal paths (resolution + expiry from zero pairs) | [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md) | Pending | Market contract (DormantYesRt and DormantNoRt slot programs) |
-| Order remainder witness-parameterization | [transaction-composability-model.md](transaction-composability-model.md) | Pending | Order contract (`remainder_idx` from witness instead of `current_index() + 1`) |
-| Sibling UTXO check + partial cancellation RT co-spend | [enforcement-layers.md](enforcement-layers.md) | Pending | Market contract (add `prev_txid` match on all RT+collateral co-spend paths; partial cancellation must co-spend RTs to maintain sibling invariant) |
-| Burn script: P2WSH → OP_RETURN | [enforcement-layers.md](enforcement-layers.md) | Pending | Market contract (`ensure_blinded_reissuance_burn_output` checks bare OP_RETURN script hash instead of P2WSH hash). Rationale: consensus-level unspendability, UTXO set pruning. Blinded OP_RETURN confirmed supported on Elements. |
+| `collateral_per_token` → `collateral_per_pair` | [collateral-per-pair-refactor.md](prediction-market/collateral-per-pair-refactor.md) | Pending | Market contract, market params |
+| Oracle BIP-340 tagged hash | [oracle-bip340-tagged-hash.md](../protocol/oracle-bip340-tagged-hash.md) | Pending | Market contract, oracle attestation |
+| Remove cosigner from order fill path | [maker-order-remove-cosigner.md](maker-order/maker-order-remove-cosigner.md) | Pending | Order contract, order params |
+| Rename pool `COSIGNER_PUBKEY` → `ADMIN_PUBKEY` | [maker-order-remove-cosigner.md](maker-order/maker-order-remove-cosigner.md) | Pending | Pool contract, pool params |
+| Remove order script-cancel path | [maker-order-remove-script-cancel.md](maker-order/maker-order-remove-script-cancel.md) | Pending | Order contract |
+| Add pool close script path | [lmsr-pool-close-path.md](lmsr-pool/lmsr-pool-close-path.md) | Pending | Pool contract |
+| Pool params → protocol constants | [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md) | Pending | Pool contract |
+| Deterministic integer table generation | [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md) | Pending — requires formal specification document (exact constants, algorithms, Merkle format, test vectors) | Pool math |
+| Covenant-enforced deterministic RT blinding | [deterministic-rt-blinding.md](../protocol/deterministic-rt-blinding.md) | Pending | Market contract (ABF enforcement, CBF pass-through, `verify_token_commitment` refactor) |
+| Dormant terminal paths (resolution + expiry from zero pairs) | [market-dormant-terminal-paths.md](prediction-market/market-dormant-terminal-paths.md) | Pending | Market contract (DormantYesRt and DormantNoRt slot programs) |
+| Order remainder witness-parameterization | [transaction-composability-model.md](../architecture/transaction-composability-model.md) | Pending | Order contract (`remainder_idx` from witness instead of `current_index() + 1`) |
+| Sibling UTXO check + partial cancellation RT co-spend | [enforcement-layers.md](../architecture/enforcement-layers.md) | Pending | Market contract (add `prev_txid` match on all RT+collateral co-spend paths; partial cancellation must co-spend RTs to maintain sibling invariant) |
+| Burn script: P2WSH → OP_RETURN | [enforcement-layers.md](../architecture/enforcement-layers.md) | Pending | Market contract (`ensure_blinded_reissuance_burn_output` checks bare OP_RETURN script hash instead of P2WSH hash). Rationale: consensus-level unspendability, UTXO set pruning. Blinded OP_RETURN confirmed supported on Elements. |
 
 **Implementation order**: The `.simf` refactors should be applied before implementing `deadcat-core`. The core implementation is specified against the planned end state.
 

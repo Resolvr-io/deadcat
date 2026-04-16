@@ -349,6 +349,6 @@ Market and pool creations are infrequent lifecycle events — the OP_RETURN cost
 
 ## Key Files
 
-- `docs/deadcat-core-design.md` — main design doc (Wallet Recovery section references this doc)
-- `docs/lmsr-pool-design.md` — LMSR pool design (deterministic table generation enables pool hint compression)
-- `docs/deterministic-rt-blinding.md` — RT blinding factors are deterministic, eliminating anchor secrets from recovery
+- `docs/architecture/deadcat-core-design.md` — main design doc (Wallet Recovery section references this doc)
+- `docs/contracts/lmsr-pool/lmsr-pool-design.md` — LMSR pool design (deterministic table generation enables pool hint compression)
+- `docs/protocol/deterministic-rt-blinding.md` — RT blinding factors are deterministic, eliminating anchor secrets from recovery
