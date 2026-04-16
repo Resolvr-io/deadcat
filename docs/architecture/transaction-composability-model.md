@@ -52,7 +52,7 @@ Each output uses the protection model best suited to its risk profile:
 
 The market covenant asserts `current_index() == 0` and checks outputs at fixed positions (0, 1, 2, 3, 4, 5...). This is acceptable because all market lifecycle operations (issuance, cancellation, resolution, redemption, expiry) are single-contract — there is no practical reason to co-spend two markets' covenant UTXOs in the same transaction. The rigid layout fully specifies the transaction structure for each operation.
 
-**Future consideration:** The atomic issuance + pool bootstrap enhancement ([future-atomic-issuance-lmsr.md](future-atomic-issuance-lmsr.md)) would co-spend market RT UTXOs while creating pool reserve outputs. The market covenant's hardcoded indices may already accommodate this (the covenant doesn't constrain token output destinations, and extra outputs between the token outputs and the fee output may be tolerated). This requires verification against the exact `.simf` logic when that feature is scoped.
+**Future consideration:** The atomic issuance + pool bootstrap enhancement ([future-atomic-issuance-lmsr.md](../contracts/lmsr-pool/future-atomic-issuance-lmsr.md)) would co-spend market RT UTXOs while creating pool reserve outputs. The market covenant's hardcoded indices may already accommodate this (the covenant doesn't constrain token output destinations, and extra outputs between the token outputs and the fee output may be tolerated). This requires verification against the exact `.simf` logic when that feature is scoped.
 
 ## Aliasing Analysis
 
@@ -148,5 +148,5 @@ During mnemonic recovery, if the user creates new contracts before completing ch
 - `src-tauri/crates/deadcat-sdk/contract/maker_order.simf` — order covenant: change remainder from `current_index() + 1` to `witness::REMAINDER_IDX`
 - `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — pool covenant: already uses witness-based `in_base`/`out_base` (no changes needed)
 - `src-tauri/crates/deadcat-sdk/contract/prediction_market.simf` — market covenant: hardcoded indices (no changes needed for v1)
-- `docs/contract-specification.md` — pending refactors table: add order remainder witness-parameterization
-- `docs/deadcat-core-design.md` — `build_trade_pset` output layout algorithm
+- `docs/contracts/contract-specification.md` — pending refactors table: add order remainder witness-parameterization
+- `docs/architecture/deadcat-core-design.md` — `build_trade_pset` output layout algorithm

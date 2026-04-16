@@ -6,7 +6,7 @@ Canonical reference for the deadcat onboarding flow. All screens, copy, routing,
 
 ## Overview
 
-Onboarding is a sequential two-step flow, triggered at the point of need when the user attempts an action that requires it. Neither step is shown on first launch; the app opens directly to the home view in guest mode. See [ux-first-use.md](ux-first-use.md) for the guest mode specification.
+Onboarding is a sequential two-step flow, triggered at the point of need when the user attempts an action that requires it. Neither step is shown on first launch; the app opens directly to the home view in guest mode. See [ux-first-use.md](first-use.md) for the guest mode specification.
 
 ```
 Step 1 (Identity):  1a → 1b (generate) or 1c → 1d (import)

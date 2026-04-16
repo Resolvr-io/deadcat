@@ -1,6 +1,6 @@
 # UX Design Decisions Log
 
-Each entry follows the format from [deadcat-core-design.md](deadcat-core-design.md): **Chosen** / **Rejected** / **Why**. Entries are grouped by category.
+Each entry follows the format from [deadcat-core-design.md](../architecture/deadcat-core-design.md): **Chosen** / **Rejected** / **Why**. Entries are grouped by category.
 
 ---
 
@@ -72,7 +72,7 @@ Each entry follows the format from [deadcat-core-design.md](deadcat-core-design.
 
 **Chosen**: Action tabs (Trade, Issue, Redeem, Cancel) are shown/hidden based on market state and user role. Users see only the actions available to them.
 **Rejected**: All tabs always visible, with disabled states for unavailable actions.
-**Why**: Showing a disabled "Redeem" tab on a live market clutters the interface and raises questions ("Why can't I redeem?"). Conditional visibility means every visible tab is actionable. The tab set acts as an implicit state indicator — the appearance of "Redeem" after resolution is itself a notification that the market has settled. The mapping is documented in [ux-views.md](ux-views.md) § Trade Composer tab visibility.
+**Why**: Showing a disabled "Redeem" tab on a live market clutters the interface and raises questions ("Why can't I redeem?"). Conditional visibility means every visible tab is actionable. The tab set acts as an implicit state indicator — the appearance of "Redeem" after resolution is itself a notification that the market has settled. The mapping is documented in [ux-views.md](views.md) § Trade Composer tab visibility.
 
 ---
 
@@ -82,7 +82,7 @@ Each entry follows the format from [deadcat-core-design.md](deadcat-core-design.
 
 **Chosen**: The app launches directly into the home view with markets loaded. No identity or wallet required to browse. Setup is deferred to the moment the user tries to trade, create, or send/receive funds.
 **Rejected**: (a) Mandatory two-step onboarding (identity + wallet) before any content is visible. (b) Always-visible "Set up wallet" banners on every page.
-**Why**: The primary conversion bottleneck is showing users *why* they should set up a wallet. A user who sees live markets with real probabilities and price charts is motivated — "I think YES at 72% is wrong, I want to buy NO." That motivation doesn't exist on a blank setup screen. Market discovery works without identity (public Nostr events from a default relay set). Quote preview works without a wallet (`quote_trade` is read-only). The setup trigger is contextual: "Buy YES" button shows an inline "Create a wallet to trade" prompt, not a full-page redirect. After setup, the user returns to exactly where they were — same market, same trade parameters. The dependency order (identity before wallet for Nostr backup detection) is preserved when both are needed. See [ux-first-use.md](ux-first-use.md) for the full specification.
+**Why**: The primary conversion bottleneck is showing users *why* they should set up a wallet. A user who sees live markets with real probabilities and price charts is motivated — "I think YES at 72% is wrong, I want to buy NO." That motivation doesn't exist on a blank setup screen. Market discovery works without identity (public Nostr events from a default relay set). Quote preview works without a wallet (`quote_trade` is read-only). The setup trigger is contextual: "Buy YES" button shows an inline "Create a wallet to trade" prompt, not a full-page redirect. After setup, the user returns to exactly where they were — same market, same trade parameters. The dependency order (identity before wallet for Nostr backup detection) is preserved when both are needed. See [ux-first-use.md](first-use.md) for the full specification.
 
 ### Nostr-Based Wallet Backup Over Manual Export
 

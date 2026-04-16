@@ -38,7 +38,7 @@ Or alternatively, the close path could be a separate top-level branch in the pri
 
 The close script path must enforce:
 
-1. **Admin authorization**: Valid BIP-340 signature from `ADMIN_PUBKEY` (same authorization model as admin path). Uses a distinct domain string (e.g., `"DEADCAT/LMSR_POOL_CLOSE_V1"`) to prevent signature reuse across paths. See [maker-order-remove-cosigner.md](maker-order-remove-cosigner.md) for the rename from `COSIGNER_PUBKEY` to `ADMIN_PUBKEY`.
+1. **Admin authorization**: Valid BIP-340 signature from `ADMIN_PUBKEY` (same authorization model as admin path). Uses a distinct domain string (e.g., `"DEADCAT/LMSR_POOL_CLOSE_V1"`) to prevent signature reuse across paths. See [maker-order-remove-cosigner.md](../maker-order/maker-order-remove-cosigner.md) for the rename from `COSIGNER_PUBKEY` to `ADMIN_PUBKEY`.
 
 2. **All three reserve inputs present**: The transaction must spend all three reserve UTXOs (YES, NO, Collateral). This is the atomic guarantee — no partial closure.
 
@@ -88,7 +88,7 @@ Takes only the contract ID and wallet funding. The engine reads the current rese
 
 ### State Advancement
 
-`process_transaction` identifies closure via witness-based path detection: the close spend path is confirmed by `RedeemNode::decode` on the spending transaction's witness. Produces `PoolTransition::Closed { final_reserves }` and sets state to `LmsrPoolState::Closed { final_txid }`. See the main design doc's [Detection Strategy and Robustness](deadcat-core-design.md#detection-strategy-and-robustness) section.
+`process_transaction` identifies closure via witness-based path detection: the close spend path is confirmed by `RedeemNode::decode` on the spending transaction's witness. Produces `PoolTransition::Closed { final_reserves }` and sets state to `LmsrPoolState::Closed { final_txid }`. See the main design doc's [Detection Strategy and Robustness](../../architecture/deadcat-core-design.md#detection-strategy-and-robustness) section.
 
 ### StateFilter
 
@@ -102,7 +102,7 @@ Takes only the contract ID and wallet funding. The engine reads the current rese
 | LMSR Pool | NUMS | No | Close script path (this proposal) |
 | Maker Order | `maker_pubkey` | Yes (cancellation) | Key-spend by maker, fill script path only |
 
-Maker orders intentionally use a real internal key — the maker's ability to key-spend is the sole cancellation mechanism. The Simplicity program handles fills only; cancellation is exclusively via key-spend. See [maker-order-remove-script-cancel.md](maker-order-remove-script-cancel.md). Markets and pools use NUMS because their lifecycle is governed by covenant logic, not a single party's key.
+Maker orders intentionally use a real internal key — the maker's ability to key-spend is the sole cancellation mechanism. The Simplicity program handles fills only; cancellation is exclusively via key-spend. See [maker-order-remove-script-cancel.md](../maker-order/maker-order-remove-script-cancel.md). Markets and pools use NUMS because their lifecycle is governed by covenant logic, not a single party's key.
 
 ## Key Files
 

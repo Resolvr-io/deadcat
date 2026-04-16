@@ -234,7 +234,7 @@ These are still under validation:
 
 ## Documentation strategy
 
-Rather than rewrite the existing `deadcat-core-design.md` (2900+ lines) and satellite docs, we agreed to:
+Rather than rewrite the existing `../../architecture/deadcat-core-design.md` (2900+ lines) and satellite docs, we agreed to:
 
 1. **Write new satellite docs first** as design proposals.
 2. **Preserve the existing docs** as-is until the new designs prove themselves in implementation.
@@ -257,7 +257,7 @@ The existing architecture (UTXO-following state machine, store trait design, cha
 
 ## Current state
 
-- **`docs/multi-outcome-market-contract.md` drafted** (Doc 1). Ready for review.
+- **`docs/contracts/multi-outcome/multi-outcome-market-contract.md` drafted** (Doc 1). Ready for review.
 - **QMSR pool proposal (Doc 2) not yet written**.
 - **Existing docs unchanged**.
 - **No code written yet**. All at the design / specification level.
@@ -272,7 +272,7 @@ In priority order:
 
 3. **Draft Doc 2** (QMSR pool proposal). Now that the foundation is in place, the QMSR pool design can be concretely specified.
 
-4. **Small updates to existing docs**: forward-reference the new docs from `contract-specification.md` and `deadcat-core-design.md`'s pending refactors tables.
+4. **Small updates to existing docs**: forward-reference the new docs from `../contract-specification.md` and `../../architecture/deadcat-core-design.md`'s pending refactors tables.
 
 5. **QMSR implementation spike**: write an actual `.simf` for the QMSR pool to validate the math works in integer arithmetic with acceptable witness sizes.
 
@@ -299,13 +299,13 @@ In priority order:
 ## References
 
 ### Internal docs
-- `docs/multi-outcome-market-contract.md` — Doc 1 (drafted)
-- `docs/contract-specification.md` — current binary contracts
-- `docs/deadcat-core-design.md` — current main design doc
-- `docs/enforcement-layers.md` — security framework
-- `docs/lmsr-pool-design.md` — current LMSR pool
-- `docs/transaction-composability-model.md` — composability patterns
-- `docs/chain-only-recovery.md` — recovery flows
+- `docs/contracts/multi-outcome/multi-outcome-market-contract.md` — Doc 1 (drafted)
+- `docs/contracts/contract-specification.md` — current binary contracts
+- `docs/architecture/deadcat-core-design.md` — current main design doc
+- `docs/architecture/enforcement-layers.md` — security framework
+- `docs/contracts/lmsr-pool/lmsr-pool-design.md` — current LMSR pool
+- `docs/architecture/transaction-composability-model.md` — composability patterns
+- `docs/protocol/chain-only-recovery.md` — recovery flows
 
 ### External references (from research agents)
 - Hanson 2002/2003 — LMSR origination and combinatorial locality

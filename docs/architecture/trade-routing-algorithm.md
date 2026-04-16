@@ -229,4 +229,4 @@ For typical values: 32 × 50 × (5 + 16) ≈ 33,600 point evaluations at ~1μs e
 ## Key Files
 
 - `src-tauri/crates/deadcat-sdk/src/amm_pool/math.rs` — LMSR math functions (will move to `deadcat-core`)
-- `docs/deadcat-core-design.md` — `ContractStore` trait with `best_orders_for_market`, `quote_trade` API
+- `docs/architecture/deadcat-core-design.md` — `ContractStore` trait with `best_orders_for_market`, `quote_trade` API

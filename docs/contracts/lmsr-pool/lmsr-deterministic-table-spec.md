@@ -213,5 +213,5 @@ Steps 1-3 need the deterministic integer algorithm. Step 4 is already implemente
 - `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — `lmsr_table_leaf_hash`, `lmsr_table_node_hash`, `merkle_proof_step_fn` (the on-chain verification code — the authoritative definition of the Merkle format)
 - `src-tauri/crates/deadcat-sdk/src/lmsr_pool/table.rs` — Rust-side Merkle tree (leaf hash, node hash, root, proof generation/verification — matches `.simf` byte-for-byte)
 - `src-tauri/crates/deadcat-sdk/src/lmsr_pool/math.rs` — quoting logic (`quote_from_table`, `quote_exact_input_from_manifest`, `fee_free_yes_spot_price_bps`)
-- `docs/lmsr-pool-design.md` — pool parameter design, derivation formulas, deterministic generation rationale
-- `docs/deadcat-core-design.md` — LMSR Math section, point evaluation vs full table distinction
+- `docs/contracts/lmsr-pool/lmsr-pool-design.md` — pool parameter design, derivation formulas, deterministic generation rationale
+- `docs/architecture/deadcat-core-design.md` — LMSR Math section, point evaluation vs full table distinction

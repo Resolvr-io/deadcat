@@ -67,7 +67,7 @@ The caller doesn't need to know which path is taken — the engine determines it
 
 ### State Advancement
 
-`process_transaction` identifies these transitions by: both RT outpoints spent + no new covenant outputs + market had zero outstanding pairs. Since all three dormant terminal paths produce identical observable outputs (no covenant outputs), the engine uses **witness-based path detection** — extracting the Simplicity program and witness bytes from the spending transaction's witness stack and calling `RedeemNode::decode` to determine which spend path was taken. This yields `MarketTransition::Resolved { outcome: Side }` or `MarketTransition::Expired` as appropriate. See the main design doc's [Detection Strategy and Robustness](deadcat-core-design.md#detection-strategy-and-robustness) section.
+`process_transaction` identifies these transitions by: both RT outpoints spent + no new covenant outputs + market had zero outstanding pairs. Since all three dormant terminal paths produce identical observable outputs (no covenant outputs), the engine uses **witness-based path detection** — extracting the Simplicity program and witness bytes from the spending transaction's witness stack and calling `RedeemNode::decode` to determine which spend path was taken. This yields `MarketTransition::Resolved { outcome: Side }` or `MarketTransition::Expired` as appropriate. See the main design doc's [Detection Strategy and Robustness](../../architecture/deadcat-core-design.md#detection-strategy-and-robustness) section.
 
 ### Transition Details
 
@@ -91,7 +91,7 @@ Both paths require atomic consumption of BOTH RT UTXOs (co-membership enforcemen
 
 ### Signature Domain Strings
 
-The oracle resolution from zero-pair state uses the same oracle signature as resolution from Unresolved — the oracle signs the same BIP-340 tagged hash message (`tagged_hash("deadcat/oracle_attestation", market_id || outcome_byte)`) regardless of the market's pair count. No new domain string needed. See [oracle-bip340-tagged-hash.md](oracle-bip340-tagged-hash.md).
+The oracle resolution from zero-pair state uses the same oracle signature as resolution from Unresolved — the oracle signs the same BIP-340 tagged hash message (`tagged_hash("deadcat/oracle_attestation", market_id || outcome_byte)`) regardless of the market's pair count. No new domain string needed. See [oracle-bip340-tagged-hash.md](../../protocol/oracle-bip340-tagged-hash.md).
 
 ### Key Files
 

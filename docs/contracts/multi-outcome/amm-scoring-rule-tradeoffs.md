@@ -407,7 +407,7 @@ Each additional outcome adds a dimension to the state space. LS-LMSR effectively
 
 ## Interaction with the Limit Order Book
 
-deadcat has a maker-order LOB as a separate covenant. The AMM pool and the LOB serve complementary roles; neither is strictly "primary" and neither is strictly "backup." Most trades are **single atomic transactions** that co-spend liquidity from both sources: a router (see `trade-routing-algorithm.md`) minimizes total cost — fill cost plus Liquid transaction fees — by selecting an optimal mix of resting maker orders and pool fill within one transaction. The pool and the LOB orders are complementary inputs to the routing optimization, not sequential venues.
+deadcat has a maker-order LOB as a separate covenant. The AMM pool and the LOB serve complementary roles; neither is strictly "primary" and neither is strictly "backup." Most trades are **single atomic transactions** that co-spend liquidity from both sources: a router (see `../../architecture/trade-routing-algorithm.md`) minimizes total cost — fill cost plus Liquid transaction fees — by selecting an optimal mix of resting maker orders and pool fill within one transaction. The pool and the LOB orders are complementary inputs to the routing optimization, not sequential venues.
 
 ### Complementary roles
 
@@ -650,17 +650,17 @@ Within the QMSR family, LS-QMSR has the same advantages over standard QMSR as in
 
 ## Key Files
 
-- `docs/lmsr-pool-design.md` — current LMSR pool design
-- `docs/lmsr-deterministic-table-spec.md` — Merkle table specification
-- `docs/design-journal-multi-outcome-amm.md` — multi-outcome AMM design exploration
-- `docs/multi-outcome-market-contract.md` — N-outcome market contract proposal
-- `docs/transaction-composability-model.md` — composability framework
+- `docs/contracts/lmsr-pool/lmsr-pool-design.md` — current LMSR pool design
+- `docs/contracts/lmsr-pool/lmsr-deterministic-table-spec.md` — Merkle table specification
+- `docs/contracts/multi-outcome/design-journal-multi-outcome-amm.md` — multi-outcome AMM design exploration
+- `docs/contracts/multi-outcome/multi-outcome-market-contract.md` — N-outcome market contract proposal
+- `docs/architecture/transaction-composability-model.md` — composability framework
 
 ## References
 
 ### Internal
-- `deadcat-core-design.md` — main design document
-- `enforcement-layers.md` — security framework
+- `../../architecture/deadcat-core-design.md` — main design document
+- `../../architecture/enforcement-layers.md` — security framework
 
 ### External
 - Hanson, R. (2003). "Combinatorial Information Market Design." *Information Systems Frontiers* 5(1).

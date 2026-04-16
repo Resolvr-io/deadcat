@@ -2,16 +2,16 @@
 
 ## Purpose
 
-This document specifies the user experience design for Deadcat Live — a desktop application for trading binary prediction markets on the Liquid Network. It translates the protocol-level abstractions defined in [deadcat-core-design.md](deadcat-core-design.md) into concrete interaction patterns, visual states, and user flows.
+This document specifies the user experience design for Deadcat Live — a desktop application for trading binary prediction markets on the Liquid Network. It translates the protocol-level abstractions defined in [deadcat-core-design.md](../architecture/deadcat-core-design.md) into concrete interaction patterns, visual states, and user flows.
 
 The primary design goal: make covenant-based prediction markets feel as intuitive as a centralized exchange, while preserving the self-custodial properties that make Deadcat distinct. Users should never need to understand Simplicity covenants, UTXO mechanics, reissuance tokens, or Nostr relay protocols to trade effectively.
 
 **Companion documents**:
-- User Stories: [Trader](ux-stories-trader.md) | [Creator & Oracle](ux-stories-creator.md) | [Operator & Maker](ux-stories-operator.md) | [Onboarding & Wallet](ux-stories-onboarding.md)
-- [View Specifications](ux-views.md) — view-by-view interaction specs and state mapping
-- [Design Decisions Log](ux-design-decisions.md) — chosen/rejected/why for every significant UX decision
+- User Stories: [Trader](stories/trader.md) | [Creator & Oracle](stories/creator.md) | [Operator & Maker](stories/operator.md) | [Onboarding & Wallet](stories/onboarding.md)
+- [View Specifications](views.md) — view-by-view interaction specs and state mapping
+- [Design Decisions Log](design-decisions.md) — chosen/rejected/why for every significant UX decision
 
-**Relationship to `deadcat-core-design.md`**: This document is the UI counterpart. Where the core doc specifies `MarketState::Trading { outstanding_pairs }`, this doc specifies what the user sees: a green "Live" badge with a probability percentage. Where the core doc specifies `quote_trade` → `build_trade_pset`, this doc specifies the two-step "quote → confirm → execute" interaction pattern. Every UI state maps to a core type; every user action maps to a core API call.
+**Relationship to `../architecture/deadcat-core-design.md`**: This document is the UI counterpart. Where the core doc specifies `MarketState::Trading { outstanding_pairs }`, this doc specifies what the user sees: a green "Live" badge with a probability percentage. Where the core doc specifies `quote_trade` → `build_trade_pset`, this doc specifies the two-step "quote → confirm → execute" interaction pattern. Every UI state maps to a core type; every user action maps to a core API call.
 
 ## Design Principles
 
@@ -81,7 +81,7 @@ User input is validated at entry points (form submission, trade confirmation). O
 
 ## User Personas
 
-Derived from the per-persona ingestion tables in `deadcat-core-design.md` § Sync Patterns and Discovery. Each persona maps to specific core API usage patterns and UI feature gates.
+Derived from the per-persona ingestion tables in `../architecture/deadcat-core-design.md` § Sync Patterns and Discovery. Each persona maps to specific core API usage patterns and UI feature gates.
 
 ### Trader (Taker)
 
@@ -195,15 +195,15 @@ Inline SVG icons throughout — no icon font dependency. Feather icon style (24x
 | Document | Contents |
 | --- | --- |
 | **First Use** | |
-| [First Use Experience](ux-first-use.md) | Guest mode, browse-first flow, deferred setup triggers, progressive upgrade |
+| [First Use Experience](first-use.md) | Guest mode, browse-first flow, deferred setup triggers, progressive upgrade |
 | **User Stories** | |
-| [Trader & Token Holder](ux-stories-trader.md) | Browse markets, buy/sell tokens, redeem, view history, recover positions |
-| [Market Creator & Oracle](ux-stories-creator.md) | Create markets, issue/cancel pairs, resolve/expire markets |
-| [Pool Operator & Order Maker](ux-stories-operator.md) | Bootstrap/adjust/close pools, place/monitor/cancel limit orders |
-| [Onboarding, Wallet & Recovery](ux-stories-onboarding.md) | Deferred identity/wallet setup, send/receive, recovery |
+| [Trader & Token Holder](stories/trader.md) | Browse markets, buy/sell tokens, redeem, view history, recover positions |
+| [Market Creator & Oracle](stories/creator.md) | Create markets, issue/cancel pairs, resolve/expire markets |
+| [Pool Operator & Order Maker](stories/operator.md) | Bootstrap/adjust/close pools, place/monitor/cancel limit orders |
+| [Onboarding, Wallet & Recovery](stories/onboarding.md) | Deferred identity/wallet setup, send/receive, recovery |
 | **Specifications** | |
-| [View Specifications](ux-views.md) | View-by-view interaction specs, layout, and core type → UI state mapping |
-| [Design Decisions](ux-design-decisions.md) | Chosen/rejected/why for every significant UX decision |
+| [View Specifications](views.md) | View-by-view interaction specs, layout, and core type → UI state mapping |
+| [Design Decisions](design-decisions.md) | Chosen/rejected/why for every significant UX decision |
 | **Reference** | |
-| [Core Design](deadcat-core-design.md) | Protocol-level computation library design |
-| [Contract Specification](contract-specification.md) | Simplicity covenant structure and spend paths |
+| [Core Design](../architecture/deadcat-core-design.md) | Protocol-level computation library design |
+| [Contract Specification](../contracts/contract-specification.md) | Simplicity covenant structure and spend paths |

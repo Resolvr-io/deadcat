@@ -1,6 +1,6 @@
 # Deterministic RT Blinding: Deadcat Implementation Plan
 
-For the general problem statement, protocol constraints, and security analysis, see [Deterministic Reissuance Token Blinding for Simplicity Covenants](simplicity-deterministic-reissuance-blinding.md). This document covers the deadcat-specific implementation details, assuming the `elements` crate's PSET blinding API has NOT been expanded to support predetermined blinding factors — all confidential output construction for RT outputs must be hand-rolled.
+For the general problem statement, protocol constraints, and security analysis, see [Deterministic Reissuance Token Blinding for Simplicity Covenants](../upstream-simplicity/simplicity-deterministic-reissuance-blinding.md). This document covers the deadcat-specific implementation details, assuming the `elements` crate's PSET blinding API has NOT been expanded to support predetermined blinding factors — all confidential output construction for RT outputs must be hand-rolled.
 
 ## Motivation: Griefing Attack Prevention
 
@@ -186,7 +186,7 @@ The `BlindingQuad` type `(in_abf, in_vbf, out_abf, out_vbf)` shrinks. Output bli
 
 These transitions use `ensure_blinded_reissuance_burn_output`, which verifies the output commitment matches the expected RT asset (same `verify_token_commitment` pattern) AND verifies the output script is the burn script. This is security-critical: deterministic blinding makes ABFs public, so the traditional Elements safeguard (ABF secrecy prevents unauthorized reissuance) is absent. Without covenant-enforced burns, a malicious transaction builder could redirect RT tokens to a wallet address and use the Elements consensus-level reissuance mechanism to mint unbacked tokens — bypassing the Simplicity covenant entirely.
 
-**Dormant terminal transitions** (resolution/expiry from zero outstanding pairs) consume both DormantRT slots with no outputs. These are specified in [market-dormant-terminal-paths.md](market-dormant-terminal-paths.md) and will also require burn output enforcement — to be added when those paths are implemented.
+**Dormant terminal transitions** (resolution/expiry from zero outstanding pairs) consume both DormantRT slots with no outputs. These are specified in [market-dormant-terminal-paths.md](../contracts/prediction-market/market-dormant-terminal-paths.md) and will also require burn output enforcement — to be added when those paths are implemented.
 
 ### What the Covenant Does NOT Enforce
 
@@ -303,4 +303,4 @@ pub fn ingest_market(
 ) -> Result<ContractId, CoreError<S::Error>>;
 ```
 
-`PredictionMarketParams` stays pure — only data needed to derive the contract's identity and addresses. No creation-time secrets. The `PredictionMarketAnchor` type and the `anchor` field on `Contract::PredictionMarket` are both eliminated. See [deadcat-core design doc](deadcat-core-design.md) for the full API.
+`PredictionMarketParams` stays pure — only data needed to derive the contract's identity and addresses. No creation-time secrets. The `PredictionMarketAnchor` type and the `anchor` field on `Contract::PredictionMarket` are both eliminated. See [deadcat-core design doc](../architecture/deadcat-core-design.md) for the full API.

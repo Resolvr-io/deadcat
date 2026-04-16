@@ -1,6 +1,6 @@
 # User Stories: Market Creator & Oracle
 
-Personas covered: **Market Creator** and **Oracle**. See [ux-design.md](ux-design.md) for persona definitions. Both personas require "Market maker mode" enabled in settings.
+Personas covered: **Market Creator** and **Oracle**. See [ux-design.md](../design.md) for persona definitions. Both personas require "Market maker mode" enabled in settings.
 
 ---
 

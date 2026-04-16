@@ -113,7 +113,7 @@ Burn outputs use bare OP_RETURN (`0x6a`) rather than the alternative P2WSH-with-
 
 2. **The covenant's job is to keep existing RTs locked**, not to prevent new ones. The RT burn enforcement on resolution/expiry prevents RTs from escaping to wallet addresses where they could be used for unauthorized reissuance. The `ensure_no_issuance` calls on non-issuance paths prevent parasitic TOKEN minting (not RT minting — that's already impossible).
 
-3. **Deterministic blinding makes ABFs public**, which means the traditional Elements safeguard for reissuance (ABF secrecy) is absent. Covenant-enforced burns are the sole protection against unauthorized reissuance — anyone who holds an RT and knows the ABF can reissue. See [deterministic-rt-blinding.md](deterministic-rt-blinding.md).
+3. **Deterministic blinding makes ABFs public**, which means the traditional Elements safeguard for reissuance (ABF secrecy) is absent. Covenant-enforced burns are the sole protection against unauthorized reissuance — anyone who holds an RT and knows the ABF can reissue. See [deterministic-rt-blinding.md](../protocol/deterministic-rt-blinding.md).
 
 4. **`ensure_no_issuance` on non-issuance paths prevents parasitic token minting.** Even though additional RTs can't be created, a malicious builder could attach `nAmount` (token minting) to a non-issuance covenant spend. The `ensure_no_issuance` check prevents this by verifying that all three issuance fields are null on non-issuance inputs.
 
@@ -228,6 +228,6 @@ When adding a new security property or modifying an existing one:
 - `src-tauri/crates/deadcat-sdk/contract/prediction_market.simf` — `ensure_blinded_reissuance_burn_output`, `ensure_no_issuance`, `verify_token_commitment`
 - `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — pool covenant (swap, admin, close paths)
 - `src-tauri/crates/deadcat-sdk/contract/maker_order.simf` — order covenant (fill path only)
-- `docs/deterministic-rt-blinding.md` — RT blinding scheme and covenant enforcement
-- `docs/contract-specification.md` — spend paths and covenant constraints
-- `docs/deadcat-core-design.md` — security model section, covenant-enforced properties table
+- `docs/protocol/deterministic-rt-blinding.md` — RT blinding scheme and covenant enforcement
+- `docs/contracts/contract-specification.md` — spend paths and covenant constraints
+- `docs/architecture/deadcat-core-design.md` — security model section, covenant-enforced properties table
