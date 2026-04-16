@@ -632,6 +632,7 @@ impl DeadcatSdk {
         F: FnMut(&mut Self, u64) -> Result<PreparedComputation<M>>,
         B: FnOnce(PreparedTransaction, M) -> T,
     {
+        self.sync()?;
         if let MinerFeePolicy::ExactAmountSat { amount_sat } = tx_options.fee_policy.clone() {
             let computation = build(self, amount_sat)?;
             let fee =
@@ -685,8 +686,6 @@ impl DeadcatSdk {
         amount_sat: u64,
         fee_rate_sat_per_kvb: Option<f32>,
     ) -> Result<PreparedComputation<SendLbtcMeta>> {
-        self.sync()?;
-
         let address: lwk_wollet::elements::Address = address_str
             .parse()
             .map_err(|e| Error::Query(format!("invalid address: {}", e)))?;
@@ -779,6 +778,7 @@ impl DeadcatSdk {
         amount_sat: u64,
         tx_options: TxOptions,
     ) -> Result<PreparedSendLbtc> {
+        self.sync()?;
         match tx_options.fee_policy.clone() {
             MinerFeePolicy::ExactAmountSat {
                 amount_sat: exact_fee_sat,
@@ -905,7 +905,6 @@ impl DeadcatSdk {
         request: &CreateLmsrPoolRequest,
         fee_amount: u64,
     ) -> Result<PreparedComputation<LmsrCreateMeta>> {
-        self.sync()?;
         validate_create_lmsr_pool_request(request)?;
 
         let contract = CompiledLmsrPool::new(request.pool_params)?;
@@ -1095,8 +1094,6 @@ impl DeadcatSdk {
         request: &AdjustLmsrPoolRequest,
         fee_amount: u64,
     ) -> Result<PreparedComputation<LmsrAdjustMeta>> {
-        self.sync()?;
-
         // Fetch the actual chain genesis hash for admin signature computation.
         // The Simplicity C runtime in elementsd uses the chain's real genesis
         // hash (via `uint256::data()` in LE byte order). For regtest, each
@@ -1549,8 +1546,6 @@ impl DeadcatSdk {
         min_utxo_value: u64,
         fee_amount: u64,
     ) -> Result<PreparedComputation<ContractCreationMeta>> {
-        self.sync()?;
-
         let raw_utxos = self.utxos()?;
         let policy_asset = self.policy_asset();
         let policy_bytes: [u8; 32] = policy_asset.into_inner().to_byte_array();
@@ -1915,6 +1910,8 @@ impl DeadcatSdk {
 
     /// Select wallet UTXOs for collateral and fee, returning unblinded UTXOs and change address.
     ///
+    /// Callers must ensure the wallet is synced before calling this method.
+    ///
     /// When the collateral asset is L-BTC (policy asset), a single UTXO can
     /// fund both collateral and fee.  The returned UTXOs will share the same
     /// outpoint in that case — downstream PSET builders detect this and emit
@@ -1925,7 +1922,6 @@ impl DeadcatSdk {
         pairs: u64,
         fee_amount: u64,
     ) -> Result<(UnblindedUtxo, UnblindedUtxo, lwk_wollet::elements::Address)> {
-        self.sync()?;
         let cpt = params.collateral_per_token;
         let required_collateral = pairs
             .checked_mul(2)
@@ -2043,7 +2039,6 @@ impl DeadcatSdk {
         pairs_to_burn: u64,
         fee_amount: u64,
     ) -> Result<PreparedComputation<CancellationMeta>> {
-        self.sync()?;
         let contract = CompiledPredictionMarket::new(*params)?;
 
         let (current_state, covenant_utxos) = self.scan_market_state(&contract, anchor)?;
@@ -2173,7 +2168,6 @@ impl DeadcatSdk {
         oracle_signature: [u8; 64],
         fee_amount: u64,
     ) -> Result<PreparedComputation<ResolutionMeta>> {
-        self.sync()?;
         let contract = CompiledPredictionMarket::new(*params)?;
 
         let (current_state, covenant_utxos) = self.scan_market_state(&contract, anchor)?;
@@ -2291,7 +2285,6 @@ impl DeadcatSdk {
         tokens_to_burn: u64,
         fee_amount: u64,
     ) -> Result<PreparedComputation<RedemptionMeta>> {
-        self.sync()?;
         let contract = CompiledPredictionMarket::new(*params)?;
 
         let (current_state, covenant_utxos) = self.scan_market_state(&contract, anchor)?;
@@ -2391,7 +2384,6 @@ impl DeadcatSdk {
         anchor: &PredictionMarketAnchor,
         fee_amount: u64,
     ) -> Result<PreparedComputation<()>> {
-        self.sync()?;
         let contract = CompiledPredictionMarket::new(*params)?;
 
         let (current_state, covenant_utxos) = self.scan_market_state(&contract, anchor)?;
@@ -2464,7 +2456,6 @@ impl DeadcatSdk {
         tokens_to_burn: u64,
         fee_amount: u64,
     ) -> Result<PreparedComputation<RedemptionMeta>> {
-        self.sync()?;
         let contract = CompiledPredictionMarket::new(*params)?;
 
         let (current_state, covenant_utxos) = self.scan_market_state(&contract, anchor)?;
@@ -2875,8 +2866,6 @@ impl DeadcatSdk {
         order_nonce: [u8; 32],
         fee_amount: u64,
     ) -> Result<PreparedComputation<CreateOrderMeta>> {
-        self.sync()?;
-
         // Build MakerOrderParams with a stable maker pubkey + nonce so
         // fee-resolution rebuilds do not mutate the public order identity.
         let (params, _p_order) = MakerOrderParams::new(
@@ -3058,8 +3047,6 @@ impl DeadcatSdk {
         order_index: u32,
         fee_amount: u64,
     ) -> Result<PreparedComputation<CancelOrderMeta>> {
-        self.sync()?;
-
         // 1. Derive maker keypair
         let maker_keypair = self.derive_maker_keypair(order_index)?;
 
@@ -3245,8 +3232,6 @@ impl DeadcatSdk {
         lots_to_fill: u64,
         fee_amount: u64,
     ) -> Result<PreparedComputation<FillOrderMeta>> {
-        self.sync()?;
-
         // 1. Compile the contract
         let contract = CompiledMakerOrder::new(*params)?;
 
@@ -3535,8 +3520,6 @@ impl DeadcatSdk {
         fee_amount: u64,
     ) -> Result<PreparedComputation<TradeMeta>> {
         use crate::trade::pset::{TradePsetParams, build_trade_pset};
-
-        self.sync()?;
 
         if let Some(ref lmsr_leg) = plan.lmsr_pool_leg {
             self.validate_live_lmsr_reserve_anchors(lmsr_leg)?;
