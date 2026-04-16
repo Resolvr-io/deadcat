@@ -24,8 +24,8 @@ fn install_crypto_provider() {
 }
 
 use deadcat_sdk::{
-    ContractMetadata, DeadcatNode, DiscoveryConfig, MinerFeePolicy, Network, NoopStore, TxOptions,
-    DEFAULT_RELAYS, NETWORK_TAG,
+    ContractMetadata, DEFAULT_RELAYS, DeadcatNode, DiscoveryConfig, MinerFeePolicy, NETWORK_TAG,
+    Network, NoopStore, TxOptions,
 };
 use nostr_sdk::prelude::*;
 
@@ -468,7 +468,11 @@ async fn setup_node(keys: Keys) -> Arc<DeadcatNode<NoopStore>> {
     let balance = node.balance().unwrap_or_default();
     let policy_asset = Network::LiquidTestnet.into_lwk().policy_asset();
     let lbtc_sats = balance.get(&policy_asset).copied().unwrap_or(0);
-    println!("Wallet balance: {} sats ({:.8} tL-BTC)", lbtc_sats, lbtc_sats as f64 / 100_000_000.0);
+    println!(
+        "Wallet balance: {} sats ({:.8} tL-BTC)",
+        lbtc_sats,
+        lbtc_sats as f64 / 100_000_000.0
+    );
 
     // Check if we have enough UTXOs — market creation needs at least 2
     let utxo_count = node
@@ -479,10 +483,21 @@ async fn setup_node(keys: Keys) -> Arc<DeadcatNode<NoopStore>> {
         .count();
 
     if utxo_count < 2 && lbtc_sats > 2000 {
-        println!("Only {} L-BTC UTXO(s) — splitting for market creation...", utxo_count);
-        let self_addr = node.address(None).await.expect("address").address().to_string();
+        println!(
+            "Only {} L-BTC UTXO(s) — splitting for market creation...",
+            utxo_count
+        );
+        let self_addr = node
+            .address(None)
+            .await
+            .expect("address")
+            .address()
+            .to_string();
         let split_amount = lbtc_sats / 2;
-        match node.send_lbtc(self_addr, split_amount, default_tx_options()).await {
+        match node
+            .send_lbtc(self_addr, split_amount, default_tx_options())
+            .await
+        {
             Ok((txid, fee)) => {
                 println!("Split tx: {} (fee: {} sats)", txid, fee);
                 println!("Waiting for confirmation...");
@@ -525,7 +540,10 @@ async fn cmd_publish(keys: &Keys, count: Option<usize>) {
         .unwrap()
         .as_secs();
     let current_height: u32 = std::process::Command::new("curl")
-        .args(["-sf", "https://blockstream.info/liquidtestnet/api/blocks/tip/height"])
+        .args([
+            "-sf",
+            "https://blockstream.info/liquidtestnet/api/blocks/tip/height",
+        ])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
@@ -539,7 +557,8 @@ async fn cmd_publish(keys: &Keys, count: Option<usize>) {
     println!("Creating {} market(s)...\n", max);
 
     for (i, market) in MARKETS.iter().take(max).enumerate() {
-        let expiry_height = unix_to_block_height(market.settlement_unix, current_height, current_unix);
+        let expiry_height =
+            unix_to_block_height(market.settlement_unix, current_height, current_unix);
         let metadata = ContractMetadata {
             question: market.question.to_string(),
             description: market.description.to_string(),
@@ -615,7 +634,12 @@ async fn cmd_publish(keys: &Keys, count: Option<usize>) {
                 let balance = node.balance().unwrap_or_default();
                 let lbtc = balance.get(&policy_asset).copied().unwrap_or(0);
                 if lbtc > 2000 {
-                    let addr = node.address(None).await.expect("address").address().to_string();
+                    let addr = node
+                        .address(None)
+                        .await
+                        .expect("address")
+                        .address()
+                        .to_string();
                     match node.send_lbtc(addr, lbtc / 2, default_tx_options()).await {
                         Ok((txid, _)) => {
                             println!("  Split tx: {}", txid);
@@ -627,9 +651,14 @@ async fn cmd_publish(keys: &Keys, count: Option<usize>) {
                                     .utxos()
                                     .unwrap_or_default()
                                     .iter()
-                                    .filter(|u| u.unblinded.asset == policy_asset && u.unblinded.value >= 546)
+                                    .filter(|u| {
+                                        u.unblinded.asset == policy_asset
+                                            && u.unblinded.value >= 546
+                                    })
                                     .count();
-                                if count >= 2 { break; }
+                                if count >= 2 {
+                                    break;
+                                }
                             }
                         }
                         Err(e) => eprintln!("  Split failed: {e}"),
@@ -778,10 +807,7 @@ async fn cmd_delete(keys: &Keys) {
             .expect("failed to sign tombstone");
 
         match client.send_event(tombstone).await {
-            Ok(_) => println!(
-                "  Deleted: d={}...",
-                &d_tag[..16.min(d_tag.len())]
-            ),
+            Ok(_) => println!("  Deleted: d={}...", &d_tag[..16.min(d_tag.len())]),
             Err(e) => eprintln!(
                 "  FAILED to delete d={}...: {e}",
                 &d_tag[..16.min(d_tag.len())]
@@ -827,13 +853,18 @@ fn print_usage() {
     eprintln!("Usage: seed_markets <command> [args]");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  publish [N]  Create N markets on-chain + announce on Nostr (default: all {}))", MARKETS.len());
+    eprintln!(
+        "  publish [N]  Create N markets on-chain + announce on Nostr (default: all {}))",
+        MARKETS.len()
+    );
     eprintln!("  list         List markets published by the source npub");
     eprintln!("  delete       Delete all markets by publishing tombstone events");
     eprintln!();
     eprintln!("Environment:");
     eprintln!("  DEADCAT_SOURCE_NSEC   nsec for the source npub (required)");
-    eprintln!("  DEADCAT_MNEMONIC      BIP-39 mnemonic for funded testnet wallet (required for publish)");
+    eprintln!(
+        "  DEADCAT_MNEMONIC      BIP-39 mnemonic for funded testnet wallet (required for publish)"
+    );
     eprintln!("  DEADCAT_ELECTRUM_URL  Electrum server (default: ssl://blockstream.info:465)");
     eprintln!("  DEADCAT_DATADIR       Wallet data dir (default: /tmp/deadcat-seed)");
 }
