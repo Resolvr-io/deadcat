@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import QRCode from "qrcode";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import {
   useCreateBitcoinSend,
   usePayLightningInvoice,
@@ -8,6 +9,7 @@ import {
 } from "../../queries/mutations/useWalletOps";
 import { useStore } from "../../store";
 import type { BoltzChainSwapPairsInfo } from "../../types";
+import { friendlyError } from "../../utils-react/friendly-error";
 import { btcLabel } from "../../utils-react/wallet";
 import { showToast } from "../shared/Toast";
 
@@ -85,6 +87,15 @@ export function SendModal() {
   const sendBtcPairInfo = useStore((s) => s.sendBtcPairInfo);
   const modalQr = useStore((s) => s.modalQr);
   const showLbtcLabel = useStore((s) => s.showLbtcLabel);
+  const walletNetwork = useStore((s) => s.walletNetwork);
+
+  const [maxLoading, setMaxLoading] = useState(false);
+  const [sendConfirm, setSendConfirm] = useState<{
+    address: string;
+    amountSat: number;
+    feeSat: number;
+  } | null>(null);
+  const [confirming, setConfirming] = useState(false);
 
   const payLightning = usePayLightningInvoice();
   const sendLiquid = useSendLiquid();
@@ -122,7 +133,7 @@ export function SendModal() {
     );
   }, [sendInvoice, payLightning]);
 
-  const handleSendLiquid = useCallback(() => {
+  const handleReviewSend = useCallback(() => {
     const address = sendLiquidAddress.trim();
     const amountSat = Math.floor(Number(sendLiquidAmount) || 0);
     if (!address || amountSat <= 0) {
@@ -130,24 +141,54 @@ export function SendModal() {
       return;
     }
     useStore.setState({ sendCreating: true, sendError: "" });
-    sendLiquid.mutate(
-      { address, amountSat },
+    void invoke<{ address: string; amountSat: number; feeSat: number }>(
+      "prepare_send",
       {
-        onSuccess: (result) => {
-          useStore.setState({
-            sentLiquidResult: result,
-            sendCreating: false,
-          });
-        },
-        onError: (e) => {
-          useStore.setState({
-            sendError: String(e),
-            sendCreating: false,
-          });
+        address,
+        amountSat,
+        txOptions: {
+          feePolicy: { kind: "confirmation_target_blocks", blocks: 6 },
         },
       },
-    );
-  }, [sendLiquidAddress, sendLiquidAmount, sendLiquid]);
+    )
+      .then((result) => {
+        setSendConfirm(result);
+        useStore.setState({ sendCreating: false });
+      })
+      .catch((e) => {
+        useStore.setState({ sendError: String(e), sendCreating: false });
+      });
+  }, [sendLiquidAddress, sendLiquidAmount]);
+
+  const handleConfirmSend = useCallback(() => {
+    setConfirming(true);
+    useStore.setState({ sendError: "" });
+    void invoke<{ txid: string; feeSat: number }>("confirm_send")
+      .then((result) => {
+        useStore.setState({
+          sentLiquidResult: {
+            txid: result.txid,
+            feeSat: result.feeSat,
+            fee: {
+              policy: {
+                kind: "confirmation_target_blocks",
+                blocks: 6,
+              },
+              amountSat: result.feeSat,
+              rateSatPerVb: 0,
+              discountVsize: 0,
+            },
+          },
+          sendCreating: false,
+        });
+        setSendConfirm(null);
+        setConfirming(false);
+      })
+      .catch((e) => {
+        useStore.setState({ sendError: String(e) });
+        setConfirming(false);
+      });
+  }, []);
 
   const handleCreateBitcoinSend = useCallback(async () => {
     const amt = Math.floor(Number(sendBtcAmount) || 0);
@@ -247,6 +288,72 @@ export function SendModal() {
             Fee: {r.feeSat.toLocaleString()} sats
           </p>
           <Copyable value={r.txid} label="Transaction ID" />
+          <button
+            type="button"
+            onClick={() => {
+              const base =
+                walletNetwork === "testnet"
+                  ? "https://blockstream.info/liquidtestnet"
+                  : "https://blockstream.info/liquid";
+              void openUrl(`${base}/tx/${r.txid}`);
+            }}
+            className="w-full rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
+          >
+            View in explorer
+          </button>
+        </div>
+      );
+    } else if (sendConfirm) {
+      const total = sendConfirm.amountSat + sendConfirm.feeSat;
+      content = (
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-slate-200">
+            Confirm Transaction
+          </p>
+          <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3 space-y-2 text-sm">
+            <div className="flex justify-between">
+              <span className="text-slate-400">To</span>
+              <span className="mono text-xs text-slate-300 max-w-[200px] truncate">
+                {sendConfirm.address}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Amount</span>
+              <span className="text-slate-200">
+                {sendConfirm.amountSat.toLocaleString()} sats
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Network fee</span>
+              <span className="text-slate-200">
+                {sendConfirm.feeSat.toLocaleString()} sats
+              </span>
+            </div>
+            <div className="flex justify-between border-t border-slate-700 pt-2 font-medium">
+              <span className="text-slate-300">Total</span>
+              <span className="text-slate-100">
+                {total.toLocaleString()} sats
+              </span>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setSendConfirm(null)}
+              disabled={confirming}
+              className="flex-1 rounded-lg border border-slate-700 px-4 py-3 font-medium text-slate-300 hover:bg-slate-800 transition"
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmSend}
+              disabled={confirming}
+              className="flex-1 rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300"
+            >
+              {confirming ? "Sending..." : "Confirm Send"}
+            </button>
+          </div>
         </div>
       );
     } else {
@@ -264,24 +371,63 @@ export function SendModal() {
             placeholder="Liquid address"
             className="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2"
           />
-          <input
-            id="send-liquid-amount"
-            type="number"
-            min="1"
-            value={sendLiquidAmount}
-            onChange={(e) =>
-              useStore.setState({ sendLiquidAmount: e.target.value })
-            }
-            placeholder="Amount (sats)"
-            className="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2"
-          />
+          <div className="flex gap-2">
+            <input
+              id="send-liquid-amount"
+              type="number"
+              min="1"
+              value={sendLiquidAmount}
+              onChange={(e) =>
+                useStore.setState({ sendLiquidAmount: e.target.value })
+              }
+              placeholder="Amount (sats)"
+              className="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 focus:ring-2"
+            />
+            <button
+              type="button"
+              disabled={maxLoading}
+              onClick={() => {
+                const address = sendLiquidAddress.trim();
+                if (!address) {
+                  useStore.setState({
+                    sendError: "Enter an address first.",
+                  });
+                  return;
+                }
+                setMaxLoading(true);
+                useStore.setState({ sendError: "" });
+                void invoke<{
+                  address: string;
+                  amountSat: number;
+                  feeSat: number;
+                }>("estimate_max_send", { address })
+                  .then((result) => {
+                    useStore.setState({
+                      sendLiquidAmount: String(result.amountSat),
+                    });
+                    setSendConfirm(result);
+                  })
+                  .catch((e) => {
+                    useStore.setState({ sendError: String(e) });
+                  })
+                  .finally(() => setMaxLoading(false));
+              }}
+              className="w-12 shrink-0 rounded-lg border border-slate-700 py-2 text-center text-xs text-slate-300 hover:bg-slate-800 transition disabled:opacity-50"
+            >
+              {maxLoading ? "..." : "Max"}
+            </button>
+          </div>
           <button
             type="button"
-            onClick={handleSendLiquid}
-            className="w-full rounded-lg bg-emerald-400 px-4 py-3 font-medium text-slate-950 hover:bg-emerald-300"
-            disabled={creating}
+            onClick={handleReviewSend}
+            className={`w-full rounded-lg px-4 py-3 font-medium ${creating || maxLoading ? "bg-slate-700 text-slate-400" : "bg-emerald-400 text-slate-950 hover:bg-emerald-300"}`}
+            disabled={creating || maxLoading}
           >
-            {creating ? "Sending..." : `Send ${btcLabel(showLbtcLabel)}`}
+            {creating
+              ? "Preparing..."
+              : maxLoading
+                ? "Calculating..."
+                : "Review Send"}
           </button>
         </div>
       );
@@ -363,7 +509,7 @@ export function SendModal() {
       {content}
       {sendError && (
         <div className="rounded-lg border border-red-500/30 bg-red-900/20 px-4 py-3 text-sm text-red-300">
-          {sendError}
+          {friendlyError(sendError)}
         </div>
       )}
     </>

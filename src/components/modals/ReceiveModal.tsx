@@ -6,6 +6,7 @@ import {
   useGenerateLiquidAddress,
 } from "../../queries/mutations/useWalletOps";
 import { useStore } from "../../store";
+import { friendlyError } from "../../utils-react/friendly-error";
 import { btcLabel } from "../../utils-react/wallet";
 import { showToast } from "../shared/Toast";
 
@@ -358,7 +359,7 @@ export function ReceiveModal() {
       {content}
       {receiveError && (
         <div className="rounded-lg border border-red-500/30 bg-red-900/20 px-4 py-3 text-sm text-red-300">
-          {receiveError}
+          {friendlyError(receiveError)}
         </div>
       )}
     </>

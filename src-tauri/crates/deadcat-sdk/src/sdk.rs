@@ -711,6 +711,68 @@ impl DeadcatSdk {
         })
     }
 
+    /// Build a transaction that drains the entire L-BTC balance to the given
+    /// address, deducting the fee from the send amount. No change output.
+    fn build_drain_lbtc_transaction(
+        &mut self,
+        address_str: &str,
+        fee_rate_sat_per_kvb: Option<f32>,
+    ) -> Result<PreparedComputation<SendLbtcMeta>> {
+        self.sync()?;
+
+        let address: lwk_wollet::elements::Address = address_str
+            .parse()
+            .map_err(|e| Error::Query(format!("invalid address: {}", e)))?;
+
+        let pset = TxBuilder::new(self.network.into_lwk())
+            .drain_lbtc_wallet()
+            .drain_lbtc_to(address.clone())
+            .fee_rate(fee_rate_sat_per_kvb)
+            .finish(&self.wollet)
+            .map_err(|e| Error::Query(format!("TxBuilder finish: {}", e)))?;
+
+        let tx = self.sign_pset(pset)?;
+        let actual_fee_sat = Self::actual_fee_amount(&tx);
+
+        // The send amount is total balance minus fee
+        let balance = self.balance()?;
+        let policy_asset = self.network.into_lwk().policy_asset();
+        let total = balance.get(&policy_asset).copied().unwrap_or(0);
+        let amount_sat = total.saturating_sub(actual_fee_sat);
+
+        Ok(PreparedComputation {
+            tx,
+            meta: SendLbtcMeta {
+                address: address_str.to_string(),
+                amount_sat,
+                actual_fee_sat,
+            },
+        })
+    }
+
+    pub fn prepare_drain_lbtc(
+        &mut self,
+        address_str: &str,
+        tx_options: TxOptions,
+    ) -> Result<PreparedSendLbtc> {
+        let rate_sat_per_vb = self
+            .resolve_fee_rate_sat_per_vb(&tx_options)?
+            .ok_or_else(|| Error::FeeResolution("missing fee rate".into()))?;
+        let fee_rate_sat_per_kvb = sat_per_vb_to_sat_per_kvb(rate_sat_per_vb)?;
+        let computation =
+            self.build_drain_lbtc_transaction(address_str, Some(fee_rate_sat_per_kvb))?;
+        let fee = self.resolved_fee_for_tx(
+            tx_options.fee_policy,
+            computation.meta.actual_fee_sat,
+            &computation.tx,
+        )?;
+        Ok(PreparedSendLbtc {
+            address: computation.meta.address,
+            amount_sat: computation.meta.amount_sat,
+            prepared_tx: PreparedTransaction::new(computation.tx, fee),
+        })
+    }
+
     pub fn prepare_send_lbtc(
         &mut self,
         address_str: &str,
