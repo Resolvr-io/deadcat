@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { discoveredToMarket } from "../services/markets";
+import { useStore } from "../store";
 import type { ChainTipResponse, DiscoveredMarket, Market } from "../types";
 
 export function useMarkets() {
@@ -20,10 +21,14 @@ export function useMarkets() {
 
       try {
         const stored = await invoke<DiscoveredMarket[]>("discover_contracts");
-        return stored.map((d) => ({
+        const markets = stored.map((d) => ({
           ...discoveredToMarket(d),
           currentHeight,
         }));
+        if (markets.length > 0 && useStore.getState().marketsLoading) {
+          useStore.setState({ marketsLoading: false });
+        }
+        return markets;
       } catch {
         try {
           const stored = await invoke<DiscoveredMarket[]>("list_contracts");
