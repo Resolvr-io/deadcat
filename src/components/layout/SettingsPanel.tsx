@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { baseCurrencyOptions } from "../../constants";
+import { useLockScroll } from "../../hooks/useLockScroll";
 import { queryClient } from "../../queries/queryClient";
 import { useStore } from "../../store";
 import type { BaseCurrency, RelayEntry } from "../../types";
@@ -1209,21 +1210,17 @@ export function SettingsPanel() {
   const settingsOpen = useStore((s) => s.settingsOpen);
   const nostrReplacePanel = useStore((s) => s.nostrReplacePanel);
 
-  useEffect(() => {
-    if (settingsOpen) {
-      document.body.style.overflow = "hidden";
-      document.documentElement.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-    }
-    return () => {
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-    };
-  }, [settingsOpen]);
-
   if (!settingsOpen) return null;
+
+  return <SettingsPanelContent nostrReplacePanel={nostrReplacePanel} />;
+}
+
+function SettingsPanelContent({
+  nostrReplacePanel,
+}: {
+  nostrReplacePanel: boolean;
+}) {
+  useLockScroll();
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 backdrop-blur-sm py-8">
