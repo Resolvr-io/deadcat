@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile, readTextFile } from "@tauri-apps/plugin-fs";
+import QRCode from "qrcode";
 import {
   type ReactNode,
   useCallback,
@@ -59,6 +60,9 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   // Guard against rapid clicks of the identity-randomize button spawning
   // concurrent preview_nostr_identity calls.
   const randomizingRef = useRef(false);
+  const [connectQr, setConnectQr] = useState("");
+  const [connectUri, setConnectUri] = useState("");
+  const connectGenerated = useRef(false);
 
   // Focus the mnemonic textarea only when first expanded, not on every re-render
   useEffect(() => {
@@ -94,6 +98,30 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const restoreMnemonic = useStore((s) => s.onboardingRestoreMnemonic);
   const restoreNsec = useStore((s) => s.onboardingRestoreNsec);
   const bunkerUri = useStore((s) => s.onboardingBunkerUri);
+
+  // Generate nostrconnect:// QR when bunker mode is entered
+  useEffect(() => {
+    if (nostrMode !== "bunker" || connectGenerated.current) return;
+    connectGenerated.current = true;
+    void (async () => {
+      try {
+        const result = await invoke<{ uri: string; appSecretKeyHex: string }>(
+          "generate_nostrconnect_uri",
+        );
+        setConnectUri(result.uri);
+        const canvas = document.createElement("canvas");
+        await QRCode.toCanvas(canvas, result.uri, {
+          errorCorrectionLevel: "M",
+          margin: 4,
+          scale: 6,
+          color: { dark: "#0f172a", light: "#ffffff" },
+        });
+        setConnectQr(canvas.toDataURL("image/png"));
+      } catch {
+        // QR generation failed — paste flow still works
+      }
+    })();
+  }, [nostrMode]);
 
   // Preview profile when a valid nsec is entered (import or manual-restore)
   const [importPreview, setImportPreview] = useState<NostrProfile | null>(null);
@@ -1813,12 +1841,46 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         </p>
         {errorHtml && <div className="mt-5">{errorHtml}</div>}
         <div className="mt-8 space-y-4">
+          {/* QR code for app-initiated flow */}
+          {connectQr && (
+            <div className="space-y-3">
+              <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+                Scan with your signer app
+              </p>
+              <div className="flex justify-center">
+                <img
+                  src={connectQr}
+                  alt="Nostr Connect QR"
+                  className="w-48 h-48 rounded-lg"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard.writeText(connectUri);
+                }}
+                className="w-full rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 transition text-center"
+              >
+                Copy nostrconnect:// URI
+              </button>
+            </div>
+          )}
+
+          {/* Divider */}
+          {connectQr && (
+            <div className="flex items-center gap-3">
+              <div className="flex-1 border-t border-slate-800" />
+              <span className="text-xs text-slate-600">or</span>
+              <div className="flex-1 border-t border-slate-800" />
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <label
               htmlFor="bunker-uri"
               className="text-xs font-medium text-slate-400 uppercase tracking-wide"
             >
-              Bunker URI
+              Paste Bunker URI
             </label>
             <input
               id="bunker-uri"

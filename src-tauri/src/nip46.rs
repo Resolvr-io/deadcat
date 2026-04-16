@@ -149,6 +149,26 @@ pub fn restore_from_connection(conn: &Nip46Connection) -> Result<NostrConnect, S
     Ok(signer)
 }
 
+/// Generate a `nostrconnect://` URI for the app-initiated flow.
+///
+/// Creates ephemeral app keys and returns the URI string for display as a
+/// QR code, plus the app secret key hex for later use when the signer
+/// connects back.
+pub fn generate_nostrconnect_uri(relay_urls: &[String]) -> Result<(String, String), String> {
+    let app_keys = Keys::generate();
+    let relays: Vec<nostr_sdk::RelayUrl> = relay_urls
+        .iter()
+        .filter_map(|url| url.parse().ok())
+        .collect();
+
+    if relays.is_empty() {
+        return Err("At least one relay URL is required".to_string());
+    }
+
+    let uri = NostrConnectURI::client(app_keys.public_key(), relays, "Deadcat Live");
+    Ok((uri.to_string(), app_keys.secret_key().to_secret_hex()))
+}
+
 /// Wrap a `NostrConnect` instance as an `Arc<dyn NostrSigner>`.
 pub fn into_arc_signer(signer: NostrConnect) -> Arc<dyn NostrSigner> {
     Arc::new(signer)

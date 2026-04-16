@@ -623,6 +623,23 @@ pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> 
 // NIP-46 remote signing (Nostr Connect) commands
 // =========================================================================
 
+/// Generate a `nostrconnect://` URI for the app-initiated NIP-46 flow.
+/// Returns `{ uri, appSecretKeyHex }` for display as a QR code.
+#[tauri::command]
+pub async fn generate_nostrconnect_uri(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let nostr_state = app.state::<NostrAppState>();
+    let relay_list = nostr_state
+        .relay_list
+        .read()
+        .map_err(|_| "relay list lock")?
+        .clone();
+    let (uri, app_secret_hex) = crate::nip46::generate_nostrconnect_uri(&relay_list)?;
+    Ok(serde_json::json!({
+        "uri": uri,
+        "appSecretKeyHex": app_secret_hex,
+    }))
+}
+
 /// Connect to a remote signer via a `bunker://` URI.
 ///
 /// Generates ephemeral app keys, performs the NIP-46 handshake, obtains the
