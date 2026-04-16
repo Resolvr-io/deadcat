@@ -18,10 +18,50 @@ use crate::{NodeState, NostrAppState};
 
 const ORDER_INDEX_AUTO_RESOLVE_SENTINEL: u32 = u32::MAX;
 
-/// Cache of markets fetched from relays but not yet promoted in the store.
-/// Persists across `discover_contracts` calls so markets don't flash and disappear.
+/// Cache of markets fetched from relays. Persisted to disk as JSON so
+/// markets are available instantly on cold start without waiting for relays.
 static RELAY_MARKET_CACHE: once_cell::sync::Lazy<std::sync::Mutex<Vec<DiscoveredMarket>>> =
     once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+const RELAY_CACHE_FILE: &str = "relay_market_cache.json";
+
+fn relay_cache_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join(RELAY_CACHE_FILE))
+}
+
+pub fn load_relay_cache(app: &tauri::AppHandle) {
+    let Some(path) = relay_cache_path(app) else {
+        return;
+    };
+    let Ok(data) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(markets) = serde_json::from_str::<Vec<DiscoveredMarket>>(&data) else {
+        return;
+    };
+    if let Ok(mut cache) = RELAY_MARKET_CACHE.lock() {
+        *cache = markets;
+    }
+}
+
+fn save_relay_cache(app: &tauri::AppHandle) {
+    let Some(path) = relay_cache_path(app) else {
+        return;
+    };
+    let Ok(cache) = RELAY_MARKET_CACHE.lock() else {
+        return;
+    };
+    if cache.is_empty() {
+        return;
+    }
+    let Ok(json) = serde_json::to_string(&*cache) else {
+        return;
+    };
+    let _ = std::fs::write(path, json);
+}
 
 fn validate_request(request: &CreateContractRequest) -> Result<(), String> {
     if request.question.trim().is_empty() || request.question.len() > 140 {
@@ -1029,6 +1069,8 @@ pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredM
                         let _ = app_handle.emit("discovery:market-refresh", ());
                     }
                 }
+                // Persist cache to disk for instant cold-start display
+                save_relay_cache(&app_handle);
             }
         });
     }
