@@ -6,7 +6,6 @@ export const SATS_PER_FULL_CONTRACT = 2; // multiplied by cptSats at runtime
 
 export const categories: NavCategory[] = [
   "Trending",
-  "Ending Soon",
   "New",
   "Portfolio",
   "Politics",
@@ -15,6 +14,7 @@ export const categories: NavCategory[] = [
   "Bitcoin",
   "Weather",
   "Macro",
+  "Ending Soon",
   "Resolved",
   "My Markets",
 ];

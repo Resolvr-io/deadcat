@@ -454,7 +454,7 @@ function CategoryBar() {
                 }`}
               >
                 {icon}
-                {category}
+                {category === "Ending Soon" ? "Ending" : category}
               </button>
             );
           })}
