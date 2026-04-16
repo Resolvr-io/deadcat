@@ -49,7 +49,7 @@ const DEC_2026_UNIX: u64 = 1_798_761_600; // 2027-01-01 00:00 UTC
 const JUN_2027_UNIX: u64 = 1_814_400_000; // ~mid 2027
 
 const MARKETS: &[MarketDef] = &[
-    // Bitcoin
+    // ── First 5: one per category for initial seeding ────────────
     MarketDef {
         question: "Will Bitcoin exceed $200k by end of 2026?",
         description: "Resolves YES if BTC/USD spot price on any major exchange exceeds $200,000 at any point before January 1, 2027 00:00 UTC.",
@@ -58,6 +58,40 @@ const MARKETS: &[MarketDef] = &[
         cpt_sats: 5000,
         settlement_unix: DEC_2026_UNIX,
     },
+    MarketDef {
+        question: "Will the US pass stablecoin legislation in 2026?",
+        description: "Resolves YES if a federal stablecoin bill is signed into law by the US President before January 1, 2027.",
+        category: "Politics",
+        resolution_source: "Congress.gov",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will Lewis Hamilton win a race for Ferrari in 2026?",
+        description: "Resolves YES if Lewis Hamilton wins at least one Formula 1 Grand Prix while driving for Scuderia Ferrari in 2026.",
+        category: "Sports",
+        resolution_source: "FIA official race results",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will GTA VI be released in 2026?",
+        description: "Resolves YES if Grand Theft Auto VI is officially released for any platform during calendar year 2026.",
+        category: "Culture",
+        resolution_source: "Rockstar Games official release",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will the Fed cut rates below 3% by end of 2026?",
+        description: "Resolves YES if the Federal Reserve's target federal funds rate upper bound is below 3.00% on December 31, 2026.",
+        category: "Macro",
+        resolution_source: "Federal Reserve press releases",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    // ── Remaining: grouped by category ───────────────────────────
+    // Bitcoin
     MarketDef {
         question: "Will Bitcoin dominance drop below 50% in 2026?",
         description: "Resolves YES if Bitcoin market cap dominance (per CoinGecko) falls below 50% at any point during 2026.",
@@ -82,15 +116,15 @@ const MARKETS: &[MarketDef] = &[
         cpt_sats: 5000,
         settlement_unix: 1_719_792_000, // 2026-07-01
     },
-    // Politics
     MarketDef {
-        question: "Will the US pass stablecoin legislation in 2026?",
-        description: "Resolves YES if a federal stablecoin bill is signed into law by the US President before January 1, 2027.",
-        category: "Politics",
-        resolution_source: "Congress.gov",
+        question: "Will Ethereum flip Bitcoin in market cap?",
+        description: "Resolves YES if Ethereum's market capitalization exceeds Bitcoin's at any point during 2026 per CoinGecko.",
+        category: "Bitcoin",
+        resolution_source: "CoinGecko market cap",
         cpt_sats: 5000,
         settlement_unix: DEC_2026_UNIX,
     },
+    // Politics
     MarketDef {
         question: "Will the EU implement MiCA enforcement actions in 2026?",
         description: "Resolves YES if any EU member state issues formal enforcement action under MiCA regulation during 2026.",
@@ -137,14 +171,6 @@ const MARKETS: &[MarketDef] = &[
         description: "Resolves YES if a new men's 100m sprint world record (sub-9.58s) is ratified by World Athletics during 2026.",
         category: "Sports",
         resolution_source: "World Athletics records page",
-        cpt_sats: 5000,
-        settlement_unix: DEC_2026_UNIX,
-    },
-    MarketDef {
-        question: "Will Lewis Hamilton win a race for Ferrari in 2026?",
-        description: "Resolves YES if Lewis Hamilton wins at least one Formula 1 Grand Prix while driving for Scuderia Ferrari in 2026.",
-        category: "Sports",
-        resolution_source: "FIA official race results",
         cpt_sats: 5000,
         settlement_unix: DEC_2026_UNIX,
     },
@@ -200,14 +226,6 @@ const MARKETS: &[MarketDef] = &[
     },
     // Macro
     MarketDef {
-        question: "Will the Fed cut rates below 3% by end of 2026?",
-        description: "Resolves YES if the Federal Reserve's target federal funds rate upper bound is below 3.00% on December 31, 2026.",
-        category: "Macro",
-        resolution_source: "Federal Reserve press releases",
-        cpt_sats: 5000,
-        settlement_unix: DEC_2026_UNIX,
-    },
-    MarketDef {
         question: "Will gold exceed $3,500/oz in 2026?",
         description: "Resolves YES if the LBMA PM gold fix exceeds $3,500 per troy ounce at any point during 2026.",
         category: "Macro",
@@ -223,11 +241,153 @@ const MARKETS: &[MarketDef] = &[
         cpt_sats: 5000,
         settlement_unix: DEC_2026_UNIX,
     },
+    // Bitcoin (additional)
     MarketDef {
-        question: "Will Ethereum flip Bitcoin in market cap?",
-        description: "Resolves YES if Ethereum's market capitalization exceeds Bitcoin's at any point during 2026 per CoinGecko.",
+        question: "Will Bitcoin transaction fees average over $50 in Q4 2026?",
+        description: "Resolves YES if the average Bitcoin on-chain transaction fee exceeds $50 USD for the full Q4 2026 quarter (Oct-Dec).",
         category: "Bitcoin",
-        resolution_source: "CoinGecko market cap",
+        resolution_source: "Mempool.space fee data",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will Lightning Network capacity exceed 10,000 BTC?",
+        description: "Resolves YES if the total public Lightning Network channel capacity exceeds 10,000 BTC at any point in 2026.",
+        category: "Bitcoin",
+        resolution_source: "Mempool.space Lightning explorer",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will a Bitcoin L2 reach $1B TVL?",
+        description: "Resolves YES if any Bitcoin Layer 2 protocol (excluding Lightning) exceeds $1 billion in total value locked per DefiLlama.",
+        category: "Bitcoin",
+        resolution_source: "DefiLlama",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    // Politics (additional)
+    MarketDef {
+        question: "Will Texas pass a state Bitcoin reserve bill?",
+        description: "Resolves YES if the Texas state legislature passes a bill establishing a state-held Bitcoin reserve, signed by the Governor.",
+        category: "Politics",
+        resolution_source: "Texas Legislature website",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will the SEC approve a Solana spot ETF in 2026?",
+        description: "Resolves YES if the US SEC approves at least one Solana spot ETF application for listing on a US exchange.",
+        category: "Politics",
+        resolution_source: "SEC EDGAR filings",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will China lift its cryptocurrency trading ban?",
+        description: "Resolves YES if the People's Republic of China officially reverses its ban on cryptocurrency trading for retail investors.",
+        category: "Politics",
+        resolution_source: "PBoC / State Council announcements",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    // Sports (additional)
+    MarketDef {
+        question: "Will the US win the most gold medals at the 2026 Winter Olympics?",
+        description: "Resolves YES if the United States finishes with the most gold medals at the 2026 Milano Cortina Winter Olympics.",
+        category: "Sports",
+        resolution_source: "IOC official medal tally",
+        cpt_sats: 5000,
+        settlement_unix: 1_740_700_800, // ~Feb 28 2026
+    },
+    MarketDef {
+        question: "Will Lionel Messi retire from professional football in 2026?",
+        description: "Resolves YES if Lionel Messi officially announces his retirement from all professional club football during 2026.",
+        category: "Sports",
+        resolution_source: "Official club / player announcement",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will an NBA team complete a 73+ win regular season?",
+        description: "Resolves YES if any NBA team wins 73 or more regular season games in the 2025-26 season, tying or breaking the record.",
+        category: "Sports",
+        resolution_source: "NBA.com standings",
+        cpt_sats: 5000,
+        settlement_unix: 1_718_668_800, // ~Jun 2026
+    },
+    // Culture (additional)
+    MarketDef {
+        question: "Will a decentralized social protocol surpass 50M users?",
+        description: "Resolves YES if any decentralized social protocol (Nostr, AT Protocol, ActivityPub, etc.) verifiably exceeds 50 million total accounts.",
+        category: "Culture",
+        resolution_source: "Protocol stats / independent audits",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will an AI-generated song reach #1 on Billboard Hot 100?",
+        description: "Resolves YES if a song primarily created by AI (vocals, composition, or production) reaches #1 on the Billboard Hot 100.",
+        category: "Culture",
+        resolution_source: "Billboard Hot 100 chart",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will GTA VI be released in 2026?",
+        description: "Resolves YES if Grand Theft Auto VI is officially released for any platform during calendar year 2026.",
+        category: "Culture",
+        resolution_source: "Rockstar Games official release",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    // Weather (additional)
+    MarketDef {
+        question: "Will Arctic sea ice hit a new record minimum in 2026?",
+        description: "Resolves YES if the Arctic sea ice minimum extent in September 2026 sets a new all-time low per NSIDC satellite data.",
+        category: "Weather",
+        resolution_source: "NSIDC Arctic Sea Ice News",
+        cpt_sats: 5000,
+        settlement_unix: 1_793_491_200, // ~Oct 2026
+    },
+    MarketDef {
+        question: "Will a US city record a temperature above 130°F?",
+        description: "Resolves YES if any official US weather station records a temperature exceeding 130°F (54.4°C) during 2026.",
+        category: "Weather",
+        resolution_source: "NOAA weather station records",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    // Macro (additional)
+    MarketDef {
+        question: "Will US unemployment exceed 5% in 2026?",
+        description: "Resolves YES if the BLS-reported US unemployment rate (U-3) exceeds 5.0% in any monthly report during 2026.",
+        category: "Macro",
+        resolution_source: "Bureau of Labor Statistics",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will the S&P 500 exceed 7,000 in 2026?",
+        description: "Resolves YES if the S&P 500 index closes above 7,000 on any trading day during 2026.",
+        category: "Macro",
+        resolution_source: "NYSE market data",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will the US 10-year Treasury yield exceed 6%?",
+        description: "Resolves YES if the US 10-year Treasury note yield exceeds 6.00% at any point during 2026.",
+        category: "Macro",
+        resolution_source: "US Treasury yield data",
+        cpt_sats: 5000,
+        settlement_unix: DEC_2026_UNIX,
+    },
+    MarketDef {
+        question: "Will a BRICS common currency be announced?",
+        description: "Resolves YES if the BRICS bloc officially announces the creation of a common settlement currency or currency unit.",
+        category: "Macro",
+        resolution_source: "BRICS summit communiqués",
         cpt_sats: 5000,
         settlement_unix: DEC_2026_UNIX,
     },
@@ -359,12 +519,22 @@ async fn cmd_publish(keys: &Keys, count: Option<usize>) {
     let oracle_pk = oracle_pubkey_bytes(keys);
     let max = count.unwrap_or(MARKETS.len()).min(MARKETS.len());
 
-    // Get current chain tip for block height estimation
-    let current_height = 2_800_000u32; // approximate Liquid testnet height
+    // Fetch actual chain tip for accurate expiry height estimation
     let current_unix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
+    let current_height: u32 = std::process::Command::new("curl")
+        .args(["-sf", "https://blockstream.info/liquidtestnet/api/blocks/tip/height"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or_else(|| {
+            eprintln!("Warning: could not fetch chain tip, using estimate");
+            2_400_000
+        });
+    println!("Current chain tip: block {}\n", current_height);
 
     println!("Creating {} market(s)...\n", max);
 
@@ -414,12 +584,57 @@ async fn cmd_publish(keys: &Keys, count: Option<usize>) {
         println!("  Category:     {}", market.category);
         println!();
 
-        // Sync wallet between markets so UTXOs are up to date
+        // Wait for the change UTXO to become visible before creating the
+        // next market.  Liquid blocks are ~1 min, so we retry sync up to
+        // 90 s waiting for at least 2 L-BTC UTXOs.
         if i + 1 < max {
-            println!("  Syncing wallet...");
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            if let Err(e) = node.sync_wallet().await {
-                eprintln!("  Warning: wallet sync failed: {e}");
+            let policy_asset = Network::LiquidTestnet.into_lwk().policy_asset();
+            println!("  Waiting for UTXOs...");
+            let mut ready = false;
+            for attempt in 1..=18 {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                if let Err(e) = node.sync_wallet().await {
+                    eprintln!("  Warning: sync failed: {e}");
+                    continue;
+                }
+                let utxo_count = node
+                    .utxos()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|u| u.unblinded.asset == policy_asset && u.unblinded.value >= 546)
+                    .count();
+                if utxo_count >= 2 {
+                    println!("  Ready ({} UTXOs after {}s)", utxo_count, attempt * 5);
+                    ready = true;
+                    break;
+                }
+            }
+            if !ready {
+                // Last resort: split the single UTXO
+                println!("  Still only 1 UTXO — splitting...");
+                let balance = node.balance().unwrap_or_default();
+                let lbtc = balance.get(&policy_asset).copied().unwrap_or(0);
+                if lbtc > 2000 {
+                    let addr = node.address(None).await.expect("address").address().to_string();
+                    match node.send_lbtc(addr, lbtc / 2, default_tx_options()).await {
+                        Ok((txid, _)) => {
+                            println!("  Split tx: {}", txid);
+                            // Wait for split to confirm
+                            for _ in 1..=18 {
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                let _ = node.sync_wallet().await;
+                                let count = node
+                                    .utxos()
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .filter(|u| u.unblinded.asset == policy_asset && u.unblinded.value >= 546)
+                                    .count();
+                                if count >= 2 { break; }
+                            }
+                        }
+                        Err(e) => eprintln!("  Split failed: {e}"),
+                    }
+                }
             }
         }
     }
