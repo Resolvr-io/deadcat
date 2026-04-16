@@ -344,9 +344,11 @@ export default function WalletSetupStep({
       }
       return;
     }
-    // For restore/nostr-restore: go to password step
+    // For restore/nostr-restore: go to password step (clear passwords for fresh start)
     useStore.setState({
       onboardingWalletPasswordStep: true,
+      onboardingWalletPassword: "",
+      onboardingWalletPasswordConfirm: "",
       onboardingError: "",
     });
   }, [walletMode, mnemonic]);
@@ -500,6 +502,8 @@ export default function WalletSetupStep({
     useStore.setState({
       onboardingWalletPasswordStep: true,
       onboardingMnemonicVerifyStep: false,
+      onboardingWalletPassword: "",
+      onboardingWalletPasswordConfirm: "",
       onboardingError: "",
     });
   }, [mnemonic, verifyIndices, verifyInputs]);
@@ -865,6 +869,8 @@ export default function WalletSetupStep({
       onClick={() =>
         useStore.setState({
           onboardingWalletMode: "nostr-restore",
+          onboardingWalletPassword: "",
+          onboardingWalletPasswordConfirm: "",
           onboardingError: "",
         })
       }
@@ -927,6 +933,8 @@ export default function WalletSetupStep({
           onClick={() =>
             useStore.setState({
               onboardingWalletMode: "restore",
+              onboardingWalletPassword: "",
+              onboardingWalletPasswordConfirm: "",
               onboardingError: "",
             })
           }
