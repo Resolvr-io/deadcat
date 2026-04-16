@@ -28,8 +28,13 @@ testing = ["simplicity-sys/test-utils"]
 version = "0.6"
 optional = true
 
+[[example]]
+name = "seed_markets"
+required-features = ["testing"]
+
 [dev-dependencies]
 deadcat-sdk = { path = ".", features = ["testing"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 deadcat-store = { path = "deadcat-store" }
 simplicity-sys = { version = "0.6", features = ["test-utils"] }
 bitcoincore-rpc = "0.19"

@@ -55,6 +55,9 @@ deadcat-store = { path = "crates/deadcat-sdk/deadcat-store" }
 nostr-sdk = { version = "0.38", features = ["nip44"] }
 nostr-relay-builder = "0.38"
 
+# Misc
+once_cell = "1"
+
 # Crypto
 sha2 = "0.10"
 electrum-client = "0.21"

@@ -1,8 +1,21 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
+import { showToast } from "../components/shared/Toast";
 import { queryClient } from "../queries/queryClient";
 import { useStore } from "../store";
 import type { WalletTransaction, WalletUtxo } from "../types";
+
+function formatSats(sats: number): string {
+  return `${Math.abs(sats).toLocaleString()} sats`;
+}
+
+function toastForNewTx(tx: WalletTransaction): void {
+  if (tx.balanceChange > 0) {
+    showToast(`Received ${formatSats(tx.balanceChange)}`, "success");
+  } else if (tx.balanceChange < 0) {
+    showToast(`Sent ${formatSats(tx.balanceChange)}`, "info");
+  }
+}
 
 export function useTauriEvents(): void {
   useEffect(() => {
@@ -63,6 +76,30 @@ export function useTauriEvents(): void {
             backupPassword: "",
             backupCopied: false,
           };
+
+          // Detect new transactions for toasts + badge
+          const { walletSeenTxids, walletNewTxids } = useStore.getState();
+          if (walletSeenTxids.size > 0) {
+            const freshNew = new Set(walletNewTxids);
+            for (const tx of payload.transactions) {
+              if (!walletSeenTxids.has(tx.txid)) {
+                toastForNewTx(tx);
+                // Only badge for incoming funds — outgoing txs (sends,
+                // market creation, etc.) don't need a persistent badge.
+                if (tx.balanceChange > 0) {
+                  freshNew.add(tx.txid);
+                }
+              }
+            }
+            if (freshNew.size !== walletNewTxids.size) {
+              useStore.setState({ walletNewTxids: freshNew });
+            }
+          }
+
+          // Update seen set to current txid list
+          const nextSeen = new Set(payload.transactions.map((t) => t.txid));
+          useStore.setState({ walletSeenTxids: nextSeen });
+
           useStore.setState({
             walletData: {
               ...base,
@@ -87,7 +124,11 @@ export function useTauriEvents(): void {
           if (current !== "not_created") {
             useStore.setState({ walletStatus: "locked" });
           }
-          useStore.setState({ walletData: null });
+          useStore.setState({
+            walletData: null,
+            walletSeenTxids: new Set(),
+            walletNewTxids: new Set(),
+          });
           void queryClient.invalidateQueries({
             queryKey: ["walletSnapshot"],
           });
@@ -96,7 +137,11 @@ export function useTauriEvents(): void {
     );
 
     // ── discovery events ─────────────────────────────────────────
-    for (const eventName of ["discovery:market", "discovery:attestation"]) {
+    for (const eventName of [
+      "discovery:market",
+      "discovery:market-refresh",
+      "discovery:attestation",
+    ]) {
       register(
         listen(eventName, () => {
           if (disposed) return;

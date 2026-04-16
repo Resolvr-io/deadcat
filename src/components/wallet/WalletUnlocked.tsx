@@ -56,6 +56,11 @@ export function WalletUnlocked({
       ? (walletData.balance[walletPolicyAssetId] ?? 0)
       : 0;
 
+  const hasUnconfirmed = useMemo(
+    () => (walletData?.transactions ?? []).some((tx) => tx.height == null),
+    [walletData?.transactions],
+  );
+
   // Map asset IDs to labels
   const assetLabel = useMemo(() => {
     const map = new Map<string, WalletAssetLabel>();
@@ -333,7 +338,9 @@ export function WalletUnlocked({
             {walletBalanceHidden ? (
               <HiddenBalance className="text-3xl text-slate-500" />
             ) : (
-              <span className="text-3xl">
+              <span
+                className={`text-3xl ${hasUnconfirmed ? "animate-pulse" : ""}`}
+              >
                 {formatLbtc(policyBalance, walletUnit, showLbtcLabel)}
               </span>
             )}

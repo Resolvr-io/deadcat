@@ -1537,6 +1537,7 @@ dependencies = [
  "nostr-sdk",
  "rand 0.8.5",
  "rayon",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

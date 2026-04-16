@@ -188,32 +188,28 @@ export default function MarketCard({
     ) : null;
 
   return (
-    <div
-      className="market-card rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600"
+    <button
+      type="button"
+      onClick={handleOpenMarket}
+      className="market-card w-full cursor-pointer rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600"
       style={{ animationDelay: `${index * 50}ms` }}
     >
-      <button
-        type="button"
-        onClick={handleOpenMarket}
-        className="w-full text-left"
-      >
-        <div className="mb-2 flex items-center justify-between text-xs">
-          <span className="text-slate-500">
-            {market.category}
-            {market.isLive && <span className="text-emerald-400"> · LIVE</span>}
-          </span>
-          <span className="text-slate-500">{timeLeft}</span>
-        </div>
-        <p className="mb-2 max-h-12 overflow-hidden text-sm font-normal text-slate-200">
-          {market.question}
+      <div className="mb-2 flex items-center justify-between text-xs">
+        <span className="text-slate-500">
+          {market.category}
+          {market.isLive && <span className="text-emerald-400"> · LIVE</span>}
+        </span>
+        <span className="text-slate-500">{timeLeft}</span>
+      </div>
+      <p className="mb-2 max-h-12 overflow-hidden text-sm font-normal text-slate-200">
+        {market.question}
+      </p>
+      {yesPct != null && (
+        <p className="mb-2 text-2xl font-semibold text-slate-100">
+          {yesPct}
+          <span className="text-base text-slate-400">%</span>
         </p>
-        {yesPct != null && (
-          <p className="mb-2 text-2xl font-semibold text-slate-100">
-            {yesPct}
-            <span className="text-base text-slate-400">%</span>
-          </p>
-        )}
-      </button>
+      )}
       <div className="flex items-center gap-2">
         {resolvedBadge ?? (
           <>
@@ -245,7 +241,7 @@ export default function MarketCard({
         {" · "}
         {timeLeft}
       </p>
-    </div>
+    </button>
   );
 }
 

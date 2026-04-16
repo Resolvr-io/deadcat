@@ -17,6 +17,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use state::{AppState, AppStateManager, PaymentSwap, AUTO_LOCK_TIMEOUT_SECS};
 
+/// How often (in seconds) to sync the wallet in the background while unlocked.
+const WALLET_SYNC_INTERVAL_SECS: u64 = 15;
+
 const APP_STATE_UPDATED_EVENT: &str = "app_state_updated";
 
 /// Holds the DeadcatNode behind a tokio Mutex for async access.
@@ -1393,6 +1396,66 @@ pub fn run() {
                             emit_state(&app_handle, &state);
                         }
                     }
+                }
+            });
+
+            // Spawn background wallet sync loop — keeps balances and
+            // transaction confirmations up to date while the wallet is
+            // unlocked, without requiring a manual sync button press.
+            let sync_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                    WALLET_SYNC_INTERVAL_SECS,
+                ));
+                // The first tick fires immediately; skip it so we don't
+                // race with the initial unlock sync.
+                interval.tick().await;
+
+                loop {
+                    interval.tick().await;
+
+                    // Clone the Arc out of the mutex immediately so we
+                    // don't hold the node lock during the slow sync.
+                    let node = {
+                        let node_state = sync_handle.state::<NodeState>();
+                        let guard = node_state.node.lock().await;
+                        match guard.as_ref().cloned() {
+                            Some(n) => n,
+                            None => continue,
+                        }
+                    };
+
+                    if !node.is_wallet_unlocked() {
+                        continue;
+                    }
+
+                    if let Err(e) = node.sync().await {
+                        log::debug!("background wallet sync: {e}");
+                        continue;
+                    }
+
+                    // Emit updated state so the frontend picks up new
+                    // confirmations and balance changes.
+                    let fresh_balance: Option<std::collections::HashMap<String, u64>> =
+                        node.balance().ok().map(|m| {
+                            m.into_iter()
+                                .filter(|(_, v)| *v > 0)
+                                .map(|(k, v)| (k.to_string(), v))
+                                .collect()
+                        });
+
+                    let bg_app = sync_handle.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let manager = bg_app.state::<Mutex<AppStateManager>>();
+                        let mut mgr = match manager.lock() {
+                            Ok(m) => m,
+                            Err(_) => return,
+                        };
+                        mgr.bump_revision();
+                        let state = mgr.snapshot_with_balance(fresh_balance);
+                        emit_state(&bg_app, &state);
+                    })
+                    .await;
                 }
             });
 
