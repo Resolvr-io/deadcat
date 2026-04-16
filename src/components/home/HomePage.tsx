@@ -191,7 +191,12 @@ function MarketLoader() {
 
 function CatLoaderSvg() {
   return (
-    <svg viewBox="0 0 260 267" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <svg
+      viewBox="0 0 260 267"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
       <path
         fillRule="evenodd"
         clipRule="evenodd"
@@ -204,7 +209,12 @@ function CatLoaderSvg() {
 
 function BagLoaderSvg() {
   return (
-    <svg viewBox="0 0 298 376" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <svg
+      viewBox="0 0 298 376"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
       <path
         fillRule="evenodd"
         clipRule="evenodd"
