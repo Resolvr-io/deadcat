@@ -1014,18 +1014,20 @@ pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredM
         let app_handle = app.clone();
         tauri::async_runtime::spawn(async move {
             if let Ok(markets) = node.fetch_markets().await {
+                // Only replace the cache when the relay returned results;
+                // an empty response (timeout / transient failure) should
+                // not wipe markets the user was just looking at.
+                if markets.is_empty() {
+                    return;
+                }
                 if let Ok(mut cache) = RELAY_MARKET_CACHE.lock() {
-                    let cached_ids: std::collections::HashSet<String> =
+                    let old_ids: std::collections::HashSet<String> =
                         cache.iter().map(|m| m.market_id.clone()).collect();
-                    let mut new_count = 0;
-                    for m in markets {
-                        if !cached_ids.contains(&m.market_id) {
-                            cache.push(m);
-                            new_count += 1;
-                        }
-                    }
-                    if new_count > 0 {
-                        // Signal one refresh — won't loop because cache now contains these markets
+                    let new_ids: std::collections::HashSet<String> =
+                        markets.iter().map(|m| m.market_id.clone()).collect();
+                    let changed = old_ids != new_ids;
+                    *cache = markets;
+                    if changed {
                         let _ = app_handle.emit("discovery:market-refresh", ());
                     }
                 }
