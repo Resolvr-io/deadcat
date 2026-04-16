@@ -11,7 +11,7 @@ export type ChartSeriesData = {
   pointCount: number;
   scaleBlocks: number;
   startBlockHeight: number;
-  xLabels: number[];
+  xLabels: string[];
   yesSeries: Array<number | null>;
 };
 
@@ -43,15 +43,36 @@ function scaleConfig(timescale: ChartTimescale): {
   };
 }
 
+/** Format a block height as a relative time label (e.g. "12:30", "Apr 3"). */
+function blockHeightToTimeLabel(
+  blockHeight: number,
+  currentHeight: number,
+): string {
+  const blocksAgo = currentHeight - blockHeight;
+  // ~1 block per minute on Liquid
+  const date = new Date(Date.now() - blocksAgo * 60_000);
+  const now = new Date();
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  if (sameDay) {
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
 function buildXAxisLabels(
   startBlockHeight: number,
   scaleBlocks: number,
-): number[] {
+  currentHeight: number,
+): string[] {
   const fractions =
     scaleBlocks >= 100 ? [0, 0.25, 0.5, 0.75, 1] : [0, 1 / 3, 2 / 3, 1];
-  return fractions.map((fraction) =>
-    Math.round(startBlockHeight + fraction * scaleBlocks),
-  );
+  return fractions.map((fraction) => {
+    const height = Math.round(startBlockHeight + fraction * scaleBlocks);
+    return blockHeightToTimeLabel(height, currentHeight);
+  });
 }
 
 function sampleHistoryProbabilityAtHeight(
@@ -115,7 +136,11 @@ export function buildChartSeriesData(
     market.currentHeight || scaleBlocks,
   );
   const startBlockHeight = Math.max(0, endBlockHeight - scaleBlocks);
-  const xLabels = buildXAxisLabels(startBlockHeight, scaleBlocks);
+  const xLabels = buildXAxisLabels(
+    startBlockHeight,
+    scaleBlocks,
+    market.currentHeight || endBlockHeight,
+  );
 
   return {
     endBlockHeight,
@@ -142,7 +167,11 @@ export function buildChartFromHistory(
     latestHistoryHeight,
   );
   const startBlockHeight = Math.max(0, endBlockHeight - scaleBlocks);
-  const xLabels = buildXAxisLabels(startBlockHeight, scaleBlocks);
+  const xLabels = buildXAxisLabels(
+    startBlockHeight,
+    scaleBlocks,
+    market.currentHeight || endBlockHeight,
+  );
   const historyPoints = history
     .map((entry) => ({
       blockHeight: entry.block_height,
