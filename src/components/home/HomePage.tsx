@@ -67,6 +67,71 @@ function CategoryIcon({
           <rect x="7" y="5" width="12" height="4" rx="1" />
         </svg>
       );
+    case "Politics":
+      return (
+        <svg
+          aria-hidden="true"
+          className={`${className} shrink-0`}
+          viewBox="0 0 24 24"
+          fill="currentColor"
+        >
+          <path d="M20 6h3v2h-1v11h1v2H1v-2h1V8H1V6h3V4a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2zm0 2H4v11h3v-7h2v7h2v-7h2v7h2v-7h2v7h3V8zM6 5v1h12V5H6z" />
+        </svg>
+      );
+    case "Sports":
+      return (
+        <svg aria-hidden="true" {...props}>
+          <path d="M6 9H4a2 2 0 0 1-2-2V4h4" />
+          <path d="M18 9h2a2 2 0 0 0 2-2V4h-4" />
+          <path d="M4 22h16" />
+          <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
+          <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
+          <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
+        </svg>
+      );
+    case "Culture":
+      return (
+        <svg aria-hidden="true" {...props}>
+          <circle cx="12" cy="12" r="10" />
+          <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
+          <path d="M2 12h20" />
+        </svg>
+      );
+    case "Bitcoin":
+      return (
+        <svg
+          aria-hidden="true"
+          className={`${className} shrink-0`}
+          viewBox="0 0 24 24"
+          fill="currentColor"
+        >
+          <path
+            fillRule="evenodd"
+            clipRule="evenodd"
+            d="M9 2a1 1 0 0 1 2 0v2h2V2a1 1 0 1 1 2 0v2c3.59 0 5.88 2.01 5.88 4.5 0 1.41-.73 2.67-2.02 3.49 1.31.82 2.06 2.08 2.06 3.51 0 2.5-2.3 4.5-5.91 4.5v2a1 1 0 1 1-2 0v-2h-2v2a1 1 0 1 1-2 0v-2H4a1 1 0 1 1 0-2h2V6H4a1 1 0 0 1 0-2h5V2zm6 9c2.91 0 3.88-1.49 3.88-2.5S17.91 6 15 6H8v5h7zM8 13v5h7c2.94 0 3.91-1.5 3.91-2.5S17.94 13 15 13H8z"
+          />
+        </svg>
+      );
+    case "Weather":
+      return (
+        <svg aria-hidden="true" {...props}>
+          <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
+        </svg>
+      );
+    case "Macro":
+      return (
+        <svg aria-hidden="true" {...props}>
+          <path d="M3 3v18h18" />
+          <path d="m19 9-5 5-4-4-3 3" />
+        </svg>
+      );
+    case "Resolved":
+      return (
+        <svg aria-hidden="true" {...props}>
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+          <polyline points="22 4 12 14.01 9 11.01" />
+        </svg>
+      );
     case "My Markets":
       return (
         <svg aria-hidden="true" {...props}>
@@ -243,7 +308,9 @@ function SortedView({
     <div className="phi-container py-6 lg:py-8">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="flex items-center gap-2 text-xl font-medium text-slate-100">
-          <CategoryIcon category={title} className="h-5 w-5" />
+          <span className="text-slate-500">
+            <CategoryIcon category={title} className="h-5 w-5" />
+          </span>
           {title}
         </h1>
         <p className="text-sm text-slate-400">
@@ -330,7 +397,9 @@ function PortfolioView({ markets }: { markets: Market[] }) {
     <div className="phi-container py-6 lg:py-8">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="flex items-center gap-2 text-xl font-medium text-slate-100">
-          <CategoryIcon category="Portfolio" className="h-5 w-5" />
+          <span className="text-slate-500">
+            <CategoryIcon category="Portfolio" className="h-5 w-5" />
+          </span>
           Portfolio
         </h1>
       </div>
@@ -584,7 +653,9 @@ function MyMarketsView({ markets }: { markets: Market[] }) {
     <div className="phi-container py-6 lg:py-8">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="flex items-center gap-2 text-xl font-medium text-slate-100">
-          <CategoryIcon category="My Markets" className="h-5 w-5" />
+          <span className="text-slate-500">
+            <CategoryIcon category="My Markets" className="h-5 w-5" />
+          </span>
           My Markets
         </h1>
         {marketMakerMode && (
@@ -698,6 +769,9 @@ function CategoryPageView({
         <section>
           <div className="mb-4 flex items-center justify-between">
             <h1 className="flex items-center gap-2 text-xl font-medium text-slate-100">
+              <span className="text-slate-500">
+                <CategoryIcon category={category} className="h-5 w-5" />
+              </span>
               {category}
             </h1>
             <div className="flex items-center gap-2 text-sm text-slate-400">

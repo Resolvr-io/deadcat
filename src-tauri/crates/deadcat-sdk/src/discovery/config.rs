@@ -11,6 +11,10 @@ pub struct DiscoveryConfig {
     pub relays: Vec<String>,
     /// Network tag value (e.g. "liquid-testnet").
     pub network_tag: String,
+    /// Timeout for relay connection attempts. Relays that don't respond
+    /// within this window are skipped — the app proceeds with whichever
+    /// relays connected in time.
+    pub connect_timeout: Duration,
     /// Timeout for one-shot fetch operations.
     pub fetch_timeout: Duration,
     /// When set, only discover markets published by this author.
@@ -22,6 +26,7 @@ impl Default for DiscoveryConfig {
         Self {
             relays: DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect(),
             network_tag: super::NETWORK_TAG.to_string(),
+            connect_timeout: Duration::from_secs(3),
             fetch_timeout: Duration::from_secs(5),
             source_author: None,
         }
