@@ -59,8 +59,7 @@ pub fn load_connection(app_data_dir: &Path) -> Option<Nip46Connection> {
 pub fn save_connection(app_data_dir: &Path, conn: &Nip46Connection) -> Result<(), String> {
     let path = connection_path(app_data_dir);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create data dir: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create data dir: {e}"))?;
     }
     let json =
         serde_json::to_string_pretty(conn).map_err(|e| format!("failed to serialize: {e}"))?;
@@ -91,19 +90,20 @@ pub fn has_connection(app_data_dir: &Path) -> bool {
 pub fn connect_from_bunker_uri(
     bunker_uri_str: &str,
 ) -> Result<(NostrConnect, Nip46Connection), String> {
-    let uri = NostrConnectURI::parse(bunker_uri_str)
-        .map_err(|e| format!("invalid bunker URI: {e}"))?;
+    let uri =
+        NostrConnectURI::parse(bunker_uri_str).map_err(|e| format!("invalid bunker URI: {e}"))?;
 
     if !uri.is_bunker() {
         return Err("Expected a bunker:// URI, got nostrconnect://".to_string());
     }
 
-    let remote_signer_pubkey = uri
+    // Extract data before moving uri into NostrConnect::new()
+    let remote_signer_pubkey = *uri
         .remote_signer_public_key()
         .ok_or("bunker URI missing remote signer pubkey")?;
+    let relay_urls: Vec<String> = uri.relays().iter().map(|r| r.to_string()).collect();
 
     let app_keys = Keys::generate();
-    let relay_urls: Vec<String> = uri.relays().iter().map(|r| r.to_string()).collect();
 
     let signer = NostrConnect::new(
         uri,
@@ -127,9 +127,7 @@ pub fn connect_from_bunker_uri(
 /// Restore a `NostrConnect` signer from a persisted connection.
 ///
 /// Re-uses the same app keys so the remote signer recognizes us.
-pub fn restore_from_connection(
-    conn: &Nip46Connection,
-) -> Result<NostrConnect, String> {
+pub fn restore_from_connection(conn: &Nip46Connection) -> Result<NostrConnect, String> {
     let uri = NostrConnectURI::parse(&conn.bunker_uri)
         .map_err(|e| format!("invalid persisted bunker URI: {e}"))?;
 
@@ -137,13 +135,8 @@ pub fn restore_from_connection(
         .map_err(|e| format!("invalid persisted app secret key: {e}"))?;
     let app_keys = Keys::new(secret_key);
 
-    let signer = NostrConnect::new(
-        uri,
-        app_keys,
-        Duration::from_secs(NIP46_TIMEOUT_SECS),
-        None,
-    )
-    .map_err(|e| format!("failed to restore NostrConnect: {e}"))?;
+    let signer = NostrConnect::new(uri, app_keys, Duration::from_secs(NIP46_TIMEOUT_SECS), None)
+        .map_err(|e| format!("failed to restore NostrConnect: {e}"))?;
 
     // If we already know the user's public key, set it to skip the
     // initial `get_public_key` round-trip on first use.

@@ -248,8 +248,10 @@ async fn node_subscription_delivers_events() {
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
     let (announcement, _params) = test_market_announcement(oracle_pubkey, 0x33);
 
-    let event =
-        deadcat_sdk::build_announcement_event(&announcement, "liquid-testnet").unwrap().sign_with_keys(&keys).unwrap();
+    let event = deadcat_sdk::build_announcement_event(&announcement, "liquid-testnet")
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
     publisher.send_event(event).await.unwrap();
 
     // Wait for broadcast event

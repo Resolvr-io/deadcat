@@ -161,8 +161,7 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
         mut config: DiscoveryConfig,
     ) -> (Self, broadcast::Receiver<DiscoveryEvent>) {
         config.network_tag = network.discovery_tag().to_string();
-        let (discovery, rx) =
-            DiscoveryService::with_store(signer.clone(), store.clone(), config);
+        let (discovery, rx) = DiscoveryService::with_store(signer.clone(), store.clone(), config);
         let (snapshot_tx, snapshot_rx) = watch::channel(None);
         (
             Self {
@@ -598,7 +597,9 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
             no_asset_id: bytes_to_hex(&params.no_token_asset),
             yes_reissuance_token: bytes_to_hex(&params.yes_reissuance_token),
             no_reissuance_token: bytes_to_hex(&params.no_reissuance_token),
-            creator_pubkey: self.public_key().await
+            creator_pubkey: self
+                .public_key()
+                .await
                 .map_err(|e| NodeError::Discovery(format!("signer error: {e}")))?
                 .to_hex(),
             created_at: nostr_sdk::Timestamp::now().as_u64(),
@@ -623,7 +624,9 @@ impl<S: DiscoveryStore> DeadcatNode<S> {
                     description: Some(announcement.metadata.description.clone()),
                     category: Some(announcement.metadata.category.clone()),
                     resolution_source: Some(announcement.metadata.resolution_source.clone()),
-                    creator_pubkey: self.public_key().await
+                    creator_pubkey: self
+                        .public_key()
+                        .await
                         .ok()
                         .and_then(|pk| hex::decode(pk.to_hex()).ok()),
                     anchor: announcement.anchor.clone(),
@@ -2546,12 +2549,10 @@ mod tests {
     #[test]
     fn resolved_sync_metadata_repairs_poisoned_anchors_from_nostr_event() {
         let announcement = sample_pool_announcement();
-        let event = build_pool_event(
-            &announcement,
-            Network::LiquidTestnet.discovery_tag(),
-        )
-        .unwrap()
-        .sign_with_keys(&Keys::generate()).unwrap();
+        let event = build_pool_event(&announcement, Network::LiquidTestnet.discovery_tag())
+            .unwrap()
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
         let pool = crate::LmsrPoolSyncInfo {
             pool_id: announcement.lmsr_pool_id.clone(),
             market_id: announcement.market_id.clone(),
@@ -2642,8 +2643,12 @@ mod order_cleanup_tests {
             network_tag: "liquid-testnet".to_string(),
             ..Default::default()
         };
-        let (node, _rx) =
-            DeadcatNode::with_store(Arc::new(keys), Network::LiquidTestnet, store.clone(), config);
+        let (node, _rx) = DeadcatNode::with_store(
+            Arc::new(keys),
+            Network::LiquidTestnet,
+            store.clone(),
+            config,
+        );
 
         let announcement = test_order_announcement("market-node-delete");
         let event_id = node
@@ -2728,8 +2733,12 @@ mod order_cleanup_tests {
             network_tag: "liquid-regtest".to_string(),
             ..Default::default()
         };
-        let (node, _rx) =
-            DeadcatNode::with_store(Arc::new(keys), Network::LiquidRegtest, store.clone(), config);
+        let (node, _rx) = DeadcatNode::with_store(
+            Arc::new(keys),
+            Network::LiquidRegtest,
+            store.clone(),
+            config,
+        );
 
         let wallet_dir = tempfile::tempdir().unwrap();
         node.unlock_wallet(TEST_MNEMONIC, &env.electrum_url(), wallet_dir.path())
@@ -2789,8 +2798,12 @@ mod order_cleanup_tests {
             network_tag: "liquid-regtest".to_string(),
             ..Default::default()
         };
-        let (node, _rx) =
-            DeadcatNode::with_store(Arc::new(keys), Network::LiquidRegtest, store.clone(), config);
+        let (node, _rx) = DeadcatNode::with_store(
+            Arc::new(keys),
+            Network::LiquidRegtest,
+            store.clone(),
+            config,
+        );
 
         let wallet_dir = tempfile::tempdir().unwrap();
         node.unlock_wallet(TEST_MNEMONIC, &env.electrum_url(), wallet_dir.path())
@@ -2872,7 +2885,8 @@ mod order_cleanup_tests {
             network_tag: "liquid-regtest".to_string(),
             ..Default::default()
         };
-        let (node, _rx) = DeadcatNode::with_store(Arc::new(keys), Network::LiquidRegtest, store, config);
+        let (node, _rx) =
+            DeadcatNode::with_store(Arc::new(keys), Network::LiquidRegtest, store, config);
 
         let wallet_dir = tempfile::tempdir().unwrap();
         node.unlock_wallet(TEST_MNEMONIC, &env.electrum_url(), wallet_dir.path())
