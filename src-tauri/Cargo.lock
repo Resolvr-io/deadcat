@@ -1502,6 +1502,7 @@ dependencies = [
  "lwk_wollet",
  "nostr-relay-builder",
  "nostr-sdk",
+ "once_cell",
  "rand 0.8.5",
  "rustls",
  "serde",

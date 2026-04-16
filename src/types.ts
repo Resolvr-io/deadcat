@@ -536,3 +536,10 @@ export type LiquidSendResult = {
   feeSat: number;
   fee: ResolvedMinerFee;
 };
+
+export type PrepareSendResult = {
+  address: string;
+  amountSat: number;
+  feeSat: number;
+  fee: ResolvedMinerFee;
+};

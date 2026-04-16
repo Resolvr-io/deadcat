@@ -14,6 +14,7 @@ import { DEFAULT_TX_OPTIONS } from "../../services/tx";
 import { useStore } from "../../store";
 import type { ActionTab, Market, TradeDirection } from "../../types";
 import { formatSats } from "../../utils-react/format";
+import { friendlyError } from "../../utils-react/friendly-error";
 import {
   clampContractPriceSats,
   commitLimitPriceDraft,
@@ -28,21 +29,6 @@ import {
 } from "../../utils-react/market";
 import OrderbookPanel from "./OrderbookPanel";
 import PoolSection from "./PoolSection";
-
-function friendlyTradeError(raw: string): string {
-  const lower = raw.toLowerCase();
-  if (lower.includes("no liquidity"))
-    return "No liquidity available for this market yet.";
-  if (lower.includes("insufficient taker funding"))
-    return "Insufficient funds to complete this trade.";
-  if (lower.includes("insufficient utxo"))
-    return "Not enough wallet outputs. Try syncing your wallet.";
-  if (lower.includes("insufficient fee"))
-    return "Not enough funds to cover the network fee.";
-  if (lower.includes("wallet locked") || lower.includes("not initialized"))
-    return "Wallet is locked. Unlock it to trade.";
-  return raw;
-}
 
 export default function TradingPanel({ market }: { market: Market }) {
   const selectedSide = useStore((s) => s.selectedSide);
@@ -625,7 +611,7 @@ export default function TradingPanel({ market }: { market: Market }) {
           </div>
           {tradeError && (
             <p className="mt-3 text-xs text-rose-300">
-              {friendlyTradeError(tradeError)}
+              {friendlyError(tradeError)}
             </p>
           )}
           <button
@@ -745,7 +731,7 @@ export default function TradingPanel({ market }: { market: Market }) {
 
           {tradeError && (
             <p className="mt-3 text-xs text-rose-300">
-              {friendlyTradeError(tradeError)}
+              {friendlyError(tradeError)}
             </p>
           )}
 

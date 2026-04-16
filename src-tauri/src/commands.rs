@@ -1003,7 +1003,7 @@ pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredM
         }
     }
 
-    // Fetch from Nostr relays in the background and update the cache.
+    // Refresh from relays in the background.
     let node = {
         let node_state = app.state::<NodeState>();
         let guard = node_state.node.lock().await;
@@ -1013,9 +1013,6 @@ pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredM
         let app_handle = app.clone();
         tauri::async_runtime::spawn(async move {
             if let Ok(markets) = node.fetch_markets().await {
-                // Only replace the cache when the relay returned results;
-                // an empty response (timeout / transient failure) should
-                // not wipe markets the user was just looking at.
                 if markets.is_empty() {
                     return;
                 }
