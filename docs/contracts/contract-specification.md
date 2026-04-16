@@ -1,10 +1,27 @@
 # Contract Specification
 
-This document specifies the three Deadcat covenant contracts from the perspective of a `deadcat-core` implementor: planned parameter types, covenant structure, spend paths, and witness data. It consolidates information from the `.simf` source files and multiple satellite refactor docs into a single reference.
+This document specifies the Deadcat covenant contracts from the perspective of a `deadcat-core` implementor: planned parameter types, covenant structure, spend paths, and witness data. It consolidates information from the `.simf` source files and multiple satellite refactor docs into a single reference.
 
 **This document describes the planned end state** — after all pending refactors are applied. The current SDK source may differ. See [Pending Refactors](#pending-refactors) for the delta.
 
-## Prediction Market
+## Contract Types at a Glance
+
+Deadcat has **two prediction market contracts** plus two supporting contracts:
+
+| Contract | Purpose | Use when |
+|---|---|---|
+| **Prediction Market (binary)** | YES/NO on a single event | Outcomes are binary, or the set of outcomes can change over time (composed via arbitrage-based coherency at the app/pool layer) |
+| **Multi-Outcome Market** | N mutually exclusive, exhaustive outcomes with per-outcome YES/NO tokens | Outcome set is fixed and provably complete (e.g., Fed rate decision: raise/flat/lower/other). Solvency + cross-outcome coherency enforced at covenant level. |
+| **LMSR Pool** | Automated market maker over a binary market's YES/NO | Providing passive liquidity on a binary market |
+| **Maker Order** | Limit order against a binary market's token | Fills at a fixed price, cancellable by the maker |
+
+The two prediction market contracts **coexist by design**. The binary market is the primitive; the multi-outcome market generalizes it when the creator can pre-commit to an exhaustive outcome set. For outcome sets that are very large or not provably complete (e.g., elections where candidates may enter or withdraw), markets should compose from binary primitives at the application layer rather than instantiating a flat multi-outcome contract.
+
+See [multi-outcome/multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md) for the design rationale and the alternatives considered.
+
+Both market contracts uphold the same set of covenant-enforced principles (permissionlessness within the solvency invariant, narrow oracle authority, terminal-path completeness, RT destruction, sibling UTXO check, witness-parameterized indices, etc.). These are specified once in [market-contract-principles.md](market-contract-principles.md) and implemented by each contract. The per-contract specs below describe what is specific to each — token model, spend paths, parameters — and inherit the shared principles by reference.
+
+## Prediction Market (Binary)
 
 ### Parameters
 
@@ -82,6 +99,81 @@ See [oracle-bip340-tagged-hash.md](../protocol/oracle-bip340-tagged-hash.md).
 For **dormant terminal paths** (resolution/expiry from 0 outstanding pairs): both RT inputs are spent with no covenant outputs. The three-way ambiguity (YES/NO/Expired) is resolved via `RedeemNode::decode` on the witness — the spend path identifies which transition occurred.
 
 All other transitions are detectable from script pubkey matching alone (8 unique scripts).
+
+## Multi-Outcome Market
+
+Generalizes the binary market to N mutually exclusive, exhaustive outcomes with **per-outcome YES/NO tokens** (2N tokens total). This contract is appropriate when the outcome set is fixed and known at creation time. For the full spec, design rationale, and alternatives considered, see [multi-outcome/multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md).
+
+### Parameters
+
+```rust
+pub struct MultiOutcomeMarketParams {
+    pub oracle_public_key: XOnlyPublicKey,
+    pub collateral_asset_id: AssetId,
+    pub yes_token_asset_ids: [AssetId; N],       // derivable from creation tx
+    pub no_token_asset_ids: [AssetId; N],        // derivable from creation tx
+    pub yes_rt_asset_ids: [AssetId; N],          // derivable from creation tx
+    pub no_rt_asset_ids: [AssetId; N],           // derivable from creation tx
+    pub collateral_per_pair: u64,                // same convention as binary market
+    pub expiry_time: u32,                        // 60-block boundary
+    pub outcome_count: u8,                       // N
+}
+```
+
+Builder validates: `N` in supported range (proposed N=3..10), `collateral_per_pair` in 1-2-5 table AND divisible by N (for exact expiry redemption), `expiry_time` on 60-block boundary.
+
+### Covenant Structure
+
+**5N + 2 slots**:
+- 2N Dormant RTs (YES_i and NO_i, one per outcome)
+- 2N Unresolved RTs (YES_i and NO_i)
+- 1 Unresolved collateral
+- N Resolved_k collateral slots (one per winning outcome)
+- 1 Expired collateral
+
+| N | Slot count |
+|---|---|
+| 3 | 17 |
+| 5 | 27 |
+| 8 | 42 |
+| 10 | 52 |
+
+### Token Model and Solvency Invariant
+
+For outcome k winning, `YES_k` and `NO_j` (for all j ≠ k) each redeem for `collateral_per_pair`. Pre-resolution, the contract maintains an outcome-independent quantity `Q = y_k + sum_{j≠k} n_j` (same value for every k), with collateral `C = collateral_per_pair × Q`. All supported operations preserve outcome-independence of Q.
+
+### Spend Paths (summary)
+
+Per-outcome operations:
+- **Issue pair (outcome i)**: mint `sets` of YES_i and sets of NO_i, lock `sets × collateral_per_pair`.
+- **Cancel pair (outcome i)**: burn sets of YES_i and sets of NO_i, release `sets × collateral_per_pair`.
+
+Cross-outcome operations:
+- **Split YES** / **Merge YES**: mint/burn `sets` of each YES_i, for `sets × collateral_per_pair`.
+- **Split NO** / **Merge NO**: mint/burn `sets` of each NO_i, for `sets × (N-1) × collateral_per_pair`.
+
+Resolution/redemption:
+- **Resolution (outcome k)**: oracle signs u8 outcome_index; all 2N RTs burned; collateral moves to Resolved_k slot.
+- **Redemption**: YES_k and NO_j (j ≠ k) each redeem for `collateral_per_pair`.
+- **Expiry redemption**: YES_i redeems for `collateral_per_pair / N`; NO_i redeems for `collateral_per_pair × (N-1) / N`. Uniform 1/N outcome probability assumption keeps the rate solvency-preserving.
+
+All Unresolved-phase transitions co-spend all **2N+1 covenant inputs** (all RTs + collateral) to maintain the sibling UTXO check.
+
+### Oracle Attestation
+
+```
+message = tagged_hash("deadcat/oracle_attestation", market_id || outcome_index)
+market_id = SHA256(yes_token_asset_ids[0] || no_token_asset_ids[0] || ... || yes_token_asset_ids[N-1] || no_token_asset_ids[N-1])
+outcome_index = u8 in [0, N-1]
+```
+
+Tag string matches the binary market. Domain separation is via `market_id`.
+
+### Code Generation
+
+Each supported N has its own `.simf` file generated from a template at build time. Proposed initial range: **N=3 through N=10**. Above N=10, transaction weight from the 2N+1-way covenant co-spend becomes uncomfortable; large-N events should use hierarchical composition (markets-of-markets) or binary-market composition with arbitrage-based coherency.
+
+N=2 is served by the binary `prediction_market.simf`; whether to regenerate N=2 from the multi-outcome template is a deferred decision.
 
 ## LMSR Pool
 
