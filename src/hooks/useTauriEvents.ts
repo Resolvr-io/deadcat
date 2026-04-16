@@ -1,8 +1,21 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
+import { showToast } from "../components/shared/Toast";
 import { queryClient } from "../queries/queryClient";
 import { useStore } from "../store";
 import type { WalletTransaction, WalletUtxo } from "../types";
+
+function formatSats(sats: number): string {
+  return `${Math.abs(sats).toLocaleString()} sats`;
+}
+
+function toastForNewTx(tx: WalletTransaction): void {
+  if (tx.balanceChange > 0) {
+    showToast(`Received ${formatSats(tx.balanceChange)}`, "success");
+  } else if (tx.balanceChange < 0) {
+    showToast(`Sent ${formatSats(tx.balanceChange)}`, "info");
+  }
+}
 
 export function useTauriEvents(): void {
   useEffect(() => {
@@ -63,6 +76,17 @@ export function useTauriEvents(): void {
             backupPassword: "",
             backupCopied: false,
           };
+
+          // Toast for new transactions
+          if (base.transactions.length > 0) {
+            const knownTxids = new Set(base.transactions.map((t) => t.txid));
+            for (const tx of payload.transactions) {
+              if (!knownTxids.has(tx.txid)) {
+                toastForNewTx(tx);
+              }
+            }
+          }
+
           useStore.setState({
             walletData: {
               ...base,
@@ -96,7 +120,11 @@ export function useTauriEvents(): void {
     );
 
     // ── discovery events ─────────────────────────────────────────
-    for (const eventName of ["discovery:market", "discovery:market-refresh", "discovery:attestation"]) {
+    for (const eventName of [
+      "discovery:market",
+      "discovery:market-refresh",
+      "discovery:attestation",
+    ]) {
       register(
         listen(eventName, () => {
           if (disposed) return;
