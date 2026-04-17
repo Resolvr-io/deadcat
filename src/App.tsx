@@ -13,6 +13,7 @@ import { ToastContainer } from "./components/shared/Toast";
 import { WalletPage } from "./components/wallet/WalletPage";
 import { useActivityTracking } from "./hooks/useActivityTracking";
 import { useBootstrap } from "./hooks/useBootstrap";
+import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useStore } from "./store";
 
@@ -26,6 +27,8 @@ function CloseConfirmDialog() {
   const handleQuit = useCallback(() => {
     void invoke("confirm_quit");
   }, []);
+
+  useEscapeKey(open, handleCancel);
 
   if (!open) return null;
 
@@ -63,6 +66,18 @@ export default function App() {
   useBootstrap();
   useTauriEvents();
   useActivityTracking();
+
+  // Tag <html> with the host OS so CSS can key off it (e.g. reserve space
+  // for macOS traffic lights without affecting other platforms).
+  useEffect(() => {
+    const ua = navigator.userAgent;
+    const os = /Mac/i.test(ua)
+      ? "macos"
+      : /Win/i.test(ua)
+        ? "windows"
+        : "linux";
+    document.documentElement.dataset.os = os;
+  }, []);
 
   // Listen for close-requested from Rust (Cmd+Q / window close)
   useEffect(() => {

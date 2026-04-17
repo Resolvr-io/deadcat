@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { createPortal } from "react-dom";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useStore } from "../../store";
 import { formatLbtc } from "../../utils-react/wallet";
 import { CloseButton } from "../shared/CloseButton";
@@ -53,6 +54,8 @@ export function WalletModal() {
     [],
   );
 
+  useEscapeKey(walletModal !== "none", handleClose);
+
   if (walletModal === "none") return null;
 
   const title = walletModal === "receive" ? "Receive Funds" : "Send Funds";
@@ -75,9 +78,6 @@ export function WalletModal() {
     <div
       role="presentation"
       onClick={handleBackdropClick}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") handleClose();
-      }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
     >
       <div className="relative mx-4 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">

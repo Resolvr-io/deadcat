@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useExecuteTrade } from "../../queries/mutations/useTrading";
 import { DEFAULT_TX_OPTIONS } from "../../services/tx";
 import { useStore } from "../../store";
@@ -92,6 +93,8 @@ export default function QuoteModal({ market }: { market: Market }) {
     });
   }, []);
 
+  useEscapeKey(tradeQuoteModalOpen, handleCancel);
+
   if (!tradeQuoteModalOpen || !tradeQuoteData) return null;
 
   const effectivePrice = getQuoteEffectivePriceSatsPerContract(tradeQuoteData);
@@ -109,9 +112,6 @@ export default function QuoteModal({ market }: { market: Market }) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       onClick={(e) => {
         if (e.target === e.currentTarget) handleCancel();
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") handleCancel();
       }}
     >
       <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">

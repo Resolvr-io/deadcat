@@ -64,6 +64,12 @@ select {
   color-scheme: dark;
 }
 
+button:focus-visible,
+[role="button"]:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 9999px rgba(51, 65, 85, 0.38);
+}
+
 /* ===== Form components ===== */
 
 @layer components {
@@ -103,6 +109,14 @@ select {
     padding-left: var(--space-4);
     padding-right: var(--space-4);
   }
+}
+
+/* Reserve vertical space at the top of the header so the logo sits below
+   the macOS traffic-light buttons (which the OS anchors at top-left).
+   Scoped to the <header>'s container so page-content .phi-container
+   instances are unaffected. */
+:root[data-os="macos"] .top-shell__title-row {
+  padding-top: 32px;
 }
 
 .phi-title {
