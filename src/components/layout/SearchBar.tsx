@@ -50,7 +50,7 @@ export function SearchBar() {
 
       {/* Mobile search overlay */}
       {searchOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm md:hidden">
+        <div className="macos-overlay-safe-top fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm md:hidden">
           <div className="flex items-center gap-3 border-b border-slate-800 bg-slate-950 px-4 py-3">
             <input
               value={search}

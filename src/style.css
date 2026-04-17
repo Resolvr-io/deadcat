@@ -142,6 +142,27 @@ button:focus-visible,
   z-index: 1000;
 }
 
+/* Keep the Tahoe overlay titlebar strip free for window dragging even when
+   app backdrops are open above the page content. */
+:root[data-os="macos"] .macos-overlay-safe-top {
+  position: fixed;
+  top: 32px;
+  padding-bottom: 32px;
+}
+
+:root[data-os="macos"] .macos-overlay-safe-top::before {
+  content: "";
+  position: absolute;
+  top: -32px;
+  left: 0;
+  right: 0;
+  height: 32px;
+  background: inherit;
+  -webkit-backdrop-filter: inherit;
+  backdrop-filter: inherit;
+  pointer-events: none;
+}
+
 .phi-title {
   max-width: 34ch;
 }

@@ -162,7 +162,7 @@ function ProfilePageContent() {
   return (
     <div
       onClick={handleBackdropClick}
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      className="macos-overlay-safe-top fixed inset-0 z-40 flex items-center justify-center bg-black/50 backdrop-blur-sm"
     >
       <div className="relative mx-4 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
         <div className="flex-1 overflow-y-auto">
