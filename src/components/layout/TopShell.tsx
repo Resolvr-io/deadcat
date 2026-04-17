@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useMemo } from "react";
 import { categories } from "../../constants";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useStore } from "../../store";
 import type { NavCategory } from "../../types";
 import { formatCompactSats } from "../../utils-react/wallet";
@@ -157,6 +158,8 @@ function LogoutModal() {
       logoutPasswordInput: "",
     });
   }, []);
+
+  useEscapeKey(logoutOpen, closeLogout);
 
   const confirmLogout = useCallback(async () => {
     // Lock first to ensure clean state, then delete
@@ -670,7 +673,7 @@ export function TopShell() {
         onMouseDown={onDragMouseDown}
       >
         <div
-          className="phi-container py-4 lg:py-5"
+          className="phi-container top-shell__title-row py-4 lg:py-5"
           onMouseDown={onDragMouseDown}
         >
           <div className="flex items-end gap-5" onMouseDown={onDragMouseDown}>
@@ -684,12 +687,18 @@ export function TopShell() {
             </button>
 
             {/* Center: search bar */}
-            <div className="flex flex-1 justify-center pb-[5px]">
+            <div
+              className="flex flex-1 justify-center pb-[5px]"
+              onMouseDown={onDragMouseDown}
+            >
               <SearchBar />
             </div>
 
             {/* Right side: wallet + user menu */}
-            <div className="flex shrink-0 items-center gap-2 pb-[5px]">
+            <div
+              className="flex shrink-0 items-center gap-2 pb-[5px]"
+              onMouseDown={onDragMouseDown}
+            >
               {nostrPubkey && (
                 <button
                   type="button"

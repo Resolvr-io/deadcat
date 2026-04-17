@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useLockScroll } from "../../hooks/useLockScroll";
 import { useStore } from "../../store";
 import { hexToNpub } from "../../utils/crypto";
@@ -92,6 +93,8 @@ export function NostrEventModal() {
     }
   }, [nostrEventNevent]);
 
+  useEscapeKey(nostrEventModal, handleClose);
+
   if (!nostrEventModal || !nostrEventJson) return null;
 
   let parsed: {
@@ -125,9 +128,6 @@ export function NostrEventModal() {
     <div
       role="presentation"
       onClick={handleBackdropClick}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") handleClose();
-      }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
     >
       <div className="relative mx-4 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">

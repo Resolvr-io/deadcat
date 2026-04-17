@@ -1651,7 +1651,13 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             )}
           </div>
           {hasFile && (
-            <>
+            <form
+              className="space-y-4"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleFileRestore();
+              }}
+            >
               <input
                 type="password"
                 value={restorePassword}
@@ -1665,14 +1671,13 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                 disabled={loading}
               />
               <button
-                type="button"
-                onClick={handleFileRestore}
+                type="submit"
                 disabled={loading || !restorePassword}
                 className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
                 {loading ? "Restoring..." : "Restore Account"}
               </button>
-            </>
+            </form>
           )}
         </div>
 

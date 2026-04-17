@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useLockScroll } from "../../hooks/useLockScroll";
 import { useStore } from "../../store";
 import { CloseButton } from "../shared/CloseButton";
@@ -25,6 +26,7 @@ export function WalletPage() {
   );
 
   useLockScroll();
+  useEscapeKey(walletOpen, close);
 
   if (!walletOpen) return null;
 

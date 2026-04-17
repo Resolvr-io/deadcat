@@ -53,6 +53,7 @@ nix develop --command just {command}
 ## Commit Conventions
 
 - Use conventional commit prefixes: `feat:`, `fix:`, `refactor:`, `style:`, `docs:`
+- Commit messages should include a descriptive body when the title alone does not preserve intent, scope, user-visible behavior, or important tradeoffs for future maintainers
 - Do NOT add Claude as co-author or contributor
 - Do NOT commit or push without explicit user permission
 - Do NOT push to master/main without explicit permission
