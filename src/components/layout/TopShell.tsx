@@ -248,7 +248,7 @@ function LogoutModal() {
   // Simple logout for identity-only (no wallet) or remote signer
   if (!hasWallet || isRemoteSigner) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+      <div className="macos-overlay-safe-top fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
         <div className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-950 p-8">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-medium text-slate-100">
@@ -286,7 +286,7 @@ function LogoutModal() {
 
   // Full logout with backup flow when wallet exists
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+    <div className="macos-overlay-safe-top fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
       <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-8">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-medium text-slate-100">Log Out</h2>

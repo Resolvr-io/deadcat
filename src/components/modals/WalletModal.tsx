@@ -78,7 +78,7 @@ export function WalletModal() {
     <div
       role="presentation"
       onClick={handleBackdropClick}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      className="macos-overlay-safe-top fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
     >
       <div className="relative mx-4 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
         <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">

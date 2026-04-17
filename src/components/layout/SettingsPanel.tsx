@@ -1294,7 +1294,7 @@ function SettingsPanelContent({
   useLockScroll();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 backdrop-blur-sm py-8">
+    <div className="macos-overlay-safe-top fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 backdrop-blur-sm py-8">
       <div className="relative mx-4 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl my-auto">
         {nostrReplacePanel ? (
           <NostrReplacePanel />

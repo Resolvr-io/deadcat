@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useStore } from "../../store";
 import { generateAvatarDataUri } from "../../utils-react/avatar";
 import { showToast } from "../shared/Toast";
@@ -35,6 +36,12 @@ export function UserMenu() {
   const openLogout = useCallback(() => {
     useStore.setState({ userMenuOpen: false, logoutOpen: true });
   }, []);
+
+  const closeMenu = useCallback(() => {
+    useStore.setState({ userMenuOpen: false });
+  }, []);
+
+  useEscapeKey(userMenuOpen, closeMenu);
 
   const nostrProfile = useStore((s) => s.nostrProfile);
   const profilePicError = useStore((s) => s.profilePicError);

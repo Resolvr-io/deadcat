@@ -33,7 +33,7 @@ function CloseConfirmDialog() {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+    <div className="macos-overlay-safe-top fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
       <div className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-950 p-8 text-center">
         <h2 className="text-lg font-medium text-slate-100">
           Quit Deadcat Live?
