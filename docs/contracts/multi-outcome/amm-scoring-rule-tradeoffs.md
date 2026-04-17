@@ -1,23 +1,43 @@
 # AMM Scoring Rule Trade-offs
 
-**Status**: Design exploration / reference. Trade-offs documented here are intended to be objective; recommendations and subjective interpretations are clearly demarcated and confined to the final section.
+**Status**: Decision record. This document records the scoring rule comparison that informed deadcat's pool design decision. **See [Decision Summary](#decision-summary) for the final choice.** The comparative analysis below is retained as reference for the reasoning.
+
+## Decision Summary
+
+After working through the full scoring rule design space under deadcat's constraints (Simplicity covenants, no transcendental jets, 2N-token multi-outcome market contract, no per-trade co-spend with the market contract), the committed decision is:
+
+- **Scoring rule**: **LMSR** (Hanson 2003), with the existing 1D Merkle-committed F-value table.
+- **Pool dimensionality**: **Binary only** (N=2). No unified multi-outcome pool contract — even the feasible N=3 2D-table variant is declined for implementation simplicity.
+- **Multi-outcome market liquidity**: **Option C composition** — N independent binary LMSR pools per market, one per outcome's YES/NO pair. Cross-outcome coherence is arb-enforced (not structural at the AMM layer).
+- **Liquidity model**: **Admin-operated** pools with permissionless creation. No LP-tokenized pool in v1. Each pool has a single operator who commits subsidy, earns fees, and bears impermanent loss; anyone can create a new pool with any params.
+
+The reasoning behind each of these decisions is distributed across the comparative analysis below. Key landing points:
+
+- **QMSR was seriously considered** (polynomial inline, better subsidy efficiency, any-N support) but ultimately rejected because (a) it has no production deployments in prediction markets, (b) its linear cost curve produces weaker first-mover incentives than LMSR's exponential curve — meaningful for the AMM-as-price-oracle use case, (c) LMSR's Merkle-table overhead at N=2 is a one-time implementation cost rather than an ongoing one.
+- **LS-QMSR was disqualified** by the 50% price-display bias (see the trilemma section).
+- **LS-LMSR was disqualified** as strictly dominated by standard LMSR at every N in deadcat's environment.
+- **Unified multi-outcome LMSR at N=3 (2D table)** is technically feasible with the same total entries as binary 1D, but was declined: the 2D-variant covenant, tooling, and audit overhead don't pay back enough given N=3 is a small fraction of real markets and composed binary works via arb.
+- **FPMM / constant-product** (Gnosis-style) structurally requires co-spending the market contract on every trade, serializing all pool trades across all pools of a market on the market's collateral UTXO. This was the blocker — all pool trades on a market would serialize on the market's collateral UTXO. LMSR/QMSR don't have this issue because their pricing state is independent of reserves.
+
+The **architectural orthogonality** is worth naming explicitly: the market contract layer (binary vs N-outcome) and the pool layer (always binary LMSR, always composed via Option C for multi-outcome markets) are independent choices. An N-outcome market contract is still used when the creator wants its cross-outcome primitives (atomic split-YES, split-NO, cross-outcome swap) for efficient arb, LP rotation, and complex trading. The pool layer doesn't know or care which market contract type is underneath.
 
 ## Purpose
 
-This document compares four automated market maker scoring rules for use in deadcat's prediction market pools:
+This document compares automated market maker scoring rules that were considered for deadcat's pool layer:
 
-- **LMSR** — Logarithmic Market Scoring Rule (Hanson 2003)
-- **QMSR** — Quadratic Market Scoring Rule (Brier-derived)
-- **LS-LMSR** — Liquidity-Sensitive LMSR (Othman et al. 2013)
-- **LS-QMSR** — Liquidity-Sensitive QMSR (proposed; see verification status below)
+- **LMSR** — Logarithmic Market Scoring Rule (Hanson 2003) — **chosen**
+- **QMSR** — Quadratic Market Scoring Rule (Brier-derived) — considered, rejected
+- **LS-LMSR** — Liquidity-Sensitive LMSR (Othman et al. 2013) — considered, rejected
+- **LS-QMSR** — Liquidity-Sensitive QMSR (proposed) — considered, disqualified by price bias
+- **FPMM / constant product** — considered as alternative family, rejected for per-trade market co-spend requirement
 
-The comparison covers conceptual properties (properness, depth profile, bounded loss) and practical constraints (Simplicity covenant feasibility, witness sizes, interaction with the limit order book) for two distinct market structures: single-event binary YES/NO markets, and N-outcome markets with a YES and NO token per outcome.
+The comparison covers conceptual properties (properness, depth profile, bounded loss) and practical constraints (Simplicity covenant feasibility, witness sizes, interaction with the limit order book and the market contract layer). The original scope covered both single-event binary YES/NO markets and N-outcome markets with YES/NO per outcome as direct pool targets; the landed decision uses binary pools for both and composes for multi-outcome.
 
-> **LS-QMSR verification status (updated).** The LS-QMSR construction has been independently analyzed with the following results:
+> **LS-QMSR verification status.** The LS-QMSR construction was independently analyzed with the following results:
 >
 > - **Path independence**: **Confirmed.** Follows directly from degree-1 homogeneity of `C(q) = Σ q_k · p_k(q)`.
 > - **Bounded loss**: **Confirmed** as an upper bound. The formula `α(N-1)/(4N) · S` is tight for α ≤ 2 and conservative for larger α. Verified numerically at multiple (N, α) pairs.
-> - **Strict properness**: **Disproven.** The LS construction causes the displayed price to diverge from the trader's true belief: at the trader's optimum, `p_k = π_k/2 + 1/(2N)` — a fixed 50% shrinkage toward uniform, independent of α. This is a fundamental consequence of the adaptive-properness-path-independence trilemma (see dedicated section below) and materially affects LS-QMSR's suitability as a price oracle.
+> - **Strict properness**: **Disproven.** The LS construction causes the displayed price to diverge from the trader's true belief: at the trader's optimum, `p_k = π_k/2 + 1/(2N)` — a fixed 50% shrinkage toward uniform, independent of α. This is a fundamental consequence of the adaptive-properness-path-independence trilemma (see dedicated section below) and was the disqualifying finding for LS-QMSR.
 
 ## Background
 
@@ -587,46 +607,59 @@ A single binary market has one YES token, one NO token, and resolves to one of t
 
 ---
 
-## Use Case 2: N-Outcome Markets with YES/NO per Outcome
+## Use Case 2: N-Outcome Markets (Multi-Outcome)
 
-In this market structure, each of N mutually exclusive outcomes has both a YES token and a NO token. Pair-split primitives (collateral ↔ YES_k + NO_k) and basket primitives (collateral ↔ full YES basket or full NO basket) enable structured liquidity. See `multi-outcome-market-contract.md` for the contract design.
+In deadcat's multi-outcome market structure, each of N mutually exclusive outcomes has both a YES and a NO token (2N tokens total). The market contract provides permissionless solvency-preserving primitives: per-outcome pair issue/cancel, split-YES / merge-YES (full basket ↔ collateral_per_pair), split-NO / merge-NO (full NO basket ↔ (N-1)·collateral_per_pair), and cross-outcome swap (YES_i ↔ {NO_j : j≠i} + (N-2) collateral, derivable). See [`multi-outcome-market-contract.md`](multi-outcome-market-contract.md) for the contract design.
 
-### LMSR
+**The landed pool-layer decision for multi-outcome markets is Option C**: N independent binary LMSR pools per market, one per outcome's YES/NO pair. Cross-outcome AMM coherence is arb-enforced, with arbitrageurs exploiting the N-outcome market contract's native cross-outcome primitives to close coherence gaps atomically. The analysis below covers why this was chosen over unified multi-outcome pool designs.
 
-The lack of transcendental functions in Simplicity means LMSR's Merkle table approach scales awkwardly with N:
+### Option C (chosen): N binary LMSR pools per market
 
-- **N=2**: 1D table, fully feasible
-- **N=3**: 2D table at 256×256 = ~65k entries, feasible
-- **N=4**: 3D table at ~16M entries, borderline (witness/proof size growth, generation cost)
-- **N=5+**: dimensional explosion, impractical
+- **Pool type**: the same binary LMSR pool contract used for binary markets, instantiated N times per multi-outcome market.
+- **Coherence**: `Σp_YES_k = 1` across pools is **arb-enforced**, not structural. Arb paths leverage the market contract's split-YES / merge-YES primitives (single atomic transaction when the N-outcome market contract is used; multi-tx sequence if the market is instead composed from N binary market contracts).
+- **Subsidy scaling**: `N × b · ln(2)` across all pools (each pool independent). Higher per-outcome depth than unified LMSR for the same total subsidy because each pool's constraint is independent of the others.
+- **Parallelism**: trades on different outcomes hit different pool UTXOs, so they parallelize. Only cross-outcome arb touches multiple pools atomically.
+- **LP model**: admin-operated per pool. Creators pick which outcomes to provide liquidity for; a market may have some outcomes with deep pools and others with thin pools or no pool at all. Permissionless creation.
+- **Implementation**: same `.simf` as binary LMSR pool. No multi-outcome-specific pool contract type.
 
-For N ≥ 4-5 in a unified pool, LMSR-based designs typically fall back to one of two approaches:
+### Why not unified LMSR (even at N=3 where feasible)?
 
-1. **Compose multiple binary LMSR pools** — one per outcome's YES/NO pair. This is N independent binary pools instead of one unified pool. Event-level coherence (Σp = 1 across YES tokens) becomes arbitrage-enforced rather than structural. Subsidy scales as N × `b · ln(2)` instead of `b · ln(N)`.
+LMSR unified pool is technically feasible for N=2 (1D table) and N=3 (2D table at same total entry count). The N=3 option was declined:
 
-2. **Switch to QMSR** for the multi-outcome case, accepting the asymmetry of using different scoring rules for different market types.
+- **2D-variant tooling cost**: table generation, covenant lookup, state encoding, Merkle tree structure all differ from 1D in non-trivial ways. Realistic effort ratio ~1.3–1.5× binary, plus separate audit.
+- **Small share of real markets**: N=3 prediction markets are a small fraction of total volume; binary dominates heavily.
+- **Uniform implementation surface is valuable**: one pool contract type across all market shapes makes audit, indexing, routing, LP UX, and bug-fixing simpler.
+- **N≥4 requires Option C anyway**: 3D table at ~16M entries is borderline; N≥5 is impractical. So unified pools would only ever cover N∈{2,3}, leaving N≥4 in Option C. Collapsing to "binary LMSR everywhere + Option C for multi-outcome" is architecturally cleaner.
 
-Neither fallback is fully satisfactory; they trade structural properties for implementability.
+### Why not unified QMSR (any N)?
 
-### QMSR
+QMSR's polynomial-inline feasibility at any N was attractive. Ultimately rejected because:
 
-Native polynomial implementation handles any N without modification:
+- **Zero production deployments** in prediction markets. 20 years of academic availability with no shipped system is a real (if path-dependent) operational risk signal.
+- **Weaker first-mover incentives**: linear cost curve vs LMSR's exponential. For deadcat's AMM-as-price-oracle use case, faster information incorporation matters.
+- **Domain constraint** (`Σ Δ_k ≤ b`) is benign in terms of semantics — at the boundary, pool's p hits 1 for some outcome, which is exactly where the market contract's pair-split takes over at equivalent cost — but it's still covenant complexity without clear offsetting value when LMSR+Option C covers the same use cases.
 
-- Single unified pool covering all N outcomes
-- Σp = 1 by construction
-- Bounded loss `b(N-1)/(2N)`, sub-linear in N
-- Per-swap witness scales as ~8N bytes plus overhead
-- Domain constraint mitigated by rebasing and pair-split
+QMSR remains a viable fallback if future operational experience surfaces LMSR issues. The comparative analysis in this document supports either direction; the choice reduces to risk tolerance.
 
-### LS-LMSR
+### LS-LMSR (rejected)
 
-Shares LMSR's scaling problems plus the per-trade table invalidation issue (one dimension step more than standard LMSR at every N). Borderline at N=3 (3D table, ~16M entries), effectively impractical for N ≥ 4 in a Simplicity covenant.
+Shares LMSR's scaling problems plus the per-trade table invalidation issue (one dimension step more than standard LMSR at every N). Borderline at N=3 (3D table, ~16M entries), effectively impractical for N ≥ 4 in a Simplicity covenant. Under Option C composition, LMSR's already-feasible 1D binary table does the job without LS's overhead; LS-LMSR's adaptive-b advantage is largely subsumed by admin-bump + LOB organic depth.
 
-### LS-QMSR
+### LS-QMSR (disqualified)
 
-Shares QMSR's scaling properties (any N feasible) plus the adaptive-depth advantages. Subsidy bound `α(N-1)/(4N) · S` (verified upper bound, tight for α ≤ 2).
+Shares QMSR's scaling properties (any N feasible) plus adaptive-depth advantages. Subsidy bound `α(N-1)/(4N) · S` (verified upper bound, tight for α ≤ 2).
 
-For α ≥ 1, the domain constraint disappears entirely, eliminating the boundary concern that exists for standard QMSR at higher N. **However**, the 50% price-display bias (see trilemma section) applies at every N, with displayed prices shrinking to `p_k = π_k/2 + 1/(2N)`. This bias becomes more severe at higher N because the uniform component `1/(2N)` is smaller, meaning the displayed price compresses the full belief range `[0, 1]` into `[1/(2N), 1/2 + 1/(2N)]` — a dramatically narrower band at higher N. For N=10, the displayable range is only [0.05, 0.55]; a market with 100% consensus on one outcome displays that outcome at 55%.
+For α ≥ 1, the domain constraint disappears entirely. **However**, the 50% price-display bias (see trilemma section) applies at every N, with displayed prices shrinking to `p_k = π_k/2 + 1/(2N)`. At N=10, the displayable range is only [0.05, 0.55]; a market with 100% consensus on one outcome displays at 55%. **Disqualified as a source-of-truth price oracle.**
+
+### FPMM / constant-product (rejected due to per-trade co-spend)
+
+The Gnosis-style FPMM is a natural alternative AMM family: `Π x_k = k` preserved on trades, polynomial inline, structurally Σp=1, no domain constraint, real production deployment history at Gnosis CTF.
+
+The disqualifying issue is structural: FPMM's invariant only holds over **post-split** reserves. Every trade requires atomically splitting collateral through the market contract's split-YES primitive to preserve `Π x_k = k`. In deadcat's setup, this means every pool trade co-spends the market contract's collateral UTXO, serializing all pool trades across all pools of the same market on the market's collateral UTXO.
+
+LMSR/QMSR don't have this problem: their pricing state is the q vector (tracked in tapdata), independent of physical reserves. Trades update q without touching uninvolved outcomes' reserves, and no market co-spend is required per trade.
+
+This was the blocker for FPMM in deadcat. Not a property defect of FPMM — just a structural incompatibility with parallel pool trading.
 
 ---
 
@@ -668,84 +701,111 @@ For α ≥ 1, the domain constraint disappears entirely, eliminating the boundar
 
 ## Open Questions
 
+### Resolved
+
 1. ~~**LS-QMSR formal verification**~~: **Resolved.** Path independence confirmed (degree-1 homogeneity). Bounded loss confirmed as upper bound (tight for α ≤ 2). Strict properness **disproven** — displayed prices exhibit a fixed 50% shrinkage toward uniform. See the trilemma section and the LS-QMSR verification banner at the top of this document.
 
-2. **Higher-degree polynomial scoring rules with LS construction**: a cubic scoring rule (e.g., `S(r, ω) = 3r_ω² - 2Σr_k³`) is strictly proper and has quadratic (nonlinear but polynomial) prices — Simplicity-compatible. Under the LS construction, the price bias should be α-dependent and smaller than LS-QMSR's 50%, because nonlinear price formulas give the extra `∇C - p` terms curvature to cancel against (same principle that makes LS-LMSR's bias small). This is genuinely novel territory: no existing literature on cubic market scoring rules. A full analysis would need to derive the bounded loss, depth profile, domain constraints, and subsidy efficiency from scratch. This is a research project, not an engineering task — but it's the most promising path to achieving LS-like adaptive liquidity with polynomial arithmetic and small price bias.
+2. ~~**LS-QMSR loss analysis at high N**~~: **Resolved.** The bound `α(N-1)/(4N) · S` is confirmed as correct for all N. It is tight for α ≤ 2. For α > 2, the true worst case is strictly less. The bound is conservative (not violated) at any (α, N) combination.
 
-3. **Smooth QMSR variants**: Nueve & Waggoner (NeurIPS 2025) propose a smoothed QMSR with a log-barrier term that eliminates the domain restriction at the cost of reintroducing transcendental arithmetic at the boundary. Could a polynomial-only smoothing exist? Could it apply to LS-QMSR similarly?
+3. ~~**Scoring rule choice**~~: **Resolved.** Binary LMSR chosen. Multi-outcome via Option C composition. See Decision Record.
 
-4. **Hybrid / multi-pool designs**: should a single market support multiple pools simultaneously (e.g., a QMSR pool for institutional flow plus per-outcome LMSR pools for retail)? What composition rules would be required?
+4. ~~**Multi-outcome pool shape**~~: **Resolved.** Option C — N binary LMSR pools composed per market. No unified multi-outcome pool contract.
 
-5. ~~**LS-QMSR loss analysis at high N**~~: **Partially resolved.** The bound `α(N-1)/(4N) · S` is confirmed as correct for all N. It is tight for α ≤ 2. For α > 2, the true worst case is strictly less. The bound is conservative (not violated) at any (α, N) combination.
+5. ~~**Liquidity model for v1**~~: **Resolved.** Admin-operated with permissionless creation. LP-tokenized pools deferred to v2.
 
-6. **Operator economics in production**: theoretical subsidy efficiency is one factor; actual operator P&L depends on trader behavior, fee structure, and adverse selection. None of the scoring rules have been operated at scale on Liquid in deadcat's specific setup.
+### Open / deferred
 
-7. **Covenant implementation specifics**: even for the "feasible" scoring rules, exact witness encoding, integer scaling for fixed-point arithmetic, rounding handling, and edge cases (e.g., S near zero in LS variants) need detailed specification before implementation.
+6. **Covenant implementation specifics for binary LMSR pool**: exact witness encoding, integer scaling for fixed-point arithmetic, rounding handling, and the deterministic table spec need concrete specification. See [`lmsr-pool/lmsr-deterministic-table-spec.md`](lmsr-pool/lmsr-deterministic-table-spec.md) — pending completion.
+
+7. **Operator economics in production**: theoretical subsidy efficiency is one factor; actual operator P&L depends on trader behavior, fee structure, adverse selection, and LOB-vs-pool routing dynamics. LMSR has production history in non-Liquid environments but not in deadcat's specific setup. Real-world data will inform future parameter defaults.
+
+8. **Cross-outcome arb coherence in practice**: under Option C composition, `Σp_YES_k = 1` is arb-enforced. Empirical question: how tight do spreads stay in practice? Does it matter whether the underlying market is a single N-outcome contract (atomic arb via split-YES/merge-YES) vs. composed binary markets (multi-tx arb)? This will only be answered by real deployment data.
+
+9. **LP-tokenized pools as v2**: if passive-capital demand materializes, design a tokenized-liquidity variant. Scale-invariance properties favor QMSR for LP-tokenization (LMSR's Merkle table doesn't play cleanly with dynamic b). Revisits the scoring rule choice.
+
+10. **Higher-degree polynomial scoring rules with LS construction**: deferred indefinitely. A cubic scoring rule with quadratic prices could give LS-like adaptive liquidity with polynomial arithmetic and small price bias. Research territory; no urgency.
+
+11. **Smooth QMSR variants**: Nueve & Waggoner (NeurIPS 2025) propose a smoothed QMSR with a log-barrier term. Polynomial-only smoothing? Deferred — only relevant if the project revisits QMSR.
+
+12. **Multi-pool composition on the same market**: a single market may have multiple competing pools (possibly with different b, fee_bps). Routing optimization across them is a `deadcat-core` concern. Whether to build explicit router tooling for it in v1 is TBD.
 
 ---
 
-## Subjective Recommendations
+## Decision Record
 
-> **Note**: The remainder of this document is opinion, not factual trade-off documentation. The reasoning is laid out so future readers can evaluate it against their own priorities.
+The committed pool design is **binary LMSR only, composed via Option C for multi-outcome markets, admin-operated with permissionless creation**. This section records the reasoning and acknowledged tradeoffs.
 
-### For binary markets (in this author's view)
+### For binary markets: LMSR chosen
 
-The trilemma analysis (above) materially changes the earlier recommendation. LS-QMSR's 50% price-display bias disqualifies it as a source-of-truth price oracle without a correction mechanism that doesn't currently exist.
+**LMSR** (Hanson 2003) is the scoring rule. Core reasons:
 
-**Standard QMSR appears to be the strongest choice** for binary markets in deadcat's environment:
+- **Unconditionally strictly proper** — displayed prices equal true belief everywhere. No domain boundary, no bias. For deadcat's AMM-as-price-oracle role, this is a first-order property.
+- **Strong first-mover incentives** via exponential cost curve. Informed traders face dramatically higher costs for delaying. This directly improves price discovery speed and the quality of the historical price record — a key deadcat value prop.
+- **Extensive production track record**: Augur v1, Gnosis, corporate prediction markets. Known operational characteristics.
+- **KL-divergence interpretation**: price is a sufficient statistic for the market's aggregate belief. Elegant theoretical grounding that survives into production.
+- **1D Merkle table is tractable**: at depth 16, ~65k entries, ~3-5 kB witness per swap. The table-generation tooling and proof machinery are a one-time cost at pool creation and a manageable per-swap witness overhead.
 
-- Native to Simplicity (polynomial arithmetic, no Merkle tables)
-- **Strictly proper**: displayed prices equal true belief (∇C = p), no bias
-- Better subsidy efficiency than LMSR (2.77× for same depth)
-- Smaller per-swap witness than LMSR
-- Composes cleanly with the existing LOB
-- Well-studied academically (Brier 1950, Selten 1998, Chen & Pennock 2007, Abramowicz 2007)
+Acknowledged costs:
+- **Larger per-swap witness** (~3-5 kB) vs QMSR's ~2-3 kB. Ongoing per-trade chain fee, paid forever.
+- **Worse subsidy efficiency** (~2.77× more collateral for equal depth at N=2). Operators commit more capital per pool.
+- **Table generation tooling** must be maintained.
 
-The main caveats are:
+These were weighed against QMSR's advantages (smaller witness, better efficiency) and the decision went to LMSR on robustness grounds — proven math and stronger first-mover incentives matter more for a new platform where operational surprises are expensive.
 
-- **Domain constraint**: `|q_YES - q_NO| ≤ b` limits the representable price range for a given b. Mitigated by rebasing (reduces S without changing prices) and pair-split (routes around the pool at extremes). The constraint binds on skew, not volume — balanced trading can have arbitrarily high S.
-- **Fixed b**: the operator must choose b at pool creation. If b is too small, the pool runs thin; if too large, more subsidy is locked than necessary. Adaptive liquidity comes from the LOB (organic maker participation) and operator b-adjustments (admin mechanism), not from the scoring rule. See "Adaptive liquidity without LS" above.
-- **Weaker first-mover incentives**: the strongest argument for LMSR. Because the AMM serves as the source of truth for both current and historical prices, the speed at which informed traders update the AMM state directly determines price signal quality. LMSR's exponential cost curve creates dramatically stronger pressure to trade immediately; QMSR's linear cost curve creates only proportional urgency. This recommendation implicitly judges subsidy efficiency and implementation simplicity as more binding than price-discovery speed — if that weighting is wrong, LMSR's overhead may be worth paying.
-- **No production deployments**: QMSR has not been deployed in any prediction market despite ~20 years of academic availability. The non-adoption analysis (see design journal) suggests path-dependency rather than fatal flaws, but the operational risk is real.
+### For multi-outcome markets: Option C composition (N binary LMSR pools)
 
-**LMSR remains a strong alternative** for binary markets specifically. It is unconditionally strictly proper with the KL-divergence interpretation, has extensive production history, and has stronger first-mover incentives. The tradeoffs are Merkle table generation, larger per-swap witnesses (~3-5 kB vs ~2-3 kB), and worse subsidy efficiency (2.77× more collateral for equal depth). For binary markets where LMSR's 1D table is fully feasible, these are genuine implementation costs, not blockers.
+For markets with N ≥ 3 outcomes, the pool layer composes **N independent binary LMSR pools**, one per outcome's YES/NO pair. Cross-outcome AMM coherence (`Σp_YES_k = 1`) is arb-enforced.
 
-**LS-QMSR is not recommended** in its current form due to the 50% price-display bias. It could be revisited if: (a) a display-layer correction is validated (showing `2p - 1/N` instead of `p`, but this has edge-case issues near 0 and 1), or (b) a higher-degree polynomial scoring rule with smaller LS bias is developed (see open questions).
+Rationale:
+- **Uniform pool implementation**: one Simplicity contract, one audit, one `deadcat-core` integration, one LP mental model. This is architecturally significant.
+- **Parallel trading**: trades on different outcomes hit different pool UTXOs. No serialization across outcomes.
+- **Arb efficiency via the N-outcome market contract**: when the underlying market is an N-outcome contract (not N composed binary markets), arbitrageurs exploit its cross-outcome primitives (split-YES, merge-YES, cross-outcome swap) to close coherence gaps in a single atomic transaction. This keeps arb-enforced coherence tight.
+- **Structural coherence at N=3 would have been "free" in table size** but costs meaningful implementation complexity (separate 2D covenant, tooling, audit). Given N=3 markets are a minority share of total volume, the ROI on a separate unified N=3 pool contract is weak.
 
-**LS-LMSR is hard to recommend** in this environment: the per-trade table invalidation makes it one dimensional step less practical than standard LMSR at every N, and its small price bias (though much better than LS-QMSR) means it's not unconditionally proper. Binary is feasible but strictly dominated by standard LMSR on implementation simplicity.
+Acknowledged costs:
+- **Cross-outcome price coherence is arb-enforced, not structural**. Small price discrepancies persist between arb events.
+- **Per-outcome liquidity may fragment**: popular outcomes get deep pools, obscure ones stay thin. Users compose trades across the available pools.
 
-### For N-outcome markets (in this author's view)
+### Alternatives considered and rejected
 
-For N-outcome markets with YES/NO per outcome, the LMSR family is increasingly problematic as N grows due to dimensional explosion. **Standard QMSR is the clear primary choice**:
+- **QMSR (unified, any N)**: strong candidate. Polynomial-inline, better subsidy efficiency, any-N support, LP-scaling-invariant. Rejected primarily because it has **zero production deployments** in prediction markets and its linear cost curve produces **weaker first-mover incentives**. Remains a viable fallback if future operational issues with LMSR surface.
+- **LS-LMSR**: adaptive b via `b = αS`. Rejected because the adaptive property requires an extra dimension in the Merkle table (one dimension less feasible than standard LMSR at every N), and its small price bias means it's not unconditionally proper. Under Option C binary pools, standard LMSR's fixed b + admin bumps + LOB organic depth substitute adequately.
+- **LS-QMSR**: disqualified by the trilemma — at the trader's optimum, displayed prices exhibit a fixed 50% shrinkage toward uniform (`p_k = π_k/2 + 1/(2N)`), independent of α. Breaks the AMM's source-of-truth role.
+- **FPMM / constant product** (Gnosis-style): rejected because every pool trade requires atomic market co-spend to preserve `Π x_k = k` over post-split reserves. This serializes all pool trades across all pools of the same market on the market's collateral UTXO. Fatal for parallel pool trading.
+- **Unified LMSR at N=3 (2D table)**: feasible with same total entries as binary 1D but different tooling, covenant logic, state encoding, audit surface. Declined because of the uniform-implementation-surface win from "binary only."
+- **Higher-degree polynomial scoring rules** (cubic, quartic with LS construction): genuinely novel research territory. Deferred indefinitely — not a v1 consideration.
 
-- Single unified pool covering any N, polynomial arithmetic, structural Σp = 1
-- Strictly proper (in the unconstrained domain) — no price-display bias
-- Bounded loss `b(N-1)/(2N)`, sub-linear in N, ~5× more efficient than unified LMSR at N=10
-- Domain constraint mitigated by rebasing and pair-split; becomes the main operational concern at higher N where extreme prices are more common
+### Liquidity model: admin-operated, permissionless creation
 
-Composed binary pools (LMSR-based or QMSR-based) remain an option where per-outcome operator flexibility is valued, at the cost of structural coherence (Σp = 1 is arbitrage-enforced rather than structural).
+Each pool has a single operator who:
+- Chooses parameters at creation (b, fee_bps, collateral asset, oracle pubkey inherited from market)
+- Provides the subsidy capital
+- Can adjust b via an admin spend path (permissioned bumps)
+- Can close the pool via an admin spend path
+- Earns all fees, bears all impermanent loss
 
-LS-QMSR's advantages at higher N (no domain constraint for α ≥ 1, adaptive per-outcome depth) are real, but the 50% price-display bias is equally real and arguably more damaging at higher N where the displayable price range narrows to `[1/(2N), 1/2 + 1/(2N)]` (e.g., [0.05, 0.55] at N=10). Standard QMSR with rebasing is preferred.
+Pool creation is **permissionless**: anyone can deploy a pool on any market with any parameters. Multiple competing pools per market are expected and welcomed. LPs with different opinions on fair b and fee rates compete.
 
-### Process recommendation
+LP-tokenized pools (shared ownership, deposit/withdraw mechanics, pro-rata fee distribution) were considered extensively but deferred to v2. Under admin-operation, the covenant stays simpler, the trust model is crisp, and operators have clear incentive alignment. LP-tokenization becomes an upgrade path if passive-capital demand materializes.
 
-1. **Prototype standard QMSR** as the primary pool design for both binary and N-outcome markets. Standard QMSR's properties are well-established academically; an implementation can validate the Simplicity-feasibility claims and operational characteristics.
+### Future directions
 
-2. **Investigate higher-degree polynomial scoring rules** as a research direction for achieving LS-like adaptive liquidity with polynomial arithmetic and small (α-dependent) price bias. A cubic scoring rule with quadratic prices is the most promising candidate (see open questions). This is a research project, not a near-term implementation dependency.
-
-3. **Defer the binary vs N-outcome contract decision** until pool implementations are validated. The pool choice and the contract choice are technically orthogonal but interact through the pool's role in the overall trader experience.
-
-4. **Revisit LS-QMSR** only if either a validated display-layer correction or a mechanism-level fix (e.g., via a higher-degree base rule) can address the price-display bias.
+- **Revisit QMSR** if LMSR's subsidy efficiency or witness size become real constraints at volume.
+- **LP-tokenized pools as v2**: QMSR's scale-invariance makes it the better candidate for LP-tokenization than LMSR (LMSR's Merkle table doesn't play cleanly with dynamic b). If/when LP-tokenized is prioritized, the scoring rule decision may revisit.
+- **Cross-outcome arb tooling**: bots and incentive mechanisms to keep multi-outcome arb-enforced coherence tight. Not a contract change; an ecosystem tooling consideration.
+- **LS-QMSR revival**: only if either (a) a display-layer correction is validated (showing `2p - 1/N` instead of `p`, with edge-case handling near 0 and 1), or (b) a higher-degree polynomial scoring rule with smaller LS bias is developed.
 
 ---
 
 ## Key Files
 
-- `docs/contracts/lmsr-pool/lmsr-pool-design.md` — current LMSR pool design
+- `docs/contracts/lmsr-pool/lmsr-pool-design.md` — binary LMSR pool design (the chosen pool contract)
 - `docs/contracts/lmsr-pool/lmsr-deterministic-table-spec.md` — Merkle table specification
-- `docs/contracts/multi-outcome/design-journal-multi-outcome-amm.md` — multi-outcome AMM design exploration
-- `docs/contracts/multi-outcome/multi-outcome-market-contract.md` — N-outcome market contract proposal
-- `docs/architecture/transaction-composability-model.md` — composability framework
+- `docs/contracts/multi-outcome/multi-outcome-market-contract.md` — N-outcome market contract spec (pool liquidity via Option C composition)
+- `docs/contracts/multi-outcome/design-journal-multi-outcome-amm.md` — design history record
+- `docs/contracts/market-contract-principles.md` — covenant-enforced properties shared across both market contract types
+- `docs/contracts/contract-specification.md` — top-level contract reference
+- `docs/architecture/transaction-composability-model.md` — composability framework (witness-parameterized indices, atomic multi-contract PSETs)
 
 ## References
 

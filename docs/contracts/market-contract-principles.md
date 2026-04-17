@@ -136,7 +136,11 @@ A covenant that only checks value and script pubkey (but not asset) can be satis
 
 Both market contracts accept `in_base` and `out_base` from the Simplicity witness. The covenant asserts `current_index() == in_base + (my slot offset)` and validates a contiguous block of covenant inputs starting at `in_base` and a contiguous block of expected outputs starting at `out_base`.
 
-This enables flexible multi-contract transaction composition — a market transition can be co-spent with an LMSR pool swap, a maker order fill, or another market's operation in a single atomic transaction, with the PSET builder choosing where each contract's inputs and outputs sit.
+This enables flexible multi-contract transaction composition — a market transition can be co-spent with a binary LMSR pool swap, a maker order fill, or another market's operation in a single atomic transaction, with the PSET builder choosing where each contract's inputs and outputs sit. Key cases this unlocks:
+
+- **Cross-outcome arb** on multi-outcome markets: the market's split-YES or merge-YES primitive co-spent with N pool swaps in one tx, closing `Σ p_YES_k = 1` coherence gaps atomically.
+- **Pool + maker-order routing**: a trade that crosses both a pool and a resting maker order in one tx, taking the best aggregate price.
+- **Atomic liquidity bootstrap**: pool creation co-spent with a market split operation that sources the pool's initial token reserves.
 
 **No correctness sacrifice.** The covenant still verifies, per-position within its block: expected script pubkey, expected asset ID, expected value, expected issuance/burn, expected blinding factors. Aliasing across contracts is blocked by script uniqueness (different contract params → different script pubkeys). Aliasing within the contract's own output block is blocked because every slot has a distinct script in the set.
 

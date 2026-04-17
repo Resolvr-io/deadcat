@@ -6,15 +6,54 @@
 
 ## Motivation
 
-The existing prediction market contract (`prediction_market.simf`) supports exactly two outcomes (YES/NO). Many real-world markets require more: elections with multiple candidates, sports tournaments with many teams, awards with many nominees. Polymarket regularly runs multi-outcome events with 10-128 outcomes.
+Many real-world markets require more than two outcomes: Fed rate decisions (raise/flat/lower/other), elections with multiple candidates, sports tournaments, awards with many nominees. Polymarket regularly runs multi-outcome events with 10-128 outcomes. The existing binary prediction market contract (`prediction_market.simf`) covers single-event YES/NO and can be composed into multi-outcome events at the application layer (one binary market per candidate/outcome), but that composition has structural limitations this contract addresses natively.
 
-This document specifies a generalization of the binary market to N mutually exclusive and exhaustive outcomes (N ≥ 2), preserving the existing contract's core properties and extending its token model to first-class per-outcome YES/NO pairs:
+**The primary value proposition of this contract is operational efficiency for multi-outcome trading.** The covenant exposes a richer set of solvency-preserving operations than composed binary markets can provide, and those operations become the arbitrage paths, hedging paths, and liquidity-rotation paths that traders actually use:
 
-- **Simple solvency invariant**: pre-resolution, the contract holds exactly enough collateral to cover the maximum possible payout across all N outcomes.
-- **Per-outcome YES/NO tokens**: each outcome has both a YES token (pays on that outcome) and a NO token (pays on every other outcome), matching the mental model of the binary market N-fold.
-- **Permissionless operation**: anyone can mint outcome pairs, burn pairs for collateral, split collateral into a full complement of YES (or NO) tokens across outcomes, or redeem winning tokens after resolution.
-- **Oracle-only resolution**: a single BIP-340 signature attests which outcome won. Covenants enforce narrow oracle authority.
+- **Atomic cross-outcome arbitrage**: when AMM liquidity comes from composed per-outcome pools (see [Pool Composition](#pool-composition) below), cross-outcome price coherence (`Σ p_YES_k = 1`) is arb-enforced. The covenant-native `split-YES` and `merge-YES` primitives let arbitrageurs close coherence gaps in a **single atomic transaction**, keeping arb-enforced coherence tight. Composed binary markets would require multi-tx arb sequences.
+- **Efficient LP/maker liquidity rotation**: a maker rotating from YES_raise exposure to YES_flat exposure can use the cross-outcome swap primitive (`YES_i + (N-2) × collateral ≡ {NO_j : j≠i}`) or split-YES + per-outcome pair-cancel atomically. Composed binary markets require multi-tx dances through each underlying market.
+- **Efficient bootstrap**: a pool creator seeding N per-outcome pools can source all outcome tokens via a single split-YES / split-NO rather than N separate pair-issues.
+- **Complex trading strategies**: basket positions, conditional structures, outcome-rotation trades — all lower-friction with native cross-outcome primitives.
+- **Shared collateral and single market identity**: one collateral UTXO serving all outcomes; single `market_id` for oracle attestation, discovery, and indexing. Operational conveniences on top of the above.
+
+### Secondary value: oracle containment
+
+As a secondary benefit, the N-outcome contract **structurally contains oracle misbehavior**: even if the oracle signs multiple outcomes, at most one resolution can land on-chain (the first signature consumed by the covenant transitions the contract to a terminal Resolved_k state; the others have no valid spend path). With composed binary markets, an oracle that signs YES for multiple markets causes economic insolvency across the composition.
+
+This is real but less important in practice than the operational efficiency argument. Market users have to trust their oracle either way; structural containment only limits the blast radius on rare failure modes (key compromise, operator error). The cross-outcome primitives, by contrast, deliver continuous operational value on every trade.
+
+### Design properties preserved from the binary market
+
+- **Solvency invariant**: pre-resolution, the contract holds exactly enough collateral to cover the maximum possible payout across all N outcomes.
+- **Per-outcome YES/NO tokens**: each outcome has both a YES (pays on that outcome) and a NO (pays on every other outcome), matching the mental model of the binary market N-fold.
+- **Permissionless operation**: anyone can mint outcome pairs, burn pairs for collateral, split collateral into a full complement of YES (or NO) tokens, or redeem winning tokens after resolution.
+- **Oracle-only resolution**: a single BIP-340 signature attests which outcome won. Covenant enforces narrow oracle authority.
 - **Composability**: tokens are standard Elements assets. Any pool design, maker order, or application can build on top.
+
+## Pool Composition
+
+**AMM liquidity for this contract is provided via Option C composition**: N independent binary LMSR pools per market, one per outcome's YES/NO pair. See [`amm-scoring-rule-tradeoffs.md`](amm-scoring-rule-tradeoffs.md) for the full analysis of why Option C was chosen over unified multi-outcome pool designs.
+
+Briefly:
+- **One pool contract type** — the binary LMSR pool — used for both binary markets and per-outcome pairs within N-outcome markets. Single Simplicity covenant to audit and maintain.
+- **Parallelism**: trades on different outcomes hit different pool UTXOs.
+- **Arb-enforced cross-outcome coherence** (`Σ p_YES_k = 1`), closed atomically via the market contract's cross-outcome primitives.
+- **Per-outcome liquidity may fragment** (popular outcomes get deep pools, obscure ones stay thin) — accepted as the cost of Option C.
+
+This contract's cross-outcome primitives are what make Option C's arb-enforced coherence tight in practice. The market contract and the pool layer are designed to work together: the market contract provides the solvency-preserving operations; the pool layer provides per-outcome price discovery; arbitrage closes the loop.
+
+### Architectural orthogonality
+
+The market contract layer and the pool layer are **independent design choices**:
+
+- **Binary market contract** can be used alone (single YES/NO event) or composed (N binary markets per multi-outcome event, at the application layer, with oracle-discipline-enforced coherence).
+- **N-outcome market contract** (this contract) provides structural market-level coherence and cross-outcome primitives. AMM liquidity comes from N binary LMSR pools composed per market.
+- **Binary LMSR pool** doesn't know or care which market contract type underlies its tokens. It takes `(yes_asset, no_asset, collateral_asset)` and makes a market; those assets can come from either contract type.
+
+Creators pick market contract type based on their event characteristics:
+
+- **Known, exhaustive outcome set** (Fed rate decisions, sports brackets, Oscar categories) → N-outcome market contract. Gets atomic cross-outcome primitives, stronger oracle containment, single market identity.
+- **Dynamic or non-exhaustive outcomes** (elections where candidates may drop out, open-ended questions with potential "other" cases) → composed binary markets. Trades off atomic primitives for flexibility in the outcome set.
 
 ## Design Rationale
 
@@ -26,7 +65,7 @@ This project rejected that variant for UX reasons:
 
 1. **Negative positions require (N-1) UTXOs.** For anything but very small N, this is punishing: more UTXOs to manage, more dust, larger spend transactions, more mental overhead.
 2. **Mental-model continuity with the binary market.** Users already understand YES/NO. Scaling that pattern to N-way is more intuitive than introducing "hold the complement of everything you want to bet against."
-3. **AMM composition is cleaner.** A pool that makes markets in `YES_i` directly (with `NO_i` as the counter-asset) mirrors the binary pool design. With N-token, pool design gets asymmetric — long positions are single-token, short positions are multi-token.
+3. **AMM composition is cleaner.** Per-outcome binary LMSR pools (Option C) make markets in `YES_k` with `NO_k` as the counter-asset per pool — mirrors the binary pool design exactly. N-token would make pool design asymmetric (long positions single-token, short positions multi-token).
 4. **Liquid's asset model already requires one RT per token type.** The covenant overhead of supporting 2N tokens instead of N is 2× on RT slot count, not 2× on the fundamental design. Given (1)-(3), the UTXO overhead is worth it.
 
 Trade-off accepted: transactions that co-spend all covenant I/O (split, merge) scale with 2N+1 instead of N+1, bounding practical N lower than the N-token design would have. The [Code Generation Strategy](#code-generation-strategy) discusses the range we intend to support.
@@ -395,7 +434,7 @@ An earlier version of this spec used **N tokens** (one per outcome) instead of 2
 
 The 2N design pays a 2× RT slot cost to make the YES/NO symmetry first-class. Given the binary market already trained users (and pool designs) on YES/NO thinking, this was judged worth the cost.
 
-Reference: this alternative was the design specified by the pre-pivot version of this document and is reflected in the initial drafts of [design-journal-multi-outcome-amm.md](design-journal-multi-outcome-amm.md) and [amm-scoring-rule-tradeoffs.md](amm-scoring-rule-tradeoffs.md) — those docs need updating to reflect the 2N pivot.
+Reference: this alternative was the design specified by the pre-pivot version of this document. [`amm-scoring-rule-tradeoffs.md`](amm-scoring-rule-tradeoffs.md) has been updated to reflect the 2N pivot and the Option C pool composition decision. [`design-journal-multi-outcome-amm.md`](design-journal-multi-outcome-amm.md) records the design history.
 
 ### Binary-market composition via an event wrapper
 
@@ -421,22 +460,20 @@ Retained as an **option for very large N** (N > the 2N-contract ceiling) and for
 | Decide N=2 migration path | Keep `prediction_market.simf` as canonical N=2, or regenerate from template. |
 | Write `.simf` template formally | Document template format, parameterization, generator algorithm. |
 | Specify builder convention validation | Permitted N, outcome ordering, naming conventions. |
-| Update `../contract-specification.md` | Add multi-outcome market as a new contract type. (Done — see that doc.) |
-| Update `design-journal-multi-outcome-amm.md` | Reflect the 2N pivot; prior text assumes the N-token design. |
-| Update `amm-scoring-rule-tradeoffs.md` | Re-evaluate scoring-rule analysis over the 2N token space. |
 | Generate test vectors | Per-N vectors covering creation, each operation, resolution per outcome, redemption (winning YES and winning NO sides), expiry, and edge cases. |
 
 ## Key Files
 
 - `docs/contracts/multi-outcome/multi-outcome-market-contract.md` — this document
-- `docs/contracts/multi-outcome/design-journal-multi-outcome-amm.md` — design history (assumes N-token; pending update)
-- `docs/contracts/multi-outcome/amm-scoring-rule-tradeoffs.md` — scoring-rule analysis (assumes N-token; pending update)
+- `docs/contracts/multi-outcome/amm-scoring-rule-tradeoffs.md` — scoring-rule analysis and the pool design decision (binary LMSR + Option C composition)
+- `docs/contracts/multi-outcome/design-journal-multi-outcome-amm.md` — design history record
 - `docs/contracts/contract-specification.md` — top-level contract index
+- `docs/contracts/market-contract-principles.md` — covenant-enforced properties shared by both market contract types
 - `docs/architecture/enforcement-layers.md` — security properties generalized to 2N
 - `docs/protocol/chain-only-recovery.md` — recovery flow extends naturally
 - `docs/protocol/deterministic-rt-blinding.md` — RT blinding applied per-token
 - `docs/protocol/oracle-bip340-tagged-hash.md` — oracle attestation format extends to outcome_index
-- `docs/architecture/transaction-composability-model.md` — witness-parameterized indices enable pool composition
+- `docs/architecture/transaction-composability-model.md` — witness-parameterized indices enable atomic multi-contract PSETs (including cross-outcome arb via pool co-spend with market's split-YES / merge-YES)
 - `docs/contracts/prediction-market/market-dormant-terminal-paths.md` — dormant terminal paths generalize to 2N RTs
-- Future: `src-tauri/crates/deadcat-sdk/contract/multi_outcome_market_n{N}.simf` — generated contracts
-- Future: `src-tauri/crates/deadcat-sdk/codegen/multi_outcome_market_template.simf` — generator input
+- Future: `src-tauri/crates/deadcat-core/contract/multi_outcome_market_n{N}.simf` — generated contracts
+- Future: `src-tauri/crates/deadcat-core/codegen/multi_outcome_market_template.simf` — generator input

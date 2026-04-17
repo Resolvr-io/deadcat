@@ -10,14 +10,17 @@ Deadcat has **two prediction market contracts** plus two supporting contracts:
 
 | Contract | Purpose | Use when |
 |---|---|---|
-| **Prediction Market (binary)** | YES/NO on a single event | Outcomes are binary, or the set of outcomes can change over time (composed via arbitrage-based coherency at the app/pool layer) |
-| **Multi-Outcome Market** | N mutually exclusive, exhaustive outcomes with per-outcome YES/NO tokens | Outcome set is fixed and provably complete (e.g., Fed rate decision: raise/flat/lower/other). Solvency + cross-outcome coherency enforced at covenant level. |
-| **LMSR Pool** | Automated market maker over a binary market's YES/NO | Providing passive liquidity on a binary market |
+| **Prediction Market (binary)** | YES/NO on a single event | Outcomes are binary, or the set of outcomes can change over time (composed at the app layer with oracle-discipline-enforced inter-market coherence) |
+| **Multi-Outcome Market** | N mutually exclusive, exhaustive outcomes with per-outcome YES/NO tokens. Provides atomic cross-outcome primitives (split-YES, split-NO, cross-outcome swap) for efficient arb, LP rotation, and basket operations. | Outcome set is fixed and known at creation (e.g., Fed rate decision: raise/flat/lower/other, sports brackets, Oscar categories) |
+| **LMSR Pool** | Binary automated market maker. Serves binary markets directly and per-outcome YES/NO pairs within multi-outcome markets via **Option C composition** (N binary LMSR pools per multi-outcome market). | Providing liquidity on any market — single pool contract type for both binary and multi-outcome |
 | **Maker Order** | Limit order against a binary market's token | Fills at a fixed price, cancellable by the maker |
 
-The two prediction market contracts **coexist by design**. The binary market is the primitive; the multi-outcome market generalizes it when the creator can pre-commit to an exhaustive outcome set. For outcome sets that are very large or not provably complete (e.g., elections where candidates may enter or withdraw), markets should compose from binary primitives at the application layer rather than instantiating a flat multi-outcome contract.
+The two prediction market contracts **coexist by design**. Creators pick by event characteristics:
 
-See [multi-outcome/multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md) for the design rationale and the alternatives considered.
+- **Known, exhaustive outcome set** → multi-outcome market contract. Gets atomic cross-outcome primitives, stronger oracle containment, single shared collateral UTXO.
+- **Dynamic or non-exhaustive outcomes** (candidates dropping out, open-ended questions) → composed binary market contracts at the app layer.
+
+Regardless of which market contract is used, **AMM liquidity is always provided via binary LMSR pools**. For multi-outcome markets, N binary LMSR pools are composed (one per outcome's YES/NO pair) and cross-outcome AMM coherence (`Σ p_YES_k = 1`) is arb-enforced. The multi-outcome market contract's cross-outcome primitives make that arb atomic (single-transaction closure of coherence gaps). See [multi-outcome/multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md) for the full spec and [multi-outcome/amm-scoring-rule-tradeoffs.md](multi-outcome/amm-scoring-rule-tradeoffs.md) for the pool design decision.
 
 Both market contracts uphold the same set of covenant-enforced principles (permissionlessness within the solvency invariant, narrow oracle authority, terminal-path completeness, RT destruction, sibling UTXO check, witness-parameterized indices, etc.). These are specified once in [market-contract-principles.md](market-contract-principles.md) and implemented by each contract. The per-contract specs below describe what is specific to each — token model, spend paths, parameters — and inherit the shared principles by reference.
 
@@ -102,7 +105,11 @@ All other transitions are detectable from script pubkey matching alone (8 unique
 
 ## Multi-Outcome Market
 
-Generalizes the binary market to N mutually exclusive, exhaustive outcomes with **per-outcome YES/NO tokens** (2N tokens total). This contract is appropriate when the outcome set is fixed and known at creation time. For the full spec, design rationale, and alternatives considered, see [multi-outcome/multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md).
+Generalizes the binary market to N mutually exclusive, exhaustive outcomes with **per-outcome YES/NO tokens** (2N tokens total). This contract is appropriate when the outcome set is fixed and known at creation time. Its primary value is the **atomic cross-outcome primitives** (split-YES, split-NO, cross-outcome swap), which enable efficient arb, LP rotation, and basket operations that composed binary markets cannot provide atomically.
+
+**AMM liquidity** for a multi-outcome market comes from **Option C composition**: N binary LMSR pools, one per outcome's YES/NO pair. Cross-outcome AMM coherence (`Σ p_YES_k = 1`) is arb-enforced, with arbitrageurs using the market contract's cross-outcome primitives to close gaps in a single atomic transaction.
+
+For the full spec, design rationale, and alternatives considered, see [multi-outcome/multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md).
 
 ### Parameters
 
@@ -176,6 +183,10 @@ Each supported N has its own `.simf` file generated from a template at build tim
 N=2 is served by the binary `prediction_market.simf`; whether to regenerate N=2 from the multi-outcome template is a deferred decision.
 
 ## LMSR Pool
+
+**The single AMM pool contract in deadcat.** One binary LMSR pool serves both single-event binary markets and per-outcome YES/NO pairs within multi-outcome markets (via Option C composition — N pools per multi-outcome market, one per outcome). The pool contract doesn't know or care which market contract type underlies its YES/NO tokens. See [multi-outcome/amm-scoring-rule-tradeoffs.md](multi-outcome/amm-scoring-rule-tradeoffs.md) for the pool design decision.
+
+**Liquidity model**: admin-operated, permissionless creation. Each pool has a single operator who chooses parameters, provides subsidy, can adjust b and close via admin-signed spend paths, earns fees, and bears impermanent loss. Anyone can deploy a pool on any market with any parameters; multiple competing pools per market are expected. LP-tokenized pools are deferred to v2.
 
 ### Parameters
 

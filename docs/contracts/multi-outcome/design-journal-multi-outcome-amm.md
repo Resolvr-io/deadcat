@@ -1,6 +1,78 @@
 # Design Journal: Multi-Outcome Markets and AMM Exploration
 
-**Status**: Design exploration record. Not a specification. Summarizes a long design discussion that produced one committed design (the multi-outcome market contract) and one still-under-validation proposal (the QMSR pool).
+**Status**: Historical design record. All open questions in this journal have been resolved. **See [Final Decisions](#final-decisions) for the committed landings.** The rest of the journal preserves the exploration trail for future reference.
+
+## Final Decisions
+
+After extended design iteration documented below (and further discussion in subsequent sessions), the following are the committed decisions:
+
+### Multi-outcome market contract: 2N tokens (YES/NO per outcome)
+
+The original Approach A in this journal proposed N tokens (one per outcome, Arrow-Debreu style). **This was subsequently pivoted to 2N tokens**: each outcome has both a YES token and a NO token, mirroring the binary market's token model. Reasons:
+
+- **Negative positions don't require (N-1) UTXOs**: with NO_k as a first-class token, users can bet against outcome k by holding a single NO_k, not a bundle of N-1 "everything-else" tokens.
+- **AMM symmetry**: per-outcome binary pools (Option C composition, see below) naturally take (YES_k, NO_k) pairs, mirroring the binary LMSR pool structure.
+- **Mental-model continuity**: users already understand YES/NO from the binary market.
+
+Trade-off accepted: 5N+2 covenant slots (vs 3N+2 for the N-token variant), 2N+1-way sibling check on unresolved-phase transitions.
+
+See [`multi-outcome-market-contract.md`](multi-outcome-market-contract.md) for the full spec.
+
+### Scoring rule: LMSR (not QMSR)
+
+The journal's tentative lean was "QMSR-for-all." **This was reversed.** Final decision: binary LMSR.
+
+Reasons the reversal happened:
+- **Production track record**: LMSR has 20 years of real deployments. QMSR has zero. For a new platform, operational unknowns are expensive.
+- **First-mover incentives**: LMSR's exponential cost curve creates dramatically stronger pressure to trade immediately on new information than QMSR's linear curve. For deadcat's AMM-as-price-oracle role, this matters.
+- **LS-QMSR disqualified by trilemma**: analyzed in [`amm-scoring-rule-tradeoffs.md`](amm-scoring-rule-tradeoffs.md). The LS construction causes a fixed 50% shrinkage of displayed prices toward uniform, independent of α. Breaks the price-oracle role.
+
+QMSR remains a viable fallback if LMSR's subsidy efficiency or witness size become real operational constraints.
+
+### Pool shape: binary only (no unified multi-outcome pool)
+
+The journal's "LMSR pool scaling investigation" noted that N=3 is feasible with a 2D table of the same entry count as the binary 1D table, and N=4 is borderline with 3D tables. **The final decision is to only support binary (N=2) LMSR pools**, even though N=3 unified is technically feasible.
+
+Reasons:
+- **Uniform implementation surface**: one pool contract type across all market shapes simplifies audit, indexing, routing, LP UX, and bug-fixing.
+- **2D-variant cost isn't "free"**: same table entries, but different covenant logic, state encoding, tooling, audit overhead.
+- **N=3 markets are a minority share of volume**: the ROI on a separate unified N=3 pool contract is weak.
+- **N≥4 needs composition anyway**: collapsing to "binary everywhere + Option C for multi-outcome" is architecturally cleaner than "unified for N∈{2,3} + composed for N≥4."
+
+### Multi-outcome pool liquidity: Option C composition
+
+For a multi-outcome market with N ≥ 3 outcomes, AMM liquidity comes from **N independent binary LMSR pools**, one per outcome's YES/NO pair. Cross-outcome AMM coherence (`Σ p_YES_k = 1`) is **arb-enforced**, not structural.
+
+The multi-outcome market contract's cross-outcome primitives (split-YES, merge-YES, cross-outcome swap) enable arbitrageurs to close coherence gaps in a **single atomic transaction**, keeping arb-enforced coherence tight. This is the primary operational value of the multi-outcome market contract, surpassing the secondary oracle-containment value initially emphasized.
+
+### Liquidity model: admin-operated pools, permissionless creation
+
+Each pool has a single operator who commits subsidy, earns fees, bears impermanent loss, and can adjust b / close via admin-signed spend paths. **Pool creation itself is permissionless** — anyone can deploy a pool on any market with any parameters, and multiple competing pools per market are expected.
+
+LP-tokenized pools (shared ownership, deposit/withdraw mechanics, pro-rata fees) were considered in depth and deferred to v2.
+
+### Contracts kept
+
+- **Binary prediction market contract** — single-event YES/NO, also used as the building block for app-layer composed multi-outcome events where the outcome set can evolve.
+- **Multi-outcome market contract** — 2N tokens, structural solvency, cross-outcome primitives for efficient arb and LP rotation.
+- **Binary LMSR pool contract** — one pool type, serves both market contract types (directly for binary markets, composed via Option C for multi-outcome).
+- **Maker order contract** — limit orders on any market.
+
+### Alternatives considered and rejected
+
+- **Unified multi-outcome LMSR at N=3** (2D table) — feasible but declined for implementation simplicity.
+- **Unified multi-outcome QMSR** (any N via polynomial inline) — rejected for lack of production history and weaker first-mover incentives.
+- **LS-LMSR** — dominated by standard LMSR at every N in Simplicity environment.
+- **LS-QMSR** — disqualified by the properness trilemma (50% price bias).
+- **FPMM / constant product** (Gnosis-style) — requires per-trade market co-spend, serializing all pool trades on the market's collateral UTXO. Rejected.
+- **LP-tokenized pools in v1** — deferred to v2; admin-operated is simpler and the v1 permissionless-creation story is preserved.
+- **Higher-degree polynomial scoring rules with LS construction** — genuinely novel research territory, deferred indefinitely.
+
+---
+
+**The remainder of this document preserves the original exploration trail.** Labels like "still under validation" and "tentative" refer to the state at the time of writing, not the current state.
+
+---
 
 ## What we set out to answer
 
