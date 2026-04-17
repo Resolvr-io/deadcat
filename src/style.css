@@ -105,6 +105,14 @@ select {
   }
 }
 
+/* Reserve vertical space at the top of the header so the logo sits below
+   the macOS traffic-light buttons (which the OS anchors at top-left).
+   Scoped to the <header>'s container so page-content .phi-container
+   instances are unaffected. */
+:root[data-os="macos"] header .phi-container {
+  padding-top: 32px;
+}
+
 .phi-title {
   max-width: 34ch;
 }
