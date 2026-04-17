@@ -590,7 +590,7 @@ function WalletButton() {
 function Logo() {
   return (
     <svg
-      className="h-10"
+      className="h-9"
       viewBox="0 0 1274 267"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
@@ -665,7 +665,10 @@ export function TopShell() {
 
   return (
     <>
-      <header className="relative z-30 border-b border-slate-800 bg-slate-950/80 backdrop-blur">
+      <header
+        className="relative z-30 border-b border-slate-800 bg-slate-950/80 backdrop-blur"
+        onMouseDown={onDragMouseDown}
+      >
         <div
           className="phi-container py-4 lg:py-5"
           onMouseDown={onDragMouseDown}
