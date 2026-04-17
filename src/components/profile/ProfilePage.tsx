@@ -65,6 +65,11 @@ async function pickAndUpload(mediaType: "avatar" | "banner"): Promise<string> {
 
 export default function ProfilePage() {
   const profileOpen = useStore((s) => s.profileOpen);
+  if (!profileOpen) return null;
+  return <ProfilePageContent />;
+}
+
+function ProfilePageContent() {
   const nostrNpub = useStore((s) => s.nostrNpub);
   const nostrProfile = useStore((s) => s.nostrProfile);
 
@@ -99,15 +104,12 @@ export default function ProfilePage() {
   useLockScroll();
 
   useEffect(() => {
-    if (profileOpen) {
-      // Fetch latest profile from relays
-      invoke<import("../../types").NostrProfile | null>("fetch_nostr_profile")
-        .then((profile) => {
-          if (profile) useStore.setState({ nostrProfile: profile });
-        })
-        .catch(() => {});
-    }
-  }, [profileOpen]);
+    invoke<import("../../types").NostrProfile | null>("fetch_nostr_profile")
+      .then((profile) => {
+        if (profile) useStore.setState({ nostrProfile: profile });
+      })
+      .catch(() => {});
+  }, []);
 
   const close = useCallback(() => {
     useStore.setState({ profileOpen: false });
@@ -154,8 +156,6 @@ export default function ProfilePage() {
     }
     setSaving(false);
   }, [name, displayName, picture, banner, about, website, nip05, lud16, close]);
-
-  if (!profileOpen) return null;
 
   return (
     <div
