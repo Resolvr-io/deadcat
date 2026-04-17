@@ -13,6 +13,7 @@ import { ToastContainer } from "./components/shared/Toast";
 import { WalletPage } from "./components/wallet/WalletPage";
 import { useActivityTracking } from "./hooks/useActivityTracking";
 import { useBootstrap } from "./hooks/useBootstrap";
+import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useStore } from "./store";
 
@@ -26,6 +27,8 @@ function CloseConfirmDialog() {
   const handleQuit = useCallback(() => {
     void invoke("confirm_quit");
   }, []);
+
+  useEscapeKey(open, handleCancel);
 
   if (!open) return null;
 

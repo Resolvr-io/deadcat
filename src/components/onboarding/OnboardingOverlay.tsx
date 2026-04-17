@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useLockScroll } from "../../hooks/useLockScroll";
 import { useStore } from "../../store";
 import { CloseButton } from "../shared/CloseButton";
@@ -37,6 +38,8 @@ export default function OnboardingOverlay() {
       onboardingPasswordRevealed: false,
     });
   }, []);
+
+  useEscapeKey(setupModalOpen && !backupFileContent, handleClose);
 
   if (!setupModalOpen) return null;
 

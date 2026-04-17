@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { useCallback, useEffect, useState } from "react";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useLockScroll } from "../../hooks/useLockScroll";
 import { useStore } from "../../store";
 import { generateAvatarDataUri } from "../../utils-react/avatar";
@@ -101,7 +102,12 @@ function ProfilePageContent() {
     }
   }, [nostrProfile]);
 
+  const close = useCallback(() => {
+    useStore.setState({ profileOpen: false });
+  }, []);
+
   useLockScroll();
+  useEscapeKey(true, close);
 
   useEffect(() => {
     invoke<import("../../types").NostrProfile | null>("fetch_nostr_profile")
@@ -109,10 +115,6 @@ function ProfilePageContent() {
         if (profile) useStore.setState({ nostrProfile: profile });
       })
       .catch(() => {});
-  }, []);
-
-  const close = useCallback(() => {
-    useStore.setState({ profileOpen: false });
   }, []);
 
   const handleBackdropClick = useCallback(

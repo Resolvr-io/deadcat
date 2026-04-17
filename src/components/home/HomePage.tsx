@@ -746,19 +746,19 @@ function CategoryPageView({
           <div className="space-y-1 text-sm text-slate-400">
             <button
               type="button"
-              className="block w-full rounded-md bg-slate-900/70 px-2 py-2 text-left text-emerald-300"
+              className="block w-full rounded-md bg-slate-900/70 px-2 py-2 text-left text-emerald-300 focus-visible:outline-none focus-visible:bg-slate-900/90 focus-visible:text-emerald-200"
             >
               All markets
             </button>
             <button
               type="button"
-              className="block w-full rounded-md px-2 py-2 text-left hover:bg-slate-900/40 hover:text-slate-200"
+              className="block w-full rounded-md px-2 py-2 text-left transition focus-visible:outline-none focus-visible:bg-slate-900/70 focus-visible:text-emerald-300 hover:bg-slate-900/40 hover:text-slate-200"
             >
               Live now
             </button>
             <button
               type="button"
-              className="block w-full rounded-md px-2 py-2 text-left hover:bg-slate-900/40 hover:text-slate-200"
+              className="block w-full rounded-md px-2 py-2 text-left transition focus-visible:outline-none focus-visible:bg-slate-900/70 focus-visible:text-emerald-300 hover:bg-slate-900/40 hover:text-slate-200"
             >
               Resolved soon
             </button>
