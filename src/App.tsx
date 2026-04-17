@@ -64,6 +64,18 @@ export default function App() {
   useTauriEvents();
   useActivityTracking();
 
+  // Tag <html> with the host OS so CSS can key off it (e.g. reserve space
+  // for macOS traffic lights without affecting other platforms).
+  useEffect(() => {
+    const ua = navigator.userAgent;
+    const os = /Mac/i.test(ua)
+      ? "macos"
+      : /Win/i.test(ua)
+        ? "windows"
+        : "linux";
+    document.documentElement.dataset.os = os;
+  }, []);
+
   // Listen for close-requested from Rust (Cmd+Q / window close)
   useEffect(() => {
     const unlisten = listen("close-requested", () => {

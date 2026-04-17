@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useMemo } from "react";
 import { categories } from "../../constants";
 import { useStore } from "../../store";
@@ -8,6 +9,16 @@ import { CloseButton } from "../shared/CloseButton";
 import { SearchBar } from "./SearchBar";
 import { SettingsPanel } from "./SettingsPanel";
 import { UserMenu } from "./UserMenu";
+
+// Empty header space becomes a window drag handle. Children with their own
+// interactive behavior (buttons, inputs) are not `event.target`, so they
+// still receive their normal click events.
+function onDragMouseDown(e: React.MouseEvent<HTMLElement>): void {
+  if (e.buttons !== 1) return;
+  if (e.target !== e.currentTarget) return;
+  e.preventDefault();
+  void getCurrentWindow().startDragging();
+}
 
 /* ── Category icon helper ──────────────────────────────────────────── */
 
@@ -655,8 +666,11 @@ export function TopShell() {
   return (
     <>
       <header className="relative z-30 border-b border-slate-800 bg-slate-950/80 backdrop-blur">
-        <div className="phi-container py-4 lg:py-5">
-          <div className="flex items-end gap-5">
+        <div
+          className="phi-container py-4 lg:py-5"
+          onMouseDown={onDragMouseDown}
+        >
+          <div className="flex items-end gap-5" onMouseDown={onDragMouseDown}>
             {/* Logo */}
             <button
               type="button"
