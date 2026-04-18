@@ -26,6 +26,38 @@ Convention compliance is enforced at three layers:
 
 Pool and order ingestion validates the parent market relationship (transitively ensuring the parent market is conforming) but does not enforce pool/order-specific conventions — a non-conforming pool or order is still fully functional for trading.
 
+## Integration Contract
+
+Correct chain-only recovery depends on the wallet integrator providing specific inputs to `deadcat-core`. This section enumerates every precondition, the failure mode if violated, and what the engine verifies on its own.
+
+### Preconditions the integrator must satisfy
+
+| Precondition | Failure mode if violated |
+|---|---|
+| **Deadcat xprv derived at `m/purpose'/deadcat'`** (see [HD Paths](#hd-paths)). The integrator is responsible for performing the derivation before passing the key to `derive_*_params` or engine construction. | Silent. Derive functions produce different keys, reconstructed covenant scripts do not match on-chain UTXOs, recovery reports "no matches" instead of an error. |
+| **Complete wallet rescan.** The caller must present every wallet-funded transaction on the target network, from the wallet's first use through the current tip. Incremental rescans must not skip block ranges. | Silent. Orders and pools whose creation txs were missed are simply absent from the recovered state. The engine has no way to know about txs it was never given. |
+| **Authoritative, tip-synced `ChainSource`.** Backends must return complete, current state — not filtered or stale results. | Latent. Stale tip produces stale state. Missing txs in `transactions_in_block` or equivalent queries produce the same silent gap as incomplete rescan. |
+| **`ChainSource::issuance_transaction(asset_id)` returns the first-issuance transaction**, not a subsequent reissuance. Esplora's `/asset/:asset_id` endpoint and Electrs's asset index both return this directly. | Loud. `ingest_market` re-derivation fails the script-pubkey match and returns `CoreError::InvalidCreationTransaction`. The error does not obviously point at the integrator's `ChainSource` implementation — integrators should treat this error as a signal to verify their issuance lookup is returning the genesis tx. |
+| **Correct `Network` at engine construction.** The well-known collateral asset index (see [Well-Known Collateral Asset Index](#well-known-collateral-asset-index-4-bits)) resolves against network-specific asset IDs — mainnet L-BTC ≠ testnet L-BTC ≠ regtest L-BTC. | Silent. Decoded collateral asset IDs resolve to the wrong chain's L-BTC / USDt; downstream operations fail with "unknown asset" rather than an explicit network-mismatch error. |
+
+### What `deadcat-core` verifies
+
+- **Creation tx / OP_RETURN authenticity** — ingestion re-derives the covenant script pubkey from the parsed params and requires it match the creation tx's output script. Spoofed hints or wrong creation txs are rejected with `CoreError::InvalidCreationTransaction`.
+- **Asset identity on ingestion** — `identify_asset` cross-checks asset IDs against registered market params. Unknown asset IDs are reported, not silently accepted.
+- **Covenant state transitions** — every tx presented to `step` / `interpret_transaction` is validated against the expected covenant spend paths; invalid transitions are rejected.
+
+### What `deadcat-core` does not verify
+
+- **Completeness of the transaction set the caller provided.** The engine cannot detect "you forgot to give me tx X." Integrators must independently guarantee rescan completeness.
+- **Freshness of the chain tip.** The engine processes what it is given in the order it is given; a stale backend produces stale state with no warning.
+- **Derivation path of the passed xprv.** The engine trusts the caller to have derived at `m/purpose'/deadcat'`. A wrong-path xprv produces usable-looking derived keys that silently fail to match on-chain data.
+
+### Recommendation for integrators
+
+After recovery, sanity-check the engine's state against an independent source before exposing it to the user. At minimum, query the `ChainSource` for the current chain height and confirm the wallet's latest processed height matches — this does not catch missing historical txs but catches obviously-stale backends.
+
+A `verify_integration(xprv, chain_source)` helper is under consideration for a future release. It would exercise a known derivation + lookup path to convert several silent-failure integration bugs into fail-fast at construction time. Not committed for v1.
+
 ## Recovery Flows by User Type
 
 ### YES/NO Token Holders (Takers)
