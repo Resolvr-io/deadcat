@@ -1,8 +1,8 @@
 # Multi-Outcome Prediction Market Contract
 
-**Status**: Proposal — design specification for a new core contract type. Not yet implemented. Supersedes an earlier N-token (Arrow-Debreu) variant; see [Alternatives Considered](#alternatives-considered).
+**Status**: Proposal — design specification for a new core contract type. Not yet implemented. Supersedes an earlier N-token (Arrow-Debreu) variant (see [Alternatives Considered](#alternatives-considered)). The Unresolved-phase operations design was revised from an enumerated-primitives approach (6 specific spend paths) to a single generic solvency-preservation spend path — the generic path accepts any `(Δy, Δn, Δc)` that preserves the invariant, enabling atomic cross-outcome compositions like the cross-outcome swap.
 
-**Related**: this contract implements every principle in [market-contract-principles.md](../market-contract-principles.md) — permissionless operation within the solvency invariant, narrow oracle authority, terminal paths from every non-terminal state, RT destruction on resolution/expiry, sibling UTXO check, witness-parameterized indices, deterministic RT blinding, and the rest. The principles doc is the canonical specification of those shared properties; this doc focuses on what is specific to the multi-outcome contract (2N token model, per-outcome and cross-outcome operations, slot layout, code generation).
+**Related**: this contract implements every principle in [market-contract-principles.md](../market-contract-principles.md) — permissionless operation within the solvency invariant, narrow oracle authority, terminal paths from every non-terminal state, RT destruction on resolution/expiry, sibling UTXO check, witness-parameterized indices, deterministic RT blinding, and the rest. The principles doc is the canonical specification of those shared properties; this doc focuses on what is specific to the multi-outcome contract (2N token model, generic Unresolved-phase transition check, slot layout, code generation).
 
 ## Motivation
 
@@ -106,13 +106,15 @@ Let `y_i` = outstanding supply of `YES_i`, `n_i` = outstanding supply of `NO_i`,
 payout(k) = collateral_per_pair × (y_k + sum_{j≠k} n_j)
 ```
 
-The contract requires `C ≥ max_k payout(k)`. All supported operations preserve the tighter condition that this maximum is **outcome-independent** — i.e., `y_k + sum_{j≠k} n_j` is the same value `Q` for every outcome k. Therefore:
+The contract requires `C ≥ max_k payout(k)`. The invariant tightens this to **outcome-independence** — i.e., `y_k + sum_{j≠k} n_j` is the same value `Q` for every outcome k. Therefore:
 
 ```
 C = collateral_per_pair × Q
 ```
 
-Operationally, preserving outcome-independence of Q constrains which `(Δy_i, Δn_i, Δc)` transitions the covenant permits. The [Operations](#operations) section enumerates the allowed primitives.
+Equivalently (and more useful for delta-based covenant checks): `y_k − n_k = D` for some constant `D` across all k, and `C = collateral_per_pair × Q`. The two formulations are equivalent given positive supplies.
+
+**Operationally**, the covenant exposes a single generic spend path for Unresolved-phase transitions: any transaction whose `(Δy, Δn, Δc)` preserves the invariant is accepted. The covenant derives the deltas from the transaction's issuance fields and burn outputs (no witness-declared state), then checks invariant preservation directly via two arithmetic conditions (see [Operations](#operations)). This makes any solvency-preserving combination of supply changes atomic in a single transaction, including compositions like cross-outcome swap that would otherwise require multi-tx sequences.
 
 ## Parameters
 
@@ -178,56 +180,85 @@ All slot scripts are static (computable at ingestion time) and pre-stored for sc
 
 ## Operations
 
-The covenant exposes the following operations in the Unresolved phase. All are permissionless (no oracle or admin signature required). Every listed operation preserves outcome-independence of Q (the solvency invariant stays tight).
+The covenant exposes **a single generic spend path** for Unresolved-phase transitions, plus the terminal phase-change paths (resolution, expiry, redemption). The generic path accepts any permissionless transaction whose `(Δy, Δn, Δc)` preserves the solvency invariant.
 
-### Per-outcome operations
+### The generic solvency-preserving transition
 
-**Issue pair for outcome i**: user pays `sets × collateral_per_pair`, receives `sets` of `YES_i` and `sets` of `NO_i`.
-- `Δy_i = sets`, `Δn_i = sets`, all other deltas zero.
-- `ΔQ = sets` uniformly across outcomes.
-- `Δc = sets × collateral_per_pair`. ✓
+On every Unresolved-phase transition, the covenant derives the per-outcome deltas from the transaction's observable fields:
 
-**Cancel pair for outcome i**: user burns `sets` of `YES_i` and `sets` of `NO_i`, receives `sets × collateral_per_pair` collateral. Inverse of issue.
+- `Δy_k = (issuance amount on YES_k RT input) − (amount at YES_k burn output)` for each k
+- `Δn_k = (issuance amount on NO_k RT input) − (amount at NO_k burn output)` for each k
+- `Δc = (new collateral output amount) − (old collateral input amount)`
 
-### Cross-outcome operations
+All of these are directly observable: RT issuance via Elements issuance fields, burn amounts via OP_RETURN outputs with specific asset IDs, collateral via explicit output values. No witness-declared state, no tapdata supply tracking.
 
-**Split YES**: user pays `sets × collateral_per_pair`, receives `sets` of `YES_i` for every outcome i.
-- `Δy_i = sets` for all i.
-- `ΔQ = sets`. ✓
+The covenant then verifies exactly two invariant-preservation checks:
 
-**Merge YES**: user burns `sets` of `YES_i` for every outcome i, receives `sets × collateral_per_pair` collateral.
+**Check 1 — uniform side shift:**
+```
+S := Δy_0 − Δn_0
+for each k in 1..N:
+    assert Δy_k − Δn_k == S
+```
+This preserves the invariant `y_k − n_k = D` (constant across k), which is equivalent to outcome-independence of `Q`.
 
-**Split NO**: user pays `sets × (N-1) × collateral_per_pair`, receives `sets` of `NO_i` for every outcome i.
-- `Δn_i = sets` for all i.
-- `ΔQ = sets × (N-1)`. ✓
+**Check 2 — collateral matches ΔQ:**
+```
+SumDeltaN := Σ_k Δn_k
+ΔQ := S + SumDeltaN
+assert Δc == ΔQ × collateral_per_pair
+```
+This ties `C` to `Q` so that `C = collateral_per_pair × Q` remains exact post-transition.
 
-**Merge NO**: user burns `sets` of `NO_i` for every outcome i, receives `sets × (N-1) × collateral_per_pair` collateral.
+Any `(Δy, Δn, Δc)` satisfying both checks is accepted. The covenant additionally enforces the orthogonal structural invariants: sibling UTXO check across all 2N+1 covenant inputs, deterministic RT blinding on continuation RT outputs, no parasitic issuance on non-issuance inputs. These are unchanged from the standard multi-input covenant design.
 
-### Derived operations (not first-class; expressible by composition)
+### Common operations as specific delta shapes
 
-**Cross swap `YES_i → {NO_j : j ≠ i}`** (Polymarket NegRiskAdapter's core invariant): `YES_i + (N-2) × collateral_per_pair ≡ {NO_j : j ≠ i}`.
+All the operations a user or pool builder might want are specific instances of the generic check. These names are **wallet-layer ergonomics** (PSET builders construct txs with these specific delta shapes) — from the covenant's perspective, every one of these is the same generic spend path:
 
-Composition: cancel pair i (gives 1 collateral) + split NO (consumes N-1 collateral, produces 1 NO of each outcome including i) + cancel pair i using the new NO_i token (gives 1 collateral back) — net: -1 YES_i, +1 NO_j for j ≠ i, user paid N-2 collateral. ✓
+| Operation | Δ shape | Passes check? |
+|---|---|---|
+| Issue pair outcome i | `Δy_i = Δn_i = sets`, all other 0, `Δc = sets·cp` | Check 1: S=0 uniformly ✓; Check 2: Δc = (0 + sets)·cp ✓ |
+| Cancel pair outcome i | `Δy_i = Δn_i = −sets`, all other 0, `Δc = −sets·cp` | Symmetric ✓ |
+| Split YES | `Δy_k = sets ∀k`, `Δn = 0`, `Δc = sets·cp` | S = sets uniformly ✓; Δc = (sets + 0)·cp ✓ |
+| Merge YES | `Δy_k = −sets ∀k`, `Δn = 0`, `Δc = −sets·cp` | ✓ |
+| Split NO | `Δn_k = sets ∀k`, `Δy = 0`, `Δc = sets·(N−1)·cp` | S = −sets uniformly ✓; Δc = (−sets + N·sets)·cp ✓ |
+| Merge NO | Symmetric ✓ | ✓ |
+| **Cross-outcome swap** (YES_i → {NO_j : j≠i}) | `Δy_i = −sets`, `Δn_j = sets ∀j≠i`, `Δc = sets·(N−2)·cp` | S = −sets uniformly (k=i: −sets − 0 = −sets; j≠i: 0 − sets = −sets) ✓; ΣΔn = (N−1)·sets; Δc = (−sets + (N−1)·sets)·cp = (N−2)·sets·cp ✓ |
+| **Arbitrary combination** in one tx | Linear sum of above | ✓ if each component preserves invariant; compositions are also invariant-preserving |
 
-The covenant does not expose this as a first-class operation; users and pools compose it from the primitives above.
+Under this design, **cross-outcome swap is a single-transaction primitive use of the generic path**, not a multi-tx composition. Any wallet can construct a tx with the cross-outcome-swap delta shape and the covenant accepts it.
+
+### What about cp, N, and numerical bounds?
+
+- `cp = collateral_per_pair` — committed at creation, fixed for the market's lifetime.
+- `N = outcome_count` — committed at creation, fixed for the market's lifetime. Determines the iteration range for Check 1.
+- Supply deltas fit in i64 (signed, bounded by reasonable token supplies).
+- `ΔQ × collateral_per_pair` may require u128 intermediate for large markets — Simplicity handles u128 arithmetic via jets.
+
+### Why this design (over enumerated primitives)
+
+**Atomicity**: any composition of solvency-preserving operations happens in one transaction. Cross-outcome swap is the canonical example, but the same flexibility applies to any future operation that preserves the invariant.
+
+**Extensibility**: new operations don't require covenant changes. If a wallet or router wants to compose a novel sequence of deltas in one tx, the covenant accepts it as long as the invariant is preserved. No new spend paths to enumerate, test, and audit.
+
+**Simpler covenant code**: one spend path (the generic invariant check) replaces six enumerated primitives. N−1 equality checks + 1 value check vs. N specific primitive-verification blocks.
+
+**Cleaner audit**: the invariant-preservation proof is mathematical and universally quantified — prove that "if Check 1 and Check 2 pass, the post-state is invariant-preserving" once, and it covers every accepted transition. Compare to enumerated primitives, where each primitive needs its own "this operation preserves the invariant" proof.
+
+**No state growth**: the delta-based check uses only tx-observable data. Tapdata does not need to track per-outcome supplies, matching the existing design's minimal state commitment.
 
 ## Spend Paths
 
 | Transition | From slots | To slots | Authorization | Covenant enforces |
 |---|---|---|---|---|
-| Initial pair issue (outcome i) | All 2N Dormant RTs | All 2N Unresolved RTs, Unresolved collateral | RT spend (all 2N) | Collateral = sets × collateral_per_pair; issuance of `sets` tokens on YES_i RT and NO_i RT only; deterministic RT blinding |
-| Subsequent pair issue (outcome i) | All 2N Unresolved RTs, Unresolved collateral | Same (continuation) | RT spend | Collateral increase = sets × collateral_per_pair; issuance on YES_i RT and NO_i RT only; sibling check across all 2N+1 covenant inputs |
-| Pair cancel (outcome i) | All 2N Unresolved RTs, Unresolved collateral | Same (or transition to Dormant if last supply burned) | RT spend + token burn | Collateral decrease = sets × collateral_per_pair; burn outputs for sets of YES_i and sets of NO_i |
-| Split YES | All 2N Unresolved RTs, collateral | Same | RT spend | Collateral increase = sets × collateral_per_pair; issuance of `sets` on each YES_i RT; no NO issuance |
-| Merge YES | All 2N Unresolved RTs, collateral | Same (or → Dormant) | RT spend + token burn | Collateral decrease = sets × collateral_per_pair; burn outputs for `sets` of each YES_i |
-| Split NO | All 2N Unresolved RTs, collateral | Same | RT spend | Collateral increase = sets × (N-1) × collateral_per_pair; issuance of `sets` on each NO_i RT |
-| Merge NO | All 2N Unresolved RTs, collateral | Same (or → Dormant) | RT spend + token burn | Collateral decrease = sets × (N-1) × collateral_per_pair; burn outputs for `sets` of each NO_i |
-| Resolution (outcome k) | All 2N Unresolved RTs, collateral | Resolved_k collateral | Oracle BIP-340 signature | Oracle signs tagged hash of market_id + outcome_index; all 2N RTs burned; collateral preserved at Resolved_k script |
+| **Generic solvency-preserving transition** (Unresolved ↔ Unresolved, Dormant → Unresolved, Unresolved → Dormant) | All 2N+1 Unresolved covenant UTXOs, or all 2N Dormant RTs if pre-state is Dormant | All 2N+1 Unresolved covenant UTXOs, or all 2N Dormant RTs if post-state reaches Q=0 | RT spend (all 2N RTs) + token burns (for negative deltas) | Sibling check across all covenant inputs; deterministic RT blinding on continuation RTs; `no_parasitic_issuance` on all inputs that aren't legitimately issuing; Check 1 (Δy_k − Δn_k uniform across k); Check 2 (Δc = (S + ΣΔn_k) × collateral_per_pair). Dormant pre-state treats all supplies as 0; Dormant post-state requires all supplies to reach 0. |
+| Resolution (outcome k, from Unresolved) | All 2N Unresolved RTs, collateral | Resolved_k collateral | Oracle BIP-340 signature | Oracle signs tagged hash of market_id + outcome_index; all 2N RTs burned; collateral preserved at Resolved_k script |
 | Redemption (resolved, winning YES_k) | Resolved_k | — | YES_k burn | YES_k tokens burned; collateral released at full value (1 token → `collateral_per_pair`) |
 | Redemption (resolved, winning NO_j, j ≠ k) | Resolved_k | — | NO_j burn | NO_j tokens burned; collateral released at full value |
 | Redemption (expired, YES_i) | Expired | — | YES_i burn | YES_i tokens burned; collateral released at yes_expiry_rate (see below) |
 | Redemption (expired, NO_i) | Expired | — | NO_i burn | NO_i tokens burned; collateral released at no_expiry_rate (see below) |
-| Expiry | All 2N Unresolved RTs, collateral | Expired | Timelock ≥ `expiry_time` | All 2N RTs burned; collateral preserved at Expired script |
+| Expiry (from Unresolved) | All 2N Unresolved RTs, collateral | Expired | Timelock ≥ `expiry_time` | All 2N RTs burned; collateral preserved at Expired script |
 | Dormant resolution (outcome k) | All 2N Dormant RTs | — | Oracle BIP-340 signature | All 2N RTs consumed, no covenant outputs |
 | Dormant expiry | All 2N Dormant RTs | — | Timelock ≥ `expiry_time` | All 2N RTs consumed, no covenant outputs |
 
@@ -369,36 +400,26 @@ This project leans toward option (a) — binary markets are the high-volume case
 
 | Property | Enforcement |
 |---|---|
-| Collateral conservation on per-outcome issue/cancel | Covenant checks `Δcollateral = sets × collateral_per_pair`, issuance on YES_i and NO_i RTs only |
-| Collateral conservation on split/merge YES | Covenant checks `Δcollateral = sets × collateral_per_pair`, issuance across all YES RTs |
-| Collateral conservation on split/merge NO | Covenant checks `Δcollateral = sets × (N-1) × collateral_per_pair`, issuance across all NO RTs |
-| Outcome-independence of Q | Covenant only allows the enumerated operations, each of which preserves the invariant |
-| Oracle-only resolution | BIP-340 signature verification against `oracle_public_key` |
-| Correct redemption rate (resolved, winning YES_k) | Covenant releases `collateral_per_pair` per token |
-| Correct redemption rate (resolved, winning NO_j, j ≠ k) | Covenant releases `collateral_per_pair` per token |
-| Correct redemption rate (expired) | Covenant releases `collateral_per_pair / N` per YES token, `collateral_per_pair × (N-1) / N` per NO token |
-| Deterministic RT blinding | Same scheme as binary market, applied to 2N RTs |
-| RT destruction on terminal transitions | All 2N RTs burned on resolution and expiry |
-| Collateral UTXO authenticity | Sibling UTXO check across all 2N+1 covenant inputs |
-| No parasitic issuance | `ensure_no_issuance` on all non-issuance paths for all 2N+1 inputs |
-| No double resolution | Resolution consumes all 2N RT UTXOs; no spend path back to Unresolved |
+| Outcome-independence of Q (equivalent: `y_k − n_k = D` constant across k) | Generic Unresolved-phase spend path's Check 1: `Δy_k − Δn_k` uniform across k for every transition. Inductive from Dormant pre-state (all zero, invariant trivially holds). |
+| Collateral matches Q | Generic Unresolved-phase spend path's Check 2: `Δc = (S + ΣΔn_k) × collateral_per_pair`. Inductive from Dormant pre-state (C=0, Q=0). |
+| Oracle-only resolution | BIP-340 signature verification against `oracle_public_key` in the resolution spend path (separate from the generic Unresolved-phase path) |
+| Correct redemption rate (resolved, winning YES_k) | Resolved_k slot's spend path releases `collateral_per_pair` per winning token burned |
+| Correct redemption rate (resolved, winning NO_j, j ≠ k) | Same Resolved_k slot; covenant distinguishes winning YES_k burn from winning NO_j burn by asset ID |
+| Correct redemption rate (expired) | Expired slot releases `collateral_per_pair / N` per YES token, `collateral_per_pair × (N-1) / N` per NO token |
+| Deterministic RT blinding | Same scheme as binary market, applied to 2N RTs, on all continuation RT outputs |
+| RT destruction on terminal transitions | All 2N RTs burned on resolution and expiry spend paths |
+| Collateral UTXO authenticity | Sibling UTXO check across all 2N+1 covenant inputs on the generic Unresolved-phase path and on resolution/expiry paths |
+| No parasitic issuance | `ensure_no_issuance` on inputs that the generic path's delta derivation doesn't account for (i.e., inputs other than RT issuance and collateral spend) |
+| No double resolution | Resolution consumes all 2N RT UTXOs; no spend path from Resolved_k back to Unresolved exists |
+| Invariant preservation across any composition of deltas | Linearity: if each component of a composed transition individually preserves Check 1 and Check 2, their sum does too. Formally proven once, covers every transaction that the generic path accepts. |
 
 See [enforcement-layers.md](../../architecture/enforcement-layers.md) for the framework.
 
 ## Impact on deadcat-core
 
-The existing `ContractEngine` API generalizes:
+The `ContractEngine` API generalizes naturally to this covenant shape. Wallet-layer PSET builders expose named operations for ergonomics (`build_issuance_pset`, `build_split_yes_pset`, etc.), each constructing a tx with a specific `(Δy, Δn, Δc)` delta shape. All of these builders produce transactions that route through the same generic covenant spend path — the covenant doesn't see the builder name, only the tx's observable deltas.
 
-- `ingest_market` accepts `PredictionMarketParams` (binary) or `MultiOutcomeMarketParams` via a unified enum.
-- `build_issue_pair_pset(market_id, outcome_index, sets)` — per-outcome issue.
-- `build_cancel_pair_pset(market_id, outcome_index, sets)` — per-outcome cancel.
-- `build_split_yes_pset(market_id, sets)` — cross-outcome YES split.
-- `build_merge_yes_pset(market_id, sets)` — cross-outcome YES merge.
-- `build_split_no_pset(market_id, sets)` — cross-outcome NO split.
-- `build_merge_no_pset(market_id, sets)` — cross-outcome NO merge.
-- `build_oracle_resolve_pset(market_id, outcome_index, signature)`.
-- `build_redemption_pset(market_id, token_asset_id, amount)` — works for both YES_k (winning) and NO_j (winning) in Resolved_k, and for both YES_i and NO_i in Expired.
-- `build_expire_transition_pset` — unchanged in shape.
+See `../../architecture/deadcat-core-design.md` for the full `Market` and `MultiOutcomeMarket` view-type APIs (unified `build_issuance_pset`, cross-outcome-specific `build_split_yes_pset` / `build_merge_yes_pset` / `build_split_no_pset` / `build_merge_no_pset`, and the cross-outcome arb quote/build pattern). The builders are unchanged in shape by the generic-path design; what changes is the covenant's internal verification logic and the ability to compose novel delta shapes in a single transaction via an optional `build_composite_transition_pset(market_id, delta_y, delta_n, delta_c, funding)` escape hatch (details TBD; not required for v1 since the named primitive builders cover the common cases).
 
 The `Side` enum (`{ Yes, No }` in the binary contract) is preserved, now paired with `OutcomeIndex(u8)`:
 
@@ -408,8 +429,6 @@ pub struct OutcomeToken {
     pub side: Side,  // Yes or No
 }
 ```
-
-Full `deadcat-core` API changes are out of scope for this doc — they'll be addressed in a subsequent pass over `../../architecture/deadcat-core-design.md`.
 
 ## Alternatives Considered
 
