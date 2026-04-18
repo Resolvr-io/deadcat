@@ -54,6 +54,16 @@ The market covenant asserts `current_index() == 0` and checks outputs at fixed p
 
 **Future consideration:** The atomic issuance + pool bootstrap enhancement ([future-atomic-issuance-lmsr.md](../contracts/lmsr-pool/future-atomic-issuance-lmsr.md)) would co-spend market RT UTXOs while creating pool reserve outputs. The market covenant's hardcoded indices may already accommodate this (the covenant doesn't constrain token output destinations, and extra outputs between the token outputs and the fee output may be tolerated). This requires verification against the exact `.simf` logic when that feature is scoped.
 
+## Script Uniqueness Guarantee
+
+Every live maker order UTXO has a unique covenant script, and every live LMSR pool reserve UTXO has a unique covenant script (per reserve role). This is structurally guaranteed, not a convention:
+
+- **Maker orders**: `maker_pubkey` and `order_nonce` are both deterministic functions of `order_index`, which the wallet increments per order. Two orders from the same wallet have different indices → different keys and nonces → different CMRs. Two orders from different wallets have different seeds → different keys → different CMRs. See [chain-only-recovery.md § Key Derivation](../protocol/chain-only-recovery.md#key-derivation) and [§ Order Nonce Derivation](../protocol/chain-only-recovery.md#order-nonce-derivation).
+- **LMSR pools**: `admin_pubkey` is derived per `pool_index`, and the pool's Merkle root varies with `max_loss_sats` / `half_payout_sats`. Two pools with matching params still differ by admin pubkey → different CMR.
+- **Prediction markets**: params include 2N issuance-derived asset IDs unique per creation tx, so two markets never share a CMR.
+
+This guarantee is what makes the aliasing analysis below tractable: "same covenant script" attack preconditions are not reachable via `derive_order_params` / `derive_pool_params`, they would require manually-constructed params that bypass deterministic derivation.
+
 ## Aliasing Analysis
 
 ### Attack Vectors

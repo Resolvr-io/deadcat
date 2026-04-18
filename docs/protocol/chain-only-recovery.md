@@ -163,7 +163,7 @@ At recovery time, the decoder reads the OP_RETURN, decodes each field to its raw
 
 Including contract-specific params in the context ensures different contracts get different masks. The recovery code recomputes the same mask from the decoded OP_RETURN data.
 
-**Known property**: Two orders with completely identical params on the same market share the same mask (leaking the XOR of their indices). This is a negligible concern — identical params already imply a CMR collision scenario the spec warns against, and the leaked information (index difference, not absolute values) requires the observer to already have linked the two transactions to the same wallet.
+**Known property**: Two orders with identical non-index params on the same market share the same mask (leaking the XOR of their order indices). This is a negligible concern — distinct `order_index` values produce distinct `maker_pubkey` and `order_nonce` values (see [Key Derivation](#key-derivation) and [Order Nonce Derivation](#order-nonce-derivation)), so CMR collision is structurally prevented regardless of mask overlap. The leaked information (index XOR, not absolute indices) additionally requires the observer to have already linked both transactions to the same wallet.
 
 ## Standard Denomination Convention
 
