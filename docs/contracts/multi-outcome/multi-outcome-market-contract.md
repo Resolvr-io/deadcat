@@ -348,32 +348,76 @@ Binary case (N=2): `yes_expiry_rate = no_expiry_rate = base_payout = cp / 2` —
 
 ## Code Generation Strategy
 
-Each supported N has its own `.simf` file generated from a template:
+Each supported N has its own hand-committed `.simf` file, produced by a Rust-based generator that applies a MiniJinja template to a per-N context. The generator runs at dev time, not at build or runtime.
+
+### Supported N range (v1)
+
+**v1 supports N ∈ {3, 4}.** N=2 continues to use the existing `prediction_market.simf` (the binary market contract, which has been deeply reviewed and is refactored in place rather than regenerated from the multi-outcome template).
+
+The {3, 4} range is a deliberately conservative v1 scope. Transaction size scales roughly quadratically with N (per-input witness grows with N, and the number of 2N+1 covenant inputs grows with N), and Liquid's block weight limit bounds the practical ceiling. We have not yet benchmarked the compiled binary (N=2) witness size against the generic-path multi-outcome contract, so we can't predict the exact cutoff. Starting at {3, 4} unlocks simple multi-outcome use cases without committing to larger N values whose tx weights we haven't measured.
+
+**Expansion is non-breaking.** Adding support for N=5, N=6, etc. in a future release only introduces new per-N `.simf` files (and their CMRs). Existing N=3 and N=4 markets are unaffected because each N's covenant is its own CMR-committed program; a market created against one `.simf` file has no dependence on any other. **Shrinking the supported range is breaking** (would invalidate existing markets' spend paths if their N is removed) and should not be done once markets exist in the wild.
+
+### Crate architecture
+
+The generator is fully decoupled from the `deadcat-core` runtime surface:
+
+- **`deadcat-codegen`** (new workspace crate, dev-only): pulls MiniJinja as a regular dep. Exposes a function (and a CLI binary for `just generate-simf`) that takes `N` and writes `multi_outcome_market_nN.simf` to the expected path inside `deadcat-core`'s contract directory.
+- **`deadcat-core`**: reads the committed `.simf` files at compile time via `include_bytes!`. Has no dependency on `deadcat-codegen` or MiniJinja. Downstream consumers of `deadcat-core` receive pre-embedded `.simf` files bundled with the published crate and never see the generator's dependency tree.
+- **Workspace CI**: `cargo test` at the workspace root runs `deadcat-codegen`'s drift-detection test, which regenerates each supported N's `.simf` source in-memory and asserts byte-exact equality against the committed files (including that no extra files exist in the target directory and no expected files are missing).
+
+File layout:
 
 ```
-src-tauri/crates/deadcat-sdk/contract/
-├── prediction_market.simf                # current binary market (N=2 legacy)
-├── multi_outcome_market_n3.simf          # generated
-├── multi_outcome_market_n4.simf          # generated
-├── multi_outcome_market_n5.simf          # generated
-├── ...
-└── multi_outcome_market_nK.simf
+crates/deadcat-codegen/
+  src/
+    lib.rs                                       # fn generate(n: usize) -> String
+    templates/
+      multi_outcome_market.simf.j2               # MiniJinja template
+    bin/
+      generate-simf.rs                           # CLI entry point (just generate-simf)
+  tests/
+    drift.rs                                     # in-memory regen + compile + byte-match test
+
+crates/deadcat-core/
+  contracts/
+    prediction_market.simf                       # binary market (hand-maintained, N=2)
+    multi_outcome/
+      multi_outcome_market_n3.simf               # committed, generator output
+      multi_outcome_market_n4.simf               # committed, generator output
 ```
 
-**Supported N range**: proposed initial range is **N=3 through N=10**. N=10 caps split/merge transaction weight at a comfortable limit; higher N pushes against Liquid block constraints (2N+1 = 21 covenant I/Os at N=10). N values above this range should be expressed via hierarchical composition (markets-of-markets) or via binary-market composition with arbitrage-based coherency, not as a single flat multi-outcome contract. The design journal explores this split in detail.
+### Template structure
 
-N=2 remains served by the existing `prediction_market.simf`. Whether to regenerate N=2 from the template or keep the binary contract as a special case is deferred; see [Relationship to the Binary Market](#relationship-to-the-binary-market).
+The MiniJinja template parameterizes the SimplicityHL source on `N`. Parameterized sections include:
 
-**Template structure**: a Rust build script (`build.rs` or a dedicated `codegen` crate) reads a template SimplicityHL file and produces concrete `.simf` files for each N. Parameterized sections include:
-- 2N param declarations for asset IDs and RT asset IDs
+- 2N param declarations for YES/NO token asset IDs and their reissuance tokens
 - 2N RT slot programs (Dormant + Unresolved per RT)
-- Loops over outcomes for issuance/burn checks (unrolled at codegen)
-- Resolution dispatch: `match outcome_index { 0 => ..., N-1 => ... }`
+- Loops over outcomes for issuance/burn checks (unrolled at codegen time via `{% for k in range(n=N) %}`)
+- Resolution dispatch: `match outcome_index { 0 => ..., N-1 => ... }` (unrolled)
 - Redemption dispatch: winning-outcome selection for both YES_k and NO_j cases
 
-**Audit & review**: generated `.simf` files are committed to the repo alongside the template so reviewers can verify the generator produces the expected structural generalization.
+Template syntax uses MiniJinja's Jinja2-compatible delimiters (`{{ N }}` for substitution, `{% for ... %}...{% endfor %}` for loops, `{% if ... %}...{% endif %}` for conditionals). These do not conflict with SimplicityHL syntax, which uses bare `{ }` and `[ ]` with adjacent tokens.
 
-**Compilation caching**: each `.simf` file's compiled CMR is cached in `deadcat-core` build output. Per-N CMR is deterministic given a template version.
+### Verification test
+
+The drift-detection test in `deadcat-codegen` runs on every `cargo test` invocation and performs, for each supported N:
+
+1. **Byte-match check**: regenerate the `.simf` source in-memory via the generator and assert it matches the committed file byte-for-byte.
+2. **Directory consistency**: assert the committed contracts directory contains exactly the expected set of files (no drift, no stragglers, no missing entries).
+3. **Compile check**: invoke the SimplicityHL compiler (as a Rust library — the same compiler `deadcat-core` uses at runtime) on the generated source with a fixed canonical test param set, asserting compilation succeeds. This catches template bugs that produce syntactically valid but semantically broken SimplicityHL.
+
+The compile check uses fixed test params rather than per-market params because CMR depends on the full param set (see [CMR and params](#cmr-and-params) below) — a fixed canonical param set gives a reproducible compile but its CMR is not a deployment artifact.
+
+Cost: the compile check runs the full SimplicityHL compilation pipeline per N, adding some time to `cargo test`. Acceptable at N=2 (N=3, N=4 in v1); worth watching as the range expands.
+
+### CMR and params
+
+CMR (Commitment Merkle Root) in Simplicity commits to the program's combinator tree, which includes compile-time constants. In deadcat's model, covenant params (oracle pubkey, asset IDs, `base_payout`, `expiry_time`, etc.) are inlined as constants during SimplicityHL compilation — so **every distinct param set produces a distinct CMR**. This is consistent with `deadcat-core-design.md`'s `fn contract_cmr(params, network) -> Cmr` signature and the cross-contract CMR-uniqueness discussion in `transaction-composability-model.md § Script Uniqueness Guarantee`.
+
+Consequence for codegen: we do **not** cache per-N CMRs at build time. The only CMR that matters is computed at market creation (and stored in `ContractId.cmr`). What we commit and verify at codegen time is the `.simf` source text, not a compiled CMR.
+
+**Audit-workflow TODO**: a reproducible recipe for "given the committed `.simf` at commit X and canonical test params Y, here's CMR Z" is useful for security-audit sign-off but is a tooling polish item, not a correctness requirement. Can ship alongside the audit pass rather than blocking v1.
 
 ## OP_RETURN Recovery Hint
 
@@ -398,11 +442,7 @@ For N=2, the multi-outcome market is structurally very close to the binary marke
 - `5N+2 = 12` slots vs. binary's 8.
 - Oracle signs u8 outcome_index rather than a single outcome_byte.
 
-**Migration question** (deferred):
-- **(a) Keep `prediction_market.simf` canonical for N=2** and use `multi_outcome_market_nN.simf` for N ≥ 3. Binary stays battle-tested; the two-token-per-outcome redundancy is avoided at the common case.
-- **(b) Regenerate N=2 from the template** and deprecate the binary contract. Single code-generation family, uniform core handling, at the cost of a heavier N=2 tx and the redundancy noted above.
-
-This project leans toward option (a) — binary markets are the high-volume case and the existing contract is already deeply validated. This decision can be revisited after the generator ships and we measure real tx weights.
+**Chosen for v1: `prediction_market.simf` stays canonical for N=2.** The multi-outcome template serves N ≥ 3 only. Binary remains the high-volume case and the existing contract is already deeply validated; the two-token-per-outcome redundancy of running N=2 through the template would cost tx weight at the common case for no structural benefit. The decision can be revisited after the generator ships and we measure real tx weights, but the path of least risk is to keep the two contracts independent.
 
 ## Security Properties
 
@@ -427,7 +467,7 @@ See [enforcement-layers.md](../../architecture/enforcement-layers.md) for the fr
 
 The `ContractEngine` API generalizes naturally to this covenant shape. Wallet-layer PSET builders expose named operations for ergonomics (`build_issuance_pset`, `build_split_yes_pset`, etc.), each constructing a tx with a specific `(Δy, Δn, Δc)` delta shape. All of these builders produce transactions that route through the same generic covenant spend path — the covenant doesn't see the builder name, only the tx's observable deltas.
 
-See `../../architecture/deadcat-core-design.md` for the full `Market` and `MultiOutcomeMarket` view-type APIs (unified `build_issuance_pset`, cross-outcome-specific `build_split_yes_pset` / `build_merge_yes_pset` / `build_split_no_pset` / `build_merge_no_pset`, and the cross-outcome arb quote/build pattern). The builders are unchanged in shape by the generic-path design; what changes is the covenant's internal verification logic and the ability to compose novel delta shapes in a single transaction via an optional `build_composite_transition_pset(market_id, delta_y, delta_n, delta_c, funding)` escape hatch (details TBD; not required for v1 since the named primitive builders cover the common cases).
+See `../../architecture/deadcat-core-design.md` for the full `Market` and `MultiOutcomeMarket` view-type APIs (unified `build_issuance_pset`, cross-outcome-specific `build_split_yes_pset` / `build_merge_yes_pset` / `build_split_no_pset` / `build_merge_no_pset`). Cross-outcome arb quote/build is deferred to v2; see [deadcat-core-design.md § Future: Cross-Outcome Arb API (v2)](../../architecture/deadcat-core-design.md#future-cross-outcome-arb-api-v2). The builders are unchanged in shape by the generic-path design; what changes is the covenant's internal verification logic and the ability to compose novel delta shapes in a single transaction via an optional `build_composite_transition_pset(market_id, delta_y, delta_n, delta_c, funding)` escape hatch (details TBD; not required for v1 since the named primitive builders cover the common cases).
 
 The `Side` enum (`{ Yes, No }` in the binary contract) is preserved, now paired with `OutcomeIndex(u8)`:
 
