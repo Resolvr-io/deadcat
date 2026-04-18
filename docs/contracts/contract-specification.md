@@ -201,7 +201,7 @@ pub struct LmsrPoolParams {
     pub collateral_asset_id: AssetId,       // from parent market
     pub lmsr_table_root: [u8; 32],          // derived: Merkle root of F-value table
     pub q_step_lots: u64,                   // derived from b and half_payout_sats
-    pub half_payout_sats: u64,              // creator-specified (convention: 26-value mantissa x 10^exp)
+    pub half_payout_sats: u64,              // creator-specified (convention: 16-value 1-2-5 table, shared with market base_payout encoding)
     pub fee_bps: u64,                       // creator-specified (u64 for Simplicity; validated < 10,000; convention: <= 4,095)
     pub admin_pubkey: XOnlyPublicKey,       // from mnemonic at pool_index
     pub max_loss_sats: u64,                 // NOT a covenant param — needed for off-chain LMSR math (b derivation, point evaluation, table generation)
@@ -319,7 +319,8 @@ These changes are specified in satellite docs but not yet applied to the `.simf`
 | Remove order script-cancel path | [maker-order-remove-script-cancel.md](maker-order/maker-order-remove-script-cancel.md) | Pending | Order contract |
 | Add pool close script path | [lmsr-pool-close-path.md](lmsr-pool/lmsr-pool-close-path.md) | Pending | Pool contract |
 | Pool params → protocol constants | [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md) | Pending | Pool contract |
-| Deterministic integer table generation | [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md) | Pending — requires formal specification document (exact constants, algorithms, Merkle format, test vectors) | Pool math |
+| Deterministic F-value computation (bignum runtime + committed reference Merkle roots) | [lmsr-deterministic-table-spec.md](lmsr-pool/lmsr-deterministic-table-spec.md) | Specified — see B1 resolution in the design docs. Runtime implementation in `deadcat-core` uses `num-bigint` + `num-rational` at arbitrary precision; reference generator and committed fixtures live in `deadcat-codegen`. | Pool math |
+| Pool denomination: 26-mantissa × 16-exponent → 16-value 1-2-5 table (shared with market encoding) | [chain-only-recovery.md § Pool Denomination](../protocol/chain-only-recovery.md#pool-denomination-1-2-5-table-4-bits-each) | Specified | Pool params, OP_RETURN hint (41 → 40 bytes) |
 | Covenant-enforced deterministic RT blinding | [deterministic-rt-blinding.md](../protocol/deterministic-rt-blinding.md) | Pending | Market contract (ABF enforcement, CBF pass-through, `verify_token_commitment` refactor) |
 | Dormant terminal paths (resolution + expiry from zero pairs) | [market-dormant-terminal-paths.md](prediction-market/market-dormant-terminal-paths.md) | Pending | Market contract (DormantYesRt and DormantNoRt slot programs) |
 | Order remainder witness-parameterization | [transaction-composability-model.md](../architecture/transaction-composability-model.md) | Pending | Order contract (`remainder_idx` from witness instead of `current_index() + 1`) |

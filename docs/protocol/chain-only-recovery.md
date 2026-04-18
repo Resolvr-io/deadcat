@@ -218,21 +218,15 @@ The derived pair-cost `cp = base_payout × N` (with `N = 2` for binary markets, 
 
 This determines order price resolution: order `PRICE` is an integer bounded by `cp = base_payout × N`, so the number of distinct expressible probability values equals `cp`. For a binary market at `base_payout = 100` (`cp = 200`): 0.5% increments. At `base_payout = 10,000` (`cp = 20,000`): 0.005% increments. Markets with low `cp` have limited price resolution for limit orders but work fine for LMSR pool trading (pools use their own pricing curve).
 
-### Pool Denomination: 26-Value Mantissa x 10^Exponent (9 bits)
+### Pool Denomination: 1-2-5 Table (4 bits each)
 
-`max_loss_sats` and `half_payout_sats` use a two-significant-digit encoding:
+Both `max_loss_sats` and `half_payout_sats` share the same 16-value 1-2-5 table used for market `base_payout`, encoded as a 4-bit index into the table above (see [Market Denomination](#market-denomination-1-2-5-table-4-bits)).
 
-**26 mantissa values** (5 bits):
-```
-10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
-25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95
-```
+This gives 16 × 16 = 256 `(max_loss_sats, half_payout_sats)` combinations, encoded in 8 bits total (vs. 18 bits under the previous 26-mantissa × 16-exponent scheme). Value range: 100 to 10,000,000 sats per param.
 
-Fine granularity at the low end (10-20: ~5-10% steps), medium in the middle (25-50: ~10-20% steps), adequate at the high end (50-95: ~5-17% steps). 6 unused 5-bit slots reserved for future expansion.
+**Why this range**: pools on L-BTC-denominated markets with `base_payout ≤ 10^7` sats and subsidies in the same range fit cleanly. Pools on larger-denomination markets (e.g., USDT with `base_payout = 10^8` or larger) would need an expanded table. Expanding the table in a future release is non-breaking: each new `(max_loss_sats, half_payout_sats)` combo gets its own Merkle root, and existing pools are unaffected by new table entries.
 
-**4-bit exponent** (0-15): `value = mantissa x 10^exponent`. The 4-bit exponent (not 3-bit) is necessary because non-L-BTC assets (USDT on Liquid = 10^8 units per dollar) need exponent 8+ for moderate pool sizes.
-
-Range: 10 x 10^0 = 10 through 95 x 10^15. Covers all practical pool parameters for any collateral asset.
+**Why not a separate table with wider range for pools**: consistency with the market encoding reduces the number of distinct denomination conventions in the protocol, simplifies decoders, and keeps the committed Merkle root set (one per combo) small. The 10^7 cap is a pragmatic v1 constraint, not a structural one.
 
 ### Well-Known Collateral Asset Index (4 bits)
 
@@ -323,18 +317,18 @@ Byte  39:    min_remainder_lots (u8)                           --  8 bits
 - `order_index <= 65535`
 - Parent market conforms to market conventions
 
-### Pool Hint (41 bytes)
+### Pool Hint (40 bytes)
 
 ```
 Byte  0:      type_tag                                          --  8 bits
 Bytes 1-32:   market_creation_txid                              -- 256 bits
-Bits 264-272: max_loss_sats (9 bits: 5 mantissa + 4 exponent)   \
-Bits 273-281: half_payout_sats (9 bits: 5 mantissa + 4 exponent) |-- 64 bits = 8 bytes
-Bits 282-293: fee_bps (u12)                                      |   (exact bit-level packing
-Bits 294-309: initial_s_index (u16)                              |    across bytes is an
-Bits 310-325: masked_pool_index (u16)                            |    implementation detail)
-Bits 326-327: reserved (must be zero)                            /
-                                                          Total: 328 bits = 41 bytes
+Bits 264-267: max_loss_sats (4 bits, 1-2-5 table index)         \
+Bits 268-271: half_payout_sats (4 bits, 1-2-5 table index)       |-- 56 bits = 7 bytes
+Bits 272-283: fee_bps (u12)                                      |   (exact bit-level packing
+Bits 284-299: initial_s_index (u16)                              |    across bytes is an
+Bits 300-315: masked_pool_index (u16)                            |    implementation detail)
+Bits 316-319: reserved (must be zero)                            /
+                                                          Total: 320 bits = 40 bytes
 ```
 
 **Per-field justification:**
@@ -342,19 +336,19 @@ Bits 326-327: reserved (must be zero)                            /
 | Field | In hint | Size | Justification |
 |---|---|---|---|
 | `market_creation_txid` | Yes | 32 bytes | Chain-only recovery of market params |
-| `max_loss_sats` | Yes (encoded) | 9 bits | Not derivable — 26-value mantissa x 10^exp |
-| `half_payout_sats` | Yes (encoded) | 9 bits | Not derivable — same encoding |
+| `max_loss_sats` | Yes (indexed) | 4 bits | Not derivable — 16-value 1-2-5 table (shared with market `base_payout` encoding) |
+| `half_payout_sats` | Yes (indexed) | 4 bits | Not derivable — same 1-2-5 table |
 | `fee_bps` | Yes | 12 bits | Not derivable — u12, 0.01% granularity, max 40.95% |
 | `initial_s_index` | Yes | 16 bits | Not derivable without brute-force script matching (EC scalar mul per candidate); enables direct script verification during creation-tx ingestion |
 | `pool_index` | Yes (masked) | 16 bits | Needed for admin key derivation; XOR-masked |
 | `yes/no/collateral_asset_id` | No | — | Derivable from parent market params |
-| `lmsr_table_root` | No | — | Derivable via deterministic table generation from `max_loss_sats` + `half_payout_sats` |
+| `lmsr_table_root` | No | — | Derivable via deterministic table generation from `max_loss_sats` + `half_payout_sats` (see [lmsr-deterministic-table-spec.md](../contracts/lmsr-pool/lmsr-deterministic-table-spec.md)) |
 | `q_step_lots` | No | — | Derivable from `b` and `half_payout_sats` |
 | `admin_pubkey` | No | — | Derivable from mnemonic at `pool_index` |
 | Protocol constants | No | — | `TABLE_DEPTH`, `S_BIAS`, `S_MAX_INDEX`, `MIN_POOL_RESERVE` are fixed in the `.simf` |
 
 **Builder validation:**
-- `max_loss_sats` and `half_payout_sats` must be in the 26-value mantissa x exponent set
+- `max_loss_sats` and `half_payout_sats` must be valid indices into the 16-value 1-2-5 table
 - `fee_bps <= 4095` (40.95%)
 - `initial_s_index <= 65535`
 - `pool_index <= 65535`
