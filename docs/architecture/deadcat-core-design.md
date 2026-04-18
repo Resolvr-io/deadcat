@@ -601,18 +601,20 @@ Creation params differ meaningfully between binary and multi-outcome markets (mu
 pub struct BinaryMarketCreationParams {
     pub oracle_public_key: XOnlyPublicKey,
     pub collateral_asset_id: AssetId,
-    pub collateral_per_pair: u64,
+    pub base_payout: u64,           // primary denomination; cp = base_payout × 2 (pair cost) is derived
     pub expiry_time: u32,
 }
 
 pub struct MultiOutcomeMarketCreationParams {
     pub oracle_public_key: XOnlyPublicKey,
     pub collateral_asset_id: AssetId,
-    pub collateral_per_pair: u64,   // must be divisible by outcome_count (exact expiry redemption)
+    pub base_payout: u64,           // primary denomination; cp = base_payout × outcome_count is derived
     pub expiry_time: u32,
     pub outcome_count: u8,          // N, validated in range per supported multi-outcome .simf files
 }
 ```
+
+The primary denomination field is `base_payout` — the per-outcome YES-expiry payout unit, drawn from the 1-2-5 table. The pair-cost `cp = base_payout × N` is derived at covenant compile time (N=2 for binary, N=`outcome_count` for multi-outcome). Formulas throughout this document use `collateral_per_pair` (or `cp`) as a derivation shorthand; implementations may expose it as an accessor method on the params struct. The unified-denomination rationale (divisibility becomes structural; no covenant `mod N` check needed; every denomination-table index is usable for every supported N) is specified in [multi-outcome-market-contract.md § Denomination model](../contracts/multi-outcome/multi-outcome-market-contract.md#denomination-model).
 
 The binary creation builder selects 2 defining inputs, derives the 2 token and 2 reissuance-token asset IDs, compiles the covenant, builds the PSET, and returns the full `BinaryMarketParams`. The multi-outcome creation builder selects 2N defining inputs, derives the 2N token and 2N reissuance-token asset IDs, compiles the N-specific `.simf` covenant, and returns the full `MultiOutcomeMarketParams`. In both cases the caller uses the returned params for subsequent `ingest_market` after the transaction confirms.
 
@@ -3851,11 +3853,11 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 **Rejected**: (a) No sync tracking — engine re-scans from last transition height (stuck `from_height` for inactive contracts). (b) Global sync tip (blocks independent contract catch-up).
 **Why**: Without `synced_to`, a contract whose last transition was at height 1000 would be re-scanned from 1000 on every `step` call, even if the engine checked through height 2000 and found nothing. `synced_to` records "checked through 2000," so the next scan starts from 2000. Per-contract (not global) because contracts are ingested at different times and catch up independently.
 
-### Collateral Per Pair
+### Denomination: `base_payout` as Primary Param
 
-**Chosen**: Covenant parameter `COLLATERAL_PER_PAIR` — the total collateral to issue one YES+NO pair.
-**Rejected**: `COLLATERAL_PER_TOKEN` (original) — the collateral backing a single token, requiring `* 2` in every formula.
-**Why**: The atomic unit of issuance is always a pair (1 YES + 1 NO). Every formula immediately multiplied by 2, and the naming caused a documentation bug (inconsistent formulas). `COLLATERAL_PER_PAIR` eliminates the factor of 2 everywhere: `pairs = collateral / collateral_per_pair`. See [collateral-per-pair-refactor.md](../contracts/prediction-market/collateral-per-pair-refactor.md).
+**Chosen**: Covenant param is `BASE_PAYOUT` — the per-outcome YES-expiry payout unit. The pair-cost `cp = base_payout × N` is derived at covenant compile time (N=2 for binary, N=outcome_count for multi-outcome). Both contract types share the same 1-2-5 denomination table, indexed by `base_payout`.
+**Rejected**: (a) `COLLATERAL_PER_PAIR` as primary (pair cost) — requires covenant-level `cp mod N == 0` assertion for multi-outcome, restricts the 1-2-5 table to N-compatible values (empty for N ∈ {3, 6, 7, 9}), creates asymmetry between binary and multi-outcome denomination. (b) Per-N denomination tables — 8 separate tables, complex decoder. (c) `COLLATERAL_PER_TOKEN` (original) — required `× 2` in every formula, caused documentation bugs.
+**Why**: Parameterizing on the per-outcome unit rather than the pair cost makes expiry-redemption divisibility automatic by construction (`cp = base_payout × N` is trivially divisible by N), so the covenant performs no division at runtime and needs no divisibility assertion. The 1-2-5 table (unchanged) is usable for every supported N. Binary and multi-outcome markets share one denomination model. See [multi-outcome-market-contract.md § Denomination model](../contracts/multi-outcome/multi-outcome-market-contract.md#denomination-model) and [collateral-per-pair-refactor.md](../contracts/prediction-market/collateral-per-pair-refactor.md) (the latter is superseded by this decision but retained for historical context on the earlier `collateral_per_token → collateral_per_pair` step).
 
 ### Key-Spend-Only Order Cancellation
 
@@ -3907,7 +3909,7 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 
 ### Standard Denomination Conventions
 
-**Chosen**: `collateral_per_pair` constrained to 16-value 1-2-5 table (4 bits). Pool `max_loss_sats` and `half_payout_sats` constrained to 26-value mantissa x 10^exponent encoding (9 bits each). Well-known collateral asset index (4 bits: L-BTC=0, USDt=1, escape=15).
+**Chosen**: `base_payout` constrained to 16-value 1-2-5 table (4 bits); `cp = base_payout × N` is derived. Pool `max_loss_sats` and `half_payout_sats` constrained to 26-value mantissa x 10^exponent encoding (9 bits each). Well-known collateral asset index (4 bits: L-BTC=0, USDt=1, escape=15).
 **Rejected**: (a) Uncompressed u64 values in OP_RETURN (wastes bytes). (b) Single-digit mantissa (too coarse — 100K to 200K is a 100% jump). (c) Full two-digit mantissa (90 values x 16 exponents = too many combinations, limited practical benefit over the 26-value set).
 **Why**: The conventions compress OP_RETURN hints (market: 77→37 bytes, pool: 51→41 bytes) while constraining parameters to "round numbers" that market creators naturally pick. The 26-value mantissa set (10-20 step 1, 25-95 step 5) balances precision and simplicity. The 4-bit exponent supports non-L-BTC assets (USDT needs exponent 8+). See [chain-only-recovery.md](../protocol/chain-only-recovery.md).
 

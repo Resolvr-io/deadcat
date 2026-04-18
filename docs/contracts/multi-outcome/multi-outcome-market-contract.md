@@ -126,7 +126,7 @@ pub struct MultiOutcomeMarketParams {
     pub no_token_asset_ids: [AssetId; N],        // NO_i asset IDs, derivable from creation tx
     pub yes_rt_asset_ids: [AssetId; N],          // YES_i reissuance tokens
     pub no_rt_asset_ids: [AssetId; N],           // NO_i reissuance tokens
-    pub collateral_per_pair: u64,                // collateral backing one YES_i + NO_i pair
+    pub base_payout: u64,                        // primary denomination: the per-outcome YES-expiry payout
     pub expiry_time: u32,                        // block height deadline
     pub outcome_count: u8,                       // N — redundant with array length, included for discovery clarity
 }
@@ -136,12 +136,19 @@ pub struct MultiOutcomeMarketParams {
 
 **Unit convention**: same as binary market — all amounts in the smallest indivisible unit of the respective asset.
 
-**Constraints** (enforced by builder / `derive_market_params`):
-- `N ≥ 2` and `N ≤ MAX_N` per the set of generated `.simf` files.
-- `collateral_per_pair` in the canonical 1-2-5 mantissa table.
-- `collateral_per_pair % N == 0` to make expiry redemption rates exact (see [Expiry Redemption Rate](#expiry-redemption-rate)).
-- `expiry_time` snapped to 60-block boundary.
-- `collateral_asset_id` in the well-known set or exotic-escape-compatible.
+### Denomination model
+
+The primary covenant param is `base_payout` — the amount of collateral one YES token returns on expiry redemption. The derived quantity `cp := base_payout × N` is the total collateral backing one `(YES_i + NO_i)` pair. All issuance, cancellation, and redemption formulas in this document use `cp` for readability; implementations compute `cp = base_payout × N` inline (with `N` a file-level literal in each generated `.simf`).
+
+This model is unified across the binary and multi-outcome market contracts: both parameterize on `base_payout` drawn from the same 1-2-5 table, and both derive `cp = base_payout × N` (with `N = 2` for binary). See [market-contract-principles.md § 12. Correct redemption rates](../market-contract-principles.md#12-correct-redemption-rates).
+
+**Why this model rather than `cp` as the primary param**: parameterizing on `cp` directly would require the covenant to enforce `cp mod N == 0` to prevent integer-division rounding losses on expiry redemption (losses that scale linearly with pairs issued). Parameterizing on `base_payout` makes the divisibility automatic by construction — `cp = base_payout × N` is trivially divisible by N — so no runtime assertion is needed and no denomination table entry is unreachable for any supported N. The 4-bit OP_RETURN encoding is unchanged; only the semantic of the indexed value shifts from "pair cost" to "per-outcome payout unit."
+
+**Constraints**:
+- `N ≥ 2` and `N ≤ MAX_N` per the set of generated `.simf` files. *(builder-enforced; each N uses a separate `.simf` file.)*
+- `base_payout` drawn from the canonical 1-2-5 mantissa table. *(builder-enforced; recovery decodability — bucket 2 of the [self-enforcement classification](../market-contract-principles.md#covenant-self-enforcement).)*
+- `expiry_time` snapped to 60-block boundary. *(builder-enforced; recovery decodability.)*
+- `collateral_asset_id` in the well-known set or exotic-escape-compatible. *(builder-enforced; recovery decodability.)*
 
 ## Covenant Structure
 
@@ -231,7 +238,7 @@ Under this design, **cross-outcome swap is a single-transaction primitive use of
 
 ### What about cp, N, and numerical bounds?
 
-- `cp = collateral_per_pair` — committed at creation, fixed for the market's lifetime.
+- `cp := base_payout × N` — derived from the primary covenant param `base_payout` (committed at creation) and the file-level literal `N`. `cp` is the pair cost; `collateral_per_pair` is used as a synonym in formulas below.
 - `N = outcome_count` — committed at creation, fixed for the market's lifetime. Determines the iteration range for Check 1.
 - Supply deltas fit in i64 (signed, bounded by reasonable token supplies).
 - `ΔQ × collateral_per_pair` may require u128 intermediate for large markets — Simplicity handles u128 arithmetic via jets.
@@ -314,29 +321,30 @@ Aliasing defense: script uniqueness per slot + per-market script derivation mean
 
 If the oracle does not resolve by `expiry_time`, all outcome tokens become redeemable against the Expired collateral UTXO at a pre-computed rate. The rate treats every outcome as equally probable (1/N), which is the "no information" default and preserves solvency exactly.
 
-Rates:
+Rates (expressed in terms of the primary denomination `base_payout`):
 ```
-yes_expiry_rate = collateral_per_pair / N
-no_expiry_rate  = collateral_per_pair × (N - 1) / N
+yes_expiry_rate = base_payout          = cp / N
+no_expiry_rate  = base_payout × (N-1)  = cp × (N-1) / N
 ```
+
+Both rates are exact integers by construction, because `cp = base_payout × N`. No division is performed at covenant runtime — the covenant's expiry spend path uses `base_payout` and `base_payout × (N-1)` directly.
 
 **Solvency verification**: if all tokens redeem, total payout is:
 ```
-sum(y_i) × yes_expiry_rate + sum(n_i) × no_expiry_rate
-  = collateral_per_pair × [sum(y_i) / N + sum(n_i) × (N-1) / N]
-  = collateral_per_pair × [Y + (N-1) × N_total] / N
+sum(y_i) × base_payout + sum(n_i) × base_payout × (N-1)
+  = base_payout × [Y + (N-1) × N_total]
 ```
 where `Y = sum(y_i)` and `N_total = sum(n_i)`.
 
-Using the outcome-independence constraint `y_k - n_k = D` (same constant D for all k), we have `Y = N_total + N×D`, so:
+Using the outcome-independence constraint `y_k - n_k = D` (same constant D for all k), we have `Y = N_total + N × D`, so:
 ```
 Y + (N-1) × N_total = N × N_total + N × D = N × (N_total + D)
 ```
-Therefore total payout = `collateral_per_pair × (N_total + D)` which equals `C` exactly. ✓
+Therefore total payout = `base_payout × N × (N_total + D) = cp × (N_total + D) = C` exactly. ✓
 
-Binary case (N=2): `yes_expiry_rate = no_expiry_rate = collateral_per_pair / 2` — matches the existing binary market.
+Binary case (N=2): `yes_expiry_rate = no_expiry_rate = base_payout = cp / 2` — matches the unified denomination model shared with the binary market.
 
-**Rounding**: requiring `collateral_per_pair % N == 0` at builder time eliminates rounding residuals.
+**Exact redemption is structural, not asserted.** Because `base_payout` is the primary param and `cp = base_payout × N` is derived at covenant compile time, every expiry redemption rate is an integer multiple of `base_payout` — no rounding residuals can arise. The alternative (primary `cp` param + covenant `cp mod N == 0` assertion) would have required rejecting any creation with non-divisible `cp` and restricted the denomination table to N-compatible values. The primary-`base_payout` model avoids both complications.
 
 ## Code Generation Strategy
 
@@ -370,7 +378,7 @@ N=2 remains served by the existing `prediction_market.simf`. Whether to regenera
 ## OP_RETURN Recovery Hint
 
 **Fixed portion** (independent of N, ~40 bytes, matching binary):
-- `collateral_per_pair` (compressed mantissa + exponent: 2 bytes)
+- `base_payout` (4-bit index into the 1-2-5 denomination table; `cp = base_payout × N` is derived at decode time)
 - `expiry_time` (per existing convention)
 - `oracle_public_key` (32 bytes)
 - `collateral_asset_id` (1 byte index into well-known set, or 32 bytes)
@@ -405,7 +413,7 @@ This project leans toward option (a) — binary markets are the high-volume case
 | Oracle-only resolution | BIP-340 signature verification against `oracle_public_key` in the resolution spend path (separate from the generic Unresolved-phase path) |
 | Correct redemption rate (resolved, winning YES_k) | Resolved_k slot's spend path releases `collateral_per_pair` per winning token burned |
 | Correct redemption rate (resolved, winning NO_j, j ≠ k) | Same Resolved_k slot; covenant distinguishes winning YES_k burn from winning NO_j burn by asset ID |
-| Correct redemption rate (expired) | Expired slot releases `collateral_per_pair / N` per YES token, `collateral_per_pair × (N-1) / N` per NO token |
+| Correct redemption rate (expired) | Expired slot releases `base_payout` per YES token, `base_payout × (N-1)` per NO token. Both are exact integers by construction (primary param is `base_payout`; `cp = base_payout × N` is derived), so no rounding residuals arise and no covenant-level divisibility assertion is needed. |
 | Deterministic RT blinding | Same scheme as binary market, applied to 2N RTs, on all continuation RT outputs |
 | RT destruction on terminal transitions | All 2N RTs burned on resolution and expiry spend paths |
 | Collateral UTXO authenticity | Sibling UTXO check across all 2N+1 covenant inputs on the generic Unresolved-phase path and on resolution/expiry paths |

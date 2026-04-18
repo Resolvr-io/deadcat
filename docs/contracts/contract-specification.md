@@ -36,16 +36,18 @@ pub struct PredictionMarketParams {
     pub no_token_asset_id: AssetId,             // derivable from creation tx issuance entropy
     pub yes_reissuance_token_id: AssetId,       // derivable from creation tx issuance entropy
     pub no_reissuance_token_id: AssetId,        // derivable from creation tx issuance entropy
-    pub collateral_per_pair: u64,               // total collateral for one YES+NO pair (convention: 1-2-5 table)
+    pub base_payout: u64,                       // primary denomination (1-2-5 table); cp = base_payout × 2 is the pair cost
     pub expiry_time: u32,                       // block height deadline (convention: snapped to 60-block boundary)
 }
 ```
 
 4 of 8 fields are derivable from the creation transaction's issuance entropy. The remaining 4 are stored in the OP_RETURN recovery hint. See [chain-only-recovery.md](../protocol/chain-only-recovery.md).
 
-**Unit convention**: All amounts (`collateral_per_pair`, `max_loss_sats`, `half_payout_sats`, token counts, reserve values) are denominated in the **smallest indivisible unit** of the respective asset — satoshis for L-BTC (10^-8 BTC), 10^-8 for USDt on Liquid, etc. The `_sats` suffix on some fields reflects the L-BTC-as-canonical-example convention, not an L-BTC-only restriction. Protocol constants like `MIN_POOL_RESERVE = 1,000` are in smallest units regardless of asset.
+**Denomination model**: The primary covenant param is `base_payout` — the per-outcome YES-expiry payout unit. The pair cost `cp = base_payout × N` (with `N = 2` for binary markets) is derived at covenant compile time. This model is shared with the multi-outcome market contract; see [multi-outcome-market-contract.md § Denomination model](multi-outcome/multi-outcome-market-contract.md#denomination-model) for the rationale.
 
-Builder validates: `collateral_per_pair` in 1-2-5 table, `expiry_time` on 60-block boundary, `collateral_asset_id` in well-known set or exotic-escape-compatible.
+**Unit convention**: All amounts (`base_payout`, `max_loss_sats`, `half_payout_sats`, token counts, reserve values) are denominated in the **smallest indivisible unit** of the respective asset — satoshis for L-BTC (10^-8 BTC), 10^-8 for USDt on Liquid, etc. The `_sats` suffix on some fields reflects the L-BTC-as-canonical-example convention, not an L-BTC-only restriction. Protocol constants like `MIN_POOL_RESERVE = 1,000` are in smallest units regardless of asset.
+
+Builder validates: `base_payout` in 1-2-5 table, `expiry_time` on 60-block boundary, `collateral_asset_id` in well-known set or exotic-escape-compatible.
 
 ### Covenant Structure
 
@@ -68,8 +70,8 @@ Each slot has a unique script pubkey derived from the contract params + slot ide
 
 | Transition | From slots | To slots | Authorization | Covenant enforces |
 |---|---|---|---|---|
-| Initial issuance | 0, 1 | 2, 3, 4 | RT spend | Collateral = pairs x collateral_per_pair |
-| Subsequent issuance | 2, 3, 4 | 2, 3, 4 | RT spend | Collateral increased by pairs x collateral_per_pair; sibling UTXO check |
+| Initial issuance | 0, 1 | 2, 3, 4 | RT spend | Collateral = pairs × cp, where cp = base_payout × 2 |
+| Subsequent issuance | 2, 3, 4 | 2, 3, 4 | RT spend | Collateral increased by pairs × cp; sibling UTXO check |
 | Partial cancellation | 2, 3, 4 | 2, 3, 4 | RT spend + token burn | Collateral decreased, tokens burned; sibling UTXO check |
 | Full cancellation | 2, 3, 4 | 0, 1 | RT spend + token burn | All collateral returned, all tokens burned; sibling UTXO check |
 | Resolution (YES) | 2, 3, 4 | 5 | Oracle BIP-340 signature | Oracle signs tagged hash of market_id + outcome; RT burn outputs verified at unspendable script with correct commitment; sibling UTXO check |
@@ -121,13 +123,13 @@ pub struct MultiOutcomeMarketParams {
     pub no_token_asset_ids: [AssetId; N],        // derivable from creation tx
     pub yes_rt_asset_ids: [AssetId; N],          // derivable from creation tx
     pub no_rt_asset_ids: [AssetId; N],           // derivable from creation tx
-    pub collateral_per_pair: u64,                // same convention as binary market
+    pub base_payout: u64,                        // primary denomination (1-2-5 table); cp = base_payout × N is the pair cost
     pub expiry_time: u32,                        // 60-block boundary
     pub outcome_count: u8,                       // N
 }
 ```
 
-Builder validates: `N` in supported range (proposed N=3..10), `collateral_per_pair` in 1-2-5 table AND divisible by N (for exact expiry redemption), `expiry_time` on 60-block boundary.
+Builder validates: `N` in supported range (proposed N=3..10), `base_payout` in 1-2-5 table, `expiry_time` on 60-block boundary. Expiry-redemption divisibility is structural under this model (`cp = base_payout × N` is trivially divisible by N), so no `cp mod N == 0` check is required at builder or covenant level.
 
 ### Covenant Structure
 
@@ -147,22 +149,24 @@ Builder validates: `N` in supported range (proposed N=3..10), `collateral_per_pa
 
 ### Token Model and Solvency Invariant
 
-For outcome k winning, `YES_k` and `NO_j` (for all j ≠ k) each redeem for `collateral_per_pair`. Pre-resolution, the contract maintains an outcome-independent quantity `Q = y_k + sum_{j≠k} n_j` (same value for every k), with collateral `C = collateral_per_pair × Q`. All supported operations preserve outcome-independence of Q.
+For outcome k winning, `YES_k` and `NO_j` (for all j ≠ k) each redeem for `cp = base_payout × N`. Pre-resolution, the contract maintains an outcome-independent quantity `Q = y_k + sum_{j≠k} n_j` (same value for every k), with collateral `C = cp × Q`. All supported operations preserve outcome-independence of Q.
 
 ### Spend Paths (summary)
 
+Formulas below use `cp := base_payout × N` as a derivation shorthand.
+
 Per-outcome operations:
-- **Issue pair (outcome i)**: mint `sets` of YES_i and sets of NO_i, lock `sets × collateral_per_pair`.
-- **Cancel pair (outcome i)**: burn sets of YES_i and sets of NO_i, release `sets × collateral_per_pair`.
+- **Issue pair (outcome i)**: mint `sets` of YES_i and sets of NO_i, lock `sets × cp`.
+- **Cancel pair (outcome i)**: burn sets of YES_i and sets of NO_i, release `sets × cp`.
 
 Cross-outcome operations:
-- **Split YES** / **Merge YES**: mint/burn `sets` of each YES_i, for `sets × collateral_per_pair`.
-- **Split NO** / **Merge NO**: mint/burn `sets` of each NO_i, for `sets × (N-1) × collateral_per_pair`.
+- **Split YES** / **Merge YES**: mint/burn `sets` of each YES_i, for `sets × cp`.
+- **Split NO** / **Merge NO**: mint/burn `sets` of each NO_i, for `sets × (N-1) × cp`.
 
 Resolution/redemption:
 - **Resolution (outcome k)**: oracle signs u8 outcome_index; all 2N RTs burned; collateral moves to Resolved_k slot.
-- **Redemption**: YES_k and NO_j (j ≠ k) each redeem for `collateral_per_pair`.
-- **Expiry redemption**: YES_i redeems for `collateral_per_pair / N`; NO_i redeems for `collateral_per_pair × (N-1) / N`. Uniform 1/N outcome probability assumption keeps the rate solvency-preserving.
+- **Redemption**: YES_k and NO_j (j ≠ k) each redeem for `cp = base_payout × N`.
+- **Expiry redemption**: YES_i redeems for `base_payout`; NO_i redeems for `base_payout × (N-1)`. Both are exact integers by construction. Uniform 1/N outcome probability assumption keeps the rate solvency-preserving.
 
 All Unresolved-phase transitions co-spend all **2N+1 covenant inputs** (all RTs + collateral) to maintain the sibling UTXO check.
 
@@ -308,7 +312,7 @@ These changes are specified in satellite docs but not yet applied to the `.simf`
 
 | Refactor | Satellite doc | Status | Blocks |
 |---|---|---|---|
-| `collateral_per_token` → `collateral_per_pair` | [collateral-per-pair-refactor.md](prediction-market/collateral-per-pair-refactor.md) | Pending | Market contract, market params |
+| `collateral_per_token` → `base_payout` (primary denomination; `cp = base_payout × N` derived) | [collateral-per-pair-refactor.md](prediction-market/collateral-per-pair-refactor.md) | Pending | Market contract, market params (binary and multi-outcome). Supersedes the intermediate `collateral_per_pair` rename — going directly to `base_payout` unifies binary and multi-outcome denomination and makes expiry-redemption divisibility structural. |
 | Oracle BIP-340 tagged hash | [oracle-bip340-tagged-hash.md](../protocol/oracle-bip340-tagged-hash.md) | Pending | Market contract, oracle attestation |
 | Remove cosigner from order fill path | [maker-order-remove-cosigner.md](maker-order/maker-order-remove-cosigner.md) | Pending | Order contract, order params |
 | Rename pool `COSIGNER_PUBKEY` → `ADMIN_PUBKEY` | [maker-order-remove-cosigner.md](maker-order/maker-order-remove-cosigner.md) | Pending | Pool contract, pool params |

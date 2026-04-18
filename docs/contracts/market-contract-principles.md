@@ -121,12 +121,14 @@ See [deterministic-rt-blinding.md](../protocol/deterministic-rt-blinding.md).
 
 ### 12. Correct redemption rates
 
-Redemption transitions release collateral at covenant-verified rates:
+Redemption transitions release collateral at covenant-verified rates. Both market contracts parameterize on `base_payout` (the primary denomination) and derive `cp := base_payout × N` where N is the outcome count (`N = 2` for binary, `N ∈ [3, MAX_N]` for multi-outcome). All rates below are exact integers by construction:
 
-- **Resolved**: winning tokens redeem for `collateral_per_pair` each. All other tokens are inert.
-- **Expired**: tokens redeem at a solvency-preserving fractional rate. Binary: `collateral_per_pair / 2` per token, symmetric across YES and NO. Multi-outcome: `collateral_per_pair / N` per YES token, `collateral_per_pair × (N-1) / N` per NO token.
+- **Resolved**: winning tokens redeem for `cp = base_payout × N` each. All other tokens are inert.
+- **Expired**: Binary: `base_payout` per token, symmetric across YES and NO (total `2 × base_payout = cp`). Multi-outcome: `base_payout` per YES token, `base_payout × (N-1)` per NO token.
 
 The expired rates treat every outcome as equally probable (a uniform 1/N prior) — not because this is "correct" in any Bayesian sense, but because it is the solvency-preserving choice under the constraint that the covenant cannot run arbitrary dynamic computation.
+
+**Exact redemption is structural, not asserted.** Parameterizing on `base_payout` and deriving `cp = base_payout × N` makes divisibility automatic: every expiry rate is an integer multiple of `base_payout`. The covenant performs no division at runtime, asserts no divisibility predicate, and rejects no markets for having "incompatible" denominations. See [multi-outcome-market-contract.md § Denomination model](multi-outcome/multi-outcome-market-contract.md#denomination-model) for the full rationale.
 
 ## UTXO identity and aliasing
 

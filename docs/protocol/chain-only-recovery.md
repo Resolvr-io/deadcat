@@ -201,7 +201,7 @@ Including contract-specific params in the context ensures different contracts ge
 
 ### Market Denomination: 1-2-5 Table (4 bits)
 
-`collateral_per_pair` is constrained to 16 values in the 1-2-5 series:
+`base_payout` — the primary covenant denomination, representing the per-outcome YES-expiry payout unit — is constrained to 16 values in the 1-2-5 series:
 
 | Index | Value (sats) | Index | Value (sats) |
 |---|---|---|---|
@@ -214,7 +214,9 @@ Including contract-specific params in the context ensures different contracts ge
 | 6 | 10,000 | 14 | 5,000,000 |
 | 7 | 20,000 | 15 | 10,000,000 |
 
-This determines order price resolution: `PRICE` is an integer bounded by `collateral_per_pair`, so the number of distinct expressible probability values equals `collateral_per_pair`. At 100: 1% increments (coarse). At 10,000: 0.01% increments (fine). Markets below 1,000 have limited price resolution for limit orders but work fine for LMSR pool trading (pools use their own pricing curve).
+The derived pair-cost `cp = base_payout × N` (with `N = 2` for binary markets, `N ∈ [3, MAX_N]` for multi-outcome) is the total collateral backing one `(YES_i + NO_i)` pair. Parameterizing on `base_payout` rather than `cp` makes expiry-redemption rates exact integers by construction: a YES token always pays `base_payout`; a NO token always pays `base_payout × (N-1)` at expiry. No covenant-level divisibility check is needed, and every denomination-table index is usable for every supported N. See [multi-outcome-market-contract.md § Denomination model](../contracts/multi-outcome/multi-outcome-market-contract.md#denomination-model) for the full rationale.
+
+This determines order price resolution: order `PRICE` is an integer bounded by `cp = base_payout × N`, so the number of distinct expressible probability values equals `cp`. For a binary market at `base_payout = 100` (`cp = 200`): 0.5% increments. At `base_payout = 10,000` (`cp = 20,000`): 0.005% increments. Markets with low `cp` have limited price resolution for limit orders but work fine for LMSR pool trading (pools use their own pricing curve).
 
 ### Pool Denomination: 26-Value Mantissa x 10^Exponent (9 bits)
 
@@ -264,7 +266,7 @@ The type tag is a **first-pass filter**, not a guarantee. Roughly 1 in 256 rando
 ```
 Byte  0:     type_tag                                  --  8 bits
 Bytes 1-32:  oracle_public_key                         -- 256 bits
-Byte  33:    [collateral_asset(4)][collateral_per_pair(4)]  --  8 bits
+Byte  33:    [collateral_asset(4)][base_payout(4)]          --  8 bits
 Bytes 34-36: expiry_time (u24, big-endian)             -- 24 bits
                                                  Total: 296 bits = 37 bytes
 ```
@@ -277,7 +279,7 @@ If `collateral_asset` index = 15 (escape): 32 additional bytes of raw `collatera
 |---|---|---|---|
 | `oracle_public_key` | Yes | 32 bytes | Not derivable — chosen by market creator |
 | `collateral_asset_id` | Yes (indexed) | 4 bits | Not derivable — well-known index, escape for exotic |
-| `collateral_per_pair` | Yes (indexed) | 4 bits | Not derivable — 1-2-5 convention, 16 values |
+| `base_payout` | Yes (indexed) | 4 bits | Not derivable — 1-2-5 convention, 16 values. `cp = base_payout × N` is derived at decode time from the market's outcome count (binary: N=2; multi-outcome: N from the `.simf` file / `outcome_count` param). |
 | `expiry_time` | Yes (absolute) | 3 bytes | Not derivable — u24 absolute encoding (see below) |
 | `yes_token_asset_id` | No | — | Derivable from creation tx issuance entropy |
 | `no_token_asset_id` | No | — | Derivable from creation tx issuance entropy |
@@ -306,7 +308,7 @@ Byte  39:    min_remainder_lots (u8)                           --  8 bits
 | `direction` | Yes (in type_tag) | 1 bit | Not derivable — SellBase or SellQuote |
 | `order_index` | Yes (masked) | 2 bytes | Needed for key derivation; XOR-masked for privacy |
 | `market_creation_txid` | Yes | 32 bytes | Chain-only recovery of market params |
-| `price` | Yes | 3 bytes | Not derivable — u24, max ~16.8M; bounded by `collateral_per_pair` for rational orders |
+| `price` | Yes | 3 bytes | Not derivable — u24, max ~16.8M; bounded by `cp = base_payout × N` for rational orders |
 | `min_fill_lots` | Yes | 1 byte | Not derivable — u8, range 1-255; baked into covenant script |
 | `min_remainder_lots` | Yes | 1 byte | Not derivable — u8, range 1-255; baked into covenant script |
 | `base_asset_id` | No | — | Derivable: `side` + market params → YES or NO asset ID |
