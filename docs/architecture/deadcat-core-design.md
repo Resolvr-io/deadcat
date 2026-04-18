@@ -195,7 +195,8 @@ impl<S: ContractStore> ContractEngine<S> {
     // ---- Trade routing (reads — &self) ----
     // Routes across all pools and maker orders for a given (market, outcome, side).
     // For multi-outcome markets, targets a single outcome's binary LMSR pool (and matching LOB orders).
-    // Basket trades and cross-outcome arb are NOT handled here — see MultiOutcomeMarket view.
+    // Basket trades (cross-outcome splits/merges) are handled via MultiOutcomeMarket view;
+    // cross-outcome arb (market + N pools atomic) is deferred to v2.
     pub fn quote_trade(
         &self,
         market_id: &ContractId,
@@ -252,7 +253,7 @@ Write methods take `&mut self`. Read methods take `&self`. Rust's borrow rules e
 
 **Per-contract operations live on views, not on the engine.** See [View Types](#view-types) for detailed per-view documentation:
 - `Market<'a, S>` exposes issuance, cancellation, resolution, redemption, expiry builders plus oracle helpers, related-contract queries, and multi-outcome specialization.
-- `MultiOutcomeMarket<'a, S>` exposes cross-outcome primitives (split-YES, merge-YES, split-NO, merge-NO, cross-outcome arb). Obtained via `Market::as_multi_outcome()`; returns `None` for binary markets.
+- `MultiOutcomeMarket<'a, S>` exposes cross-outcome primitives (split-YES, merge-YES, split-NO, merge-NO). Obtained via `Market::as_multi_outcome()`; returns `None` for binary markets. Cross-outcome arb (market + N pools atomic) is deferred to v2.
 - `Pool<'a, S>` exposes adjust and close builders plus parent-market navigation.
 - `Order<'a, S>` exposes cancel builder plus parent-market navigation.
 
@@ -1155,7 +1156,7 @@ pub struct TradeSpec {
 
 `TradeSpec` is the input to `quote_trade`. The four axes are orthogonal — any combination of outcome, side, direction, and amount mode is valid. For binary markets, `outcome` is always `OutcomeIndex::BINARY` (the single outcome); `side` picks YES or NO. For multi-outcome markets, `outcome` identifies which outcome's pool the trade targets, and `side` picks YES_k or NO_k within that outcome's pool.
 
-**Basket trades and cross-outcome arb are NOT part of `TradeSpec`.** These are multi-outcome-specific operations exposed as dedicated builders (e.g., `MultiOutcomeMarket::build_split_yes_pset`, `build_cross_outcome_arb_pset`) rather than routed through the trade quote system. Each `TradeQuote` corresponds to a single-outcome trade; multi-outcome traders issuing a basket construct a composition of single-outcome trades plus market-contract-native primitives.
+**Basket trades are NOT part of `TradeSpec`.** Cross-outcome splits/merges (`MultiOutcomeMarket::build_split_yes_pset` etc.) are exposed as dedicated builders rather than routed through the trade quote system. Each `TradeQuote` corresponds to a single-outcome trade; multi-outcome traders issuing a basket construct a composition of single-outcome trades plus market-contract-native primitives. Cross-outcome arb (single-tx composition of a market split/merge with N pool swaps) is deferred to v2; see [Future: Cross-Outcome Arb API (v2)](#future-cross-outcome-arb-api-v2).
 
 ### TradeQuote and Related Types
 
@@ -1265,15 +1266,10 @@ Outpoints are intentionally omitted — they are internal to the engine's UTXO-f
 
 #### Multi-Contract Transaction Patterns
 
-Single-contract transitions (one market, one pool, one order) are fully described by their respective `TransitionDetails` variant. Some transactions legitimately span multiple contracts atomically — a trade (pool + maybe maker orders), a cross-outcome arb (market + N pools), an atomic issuance + pool bootstrap (market + new pool creation). For these, the raw per-contract transitions are always preserved in `InterpretedTransaction.transitions`; additional helper methods on `InterpretedTransaction` classify recognized multi-contract patterns without collapsing the raw data:
+Single-contract transitions (one market, one pool, one order) are fully described by their respective `TransitionDetails` variant. Some transactions legitimately span multiple contracts atomically — a trade (pool + maybe maker orders), an atomic issuance + pool bootstrap (market + new pool creation). For these, the raw per-contract transitions are always preserved in `InterpretedTransaction.transitions`; additional helper methods on `InterpretedTransaction` classify recognized multi-contract patterns without collapsing the raw data:
 
 ```rust
 impl InterpretedTransaction {
-    /// If this tx realizes a cross-outcome arb (market's SplitYes or MergeYes atomically
-    /// co-spent with matching swaps on every outcome's pool), returns structured arb
-    /// details. Raw transitions remain available via `self.transitions`.
-    pub fn as_cross_outcome_arb(&self) -> Option<CrossOutcomeArbRealized>;
-
     /// If this tx realizes a trade (pool swap plus zero or more LOB order fills),
     /// returns structured trade details.
     pub fn as_trade(&self) -> Option<TradeRealized>;
@@ -1284,22 +1280,9 @@ impl InterpretedTransaction {
     pub fn net_effect_for(&self, contract_id: &ContractId) -> Option<ContractNetEffect>;
 }
 
-pub struct CrossOutcomeArbRealized {
-    pub market_id: ContractId,
-    pub direction: ArbDirection,
-    pub sets: u64,
-    pub pool_legs: Vec<ArbPoolLegRealized>,     // one per outcome — which pool, what s-index move
-    pub realized_profit_sats: i64,              // includes fee
-}
-
-pub struct ArbPoolLegRealized {
-    pub outcome: OutcomeIndex,
-    pub pool_id: ContractId,
-    pub side_traded: Side,
-    pub old_s_index: u64,
-    pub new_s_index: u64,
-    pub tokens_moved: u64,
-}
+// Cross-outcome arb classification (`as_cross_outcome_arb`, `CrossOutcomeArb`) is
+// deferred to v2 alongside the arb PSET builder. See "Future: Cross-Outcome Arb API"
+// for the deferred surface.
 
 pub struct TradeRealized {
     pub market_id: ContractId,
@@ -1318,7 +1301,7 @@ pub struct ContractNetEffect {
 }
 ```
 
-**Single-contract transactions** still have `as_*` helpers return `None` — they return `Some` only when the tx exactly matches the multi-contract pattern. A tx that moved a pool's s_index but did nothing else (no market co-spend) produces a single `PoolTransition::Swapped` and `as_trade()` returns `None` (no taker was involved). A tx that consolidates an arb via market + pools returns `Some(CrossOutcomeArbRealized)` AND preserves the individual `MarketTransition::SplitYes` + N `PoolTransition::Swapped` in `self.transitions`.
+**Single-contract transactions** still have `as_*` helpers return `None` — they return `Some` only when the tx exactly matches the multi-contract pattern. A tx that moved a pool's s_index but did nothing else (no market co-spend) produces a single `PoolTransition::Swapped` and `as_trade()` returns `None` (no taker was involved). A tx that combines a market split/merge with N pool swaps (what would be an arb in v2) still ingests cleanly — the raw `MarketTransition::SplitYes` + N `PoolTransition::Swapped` are preserved in `self.transitions`, just without an aggregate arb classification until v2.
 
 **Transactions are interpreted independently.** The engine does not pattern-match across transactions to recognize user-level behaviors that span multiple txs. For example, a user-level "cross-outcome swap" (a SplitNo in tx 1 followed by a CancelledPair in tx 2 on the same market) produces two independent single-primitive interpretations. Higher-level tools that want to aggregate across tx history can do so externally; the core engine's job is single-tx classification.
 
@@ -1445,7 +1428,7 @@ The engine classifies the tx's delta shape into a `MultiOutcomeMarketTransition`
 
 **Cross-outcome swap is now a single-transaction operation.** Under the generic spend path, a user (or wallet builder) constructs one transaction with the cross-outcome-swap delta shape and the covenant accepts it atomically. This is a change from an earlier design iteration where cross-outcome swap was necessarily a two-transaction composition (split-NO + pair-cancel); that was tied to the enumerated-primitives covenant design, which has since been replaced with the generic-path design.
 
-**Multi-contract patterns in a single transaction** (e.g., cross-outcome arb: market's split-YES atomically co-spent with N pool swaps) are detected at the `InterpretedTransaction` level via helper methods like `InterpretedTransaction::as_cross_outcome_arb()`. Each participating contract still emits one primitive transition; the tx-level helpers recognize recurring multi-contract patterns without collapsing the per-contract transitions. See [Multi-Contract Transaction Patterns](#multi-contract-transaction-patterns) below.
+**Multi-contract patterns in a single transaction** (e.g., trades that combine a pool swap with maker order fills) are detected at the `InterpretedTransaction` level via helper methods. Each participating contract still emits one primitive transition; the tx-level helpers recognize recurring multi-contract patterns without collapsing the per-contract transitions. See [Multi-Contract Transaction Patterns](#multi-contract-transaction-patterns) below. Cross-outcome arb (market + N pools atomic) is deferred to v2 — see [Future: Cross-Outcome Arb API (v2)](#future-cross-outcome-arb-api-v2).
 
 `PoolTransition::Swapped` corresponds to the LMSR covenant's swap path — someone traded through the pool, moving the s-index. `PoolTransition::Adjusted` corresponds to the admin path — the pool operator (with admin key signature) adjusted liquidity without changing the s-index. The covenant enforces that YES and NO token deltas are equal on the admin path; collateral can change independently. `PoolTransition::Closed` indicates the pool admin reclaimed all reserve UTXOs via the close script path. See [lmsr-pool-close-path.md](../contracts/lmsr-pool/lmsr-pool-close-path.md).
 
@@ -1762,7 +1745,8 @@ impl<'a, S: ContractStore> Market<'a, S> {
 
     // ---- Type-level specialization ----
     /// Returns a `MultiOutcomeMarket` view for multi-outcome-specific operations
-    /// (cross-outcome splits/merges, cross-outcome arb). Returns `None` for binary markets.
+    /// (cross-outcome splits/merges). Returns `None` for binary markets.
+    /// Cross-outcome arb builders are deferred to v2.
     pub fn as_multi_outcome(&self) -> Option<MultiOutcomeMarket<'a, S>>;
 }
 
@@ -1833,78 +1817,44 @@ impl<'a, S: ContractStore> MultiOutcomeMarket<'a, S> {
     /// opportunity. Outcomes with no pool are omitted from the sum.
     pub fn sum_of_probabilities_bps(&self) -> Result<u64, CoreError<S::Error>>;
 
-    // ---- Cross-outcome arb (multi-contract atomic composition) ----
-
-    /// Quote a cross-outcome arb opportunity if one exists. Returns `Ok(None)` if
-    /// `profit_per_set ≤ 0` (i.e., cross-outcome prices already coherent). Returns
-    /// `Ok(Some(quote))` with a snapshot of pool outpoints and the arb direction
-    /// otherwise. Mirrors the `engine.quote_trade` → `engine.build_trade_pset` pattern.
-    ///
-    /// The engine picks the best-priced pool per outcome for the arb direction
-    /// (cheapest for buys, most valuable for sells). Consumers wanting a specific
-    /// pool selection can route manually via individual pool swap builders.
-    pub fn quote_cross_outcome_arb(&self, fee_rate: FeeRate)
-        -> Result<Option<ArbQuote>, CoreError<S::Error>>;
-
-    /// Build the atomic PSET for an arb quote. Fails with `CoreError::StaleQuote` if the
-    /// snapshotted pool outpoints in `quote` are no longer current (a `step` consumed them
-    /// between quote and build).
-    ///
-    /// `sets` scales the arb volume; total profit is approximately
-    /// `quote.profit_per_set_sats × sets - fee`. Caller can use
-    /// `quote.break_even_sets()` to pick a minimum-viable `sets`.
-    pub fn build_cross_outcome_arb_pset(
-        &self,
-        quote: &ArbQuote,
-        sets: u64,
-        funding: &WalletFunding,
-    ) -> Result<UnblindedPset, CoreError<S::Error>>;
+    // Cross-outcome arb (quote/build API) is deferred to v2. The covenant's generic
+    // solvency-preservation path already makes arb permissionless, so external bots
+    // can close coherence gaps without a built-in builder. See the "Future:
+    // Cross-Outcome Arb API" section below for the deferred surface and open
+    // design questions.
 
     // ---- Conversion back ----
     /// Returns the general `Market` view, for operations that apply to both market kinds.
     pub fn as_market(&self) -> Market<'a, S>;
 }
-
-pub enum ArbDirection {
-    /// Σ p_YES_k > 10000 bps: split-YES via market (pay 1×cp), sell each YES_k to its
-    /// pool. Receive Σ p_YES_k × cp. Profit: (Σ p − 10000) × cp / 10000 per set.
-    SplitAndSell,
-
-    /// Σ p_YES_k < 10000 bps: buy each YES_k from its pool (pay Σ p × cp), merge-YES
-    /// via market (receive 1×cp). Profit: (10000 − Σ p) × cp / 10000 per set.
-    BuyAndMerge,
-}
-
-pub struct ArbQuote {
-    // Public — for display / decision-making:
-    pub direction: ArbDirection,
-    pub sum_of_probabilities_bps: u64,       // > 10000 → SplitAndSell; < 10000 → BuyAndMerge
-    pub profit_per_set_sats: i64,            // > 0 if quote returned Ok(Some); caller scales by `sets`
-    pub estimated_fee_sats: u64,             // tx weight × fee_rate, single-tx cost
-    pub pool_legs: Vec<ArbPoolLeg>,          // length outcome_count — shows which pool per outcome
-
-    // Crate-internal snapshot (pool outpoints + s-indices) — staleness-checked at build time.
-    pub(crate) snapshot: ArbSnapshot,
-}
-
-pub struct ArbPoolLeg {
-    pub outcome: OutcomeIndex,
-    pub pool_id: ContractId,
-    pub side_traded: Side,            // Yes for SplitAndSell, No inferred on BuyAndMerge
-    pub pool_price_bps: u16,          // this pool's contribution to Σ p
-}
-
-impl ArbQuote {
-    /// Minimum `sets` required for net profit ≥ 0 after fees. Returns None if fees
-    /// exceed profit at all scales (shouldn't happen since the quote returned Ok(Some),
-    /// but guards against edge cases at extremely large fees).
-    pub fn break_even_sets(&self) -> Option<u64>;
-
-    /// Net profit in collateral sats at a chosen `sets` count, including estimated fees.
-    /// Returns signed — may be negative below break-even.
-    pub fn net_profit_at_sets(&self, sets: u64) -> i64;
-}
 ```
+
+### Future: Cross-Outcome Arb API (v2)
+
+Cross-outcome arb closes coherence gaps among a multi-outcome market's N pools: when `Σ p_YES_k ≠ 1` (or symmetrically `Σ p_NO_k ≠ N−1`), an arbitrageur can profit by co-spending a market split/merge primitive with N pool swaps in one atomic transaction. Four directions exist — split-YES + sell-yes-to-pools, buy-yes-from-pools + merge-YES, and the NO analogues.
+
+**Scope decision**: deferred to v2. Rationale:
+
+- **Not safety-critical.** Coherence gaps are pricing drift, not solvency violations — the covenant's invariants hold regardless of whether arb is run. Markets stay solvent; users can still trade.
+- **Permissionless by construction.** The multi-outcome market's generic solvency-preservation spend path ([see multi-outcome-market-contract.md § Operations](../contracts/multi-outcome/multi-outcome-market-contract.md#operations)) admits cross-outcome arb as one of its delta shapes. External arb bots can construct and broadcast these txs directly against the covenant spec without a `deadcat-core`-provided builder.
+- **Advanced-actor-facing.** Arbitrageurs and keepers, not retail users. That audience tolerates external tooling while v1 ships.
+
+**Deferred API surface** (names reserved; signatures to be finalized before v2):
+
+- `MultiOutcomeMarket::quote_cross_outcome_arb(...) -> Result<Option<ArbQuote<'a>>, _>` — quote the best available arb direction.
+- `MultiOutcomeMarket::build_cross_outcome_arb_pset(quote, funding, fee_rate) -> Result<UnblindedPset, _>` — build the atomic PSET.
+- `InterpretedTransaction::as_cross_outcome_arb() -> Option<&CrossOutcomeArb>` — classify an observed arb tx.
+- Types: `ArbQuote`, `ArbDirection`, `ArbPoolLeg`, `CrossOutcomeArb` (observed-tx form).
+
+**Open design questions for v2** (these do not need to be settled for v1):
+
+1. Scope of directions in v2 — just the four split/merge directions, or also cross-outcome swap as an arb primitive?
+2. Quote API shape — caller specifies `ArbDirection` explicitly, or engine auto-detects the most profitable?
+3. Sizing model — engine picks max-profit sets vs caller-specified `sets` vs break-even sets?
+4. `ArbQuote` fields — staleness via lifetime binding to `MultiOutcomeMarket` reference? Pool state snapshot granularity?
+5. Classification rule — what exact delta-shape + pool-swap pattern counts as "arb" vs falling through to generic `Composite`?
+
+**v1 behavior on observed arb-shaped txs**: an arb tx broadcast by an external bot will ingest normally. Its per-contract transitions (market `SplitYes` / `MergeYes` / etc. + N pool `Swapped`) remain available in `InterpretedTransaction.transitions`. The aggregate multi-contract classification is deferred — such txs fall through to the generic classification until v2 lands the `as_cross_outcome_arb` helper.
 
 ### Pool
 
@@ -2485,7 +2435,8 @@ Canonical builder signatures are in [View Types § Market](#market) (common to b
 | `build_merge_yes_pset` | Burn complete YES basket | Trading → Trading (all supplies.yes ↓ by sets) |
 | `build_split_no_pset` | Mint complete NO basket | Trading → Trading (all supplies.no ↑ by sets) |
 | `build_merge_no_pset` | Burn complete NO basket | Trading → Trading (all supplies.no ↓ by sets) |
-| `build_cross_outcome_arb_pset` | Multi-contract atomic arb (co-spends market + N pools) | Market Trading → Trading + pool s_index moves |
+
+`build_cross_outcome_arb_pset` (multi-contract atomic arb co-spending market + N pools) is deferred to v2. See [Future: Cross-Outcome Arb API](#future-cross-outcome-arb-api-v2).
 
 **Creation builders (engine)**:
 
@@ -3312,11 +3263,11 @@ For the display case of "all pools/orders across all outcomes of a multi-outcome
 - **Single-primitive-only variants** (as originally specified during Stage 3): assumed the covenant enumerated primitives (pair-issue, split-YES, merge-YES, split-NO, merge-NO) as separate spend paths, making each tx exactly one named primitive. That design has since been superseded by the generic solvency-preservation spend path (see [`multi-outcome-market-contract.md § Operations`](../contracts/multi-outcome/multi-outcome-market-contract.md#operations)), which accepts any `(Δy, Δn, Δc)` preserving the invariant. Under the generic path, a single tx can represent any composition of named primitives plus novel delta shapes, so `Composite` is required to represent compositions that don't match named classifications.
 - **Bare `Composite` variant only, no named patterns**: loses display convenience. Consumers have to decode raw deltas to recognize common operations. Named variants provide ergonomic matching for the common cases; `Composite` catches the rest.
 
-**Why**: matches the covenant's actual structure. The generic spend path makes single-tx compositions possible, and the classification enum reflects that: common patterns get named variants (wallet UI can match on `IssuedPair { outcome, pairs, ... }` directly), while arbitrary compositions get captured as `Composite` with raw deltas preserved. Multi-contract patterns (cross-outcome arb, trades) remain detected at the `InterpretedTransaction` level via helper methods; those are orthogonal to per-contract transition classification.
+**Why**: matches the covenant's actual structure. The generic spend path makes single-tx compositions possible, and the classification enum reflects that: common patterns get named variants (wallet UI can match on `IssuedPair { outcome, pairs, ... }` directly), while arbitrary compositions get captured as `Composite` with raw deltas preserved. Multi-contract patterns (trades) remain detected at the `InterpretedTransaction` level via helper methods; those are orthogonal to per-contract transition classification. Cross-outcome arb classification (market + N pools atomic) is deferred to v2.
 
 ### Multi-Contract Patterns Detected at the Transaction Level
 
-Multi-contract patterns — a single transaction co-spending multiple contracts atomically (cross-outcome arb: market + N pools; trade: pool + LOB orders) — are surfaced via helper methods on `InterpretedTransaction` (`as_cross_outcome_arb`, `as_trade`, `net_effect_for`). Raw per-contract transitions remain available in `InterpretedTransaction.transitions` for consumers that want granular detail.
+Multi-contract patterns — a single transaction co-spending multiple contracts atomically (trade: pool + LOB orders) — are surfaced via helper methods on `InterpretedTransaction` (`as_trade`, `net_effect_for`). Raw per-contract transitions remain available in `InterpretedTransaction.transitions` for consumers that want granular detail. Cross-outcome arb (market + N pools) is deferred to v2; see [Future: Cross-Outcome Arb API (v2)](#future-cross-outcome-arb-api-v2).
 
 ### Single-Transaction Interpretation (No Cross-Transaction Inference)
 
@@ -3338,15 +3289,13 @@ Multi-contract patterns — a single transaction co-spending multiple contracts 
 
 **Why**: weighting by `b` matches intuition — a pool with 10× the subsidy is "10× more confident" in its price because it can absorb 10× the volume before moving significantly. Single-value-per-outcome collapses redundancy while remaining honest about cross-outcome coherence via `sum_of_probabilities_bps()` (expected to equal 10000; deviation surfaces arb opportunity).
 
-### Cross-Outcome Arb: Quote + Build Pattern Mirroring Trades
+### Cross-Outcome Arb: Deferred to v2
 
-**Chosen**: `MultiOutcomeMarket::quote_cross_outcome_arb(fee_rate) → Option<ArbQuote>` + `build_cross_outcome_arb_pset(quote, sets, funding)`. `quote_*` returns `Ok(None)` only when raw profit-per-set is ≤ 0 (no price imbalance). Fee viability is the caller's check via `ArbQuote::break_even_sets()` and `net_profit_at_sets()`.
+**Chosen**: defer the cross-outcome arb quote + build API (`quote_cross_outcome_arb`, `build_cross_outcome_arb_pset`, `ArbQuote`, `ArbDirection`, `ArbPoolLeg`, `as_cross_outcome_arb`) to v2. v1 ships multi-outcome markets (if B3 resolves that way) without a built-in arb builder; external bots can construct arb txs directly against the covenant's generic solvency-preservation spend path.
 
-**Rejected**:
-- Single builder `build_cross_outcome_arb_pset(direction, sets, funding)` with no quote step: no snapshot → no staleness check; pool states could change between caller's mental check and build.
-- Quote returns `None` if fees exceed profit at any volume: fee is fixed per-tx, profit scales with sets; large-enough volumes always amortize fee. Caller knows their desired volume better than the engine does.
+**Rejected**: shipping the full quote + build + classification surface in v1. The API design has several unresolved questions (scope of directions, sizing model, staleness representation, classification rule) and landing it prematurely would bake in choices before the arb ecosystem exists to inform them.
 
-**Why**: the quote + build pattern mirrors `engine.quote_trade` + `engine.build_trade_pset` — familiar shape, same staleness protection (`CoreError::StaleQuote` when snapshotted outpoints change between quote and build). `break_even_sets` helper surfaces fee viability without making the engine pick a volume for the caller.
+**Why**: cross-outcome arb is not safety-critical — coherence gaps are pricing drift, not solvency violations, and the covenant's invariants hold regardless of whether arb runs. The generic solvency-preservation spend path makes arb permissionless by construction, so external tooling can close gaps without a core-layer builder. The audience for arb is advanced actors (bots, keepers) who tolerate external tooling while v1 stabilizes. See [Future: Cross-Outcome Arb API (v2)](#future-cross-outcome-arb-api-v2) for the deferred surface and open design questions.
 
 ### View Types for Per-Contract Operations
 
@@ -3357,7 +3306,7 @@ Multi-contract patterns — a single transaction co-spending multiple contracts 
 - **Free functions with `&engine` parameter**: e.g. `build_issuance_pset(&engine, &contract_id, pairs, ...)`. Avoids the engine-method bloat but loses method-call ergonomics and bundled-context benefits.
 - **Trait-based dispatch (e.g. `ContractOps::build_issuance_pset`)**: adds type machinery for minimal gain over direct `impl` blocks on concrete view structs.
 
-**Why**: operations naturally cluster by the object they operate on. A `Market` view groups everything you can do with a market (issue, cancel, resolve, expire, redeem, query state, fetch pools, fetch orders, oracle attestation helpers, and for multi-outcome via `as_multi_outcome()`: split/merge YES/NO and cross-outcome arb). This is idiomatic Rust API design (similar patterns in `std::fs::File`, `hyper::Client`, etc.) and it enables type-level dispatch for specializations (`MultiOutcomeMarket` only exists for multi-outcome markets — binary markets can't accidentally call `build_split_yes_pset`).
+**Why**: operations naturally cluster by the object they operate on. A `Market` view groups everything you can do with a market (issue, cancel, resolve, expire, redeem, query state, fetch pools, fetch orders, oracle attestation helpers, and for multi-outcome via `as_multi_outcome()`: split/merge YES/NO — with cross-outcome arb deferred to v2). This is idiomatic Rust API design (similar patterns in `std::fs::File`, `hyper::Client`, etc.) and it enables type-level dispatch for specializations (`MultiOutcomeMarket` only exists for multi-outcome markets — binary markets can't accidentally call `build_split_yes_pset`).
 
 ### View Caching and Borrow-Checker-Enforced Freshness
 
@@ -3473,7 +3422,7 @@ This is the same pattern used elsewhere in the codebase: keep per-kind semantic 
 
 - **Stage 1 (complete)**: type definitions — umbrella enums, paired Binary/MultiOutcome inner types, `OutcomeIndex` newtype, `MarketResolution` discriminated union, generalized `AssetInfo` / `TradeSpec`, unified `OracleAttestationSpec`.
 - **Stage 2 (complete)**: API surface — `Market<'a, S>`, `MultiOutcomeMarket<'a, S>`, `Pool<'a, S>`, `Order<'a, S>` view types with per-contract operations; engine surface shrunk to ingestion, chain sync, discovery, view accessors, creation builders, and trade routing; relationship queries moved to views; builder naming rationalized (`build_lmsr_adjust_pset` → `build_adjust_pset` on `Pool` view, etc.).
-- **Stage 3 (complete)**: behavior — multi-outcome transaction interpretation (witness-based disambiguation across per-outcome and cross-outcome primitives), multi-contract pattern detection on `InterpretedTransaction` (`as_cross_outcome_arb`, `as_trade`, `net_effect_for`) while preserving raw per-contract transitions, probability accessors on views (liquidity-weighted by LMSR `b`), cross-outcome arb quote/build pattern mirroring trade routing, chain sync notes for N-scaling. Corrected a Stage 1 error: removed the `CrossOutcomeSwap` variant from `MultiOutcomeMarketTransition` — at the single-market-contract layer, every transaction is exactly one primitive.
+- **Stage 3 (complete)**: behavior — multi-outcome transaction interpretation (delta-shape classification into `MultiOutcomeMarketTransition` variants), multi-contract pattern detection on `InterpretedTransaction` (`as_trade`, `net_effect_for`) while preserving raw per-contract transitions, probability accessors on views (liquidity-weighted by LMSR `b`), chain sync notes for N-scaling. Cross-outcome arb quote/build and `as_cross_outcome_arb` classification were originally specified here but have since been deferred to v2 — see [Future: Cross-Outcome Arb API (v2)](#future-cross-outcome-arb-api-v2).
 
 **Why**: staging keeps each reviewable chunk focused. Stage 1 establishes the vocabulary; Stage 2 uses that vocabulary in API signatures and view-type design; Stage 3 elaborates behavior (and corrects a Stage 1 design error surfaced by deeper interpretation analysis). Staging avoids touch-every-section-at-once commits that are hard to review.
 
