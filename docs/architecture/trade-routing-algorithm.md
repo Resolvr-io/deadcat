@@ -2,15 +2,19 @@
 
 ## Overview
 
-The `quote_trade` engine method computes the optimal route for a trade across all available LMSR pools and limit orders for a market. The algorithm minimizes total cost to the taker, including transaction fees — which depend on how many liquidity sources are included in the route.
+The `quote_trade` engine method computes the optimal route for a trade across all available LMSR pools and limit orders for a **specific `(market, outcome, side)` combination**. The algorithm minimizes total cost to the taker, including transaction fees — which depend on how many liquidity sources are included in the route.
 
-The external interface is simple: `TradeSpec` in, `TradeQuote` out. This document specifies the internal routing algorithm.
+The external interface is simple: `TradeSpec { outcome, side, direction, amount }` in, `TradeQuote` out. This document specifies the internal routing algorithm.
+
+**Scoping**: routing operates on a single outcome's YES/NO pair at a time. For binary markets, there is only one outcome (`OutcomeIndex::BINARY`), so the `outcome` axis is trivial. For multi-outcome markets composed via Option C (N independent binary LMSR pools per market, one per outcome's YES/NO pair — see [`amm-scoring-rule-tradeoffs.md`](../contracts/multi-outcome/amm-scoring-rule-tradeoffs.md)), each trade targets one outcome's liquidity: the pools and maker orders for that outcome's YES_k / NO_k assets. The algorithm is identical per-outcome — this document is "the algorithm for one outcome's liquidity" with no special multi-outcome semantics at the routing layer itself.
+
+**Multi-outcome operations that don't route through this algorithm**: cross-outcome arbitrage (closing `Σ p_YES_k ≠ 1` gaps by atomically composing the market's split-YES/merge-YES primitive with per-outcome pool swaps) has its own quote/build flow on the `MultiOutcomeMarket` view (`quote_cross_outcome_arb` + `build_cross_outcome_arb_pset`). Basket trades (minting or burning complete YES/NO sets) are direct primitives on `MultiOutcomeMarket`. See [`deadcat-core-design.md § MultiOutcomeMarket`](deadcat-core-design.md#multioutcomemarket) for details. Neither case is routed through `quote_trade`, which handles only single-outcome trades.
 
 ## Algorithm Structure
 
-The router uses **pool-subset enumeration × fee-aware greedy order selection**:
+The router uses **pool-subset enumeration × fee-aware greedy order selection**, scoped to the trade's target outcome:
 
-1. **Pre-select candidate pools**: Rank all active pools by estimated average fill price for the requested amount (one LMSR computation per pool). Take the top N (N = 5).
+1. **Pre-select candidate pools**: Rank all active pools for the target outcome by estimated average fill price for the requested amount (one LMSR computation per pool). Take the top N (N = 5).
 2. **Enumerate pool subsets**: For each subset of the N candidate pools (including the empty set — no pools), run the fee-aware greedy order selection.
 3. **Pick the best result**: The subset that produces the lowest total cost (fill cost + transaction fee) wins.
 
@@ -47,15 +51,15 @@ A partial fill (filled_amount < requested_amount) is returned to the caller via 
 
 ## Pool Pre-Selection
 
-With P active pools for a market, full subset enumeration costs 2^P. To bound this:
+With P active pools for the trade's target outcome, full subset enumeration costs 2^P. To bound this:
 
-1. For each pool, compute the **estimated average fill price** for the full requested amount using point evaluation of the LMSR cost function. This is one computation per pool — O(1), ~1-16μs.
+1. For each pool serving the target outcome, compute the **estimated average fill price** for the full requested amount using point evaluation of the LMSR cost function. This is one computation per pool — O(1), ~1-16μs.
 2. Rank pools by this estimate (lower = better).
 3. Take the top N pools (N = 5 constant). Discard the rest.
 
 Ranking by average fill price (not spot price) ensures deep pools with slightly worse spot prices are preferred over shallow pools with great spot prices for large trades. A shallow pool at 50.00 that slips to 55.00 over 1000 tokens ranks below a deep pool at 50.50 that barely moves.
 
-**Pool flooding defense**: An attacker creating 100 pools to slow routing only causes 100 LMSR lookups in the pre-selection step (microseconds). The top-5 filter bounds the enumeration at 2^5 = 32 regardless of total pool count.
+**Pool flooding defense**: An attacker creating 100 pools for a single outcome to slow routing only causes 100 LMSR lookups in the pre-selection step (microseconds). The top-5 filter bounds the enumeration at 2^5 = 32 regardless of total pool count. For multi-outcome markets, the attacker can't flood "all outcomes at once" to amplify the attack — routing scopes to one outcome's pool set, so flooding other outcomes' pool sets has no effect on this trade's routing cost.
 
 ## Order Constraints
 
@@ -130,10 +134,18 @@ This applies to:
 
 ```
 function quote_trade(market_id, spec, fee_rate):
-    // 1. Load candidates
-    all_pools = store.pools_for_market(market_id, ActiveOnly)
-    orders = store.best_orders_for_market(market_id, spec.side, matching_direction, ascending, min_remaining, K=50)
-    // orders are filtered by side + direction, sorted by (price, creation_position) — FIFO within same price
+    // spec = TradeSpec { outcome, side, direction, amount }
+    // For binary markets, spec.outcome == OutcomeIndex::BINARY.
+    // For multi-outcome markets, spec.outcome picks which outcome's liquidity to route against.
+
+    // 1. Load candidates — scoped to the trade's target outcome
+    all_pools = store.pools_for_market(market_id, spec.outcome, ActiveOnly)
+    orders = store.best_orders_for_market(
+        market_id, spec.outcome, spec.side, matching_direction,
+        ascending, min_remaining, K=50,
+    )
+    // orders are filtered by (outcome, side, direction), sorted by (price, creation_position)
+    // — FIFO within same price
 
     // 2. Pre-select top-N pools by average fill price (point evaluation, ~1-16μs per pool)
     for each pool in all_pools:
@@ -228,5 +240,7 @@ For typical values: 32 × 50 × (5 + 16) ≈ 33,600 point evaluations at ~1μs e
 
 ## Key Files
 
-- `src-tauri/crates/deadcat-sdk/src/amm_pool/math.rs` — LMSR math functions (will move to `deadcat-core`)
-- `docs/architecture/deadcat-core-design.md` — `ContractStore` trait with `best_orders_for_market`, `quote_trade` API
+- `src-tauri/crates/deadcat-sdk/src/amm_pool/math.rs` — LMSR math functions (will move to `deadcat-core`); binary LMSR is the only scoring rule, used per-outcome for multi-outcome markets under Option C composition
+- `docs/architecture/deadcat-core-design.md` — `ContractStore` trait (outcome-scoped `pools_for_market` / `best_orders_for_market`), `quote_trade` engine API, `TradeSpec` / `TradeQuote` types
+- `docs/contracts/multi-outcome/amm-scoring-rule-tradeoffs.md` — pool design decision (binary LMSR + Option C composition for multi-outcome)
+- `docs/contracts/multi-outcome/multi-outcome-market-contract.md` — market contract providing the cross-outcome primitives that cross-outcome arb composes with

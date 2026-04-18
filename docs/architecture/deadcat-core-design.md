@@ -1663,9 +1663,36 @@ impl<'a, S: ContractStore> Market<'a, S> {
     ) -> Result<Option<u64>, CoreError<S::Error>>;
 
     // ---- Related contracts (replaces engine.pools_for_market / engine.orders_for_market) ----
+
+    /// All pools associated with this market across all outcomes.
+    ///
+    /// For binary markets (N=1), this is a single outcome-scoped store call under the hood.
+    /// For multi-outcome markets, the view iterates over `0..outcome_count` store calls
+    /// (one per outcome) and merges results in outcome-index order. Pagination is
+    /// supported via an opaque cursor that encodes `(outcome_index, inner_cursor)` —
+    /// callers don't need to manage the iteration themselves.
+    ///
+    /// Use `pools_for_outcome` when scoping to a single outcome (routing, per-outcome
+    /// display). Use `pools` for the "all pools for this market" display case.
     pub fn pools(&self, filter: StateFilter, page: Pagination)
         -> Result<Page<PoolEntry>, CoreError<S::Error>>;
+
+    /// All orders associated with this market across all outcomes. Same iteration
+    /// semantics as `pools` for multi-outcome markets.
     pub fn orders(&self, filter: StateFilter, page: Pagination)
+        -> Result<Page<OrderEntry>, CoreError<S::Error>>;
+
+    /// Pools for a specific outcome. Direct delegate to `store.pools_for_market` (single
+    /// indexed store call, no iteration). For binary markets, pass `OutcomeIndex::BINARY`;
+    /// any other index returns an empty page.
+    pub fn pools_for_outcome(&self, outcome: OutcomeIndex, filter: StateFilter, page: Pagination)
+        -> Result<Page<PoolEntry>, CoreError<S::Error>>;
+
+    /// Orders for a specific outcome (both sides). Direct delegate to
+    /// `store.orders_for_market` (single indexed store call, no iteration). Side/direction
+    /// filtering can be applied by the caller on the returned data, or use
+    /// `engine.quote_trade` for routing-focused access to best orders.
+    pub fn orders_for_outcome(&self, outcome: OutcomeIndex, filter: StateFilter, page: Pagination)
         -> Result<Page<OrderEntry>, CoreError<S::Error>>;
 
     // ---- Type-level specialization ----
@@ -2224,12 +2251,17 @@ pub trait ContractStore {
     fn list_pools(&self, filter: StateFilter, page: Pagination) -> Result<Page<PoolEntry>, Self::Error>;
     fn list_orders(&self, filter: StateFilter, page: Pagination) -> Result<Page<OrderEntry>, Self::Error>;
 
-    // Relationship queries — &self (typed results)
-    fn pools_for_market(&self, market_id: &ContractId, filter: StateFilter, page: Pagination) -> Result<Page<PoolEntry>, Self::Error>;
-    fn orders_for_market(&self, market_id: &ContractId, filter: StateFilter, page: Pagination) -> Result<Page<OrderEntry>, Self::Error>;
+    // Relationship queries — &self (typed results; outcome-scoped)
+    // For binary markets, callers pass `OutcomeIndex::BINARY`. For multi-outcome
+    // markets, callers pass the specific outcome they care about. Store implementations
+    // should index by (market_id, outcome) for efficient lookup. To get "all pools/orders
+    // across all outcomes" of a multi-outcome market, the caller (or the engine's Market
+    // view) iterates over `0..outcome_count` and merges results.
+    fn pools_for_market(&self, market_id: &ContractId, outcome: OutcomeIndex, filter: StateFilter, page: Pagination) -> Result<Page<PoolEntry>, Self::Error>;
+    fn orders_for_market(&self, market_id: &ContractId, outcome: OutcomeIndex, filter: StateFilter, page: Pagination) -> Result<Page<OrderEntry>, Self::Error>;
 
-    // Trade routing support — &self (used by quote_trade internally)
-    fn best_orders_for_market(&self, market_id: &ContractId, side: Side, direction: OrderDirection, ascending: bool, min_remaining: u64, limit: u32) -> Result<Vec<OrderEntry>, Self::Error>;
+    // Trade routing support — &self (used by quote_trade internally; outcome-scoped)
+    fn best_orders_for_market(&self, market_id: &ContractId, outcome: OutcomeIndex, side: Side, direction: OrderDirection, ascending: bool, min_remaining: u64, limit: u32) -> Result<Vec<OrderEntry>, Self::Error>;
 
     // Writes — &mut self
     fn track_contract(&mut self, contract_id: ContractId, contract: Contract, derived: DerivedContractData, initial: InitialContractState) -> Result<(), Self::Error>;
@@ -3193,6 +3225,19 @@ Each row is a property the Simplicity covenants enforce on-chain. These also ser
 Trade transactions co-spend multiple covenant inputs (LMSR pools + maker orders). Output aliasing — where two covenants both claim the same output — is prevented by two mechanisms: script uniqueness (different contracts produce different scripts) and structural separation (positional output references tied to input index). See [transaction-composability-model.md](transaction-composability-model.md) for the full analysis, output layout algorithm, and the proposed order covenant change that enables flexible multi-source trade transactions.
 
 ## Design Decisions Log
+
+### Store Trait Relationship Queries Are Outcome-Scoped; View Adds All-Outcomes Companions
+
+**Chosen**: the store trait's `pools_for_market`, `orders_for_market`, and `best_orders_for_market` all take `outcome: OutcomeIndex` as a required parameter. Callers must specify which outcome's YES/NO pair they want. Binary markets always pass `OutcomeIndex::BINARY`.
+
+For the display case of "all pools/orders across all outcomes of a multi-outcome market," the `Market` view exposes `pools(filter, page)` and `orders(filter, page)` that iterate internally over `0..outcome_count` and merge results. Outcome-scoped companions `pools_for_outcome` and `orders_for_outcome` delegate directly to the store for a single outcome.
+
+**Rejected**:
+- **Store trait without `outcome`, engine filters in memory**: fine for pools (few per market) but wasteful for orders at scale (a 10-outcome market with thousands of orders per outcome would return tens of thousands of rows when routing wants 20-50). Store-level indexed filtering is much cheaper.
+- **Two store trait variants (`pools_for_market` unscoped and `pools_for_outcome` scoped)**: doubles the trait surface. The unscoped variant is a thin wrapper around iteration; no real value in having both at the store layer.
+- **`Option<OutcomeIndex>` parameter with `None` meaning all outcomes**: mixes two semantics in one method. Option A (required outcome) keeps each store method single-purpose; the view layer handles the all-outcomes aggregation where pagination logic naturally lives.
+
+**Why**: scale pressure on orders drives this. Indexed `(market_id, outcome)` lookups at the store are fundamental to sustaining Polymarket-scale multi-outcome markets. Binary markets pay a syntactic tax of one extra parameter (`OutcomeIndex::BINARY`) but get the same behavior they would have had. The view-layer aggregation pattern (iterate outcomes for the all-outcomes case) is bounded (N ≤ 10 in practice) and lives in one place — the `Market` view — rather than being duplicated across consumers.
 
 ### Each Market Transaction Is One Primitive; Multi-Contract Patterns Are Detected at the Transaction Level
 
