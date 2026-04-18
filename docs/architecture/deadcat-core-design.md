@@ -10,7 +10,7 @@ The primary motivating use case: integrating Deadcat functionality into existing
 
 **Implementation prerequisite**: This document specifies the planned end state — after several pending `.simf` covenant refactors (collateral-per-pair rename, oracle BIP-340 tagged hash, cosigner removal, script-cancel removal, pool close path addition, pool param constants) plus the as-yet-unimplemented multi-outcome market contract. These refactors and new contracts should be applied before implementing `deadcat-core`. See [contract-specification.md § Pending Refactors](../contracts/contract-specification.md#pending-refactors) for the complete list and status.
 
-**Documentation staging**: this document is being updated across three stages to integrate multi-outcome support. **Stage 1 (complete)**: core type definitions — umbrella enums (`MarketParams`, `MarketState`, `MarketTransition`), Binary/MultiOutcome-paired inner types, `OutcomeIndex` newtype, `MarketResolution` discriminated union for oracle APIs, `MarketId` newtype, generalized `AssetInfo`/`TradeSpec`, unified `OracleAttestationSpec`. **Stage 2 (complete)**: API surface — introduced `Market<'a, S>`, `MultiOutcomeMarket<'a, S>`, `Pool<'a, S>`, `Order<'a, S>` view types; per-contract operations moved from `ContractEngine` methods to view types; engine shrunk to ingestion, chain sync, discovery, view accessors, creation builders, and trade routing; relationship queries (`pools_for_market`, `orders_for_market`) moved to `Market` view. **Stage 3 (pending)**: behavior — trade routing details for multi-outcome, transaction interpretation for multi-outcome transitions, chain sync details (larger creation txs, 2N+1 sibling-checked inputs, outpoint tracking per outcome), cross-outcome arb compound builder specification.
+**Documentation staging**: this document was updated across three stages to integrate multi-outcome support. **Stage 1 (complete)**: core type definitions — umbrella enums (`MarketParams`, `MarketState`, `MarketTransition`), Binary/MultiOutcome-paired inner types, `OutcomeIndex` newtype, `MarketResolution` discriminated union for oracle APIs, `MarketId` newtype, generalized `AssetInfo`/`TradeSpec`, unified `OracleAttestationSpec`. **Stage 2 (complete)**: API surface — `Market<'a, S>`, `MultiOutcomeMarket<'a, S>`, `Pool<'a, S>`, `Order<'a, S>` view types; per-contract operations moved from `ContractEngine` methods to view types; engine shrunk to ingestion, chain sync, discovery, view accessors, creation builders, and trade routing; relationship queries moved to `Market` view. **Stage 3 (complete)**: behavior — multi-outcome transaction interpretation (per-primitive transitions, witness-based path disambiguation for the new spend paths), multi-contract pattern detection via `InterpretedTransaction::as_cross_outcome_arb` / `as_trade` / `net_effect_for`, probability accessors on views (`probability_bps`, `sum_of_probabilities_bps`, `implied_token_cost_sats` — liquidity-weighted by LMSR `b`), cross-outcome arb quote/build pattern (`quote_cross_outcome_arb` + `build_cross_outcome_arb_pset` with `ArbQuote` staleness-checked snapshot and `break_even_sets` helper), chain sync scaling notes for 2N+1 sibling-checked inputs and N-specific slot indexing. Also: removed the erroneous `CrossOutcomeSwap` variant from `MultiOutcomeMarketTransition` — at the single-market-contract layer, every transaction is exactly one primitive; cross-outcome rotation is a 2-transaction user-level composition, not a single market transition.
 
 ## Architecture Overview
 
@@ -1221,6 +1221,65 @@ Outpoints are intentionally omitted — they are internal to the engine's UTXO-f
 
 **Why `external_outputs` is transaction-level, not per-transition**: A key invariant of the Deadcat protocol is that while a transaction can compose multiple contracts (co-spending pool reserves and order UTXOs), each non-covenant output is associated with at most one contract. A `MakerReceive` output belongs to a specific order (positional at `current_index()`). A `TradeReceive` output is the taker's consolidated receive. A `Fee` output is transaction-global. No output serves dual roles for two different contracts. This means output classification never conflicts across contracts — an output is either `Unknown` from a contract's perspective or has exactly one role, and when multiple contracts can classify the same output they always agree (e.g., both the pool and order classify the taker receive as `TradeReceive`). The engine exploits this by computing a single merged classification at the transaction level, eliminating per-contract duplication and the merge boilerplate every wallet integrator would otherwise need. When a wallet needs to attribute a `MakerReceive` output to a specific order (e.g., two orders filled in the same trade produce two `MakerReceive` outputs), it matches the output's `script_pubkey` against the filled orders' `maker_receive_spk_hash` from their params.
 
+#### Multi-Contract Transaction Patterns
+
+Single-contract transitions (one market, one pool, one order) are fully described by their respective `TransitionDetails` variant. Some transactions legitimately span multiple contracts atomically — a trade (pool + maybe maker orders), a cross-outcome arb (market + N pools), an atomic issuance + pool bootstrap (market + new pool creation). For these, the raw per-contract transitions are always preserved in `InterpretedTransaction.transitions`; additional helper methods on `InterpretedTransaction` classify recognized multi-contract patterns without collapsing the raw data:
+
+```rust
+impl InterpretedTransaction {
+    /// If this tx realizes a cross-outcome arb (market's SplitYes or MergeYes atomically
+    /// co-spent with matching swaps on every outcome's pool), returns structured arb
+    /// details. Raw transitions remain available via `self.transitions`.
+    pub fn as_cross_outcome_arb(&self) -> Option<CrossOutcomeArbRealized>;
+
+    /// If this tx realizes a trade (pool swap plus zero or more LOB order fills),
+    /// returns structured trade details.
+    pub fn as_trade(&self) -> Option<TradeRealized>;
+
+    /// Net change in token and collateral balances attributable to a specific contract
+    /// from this transaction. Rolls up per-contract transitions and external outputs.
+    /// Returns None if the contract had no involvement in this transaction.
+    pub fn net_effect_for(&self, contract_id: &ContractId) -> Option<ContractNetEffect>;
+}
+
+pub struct CrossOutcomeArbRealized {
+    pub market_id: ContractId,
+    pub direction: ArbDirection,
+    pub sets: u64,
+    pub pool_legs: Vec<ArbPoolLegRealized>,     // one per outcome — which pool, what s-index move
+    pub realized_profit_sats: i64,              // includes fee
+}
+
+pub struct ArbPoolLegRealized {
+    pub outcome: OutcomeIndex,
+    pub pool_id: ContractId,
+    pub side_traded: Side,
+    pub old_s_index: u64,
+    pub new_s_index: u64,
+    pub tokens_moved: u64,
+}
+
+pub struct TradeRealized {
+    pub market_id: ContractId,
+    pub outcome: OutcomeIndex,                   // BINARY for binary markets
+    pub side: Side,
+    pub direction: TradeDirection,
+    pub total_input: u64,
+    pub total_output: u64,
+    pub pool_leg: Option<PoolLegRealized>,       // Some if pool was hit
+    pub order_legs: Vec<OrderLegRealized>,       // One per LOB order filled
+}
+
+pub struct ContractNetEffect {
+    pub token_deltas: Vec<(AssetId, i64)>,       // asset → signed delta in user's tokens
+    pub collateral_delta: i64,                   // signed change in user's collateral
+}
+```
+
+**Single-contract transactions** still have `as_*` helpers return `None` — they return `Some` only when the tx exactly matches the multi-contract pattern. A tx that moved a pool's s_index but did nothing else (no market co-spend) produces a single `PoolTransition::Swapped` and `as_trade()` returns `None` (no taker was involved). A tx that consolidates an arb via market + pools returns `Some(CrossOutcomeArbRealized)` AND preserves the individual `MarketTransition::SplitYes` + N `PoolTransition::Swapped` in `self.transitions`.
+
+**Transactions are interpreted independently.** The engine does not pattern-match across transactions to recognize user-level behaviors that span multiple txs. For example, a user-level "cross-outcome swap" (a SplitNo in tx 1 followed by a CancelledPair in tx 2 on the same market) produces two independent single-primitive interpretations. Higher-level tools that want to aggregate across tx history can do so externally; the core engine's job is single-tx classification.
+
 ### StateUpdate
 
 The write-path type passed to the store via `apply_transitions`. Contains outpoints needed for state advancement and rollback, but NOT used on the read path (history queries return `HistoryEntry` which omits outpoints). Does not include the computed output classification (`external_outputs`) since those are derived from the transaction at query time and do not need to be persisted:
@@ -1287,19 +1346,15 @@ pub enum BinaryMarketTransition {
 }
 
 pub enum MultiOutcomeMarketTransition {
-    // Per-outcome operations (binary-analogous, outcome-indexed):
+    // Per-outcome primitives (binary-analogous, outcome-indexed):
     IssuedPair { outcome: OutcomeIndex, pairs: u64, collateral_locked: u64 },
     CancelledPair { outcome: OutcomeIndex, pairs_burned: u64, collateral_returned: u64 },
 
-    // Cross-outcome operations (multi-outcome only):
+    // Cross-outcome primitives (multi-outcome only):
     SplitYes { sets: u64, collateral_locked: u64 },
     MergeYes { sets: u64, collateral_returned: u64 },
     SplitNo { sets: u64, collateral_locked: u64 },
     MergeNo { sets: u64, collateral_returned: u64 },
-
-    // Cross-outcome swap (derived from split-NO + pair-cancel; detected by the engine as a
-    // single transition when the transaction shape matches):
-    CrossOutcomeSwap { from_outcome: OutcomeIndex, sets: u64, collateral_delta: i64 },
 
     // Resolution / expiry / redemption:
     Resolved { outcome: OutcomeIndex },
@@ -1321,7 +1376,11 @@ pub enum OrderTransition {
 
 `BinaryMarketTransition::Issued` (and `MultiOutcomeMarketTransition::IssuedPair` / `SplitYes` / `SplitNo`) carry only the user-facing amounts (`pairs`/`sets` and `collateral_locked`) without an `IssuanceKind` discriminant. The engine still knows internally whether it was initial or subsequent issuance (for PSET routing), but this distinction is hidden from callers — it is a covenant implementation detail.
 
-`MultiOutcomeMarketTransition::CrossOutcomeSwap` is a derived transition the engine detects when a single atomic transaction executes the equivalent of split-NO + pair-cancel in a pattern that rotates YES_i exposure into NO_j exposure across j≠i. The covenant doesn't expose this as a first-class primitive (it's decomposable into existing primitives), but for interpretation consumers a single summary variant is more readable than a composition of constituent operations. The constituent operations are still available via per-input interpretation if the consumer needs granular detail.
+**Each market transaction is exactly one primitive.** The multi-outcome market covenant enforces that every Unresolved-phase transition co-spends all 2N+1 covenant inputs and selects exactly one spend path from the witness. This means each on-chain transaction produces exactly one `MultiOutcomeMarketTransition` for the market contract — there is no in-transaction composition at the market-contract layer.
+
+**User-level cross-outcome swaps are two-transaction compositions.** A user rotating 1 YES_i into `{NO_j : j ≠ i}` at a net cost of `(N-2) × collateral_per_pair` executes this across two separate transactions: (1) `SplitNo` (pay `(N-1) × collateral_per_pair`, receive 1 NO_k for each k) and (2) `CancelledPair { outcome: i }` (burn 1 YES_i + 1 NO_i, release `collateral_per_pair`). Each is interpreted independently as a single primitive transition. The engine does not pattern-match across transactions to emit a derived "cross-outcome swap" — each tx is processed individually by the UTXO-following state machine. Higher-level tools (wallets, explorers) can aggregate across a user's tx history to recognize the pattern if desired.
+
+**Multi-contract patterns in a single transaction** (e.g., cross-outcome arb: market's split-YES atomically co-spent with N pool swaps) are detected at the `InterpretedTransaction` level via helper methods like `InterpretedTransaction::as_cross_outcome_arb()`. Each participating contract still emits one primitive transition; the tx-level helpers recognize recurring multi-contract patterns without collapsing the per-contract transitions. See [Multi-Contract Transaction Patterns](#multi-contract-transaction-patterns) below.
 
 `PoolTransition::Swapped` corresponds to the LMSR covenant's swap path — someone traded through the pool, moving the s-index. `PoolTransition::Adjusted` corresponds to the admin path — the pool operator (with admin key signature) adjusted liquidity without changing the s-index. The covenant enforces that YES and NO token deltas are equal on the admin path; collateral can change independently. `PoolTransition::Closed` indicates the pool admin reclaimed all reserve UTXOs via the close script path. See [lmsr-pool-close-path.md](../contracts/lmsr-pool/lmsr-pool-close-path.md).
 
@@ -1581,6 +1640,28 @@ impl<'a, S: ContractStore> Market<'a, S> {
         signature: &schnorr::Signature,
     ) -> Result<bool, CoreError<S::Error>>;
 
+    // ---- Probability / implied-price accessors ----
+
+    /// Liquidity-weighted probability that `outcome` wins, in basis points (0..=10000).
+    /// Weighting is by each pool's `b` parameter (LMSR depth). Returns None if no pool
+    /// exists for that outcome.
+    ///
+    /// Within any single LMSR pool, p_YES + p_NO = 10000 bps by construction (softmax),
+    /// so per-outcome probability is a single value — the YES side's price in bps; the
+    /// NO side's price derives as `10000 - probability_bps`.
+    pub fn probability_bps(&self, outcome: OutcomeIndex)
+        -> Result<Option<u16>, CoreError<S::Error>>;
+
+    /// Implied token cost in collateral sats at the current probability. For real trade
+    /// prices including fees and slippage, use `engine.quote_trade`. Derived as:
+    ///   Side::Yes → probability_bps × collateral_per_pair / 10000
+    ///   Side::No  → (10000 - probability_bps) × collateral_per_pair / 10000
+    pub fn implied_token_cost_sats(
+        &self,
+        outcome: OutcomeIndex,
+        side: Side,
+    ) -> Result<Option<u64>, CoreError<S::Error>>;
+
     // ---- Related contracts (replaces engine.pools_for_market / engine.orders_for_market) ----
     pub fn pools(&self, filter: StateFilter, page: Pagination)
         -> Result<Page<PoolEntry>, CoreError<S::Error>>;
@@ -1648,18 +1729,41 @@ impl<'a, S: ContractStore> MultiOutcomeMarket<'a, S> {
         funding: &WalletFunding,
     ) -> Result<UnblindedPset, CoreError<S::Error>>;
 
+    // ---- Probability aggregates ----
+
+    /// Length `outcome_count`. Entry k is `Some(probability_bps)` if any pool exists for
+    /// outcome k, else `None`. Each entry is a liquidity-weighted average across all pools
+    /// for that outcome (same as `Market::probability_bps`).
+    pub fn probabilities_bps(&self) -> Result<Vec<Option<u16>>, CoreError<S::Error>>;
+
+    /// Sum of per-outcome probabilities across all outcomes with at least one pool.
+    /// Equals ~10000 under perfect cross-outcome arb; deviation indicates an arb
+    /// opportunity. Outcomes with no pool are omitted from the sum.
+    pub fn sum_of_probabilities_bps(&self) -> Result<u64, CoreError<S::Error>>;
+
     // ---- Cross-outcome arb (multi-contract atomic composition) ----
 
-    /// Returns `Some` if `Σ p_YES_k ≠ 1` across the market's pools (arb opportunity exists).
-    pub fn cross_outcome_arb_opportunity(&self)
-        -> Result<Option<ArbOpportunity>, CoreError<S::Error>>;
+    /// Quote a cross-outcome arb opportunity if one exists. Returns `Ok(None)` if
+    /// `profit_per_set ≤ 0` (i.e., cross-outcome prices already coherent). Returns
+    /// `Ok(Some(quote))` with a snapshot of pool outpoints and the arb direction
+    /// otherwise. Mirrors the `engine.quote_trade` → `engine.build_trade_pset` pattern.
+    ///
+    /// The engine picks the best-priced pool per outcome for the arb direction
+    /// (cheapest for buys, most valuable for sells). Consumers wanting a specific
+    /// pool selection can route manually via individual pool swap builders.
+    pub fn quote_cross_outcome_arb(&self, fee_rate: FeeRate)
+        -> Result<Option<ArbQuote>, CoreError<S::Error>>;
 
-    /// Build a single atomic PSET that co-spends the market (split-YES or merge-YES)
-    /// with each outcome's pool to realize the arb. `sets` controls the arb volume;
-    /// `direction` picks which side of the imbalance is being closed.
+    /// Build the atomic PSET for an arb quote. Fails with `CoreError::StaleQuote` if the
+    /// snapshotted pool outpoints in `quote` are no longer current (a `step` consumed them
+    /// between quote and build).
+    ///
+    /// `sets` scales the arb volume; total profit is approximately
+    /// `quote.profit_per_set_sats × sets - fee`. Caller can use
+    /// `quote.break_even_sets()` to pick a minimum-viable `sets`.
     pub fn build_cross_outcome_arb_pset(
         &self,
-        direction: ArbDirection,
+        quote: &ArbQuote,
         sets: u64,
         funding: &WalletFunding,
     ) -> Result<UnblindedPset, CoreError<S::Error>>;
@@ -1670,14 +1774,43 @@ impl<'a, S: ContractStore> MultiOutcomeMarket<'a, S> {
 }
 
 pub enum ArbDirection {
-    SplitAndSell,   // Σ p > 1: split-YES into N tokens, sell each to its pool, pocket the premium
-    BuyAndMerge,    // Σ p < 1: buy each YES_k from its pool, merge-YES for collateral, pocket the discount
+    /// Σ p_YES_k > 10000 bps: split-YES via market (pay 1×cp), sell each YES_k to its
+    /// pool. Receive Σ p_YES_k × cp. Profit: (Σ p − 10000) × cp / 10000 per set.
+    SplitAndSell,
+
+    /// Σ p_YES_k < 10000 bps: buy each YES_k from its pool (pay Σ p × cp), merge-YES
+    /// via market (receive 1×cp). Profit: (10000 − Σ p) × cp / 10000 per set.
+    BuyAndMerge,
 }
 
-pub struct ArbOpportunity {
+pub struct ArbQuote {
+    // Public — for display / decision-making:
     pub direction: ArbDirection,
-    pub expected_profit_per_set: u64,   // in collateral units, net of estimated fees
-    pub sum_of_yes_prices_bps: u64,     // Σ p_YES_k × 10000 — above/below 10000 indicates direction
+    pub sum_of_probabilities_bps: u64,       // > 10000 → SplitAndSell; < 10000 → BuyAndMerge
+    pub profit_per_set_sats: i64,            // > 0 if quote returned Ok(Some); caller scales by `sets`
+    pub estimated_fee_sats: u64,             // tx weight × fee_rate, single-tx cost
+    pub pool_legs: Vec<ArbPoolLeg>,          // length outcome_count — shows which pool per outcome
+
+    // Crate-internal snapshot (pool outpoints + s-indices) — staleness-checked at build time.
+    pub(crate) snapshot: ArbSnapshot,
+}
+
+pub struct ArbPoolLeg {
+    pub outcome: OutcomeIndex,
+    pub pool_id: ContractId,
+    pub side_traded: Side,            // Yes for SplitAndSell, No inferred on BuyAndMerge
+    pub pool_price_bps: u16,          // this pool's contribution to Σ p
+}
+
+impl ArbQuote {
+    /// Minimum `sets` required for net profit ≥ 0 after fees. Returns None if fees
+    /// exceed profit at all scales (shouldn't happen since the quote returned Ok(Some),
+    /// but guards against edge cases at extremely large fees).
+    pub fn break_even_sets(&self) -> Option<u64>;
+
+    /// Net profit in collateral sats at a chosen `sets` count, including estimated fees.
+    /// Returns signed — may be negative below break-even.
+    pub fn net_profit_at_sets(&self, sets: u64) -> i64;
 }
 ```
 
@@ -1848,16 +1981,29 @@ Two specific transitions produce no new covenant outputs, making the spend path 
 
 #### Prediction Markets
 
-The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [SlotType and CovenantPhase](#slottype-and-covenantphase-internal)). The transition type is determined by which slot scripts the new outputs match:
+The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [SlotType and CovenantPhase](#slottype-and-covenantphase-internal)). The transition type is determined by which slot scripts the new outputs match, combined with witness-based path detection where output matching is ambiguous.
 
-- **Issuance** (Trading with 0 pairs to Trading with >0 pairs, or Trading to Trading with more pairs): Old outputs match Dormant or Unresolved slots; new outputs match Unresolved slots. `pairs` = new collateral value / `collateral_per_pair`. This division is always exact — the covenant enforces that collateral is a multiple of the pair cost. Implementations should assert exactness rather than silently truncating. `collateral_locked` = new collateral value - old collateral value. For initial issuance from Dormant, old collateral value is zero (no prior collateral output exists), so `collateral_locked` equals the full new collateral value. `IssuanceKind` is determined internally (`Initial` if old phase was Dormant, `Subsequent` if Unresolved) but not exposed in the public `MarketTransition::Issued`.
+**Binary markets** (8 slots):
+
+- **Issuance** (Trading with 0 pairs to Trading with >0 pairs, or Trading to Trading with more pairs): Old outputs match Dormant or Unresolved slots; new outputs match Unresolved slots. `pairs` = new collateral value / `collateral_per_pair`. This division is always exact — the covenant enforces that collateral is a multiple of the pair cost. Implementations should assert exactness rather than silently truncating. `collateral_locked` = new collateral value - old collateral value. For initial issuance from Dormant, old collateral value is zero, so `collateral_locked` equals the full new collateral value. `IssuanceKind` is determined internally (`Initial` if old phase was Dormant, `Subsequent` if Unresolved) but not exposed.
 - **Resolution** (Trading with >0 pairs → ResolvedYes/ResolvedNo): New output matches either `ResolvedYesCollateral` or `ResolvedNoCollateral` script. Which one determines the `outcome`.
-- **Redemption** (ResolvedYes/ResolvedNo/Expired with outstanding_pairs decremented, terminal when reaching 0): No new covenant outputs. `payout_sats` is derived from the old collateral value. `side` from which token burn outputs are present. `RedemptionKind` is `PostResolution` if old state was ResolvedYes/ResolvedNo, `Expiry` if Expired.
-- **Cancellation** (Trading → Trading with fewer pairs): New outputs match Unresolved or Dormant slots. `pairs_burned` = (old collateral - new collateral) / `collateral_per_pair`. `collateral_returned` = old collateral - new collateral. If new outputs match Dormant slots (all collateral returned), it's a full cancellation back to zero outstanding pairs.
+- **Redemption** (ResolvedYes/ResolvedNo/Expired with outstanding_pairs decremented, terminal when reaching 0): No new covenant outputs. `payout_sats` is derived from the old collateral value. `side` from which token burn outputs are present. `RedemptionKind` is `PostResolution` if old state was Resolved*, `Expiry` if Expired.
+- **Cancellation** (Trading → Trading with fewer pairs): New outputs match Unresolved or Dormant slots. `pairs_burned` and `collateral_returned` from the value differences.
 - **Expiry** (Trading with >0 pairs → Expired): New output matches `ExpiredCollateral` script.
-- **Dormant terminal paths** (Trading with 0 pairs → ResolvedYes/ResolvedNo/Expired with 0 pairs): Both RT outpoints consumed, no new covenant outputs. The engine cannot distinguish dormant resolution (YES or NO) from dormant expiry using outputs alone — all three paths produce identical observable results (both DormantRT inputs spent, zero covenant outputs). The engine uses **witness-based path detection**: it extracts the Simplicity program bytes and witness bytes from the spending transaction's witness stack and calls `RedeemNode::decode` to identify which covenant spend path was taken. This determines the resulting variant (`ResolvedYes`, `ResolvedNo`, or `Expired`) — all with `outstanding_pairs: 0` (immediately terminal). See [Detection Strategy and Robustness](#detection-strategy-and-robustness) and [market-dormant-terminal-paths.md](../contracts/prediction-market/market-dormant-terminal-paths.md).
+- **Dormant terminal paths** (Trading with 0 pairs → ResolvedYes/ResolvedNo/Expired with 0 pairs): Both RT outpoints consumed, no new covenant outputs. Output-only detection can't disambiguate — all three paths produce identical observable outputs. Engine uses witness-based path detection via `RedeemNode::decode`.
 
-**Detection strategy summary:**
+**Multi-outcome markets** (5N+2 slots, detection rules analogous but scaled):
+
+- **Per-outcome pair issuance / cancellation**: detected by slot script match + witness path selector. Because the covenant always co-spends all 2N+1 Unresolved UTXOs and outputs always include all 2N+1 Unresolved slot continuations, the output-only signature isn't enough to distinguish "issue pair for outcome i" from "issue pair for outcome j". The engine examines the witness (`RedeemNode::decode`) to identify which outcome's spend path was selected. Supply deltas computed from RT-issuance amounts and/or token burn outputs.
+- **Split-YES / Merge-YES / Split-NO / Merge-NO**: also witness-identified (all four produce similar output layouts — all 2N+1 covenant continuations). The collateral delta distinguishes (split-YES: +collateral_per_pair; merge-YES: -collateral_per_pair; split-NO: +(N-1)·collateral_per_pair; merge-NO: -(N-1)·collateral_per_pair). The engine can cross-check witness path against collateral delta for defensive verification.
+- **Resolution** (Trading → Resolved(k)): new output matches one of the N `ResolvedCollateral(k)` scripts (one per possible winning outcome). The matched slot identifies `winning_outcome`.
+- **Redemption**: no new covenant outputs; token burn outputs identify which `(outcome, side)` was redeemed; payout derived from the old resolved-collateral value.
+- **Expiry**: new output matches `ExpiredCollateral` script (single script, not outcome-indexed since expiry is pre-resolution and doesn't pick an outcome).
+- **Dormant terminal paths** (all 2N Dormant RTs → Resolved(k) or Expired, no continuation): analogous to binary. Witness-based path detection identifies which of the `N + 1` terminal paths was taken.
+
+**Scaling implications for multi-outcome detection**: the engine makes **one `RedeemNode::decode` call per transaction per multi-outcome market transition** (same as binary — just with a richer set of possible paths). Cost remains negligible (~<1ms). The N outcome-pair slot scripts per phase are pre-stored in the script index during ingestion, so slot-match lookups remain O(1).
+
+**Detection strategy summary (binary)**:
 
 | Transition | Detection method | Airtight? |
 |---|---|---|
@@ -1868,7 +2014,18 @@ The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [S
 | Partial cancellation | Unresolved inputs → Unresolved outputs, collateral decreased | Yes — value direction distinguishes from issuance |
 | Full cancellation | Unresolved inputs → Dormant output scripts | Yes — unique scripts |
 | Expiry (non-dormant) | Unresolved inputs → ExpiredCollateral output script | Yes — unique script for slot 7 |
-| Dormant terminal | Dormant RT inputs → no covenant outputs, old state was Trading(0 pairs), witness path detection for three-way ambiguity | Yes — witness is ground truth (determines ResolvedYes/ResolvedNo/Expired, all with outstanding_pairs: 0) |
+| Dormant terminal | Dormant RT inputs → no covenant outputs, witness path detection | Yes — witness is ground truth |
+
+**Detection strategy summary (multi-outcome)**:
+
+| Transition | Detection method | Airtight? |
+|---|---|---|
+| Issue / cancel pair (outcome k) | Script match (Unresolved continuation) + witness path (identifies outcome index k) + collateral delta | Yes — witness is ground truth |
+| Split-YES / Merge-YES / Split-NO / Merge-NO | Script match (Unresolved continuation) + witness path (identifies primitive) + collateral delta (cross-checked against primitive) | Yes — witness is ground truth; collateral delta is defensive cross-check |
+| Resolution (non-dormant, outcome k) | Unresolved inputs → ResolvedCollateral(k) script (1 of N possible) | Yes — unique scripts |
+| Redemption | Resolved(k)/Expired inputs → no covenant outputs, token burn outputs identify (outcome, side) | Yes — old state + burn outputs disambiguate |
+| Expiry (non-dormant) | Unresolved inputs → ExpiredCollateral script | Yes — unique script |
+| Dormant terminal | All 2N Dormant RT inputs → no covenant outputs, witness path detection (N+1 possible paths: Resolved for each outcome + Expired) | Yes — witness is ground truth |
 
 #### LMSR Pools
 
@@ -1957,7 +2114,7 @@ Core doesn't know or care about the discovery layer (Nostr, manual import, QR co
 
 The three ingestion methods handle the different needs of each contract type:
 
-**Markets** (`ingest_market`): Always ingested from the creation transaction. Markets have few transitions (bounded by the number of covenant phases) and fast catch-up, so there is no benefit to non-initial ingestion.
+**Markets** (`ingest_market`): Always ingested from the creation transaction. Markets have few transitions (bounded by the number of covenant phases) and fast catch-up, so there is no benefit to non-initial ingestion. Ingestion handles both binary (2 token issuances, 2 RT issuances, 3-output covenant window) and multi-outcome (2N token issuances, 2N RT issuances, (2N+1)-output covenant window) markets via the `MarketParams` enum. Verification cost scales linearly with N — each token and RT asset ID is reconstructed and matched against the creation tx's issuance metadata.
 
 **Pools** (`ingest_pool`): Support both creation-tx and non-initial ingestion via `PoolSnapshot`. Pools can accumulate thousands of state transitions (one per swap), making forward-sync from creation expensive. Non-initial ingestion via `PoolSnapshot::Current` allows a trader to start using a pool immediately from its current state without replaying history.
 
@@ -3037,6 +3194,46 @@ Trade transactions co-spend multiple covenant inputs (LMSR pools + maker orders)
 
 ## Design Decisions Log
 
+### Each Market Transaction Is One Primitive; Multi-Contract Patterns Are Detected at the Transaction Level
+
+**Chosen**: `MultiOutcomeMarketTransition` variants are all single-primitive (IssuedPair, CancelledPair, SplitYes, MergeYes, SplitNo, MergeNo, plus terminals). Multi-contract patterns that span multiple contracts atomically in one transaction (cross-outcome arb, trades) are detected and exposed via helper methods on `InterpretedTransaction` (`as_cross_outcome_arb`, `as_trade`).
+
+**Rejected**:
+- **A `CrossOutcomeSwap` variant on `MultiOutcomeMarketTransition`** (proposed earlier during Stage 1 design): incorrect. The multi-outcome market covenant enforces that every Unresolved-phase transition co-spends all 2N+1 covenant inputs and selects exactly one spend path — one primitive per transaction. A user-level cross-outcome swap (rotating YES_i into {NO_j : j ≠ i}) requires TWO separate transactions (SplitNo then CancelledPair), so no single transaction produces a `CrossOutcomeSwap` transition for a single market.
+- **A `Composite(Vec<Primitive>)` variant within `MultiOutcomeMarketTransition`**: also incorrect — there's no in-transaction composition at the single-market-contract level because the covenant allows only one spend path per transaction.
+
+**Why**: matching the covenant's structure keeps single-contract transitions honest (each transition records exactly what that contract's covenant did in this transaction). Multi-contract patterns are real — they happen when one transaction co-spends multiple contracts atomically (cross-outcome arb, trades with LOB fills). These get first-class detection at the transaction level, via helpers on `InterpretedTransaction`. The raw per-contract transitions remain available in `InterpretedTransaction.transitions` for consumers that want granular detail.
+
+### Single-Transaction Interpretation (No Cross-Transaction Inference)
+
+**Chosen**: the engine interprets each transaction independently. It does not pattern-match across a user's transaction history to recognize user-level behaviors that span multiple transactions (e.g., "these two txs together were a cross-outcome swap").
+
+**Rejected**: cross-transaction inference in the engine. Higher-level tools (wallets, explorers, analytics) can aggregate across user tx history externally.
+
+**Why**: the UTXO-following state machine processes one tx at a time. Each tx produces a complete interpretation given the current contract state. Cross-tx inference would require maintaining stateful heuristics (which sequences count as "semantically atomic" from the user's perspective?) and would pollute the core's otherwise mechanical interpretation logic. Keep the core mechanical; let higher layers add semantic aggregation.
+
+### Liquidity-Weighted Probability; Single Value Per Outcome
+
+**Chosen**: `Market::probability_bps(outcome)` returns a single liquidity-weighted probability in basis points (0..=10000) — weighted by each pool's `b` parameter (LMSR depth).
+
+**Rejected**:
+- Return separate YES and NO prices per outcome. Redundant: within any single LMSR pool, p_YES + p_NO = 10000 bps by construction, so per-outcome probability is a single number; the NO side's price derives as `10000 - probability_bps`.
+- Return per-pool prices without aggregation. Available separately via the `Pool` view (`pool.params()` + `pool.state()`); the Market view exposes the canonical single value.
+- Simple average (unweighted). Deep pools should dominate thin ones in the canonical "what does the market think?" number.
+- Best-priced pool only. Biases toward outliers; a single thin pool at an extreme price would dominate despite low confidence.
+
+**Why**: weighting by `b` matches intuition — a pool with 10× the subsidy is "10× more confident" in its price because it can absorb 10× the volume before moving significantly. Single-value-per-outcome collapses redundancy while remaining honest about cross-outcome coherence via `sum_of_probabilities_bps()` (expected to equal 10000; deviation surfaces arb opportunity).
+
+### Cross-Outcome Arb: Quote + Build Pattern Mirroring Trades
+
+**Chosen**: `MultiOutcomeMarket::quote_cross_outcome_arb(fee_rate) → Option<ArbQuote>` + `build_cross_outcome_arb_pset(quote, sets, funding)`. `quote_*` returns `Ok(None)` only when raw profit-per-set is ≤ 0 (no price imbalance). Fee viability is the caller's check via `ArbQuote::break_even_sets()` and `net_profit_at_sets()`.
+
+**Rejected**:
+- Single builder `build_cross_outcome_arb_pset(direction, sets, funding)` with no quote step: no snapshot → no staleness check; pool states could change between caller's mental check and build.
+- Quote returns `None` if fees exceed profit at any volume: fee is fixed per-tx, profit scales with sets; large-enough volumes always amortize fee. Caller knows their desired volume better than the engine does.
+
+**Why**: the quote + build pattern mirrors `engine.quote_trade` + `engine.build_trade_pset` — familiar shape, same staleness protection (`CoreError::StaleQuote` when snapshotted outpoints change between quote and build). `break_even_sets` helper surfaces fee viability without making the engine pick a volume for the caller.
+
 ### View Types for Per-Contract Operations
 
 **Chosen**: `ContractEngine` exposes per-contract operations via view types (`Market<'a, S>`, `Pool<'a, S>`, `Order<'a, S>`, `MultiOutcomeMarket<'a, S>`) returned by engine accessors (`engine.market(id)`, etc.). Each view holds `&'a ContractEngine<S>` plus cached `(params, state)`. Per-contract PSET builders, state accessors, oracle helpers, and relationship queries live on the views; engine surface shrinks to ingestion, chain sync, discovery/listing, asset identification, transaction interpretation, creation builders, and trade routing.
@@ -3162,9 +3359,9 @@ This is the same pattern used elsewhere in the codebase: keep per-kind semantic 
 
 - **Stage 1 (complete)**: type definitions — umbrella enums, paired Binary/MultiOutcome inner types, `OutcomeIndex` newtype, `MarketResolution` discriminated union, generalized `AssetInfo` / `TradeSpec`, unified `OracleAttestationSpec`.
 - **Stage 2 (complete)**: API surface — `Market<'a, S>`, `MultiOutcomeMarket<'a, S>`, `Pool<'a, S>`, `Order<'a, S>` view types with per-contract operations; engine surface shrunk to ingestion, chain sync, discovery, view accessors, creation builders, and trade routing; relationship queries moved to views; builder naming rationalized (`build_lmsr_adjust_pset` → `build_adjust_pset` on `Pool` view, etc.).
-- **Stage 3 (pending)**: behavior — trade routing details for multi-outcome, transaction interpretation for multi-outcome transitions, chain sync details (larger creation transactions, 2N+1 sibling-checked inputs, outpoint tracking per outcome), cross-outcome arb compound builder specification.
+- **Stage 3 (complete)**: behavior — multi-outcome transaction interpretation (witness-based disambiguation across per-outcome and cross-outcome primitives), multi-contract pattern detection on `InterpretedTransaction` (`as_cross_outcome_arb`, `as_trade`, `net_effect_for`) while preserving raw per-contract transitions, probability accessors on views (liquidity-weighted by LMSR `b`), cross-outcome arb quote/build pattern mirroring trade routing, chain sync notes for N-scaling. Corrected a Stage 1 error: removed the `CrossOutcomeSwap` variant from `MultiOutcomeMarketTransition` — at the single-market-contract layer, every transaction is exactly one primitive.
 
-**Why**: staging keeps each reviewable chunk focused. Stage 1 establishes the vocabulary; Stage 2 uses that vocabulary in API signatures and view-type design; Stage 3 elaborates behavior. Staging avoids touch-every-section-at-once commits that are hard to review.
+**Why**: staging keeps each reviewable chunk focused. Stage 1 establishes the vocabulary; Stage 2 uses that vocabulary in API signatures and view-type design; Stage 3 elaborates behavior (and corrects a Stage 1 design error surfaced by deeper interpretation analysis). Staging avoids touch-every-section-at-once commits that are hard to review.
 
 ### UTXO-following vs Transaction Classification
 
