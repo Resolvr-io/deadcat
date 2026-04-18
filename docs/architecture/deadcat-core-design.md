@@ -10,7 +10,7 @@ The primary motivating use case: integrating Deadcat functionality into existing
 
 **Implementation prerequisite**: This document specifies the planned end state — after several pending `.simf` covenant refactors (collateral-per-pair rename, oracle BIP-340 tagged hash, cosigner removal, script-cancel removal, pool close path addition, pool param constants) plus the as-yet-unimplemented multi-outcome market contract. These refactors and new contracts should be applied before implementing `deadcat-core`. See [contract-specification.md § Pending Refactors](../contracts/contract-specification.md#pending-refactors) for the complete list and status.
 
-**Documentation staging**: this document was updated across three stages to integrate multi-outcome support. **Stage 1 (complete)**: core type definitions — umbrella enums (`MarketParams`, `MarketState`, `MarketTransition`), Binary/MultiOutcome-paired inner types, `OutcomeIndex` newtype, `MarketResolution` discriminated union for oracle APIs, `MarketId` newtype, generalized `AssetInfo`/`TradeSpec`, unified `OracleAttestationSpec`. **Stage 2 (complete)**: API surface — `Market<'a, S>`, `MultiOutcomeMarket<'a, S>`, `Pool<'a, S>`, `Order<'a, S>` view types; per-contract operations moved from `ContractEngine` methods to view types; engine shrunk to ingestion, chain sync, discovery, view accessors, creation builders, and trade routing; relationship queries moved to `Market` view. **Stage 3 (complete)**: behavior — multi-outcome transaction interpretation (per-primitive transitions, witness-based path disambiguation for the new spend paths), multi-contract pattern detection via `InterpretedTransaction::as_cross_outcome_arb` / `as_trade` / `net_effect_for`, probability accessors on views (`probability_bps`, `sum_of_probabilities_bps`, `implied_token_cost_sats` — liquidity-weighted by LMSR `b`), cross-outcome arb quote/build pattern (`quote_cross_outcome_arb` + `build_cross_outcome_arb_pset` with `ArbQuote` staleness-checked snapshot and `break_even_sets` helper), chain sync scaling notes for 2N+1 sibling-checked inputs and N-specific slot indexing. Also: removed the erroneous `CrossOutcomeSwap` variant from `MultiOutcomeMarketTransition` — at the single-market-contract layer, every transaction is exactly one primitive; cross-outcome rotation is a 2-transaction user-level composition, not a single market transition.
+**Documentation staging**: this document was updated across three stages to integrate multi-outcome support, with a follow-up revision reflecting a covenant design change (generic solvency-preservation spend path). **Stage 1**: core type definitions — umbrella enums (`MarketParams`, `MarketState`, `MarketTransition`), Binary/MultiOutcome-paired inner types, `OutcomeIndex` newtype, `MarketResolution` discriminated union for oracle APIs, `MarketId` newtype, generalized `AssetInfo`/`TradeSpec`, unified `OracleAttestationSpec`. **Stage 2**: API surface — `Market<'a, S>`, `MultiOutcomeMarket<'a, S>`, `Pool<'a, S>`, `Order<'a, S>` view types; per-contract operations moved from `ContractEngine` methods to view types; engine shrunk to ingestion, chain sync, discovery, view accessors, creation builders, and trade routing; relationship queries moved to `Market` view. **Stage 3**: behavior — multi-outcome transaction interpretation (delta-shape classification into `MultiOutcomeMarketTransition` variants), multi-contract pattern detection via `InterpretedTransaction::as_cross_outcome_arb` / `as_trade` / `net_effect_for`, probability accessors on views (`probability_bps`, `sum_of_probabilities_bps`, `implied_token_cost_sats` — liquidity-weighted by LMSR `b`), cross-outcome arb quote/build pattern (`quote_cross_outcome_arb` + `build_cross_outcome_arb_pset` with `ArbQuote` staleness-checked snapshot and `break_even_sets` helper), chain sync scaling notes for 2N+1 sibling-checked inputs and N-specific slot indexing. **Post-Stage-3 revision**: the multi-outcome market covenant's Unresolved-phase operations were revised from six enumerated spend paths to a single generic solvency-preservation spend path (see [`multi-outcome-market-contract.md § Operations`](../contracts/multi-outcome/multi-outcome-market-contract.md#operations)); `MultiOutcomeMarketTransition` was updated to include `CrossOutcomeSwap` as a classified delta-shape variant and `Composite` for arbitrary delta shapes. Cross-outcome swap is now atomic in a single transaction.
 
 ## Architecture Overview
 
@@ -1346,17 +1346,35 @@ pub enum BinaryMarketTransition {
 }
 
 pub enum MultiOutcomeMarketTransition {
-    // Per-outcome primitives (binary-analogous, outcome-indexed):
+    // Classified delta shapes (engine pattern-matches tx deltas against these common
+    // shapes for display convenience). All pass through the same generic covenant path.
     IssuedPair { outcome: OutcomeIndex, pairs: u64, collateral_locked: u64 },
     CancelledPair { outcome: OutcomeIndex, pairs_burned: u64, collateral_returned: u64 },
-
-    // Cross-outcome primitives (multi-outcome only):
     SplitYes { sets: u64, collateral_locked: u64 },
     MergeYes { sets: u64, collateral_returned: u64 },
     SplitNo { sets: u64, collateral_locked: u64 },
     MergeNo { sets: u64, collateral_returned: u64 },
 
-    // Resolution / expiry / redemption:
+    /// Cross-outcome swap: 1 YES_i in, 1 NO_j out for each j ≠ i, paying
+    /// (N − 2) × collateral_per_pair. Possible as a single transaction under the
+    /// generic spend path; the engine pattern-matches this canonical shape.
+    CrossOutcomeSwap {
+        from_outcome: OutcomeIndex,
+        sets: u64,
+        collateral_cost: u64,
+    },
+
+    /// Arbitrary solvency-preserving delta composition that doesn't match any named
+    /// classification above. Raw deltas are preserved for consumers that want
+    /// granular detail; helper methods on the transition can classify common
+    /// sub-patterns.
+    Composite {
+        delta_yes: Vec<i64>,        // length outcome_count
+        delta_no: Vec<i64>,         // length outcome_count
+        delta_collateral: i64,      // signed
+    },
+
+    // Resolution / expiry / redemption (unchanged):
     Resolved { outcome: OutcomeIndex },
     Redeemed { kind: RedemptionKind, outcome: OutcomeIndex, side: Side, tokens_burned: u64, payout_sats: u64 },
     Expired,
@@ -1376,9 +1394,14 @@ pub enum OrderTransition {
 
 `BinaryMarketTransition::Issued` (and `MultiOutcomeMarketTransition::IssuedPair` / `SplitYes` / `SplitNo`) carry only the user-facing amounts (`pairs`/`sets` and `collateral_locked`) without an `IssuanceKind` discriminant. The engine still knows internally whether it was initial or subsequent issuance (for PSET routing), but this distinction is hidden from callers — it is a covenant implementation detail.
 
-**Each market transaction is exactly one primitive.** The multi-outcome market covenant enforces that every Unresolved-phase transition co-spends all 2N+1 covenant inputs and selects exactly one spend path from the witness. This means each on-chain transaction produces exactly one `MultiOutcomeMarketTransition` for the market contract — there is no in-transaction composition at the market-contract layer.
+**Each market transaction is exactly one covenant spend path.** The multi-outcome market covenant uses a single generic spend path for all Unresolved-phase transitions (see [`multi-outcome-market-contract.md § Operations`](../contracts/multi-outcome/multi-outcome-market-contract.md#operations)). That one spend path accepts any `(Δy, Δn, Δc)` preserving the solvency invariant — so a single on-chain transaction may represent a pure named primitive (IssuedPair, SplitYes, etc.), a classified cross-outcome swap, or an arbitrary composition of delta shapes.
 
-**User-level cross-outcome swaps are two-transaction compositions.** A user rotating 1 YES_i into `{NO_j : j ≠ i}` at a net cost of `(N-2) × collateral_per_pair` executes this across two separate transactions: (1) `SplitNo` (pay `(N-1) × collateral_per_pair`, receive 1 NO_k for each k) and (2) `CancelledPair { outcome: i }` (burn 1 YES_i + 1 NO_i, release `collateral_per_pair`). Each is interpreted independently as a single primitive transition. The engine does not pattern-match across transactions to emit a derived "cross-outcome swap" — each tx is processed individually by the UTXO-following state machine. Higher-level tools (wallets, explorers) can aggregate across a user's tx history to recognize the pattern if desired.
+The engine classifies the tx's delta shape into a `MultiOutcomeMarketTransition` variant:
+- If deltas match exactly the shape of a named primitive (e.g., `Δy_i = Δn_i = sets`, all others zero → `IssuedPair`), emit that variant.
+- If deltas match the cross-outcome-swap shape (`Δy_i = −sets`, `Δn_j = sets ∀j≠i`, `Δc = sets·(N−2)·cp`) → emit `CrossOutcomeSwap`.
+- Otherwise, emit `Composite { delta_yes, delta_no, delta_collateral }` with the raw deltas preserved.
+
+**Cross-outcome swap is now a single-transaction operation.** Under the generic spend path, a user (or wallet builder) constructs one transaction with the cross-outcome-swap delta shape and the covenant accepts it atomically. This is a change from an earlier design iteration where cross-outcome swap was necessarily a two-transaction composition (split-NO + pair-cancel); that was tied to the enumerated-primitives covenant design, which has since been replaced with the generic-path design.
 
 **Multi-contract patterns in a single transaction** (e.g., cross-outcome arb: market's split-YES atomically co-spent with N pool swaps) are detected at the `InterpretedTransaction` level via helper methods like `InterpretedTransaction::as_cross_outcome_arb()`. Each participating contract still emits one primitive transition; the tx-level helpers recognize recurring multi-contract patterns without collapsing the per-contract transitions. See [Multi-Contract Transaction Patterns](#multi-contract-transaction-patterns) below.
 
@@ -3239,15 +3262,19 @@ For the display case of "all pools/orders across all outcomes of a multi-outcome
 
 **Why**: scale pressure on orders drives this. Indexed `(market_id, outcome)` lookups at the store are fundamental to sustaining Polymarket-scale multi-outcome markets. Binary markets pay a syntactic tax of one extra parameter (`OutcomeIndex::BINARY`) but get the same behavior they would have had. The view-layer aggregation pattern (iterate outcomes for the all-outcomes case) is bounded (N ≤ 10 in practice) and lives in one place — the `Market` view — rather than being duplicated across consumers.
 
-### Each Market Transaction Is One Primitive; Multi-Contract Patterns Are Detected at the Transaction Level
+### `MultiOutcomeMarketTransition` Is a Classification of the Tx's Delta Shape
 
-**Chosen**: `MultiOutcomeMarketTransition` variants are all single-primitive (IssuedPair, CancelledPair, SplitYes, MergeYes, SplitNo, MergeNo, plus terminals). Multi-contract patterns that span multiple contracts atomically in one transaction (cross-outcome arb, trades) are detected and exposed via helper methods on `InterpretedTransaction` (`as_cross_outcome_arb`, `as_trade`).
+**Chosen**: `MultiOutcomeMarketTransition` variants name common delta-shape patterns (`IssuedPair`, `SplitYes`, `CrossOutcomeSwap`, etc.) plus a `Composite { delta_yes, delta_no, delta_collateral }` escape hatch for arbitrary solvency-preserving delta shapes that don't match a named pattern. Each market transaction produces exactly one variant (the covenant executes one spend path per tx — the generic solvency-preserving path — and the engine classifies the observed deltas).
 
 **Rejected**:
-- **A `CrossOutcomeSwap` variant on `MultiOutcomeMarketTransition`** (proposed earlier during Stage 1 design): incorrect. The multi-outcome market covenant enforces that every Unresolved-phase transition co-spends all 2N+1 covenant inputs and selects exactly one spend path — one primitive per transaction. A user-level cross-outcome swap (rotating YES_i into {NO_j : j ≠ i}) requires TWO separate transactions (SplitNo then CancelledPair), so no single transaction produces a `CrossOutcomeSwap` transition for a single market.
-- **A `Composite(Vec<Primitive>)` variant within `MultiOutcomeMarketTransition`**: also incorrect — there's no in-transaction composition at the single-market-contract level because the covenant allows only one spend path per transaction.
+- **Single-primitive-only variants** (as originally specified during Stage 3): assumed the covenant enumerated primitives (pair-issue, split-YES, merge-YES, split-NO, merge-NO) as separate spend paths, making each tx exactly one named primitive. That design has since been superseded by the generic solvency-preservation spend path (see [`multi-outcome-market-contract.md § Operations`](../contracts/multi-outcome/multi-outcome-market-contract.md#operations)), which accepts any `(Δy, Δn, Δc)` preserving the invariant. Under the generic path, a single tx can represent any composition of named primitives plus novel delta shapes, so `Composite` is required to represent compositions that don't match named classifications.
+- **Bare `Composite` variant only, no named patterns**: loses display convenience. Consumers have to decode raw deltas to recognize common operations. Named variants provide ergonomic matching for the common cases; `Composite` catches the rest.
 
-**Why**: matching the covenant's structure keeps single-contract transitions honest (each transition records exactly what that contract's covenant did in this transaction). Multi-contract patterns are real — they happen when one transaction co-spends multiple contracts atomically (cross-outcome arb, trades with LOB fills). These get first-class detection at the transaction level, via helpers on `InterpretedTransaction`. The raw per-contract transitions remain available in `InterpretedTransaction.transitions` for consumers that want granular detail.
+**Why**: matches the covenant's actual structure. The generic spend path makes single-tx compositions possible, and the classification enum reflects that: common patterns get named variants (wallet UI can match on `IssuedPair { outcome, pairs, ... }` directly), while arbitrary compositions get captured as `Composite` with raw deltas preserved. Multi-contract patterns (cross-outcome arb, trades) remain detected at the `InterpretedTransaction` level via helper methods; those are orthogonal to per-contract transition classification.
+
+### Multi-Contract Patterns Detected at the Transaction Level
+
+Multi-contract patterns — a single transaction co-spending multiple contracts atomically (cross-outcome arb: market + N pools; trade: pool + LOB orders) — are surfaced via helper methods on `InterpretedTransaction` (`as_cross_outcome_arb`, `as_trade`, `net_effect_for`). Raw per-contract transitions remain available in `InterpretedTransaction.transitions` for consumers that want granular detail.
 
 ### Single-Transaction Interpretation (No Cross-Transaction Inference)
 
