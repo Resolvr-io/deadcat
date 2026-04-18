@@ -150,6 +150,16 @@ button:focus-visible,
   padding-bottom: 32px;
 }
 
+/* Positioned absolute (not fixed): `backdrop-filter` on the parent
+   establishes a containing block for `position: fixed` descendants too,
+   which would re-base the pseudo onto the parent's padding box and paint
+   a double-layered band at the top. Absolute with top:-32px sits
+   correctly relative to the parent's padding-box edge (viewport y=0 for a
+   parent fixed at top:32px).
+   NB: the backdrop element must not use `overflow-y-auto` — per CSS spec,
+   `overflow-y` non-`visible` forces `overflow-x` to compute to `auto` too,
+   which would clip this pseudo at `top: -32px`. Put scrolling on an inner
+   container instead. */
 :root[data-os="macos"] .macos-overlay-safe-top::before {
   content: "";
   position: absolute;
