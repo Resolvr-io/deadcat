@@ -57,6 +57,46 @@ deadcat-node     Full batteries-included runtime. Wraps SDK with Nostr discovery
 
 Note: `deadcat-core` defines the `ContractStore` and `ContractHistory` traits. `deadcat-node` provides concrete SQLite implementations of both. The distinction: core defines the interfaces, node provides storage implementations. A consumer like Aqua would implement these traits against their own database.
 
+## System Invariants
+
+Load-bearing guarantees that the `deadcat-core` library exposes and depends on. Each is stated as a property of the system, with the enforcement mechanism cross-referenced. These are the checklist against which both the library and every `.simf` contract must be audited — if an implementation conflicts with an invariant, the implementation is wrong.
+
+### Script uniqueness per live contract
+
+Every live maker order UTXO has a unique covenant script; every live LMSR pool reserve UTXO has a unique covenant script (per reserve role); every market has unique covenant scripts across its slot layout. Orders and pools achieve uniqueness via per-index derivation of `maker_pubkey` / `admin_pubkey` and per-index HMAC-derived nonces — the wallet increments `order_index` / `pool_index` per contract. Markets achieve it via 2N issuance-entropy-derived asset IDs, unique by Elements consensus. CMR collision across live contracts is structurally prevented. See [chain-only-recovery.md § Key Derivation](../protocol/chain-only-recovery.md#key-derivation), [§ Order Nonce Derivation](../protocol/chain-only-recovery.md#order-nonce-derivation), and [transaction-composability-model.md § Script Uniqueness Guarantee](transaction-composability-model.md#script-uniqueness-guarantee).
+
+### Covenants self-enforce
+
+Covenants verify their own correctness against arbitrary transactions. Any constraint that protects funds, preserves solvency, or prevents griefing is enforced by the Simplicity program, not by builder conventions. Builder-layer constraints are confined to recovery decodability (bucket 2 of the self-enforcement classification) and never fund safety (bucket 3 is forbidden). See [market-contract-principles.md § Covenant self-enforcement](../contracts/market-contract-principles.md#covenant-self-enforcement).
+
+### Sibling group atomicity
+
+Every market transition in active phases (Unresolved, Dormant) spends all covenant UTXOs in its sibling group atomically. The covenant rejects partial spends that would leave orphaned RTs or orphaned collateral. Partial-cancel / partial-burn transitions are no exception — they still co-spend the full sibling set to maintain the `prev_txid`-equality invariant across the contract's lifetime. See [market-contract-principles.md § Principle 13](../contracts/market-contract-principles.md#13-sibling-utxo-check-on-co-spent-covenant-inputs) and [enforcement-layers.md](enforcement-layers.md).
+
+### One covenant spend path per on-chain transaction
+
+Each on-chain transaction that touches a Deadcat covenant exercises exactly one covenant spend path. Transition classification is deterministic: the engine pattern-matches the tx's observable effects (RT issuance, burn outputs, collateral delta) to a single named variant — binary primitives for the binary market, or one of the generic-path delta-shape classifications (`IssuedPair`, `SplitYes`, `CrossOutcomeSwap`, `Composite`, etc.) for the multi-outcome market. This enables unambiguous indexing, replay, and interpretation.
+
+### Deterministic reconstructibility — owner-level
+
+For any contract the user created (market, pool, order), mnemonic + authoritative chain data suffice to reconstruct all covenant parameters and private material (keys, nonces, masked indices) required to recover custody, sign cancellations, or exercise admin paths. No off-chain backup is required beyond the mnemonic. See [chain-only-recovery.md](../protocol/chain-only-recovery.md).
+
+### Deterministic reconstructibility — non-owner-level
+
+For any Deadcat contract on-chain, regardless of creator, the creation transaction plus its OP_RETURN hint suffice for any node to parameterize the contract, verify script pubkey authenticity via re-derivation, and construct transactions that interact with it (trade, redeem, observe). Non-owners cannot reconstruct the owner's private material but do not need it for interaction. This property enables permissionless discovery and participation.
+
+### OP_RETURN authenticity is verifiable
+
+Every covenant creation hint is reverse-verifiable: a parameter set parsed from an OP_RETURN, re-compiled to a covenant script, must match the UTXO's on-chain script pubkey. Spoofed or stale hints produce a compile-then-compare failure and are rejectable at the recovery layer before any downstream state is trusted.
+
+### RT deterministic blinding
+
+Reissuance token continuation outputs use covenant-enforced deterministic blinding factors (ABF derived from tagged hash of the defining outpoint; CBF passed through unchanged; VBF computed as `CBF - ABF`). This removes the traditional Elements-layer RT-secrecy safeguard deliberately — enabling permissionless recovery and transaction construction — and makes the covenant's enforcement the sole defense against blinding-griefing. See [market-contract-principles.md § Principle 11](../contracts/market-contract-principles.md#11-deterministic-rt-blinding) and [deterministic-rt-blinding.md](../protocol/deterministic-rt-blinding.md).
+
+### View freshness via lifetimes
+
+Public view types (`Market<'a, S>`, `Pool<'a, S>`, `Order<'a, S>`, `MultiOutcomeMarket<'a, S>`) carry the store's lifetime. The borrow checker prevents a caller from holding a view across a mutation of the underlying store, eliminating the stale-view class of bugs without runtime checks. No freshness flags, no revalidation API — the type system enforces it.
+
 ## ContractEngine
 
 `ContractEngine` is the central type in `deadcat-core`. It owns the store, manages contract state, processes transactions, and provides interpretation and asset identification.

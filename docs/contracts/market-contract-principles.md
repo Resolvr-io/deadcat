@@ -11,6 +11,18 @@ Usage conventions (1-2-5 mantissa for collateral amounts, 60-block expiry snappi
 - **In scope**: the binary prediction market contract and the multi-outcome market contract.
 - **Out of scope**: the LMSR pool contract and the maker order contract. These have their own principle sets (reserves, pricing integrity, maker-only cancellation) distinct from the market-contract principles below.
 
+## Covenant self-enforcement
+
+Every principle below is covenant-enforced: the Simplicity program verifies the property from transaction-observable data alone. PSET builders are off-chain conveniences; the covenant assumes an adversary constructs the spending transaction. Any constraint that protects funds, preserves solvency, or prevents griefing must live in the covenant, not in builder code.
+
+This framing classifies every constraint the design relies on into one of three buckets:
+
+1. **Covenant-enforced** — checked in the Simplicity program; safe against arbitrary builders.
+2. **Builder-enforced, recovery-critical** — violation breaks chain-only recovery decode but cannot drain funds, alter resolution, or produce unauthorized issuance. Acceptable at the builder layer when explicitly documented as such. Examples: the 1-2-5 mantissa table for `collateral_per_pair`, OP_RETURN hint format, expiry snapping to 60-block boundaries.
+3. **Builder-enforced, fund-critical** — **not acceptable.** Any constraint that, if violated, permits fund loss, solvency violation, or griefing must be promoted to covenant enforcement before release.
+
+**Audit obligation**: every spend path in every `.simf` must be reviewed against this classification. Every constraint the covenant's correctness depends on belongs in bucket 1; none in bucket 3. Bucket-2 constraints must be named and their failure modes documented.
+
 ## Foundational principle
 
 ### 1. The contract's purpose is to uphold solvency across every possible resolution outcome
