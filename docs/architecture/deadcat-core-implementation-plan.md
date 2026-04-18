@@ -210,6 +210,107 @@ Enumerated so they don't surprise anyone mid-phase:
 4. **Ingestion script-pubkey verification** — the authenticity check that every other engine guarantee depends on. If this is loose (e.g., accepts spoofed params with a coincidentally-matching txid), recovery breaks. Mitigation: exhaustive positive and negative tests in Phase 4.
 5. **PSET builder correctness across cross-contract composition** — atomic trades (pool + maker orders) and (in v2) arb (market + pools) layer constraints from multiple covenants into one tx. Any builder that produces txs that one covenant accepts but another rejects is a bug that only surfaces at broadcast time. Mitigation: integration tests specifically targeting multi-contract atomic transactions in Phase 5.
 
+## Simplicity testing with smplx
+
+[smplx](https://github.com/BlockstreamResearch/smplx) (Simplex) is Blockstream's development framework for Simplicity contracts. It provides a CLI (`simplex`), a test harness (`#[simplex::test]`), and a build system (`simplex build`) that compiles `.simf` source into Rust artifacts with typed argument and witness structs. It bundles `elementsd` and `electrs` binaries in its release tarball, handling regtest provisioning automatically.
+
+### What smplx provides
+
+| Capability | Replaces | Relevant phase |
+|---|---|---|
+| `simplex build` — compiles `.simf` → typed Rust `Arguments` / `Witness` structs | Manual `TemplateProgram::new(SOURCE)` + untyped witness construction | Phase 1, 5 |
+| `#[simplex::test]` — auto-provisions funded regtest wallet + `TestContext` | Hand-rolled `Fixture` scaffolding in integration tests | Phase 5, 6 |
+| `simplex regtest` — persistent local Elements + Electrs for iterative dev | Manual regtest lifecycle management | Phase 1 (exploratory), Phase 5 |
+| `Program::execute()` with `DefaultTracker` — local Simplicity execution with trace output | Direct `BitMachine::exec` calls | Phase 1 (validation during authoring) |
+
+### What smplx does not replace
+
+- **Tier 1 BitMachine unit tests** — fast, mock-env tests that validate contract logic without a chain. smplx's test harness always provisions a regtest; there is no "unit test only" mode. Tier 1 tests continue to use `simplicity_lang::BitMachine` directly.
+- **Tier 1.5 C evaluator tests** — Rust-vs-C serialization roundtrip checks via `c_eval.rs`. smplx does not expose the C evaluator pipeline. These remain as-is.
+- **LMSR math** — pure Rust computation with no Simplicity involvement. Tested with standard `#[test]`.
+- **Codegen drift tests** — `deadcat-codegen` fixture regeneration and byte-match assertions. Standard `cargo test`.
+
+In short: smplx targets Tier 2 (regtest integration) and contract development workflows. Tiers 1 and 1.5 are unaffected.
+
+### Nix flake integration
+
+smplx releases a single tarball per platform containing three pre-built binaries (`simplex`, `elementsd`, `electrs`). This maps directly to a Nix derivation that fetches the tarball and puts all three on `PATH`:
+
+```nix
+simplex = pkgs.stdenv.mkDerivation {
+  pname = "simplex";
+  version = "0.0.3";
+  src = pkgs.fetchurl {
+    url = "https://github.com/BlockstreamResearch/smplx/releases/download/v0.0.3/simplex-v0.0.3-${
+      if pkgs.stdenv.isDarwin then "darwin-arm64"
+      else "linux-x86_64"
+    }.tar.gz";
+    sha256 = if pkgs.stdenv.isDarwin
+      then "sha256-Mcoo93RgR/SB5GkMqZi8ZbmbsieyM0XLMTKe6GNEl6c="
+      else "sha256-4CxpeOSdRn/eJ345CgbjaE3YS1J95OmTC2J8+IcbaEQ=";
+  };
+  sourceRoot = ".";
+  dontConfigure = true;
+  dontBuild = true;
+  installPhase = ''
+    mkdir -p $out/bin
+    cp simplex elementsd electrs $out/bin/
+    chmod +x $out/bin/*
+  '';
+};
+```
+
+Add `simplex` to the `devShells.default.packages` list. All three binaries become available inside `nix develop` — no `simplexup` installer needed, no `~/.simplex/` global state. The Nix shell provides the Rust toolchain (`cargo`, `rustc`); smplx's `simplex test` invokes `cargo test` under the hood and finds it on `PATH`.
+
+This replaces the current approach of vendoring platform-specific `elementsd-$TRIPLE` / `electrs-$TRIPLE` binaries under `tests/` and pointing at them via `ELEMENTSD_EXEC` / `ELECTRS_LIQUID_EXEC` env vars.
+
+### Justfile integration
+
+```just
+# Regtest integration tests via smplx (Tier 2)
+simplex-test:
+    cd crates/deadcat-core && simplex test
+
+# Regtest integration tests for a specific test
+simplex-test-one name:
+    cd crates/deadcat-core && simplex test --tests "{{name}}" --nocapture
+
+# Unit tests (Tier 1 / 1.5 + pure Rust) — standard cargo, no smplx
+unit-test:
+    cargo test --workspace --exclude deadcat-core-integration
+```
+
+### Project configuration
+
+A minimal `Simplex.toml` at the `crates/deadcat-core/` root:
+
+```toml
+[build]
+src_dir = "./contracts"
+simf_files = ["*.simf"]
+out_dir = "./src/artifacts"
+
+[regtest]
+bitcoins = 10_000_000
+```
+
+The `[build]` section tells `simplex build` where to find the `.simf` contracts and where to emit generated Rust artifact modules. The `[regtest]` section configures the auto-provisioned regtest for `simplex test`.
+
+### Build artifacts and typed witnesses
+
+`simplex build` parses each `.simf` file and generates a Rust module in `src/artifacts/` with:
+- A `<Contract>Program` struct wrapping the compiled Simplicity program
+- A typed `<Contract>Arguments` struct for compile-time parameters (maps to `param::` declarations in `.simf`)
+- A typed `<Contract>Witness` struct for runtime witness values (maps to `witness::` declarations in `.simf`)
+
+This gives compile-time type checking on covenant parameters and witness fields — a misnamed or mistyped field becomes a Rust compiler error rather than a runtime Simplicity assertion failure. Whether to adopt these generated types in production PSET builders (vs. the current manual `CompiledProgram` API) is a decision that can be deferred until Phase 5; at minimum they are valuable for test code.
+
+### Version pinning
+
+The Nix derivation pins a specific smplx release (currently v0.0.3). When upgrading, update the version, URLs, and hashes in the flake. The `elementsd` and `electrs` versions are coupled to the smplx release — they ship together in the tarball, so version compatibility is guaranteed by construction.
+
+smplx is pre-1.0 (v0.0.3 as of 2026-04-02). API churn is expected. The Nix pin provides a reproducible baseline; upgrades are explicit and auditable via flake.lock diff.
+
 ## Status
 
 Pre-implementation. Design complete; Phase 1 can start.
