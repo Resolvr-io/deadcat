@@ -39,7 +39,8 @@ function CloseConfirmDialog() {
           Quit Deadcat Live?
         </h2>
         <p className="mt-2 text-sm text-slate-400">
-          Make sure you&apos;ve saved your work before quitting.
+          Your wallet and identity are saved. Pending operations will be
+          interrupted.
         </p>
         <div className="mt-6 flex gap-3">
           <button
