@@ -663,7 +663,11 @@ export function TopShell() {
   const activeCategory = useStore((s) => s.activeCategory);
 
   const goHome = useCallback(() => {
-    useStore.setState({ view: "home", selectedMarketId: "" });
+    useStore.setState({
+      view: "home",
+      activeCategory: "Trending",
+      selectedMarketId: "",
+    });
   }, []);
 
   return (
