@@ -122,6 +122,26 @@ button:focus-visible,
   padding-top: 32px;
 }
 
+/* Soft "hood" behind the macOS traffic lights so content that scrolls
+   under them reads as subordinate. Fades to transparent over 32px so it
+   doesn't add a hard edge. Pointer-events:none lets the native drag
+   region and traffic-light clicks pass through. */
+:root[data-os="macos"]::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  background: linear-gradient(
+    to bottom,
+    rgba(2, 6, 23, 0.92),
+    rgba(2, 6, 23, 0)
+  );
+  pointer-events: none;
+  z-index: 1000;
+}
+
 .phi-title {
   max-width: 34ch;
 }
