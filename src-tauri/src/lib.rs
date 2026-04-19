@@ -1402,6 +1402,35 @@ fn confirm_quit(app: AppHandle) {
     app.exit(0);
 }
 
+#[derive(serde::Serialize)]
+struct AppVersion {
+    version: &'static str,
+    commit: &'static str,
+    modified: bool,
+    /// SemVer build-metadata form: `0.1.0+abc1234` (or `+abc1234.modified`).
+    display: String,
+}
+
+/// Version string assembled from Cargo package version + git short hash
+/// embedded at build time. Shown in Settings.
+#[tauri::command]
+fn get_app_version() -> AppVersion {
+    let version = env!("CARGO_PKG_VERSION");
+    let commit = env!("GIT_HASH");
+    let modified = env!("GIT_DIRTY") == "1";
+    let display = if modified {
+        format!("{version}+{commit}.modified")
+    } else {
+        format!("{version}+{commit}")
+    };
+    AppVersion {
+        version,
+        commit,
+        modified,
+        display,
+    }
+}
+
 // ============================================================================
 // App Entry Point
 // ============================================================================
@@ -1635,6 +1664,7 @@ pub fn run() {
             // Legacy
             fetch_chain_tip,
             confirm_quit,
+            get_app_version,
             // SDK / Nostr
             commands::init_nostr_identity,
             commands::generate_nostr_identity,
