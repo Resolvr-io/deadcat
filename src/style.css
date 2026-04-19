@@ -24,7 +24,10 @@
 }
 
 html {
+  /* Solid dark so the scrollbar gutter and any macOS elastic-overscroll
+     exposure match the top-left stop of the body gradient below. */
   background: #020617;
+  color-scheme: dark;
 }
 
 html,
@@ -467,29 +470,24 @@ button:focus-visible,
   }
 }
 
+/* Narrow, dark scrollbar. The track uses a vertical approximation of the
+   body's diagonal gradient so it blends with the page at both the top
+   (#020617) and the bottom (#0f172a) instead of reading as a dark slab
+   on the lighter part of the page. */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
-
-::-webkit-scrollbar-thumb {
-  border-radius: 9999px;
-  border: 2px solid #0b1222;
-  background-color: #0b1222;
-}
-
-body:hover::-webkit-scrollbar-thumb {
-  background-color: #1e293b;
-}
-
-body:hover::-webkit-scrollbar-thumb:hover {
-  background-color: #334155;
-}
-
 ::-webkit-scrollbar-track {
-  background: #0b1222;
+  background: linear-gradient(to bottom, #020617 0%, #0b1222 45%, #0f172a 100%);
 }
-
 ::-webkit-scrollbar-corner {
-  background: #0b1222;
+  background-color: #0f172a;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
 }
