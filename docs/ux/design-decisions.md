@@ -6,23 +6,29 @@ Each entry follows the format from [deadcat-core-design.md](../architecture/dead
 
 ## Rendering & Architecture
 
-### Vanilla HTML String Rendering Over Virtual DOM Framework
+### React Over Vanilla HTML String Rendering
 
-**Chosen**: Pure TypeScript functions returning HTML template strings. Full DOM replacement via `app.innerHTML = html` on each render cycle.
-**Rejected**: React, Vue, Svelte, or any virtual DOM framework.
-**Why**: The Deadcat UI is a single-page desktop app with a small DOM (~500-2000 nodes). Full re-render completes in <16ms — well within a single frame. The string rendering model eliminates: build toolchain complexity (JSX transpilation, framework-specific plugins), stale closure bugs (a common React pitfall with event handlers referencing old state), component lifecycle management, and the conceptual overhead of reconciliation. The trade-off is losing declarative component composition and fine-grained reactivity — accepted because the UI is small enough that brute-force re-rendering is fast, and the global state object provides a simpler mental model than component-local state.
+**Chosen**: React 18 with TypeScript (TSX). Components are React function components; state changes trigger fine-grained virtual DOM reconciliation — only affected components re-render.
+**Rejected (previously attempted)**: Pure TypeScript functions returning HTML template strings. Full DOM replacement via `app.innerHTML = html` on each render cycle.
+**Why**: The vanilla string rendering approach worked at small scale but created friction as the component surface grew: no JSX type safety, no composable component patterns, all event handlers had to flow through a single root dispatcher, and full re-renders became noticeable as the DOM grew beyond ~2000 nodes. React provides declarative composition, fine-grained updates via hooks, and a standard ecosystem for async state (React Query). The trade-off — build toolchain complexity (Vite + TSX compilation) — is accepted because Vite's HMR and TSX type safety outweigh the setup cost for a codebase this size. See also: Zustand and React Query decisions below.
 
-### Centralized Global State Over Component-Local State
+### Zustand Over Manual Global State Object
 
-**Chosen**: Single `state` object with ~280 properties. Event handlers mutate state directly, then call `render()`.
-**Rejected**: Component-local state, Redux-style stores, signals/observables.
-**Why**: Mirrors the core engine's architecture — the engine exclusively owns its store, and all reads/writes go through a single API. The UI `state` object is the frontend equivalent. With full re-rendering, there's no need for fine-grained subscriptions or memoization — every render reads the full state. The downside is that unrelated state changes trigger full re-renders, but this is acceptable at the current DOM size. If performance becomes an issue, targeted DOM patching can be introduced without changing the state model.
+**Chosen**: Zustand store (`src/store/index.ts`) with ~280 properties in flat slices. Components subscribe via `useStore((s) => s.property)`. State is mutated via `useStore.setState({ ... })`.
+**Rejected**: (a) Plain global `state` object with manual `render()` calls. (b) Redux-style reducers with dispatched actions. (c) Distributed component-local state.
+**Why**: Preserves the original single-source-of-truth philosophy — all UI state lives in one place, readable in one file — while gaining selective re-rendering. With the vanilla approach, any state mutation triggered a full `innerHTML` replacement. With Zustand, only components that subscribe to the changed slice re-render. The flat structure (all properties at the top level, no nested reducers) keeps the mental model simple: `useStore.setState({ tradeSizeSats: 10000 })` is exactly as legible as `state.tradeSizeSats = 10000` was before. Zustand's minimal API (`create`, `useStore`, `setState`) adds no indirection beyond what React itself requires.
 
-### Event Delegation Over Per-Component Listeners
+### React Component Event Handlers Over Root Event Delegation
 
-**Chosen**: Single click/input/keydown listeners on the root `#app` element. Actions identified via `data-action` attributes on elements.
-**Rejected**: Per-component event listeners attached after render.
-**Why**: Full DOM replacement via `innerHTML` destroys all attached listeners. Event delegation sidesteps this entirely — the root listener is attached once and never re-attached. The `data-action` pattern also creates a natural registry of all user interactions, making the action space auditable. The trade-off is that every click traverses the DOM upward to find a `data-action` — negligible for desktop use.
+**Chosen**: Standard React `onClick`, `onChange`, `onSubmit` props on components. Mutations encapsulated in React Query hooks (`useTrading`, `useWalletOps`, etc.).
+**Rejected**: Single click listener on root `#app` + `data-action` attribute dispatch pattern.
+**Why**: The `data-action` pattern was designed to survive `innerHTML` re-renders — the root listener never needed re-attachment. With React, this constraint disappears: React manages listener lifecycle alongside component lifecycle. Per-component handlers are more discoverable (the handler is co-located with the element that triggers it), type-safe (no stringly-typed action names), and testable in isolation. The trade-off is losing the centralized action registry that `data-action` provided — mitigated by React Query's mutation hooks, which serve as the canonical list of all side-effectful operations.
+
+### TanStack React Query for Server State
+
+**Chosen**: React Query (`src/queries/`) for all data that originates from the Tauri backend: markets, wallet snapshots, price history, orders, pools. Queries are invalidated via Tauri events (`useTauriEvents`).
+**Rejected**: Manual polling loops or Zustand for server state.
+**Why**: Server state (markets, wallet data) has fundamentally different lifecycle requirements from UI state (which tab is selected, whether a modal is open). React Query's stale-while-revalidate model, automatic background refetching, and cache invalidation on mutation success eliminate entire categories of manual synchronization code that existed in the vanilla approach (polling intervals, manual `refreshWallet()` calls, etc.). The IPC bridge remains unchanged — `invoke()` calls are wrapped inside React Query's `queryFn`/`mutationFn` rather than called directly from event handlers.
 
 ---
 

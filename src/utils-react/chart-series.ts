@@ -15,18 +15,19 @@ export type ChartSeriesData = {
   yesSeries: Array<number | null>;
 };
 
+// Liquid: ~1 block per minute
 const SCALE_BLOCKS_BY_KEY: Record<ChartTimescale, number> = {
-  "10B": 10,
-  "25B": 25,
-  "50B": 50,
-  "100B": 100,
+  "30m": 30,
+  "1h": 60,
+  "4h": 240,
+  "1d": 1440,
 };
 
 const POINT_COUNT_BY_KEY: Record<ChartTimescale, number> = {
-  "10B": 20,
-  "25B": 28,
-  "50B": 40,
-  "100B": 56,
+  "30m": 30,
+  "1h": 60,
+  "4h": 80,
+  "1d": 96,
 };
 
 function clampProbability(value: number): number {
@@ -43,14 +44,19 @@ function scaleConfig(timescale: ChartTimescale): {
   };
 }
 
-/** Format a block height as a relative time label (e.g. "12:30", "Apr 3"). */
+/** Approximate wall-clock date for a given block height. */
+function blockHeightToDate(blockHeight: number, currentHeight: number): Date {
+  const blocksAgo = currentHeight - blockHeight;
+  // ~1 block per minute on Liquid
+  return new Date(Date.now() - blocksAgo * 60_000);
+}
+
+/** Format a block height as a short x-axis label (e.g. "12:30", "Apr 3"). */
 function blockHeightToTimeLabel(
   blockHeight: number,
   currentHeight: number,
 ): string {
-  const blocksAgo = currentHeight - blockHeight;
-  // ~1 block per minute on Liquid
-  const date = new Date(Date.now() - blocksAgo * 60_000);
+  const date = blockHeightToDate(blockHeight, currentHeight);
   const now = new Date();
   const sameDay =
     date.getFullYear() === now.getFullYear() &&
@@ -60,6 +66,32 @@ function blockHeightToTimeLabel(
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+/**
+ * Format a block height as a precise hover tooltip timestamp.
+ * Always includes time; adds date when not today.
+ */
+export function blockHeightToHoverLabel(
+  blockHeight: number,
+  currentHeight: number,
+): string {
+  const date = blockHeightToDate(blockHeight, currentHeight);
+  const now = new Date();
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  const timeStr = date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  if (sameDay) return timeStr;
+  const dateStr = date.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
+  return `${dateStr} ${timeStr}`;
 }
 
 function buildXAxisLabels(

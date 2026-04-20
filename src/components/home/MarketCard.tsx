@@ -1,6 +1,8 @@
 import { useCallback } from "react";
+import { usePriceHistory } from "../../queries/usePools";
 import { useStore } from "../../store";
 import type { Market, Side, TradeIntent } from "../../types";
+import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
 import {
   formatPercent,
   formatSatsInput,
@@ -117,17 +119,39 @@ function openMarket(
   });
 }
 
-// ── Chart sparkline placeholder ──────────────────────────────────────
-function ChartSparkline() {
+// ── Chart sparkline ──────────────────────────────────────────────────
+function ChartSparkline({ market }: { market: Market }) {
+  const { data: rawHistory } = usePriceHistory(market.marketId);
+  const history =
+    rawHistory && rawHistory.length > 0
+      ? rawHistory
+      : generateMockPriceHistory(market);
+
+  if (history.length < 2) return <div className="h-6 w-20" />;
+
+  const W = 80;
+  const H = 24;
+  const prices = history.map((e) => e.implied_yes_price_bps / 10000);
+  const points = prices
+    .map((p, i) => {
+      const x = (i / (prices.length - 1)) * W;
+      const y = H - p * H;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+
+  const isUp = prices[prices.length - 1] >= prices[0];
+  const colorClass = isUp ? "text-emerald-400/60" : "text-rose-400/60";
+
   return (
     <svg
       aria-hidden="true"
-      viewBox="0 0 80 24"
+      viewBox={`0 0 ${W} ${H}`}
       fill="none"
-      className="h-6 w-20 text-emerald-400/40"
+      className={`h-6 w-20 ${colorClass}`}
     >
       <polyline
-        points="0,18 10,14 20,16 30,10 40,12 50,6 60,8 70,4 80,6"
+        points={points}
         stroke="currentColor"
         strokeWidth="1.5"
         strokeLinecap="round"
@@ -210,6 +234,9 @@ export default function MarketCard({
           <span className="text-base text-slate-400">%</span>
         </p>
       )}
+      <div className="mb-2">
+        <ChartSparkline market={market} />
+      </div>
       <div className="flex items-center gap-2">
         {resolvedBadge ?? (
           <>

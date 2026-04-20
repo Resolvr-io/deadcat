@@ -1,8 +1,9 @@
 import type React from "react";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../../store";
-import type { ChartTimescale, Market, PriceHistoryEntry } from "../../types";
+import type { Market, PriceHistoryEntry } from "../../types";
 import {
+  blockHeightToHoverLabel,
   buildChartFromHistory,
   buildChartSeriesData,
   lastDefinedChartProbability,
@@ -229,12 +230,31 @@ export default function MarketChart({
   const chartTimescale = useStore((s) => s.chartTimescale);
   const chartHoverMarketId = useStore((s) => s.chartHoverMarketId);
   const chartHoverX = useStore((s) => s.chartHoverX);
-  const chartAspect = useStore((s) =>
+  const fallbackAspect = useStore((s) =>
     mode === "home" ? s.chartAspectHome : s.chartAspectDetail,
   );
 
   const hoverRef = useRef<HTMLDivElement>(null);
+  const svgContainerRef = useRef<HTMLDivElement>(null);
   const isHomeChart = mode === "home";
+
+  // Measure the actual SVG container so the viewBox always matches the pixel
+  // ratio exactly — prevents non-uniform stretching with preserveAspectRatio="none".
+  const [measuredAspect, setMeasuredAspect] = useState<number | null>(null);
+  useEffect(() => {
+    const el = svgContainerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const { width, height } = entry.contentRect;
+      if (height > 0) setMeasuredAspect(width / height);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const chartAspect = measuredAspect ?? fallbackAspect;
 
   const hasHistory = priceHistory.length > 0;
   const hasPrice = market.yesPrice != null || hasHistory;
@@ -419,7 +439,10 @@ export default function MarketChart({
 
   // ── Hover time box ────────────────────────────────────────────────
   const hoverTimeX = Math.max(plotLeft + 18, Math.min(plotRight - 18, hoverX));
-  const hoverTimeText = `Block ${hoverBlockHeight.toLocaleString()}`;
+  const hoverTimeText = blockHeightToHoverLabel(
+    hoverBlockHeight,
+    market.currentHeight || hoverBlockHeight,
+  );
   const hoverTimeFontSize = isHomeChart ? 7.8 : 8.4;
   const hoverTimeStrokeWidth = isHomeChart ? 0.16 : 0.2;
   const hoverTimeBoxHeight = 15.8;
@@ -503,7 +526,7 @@ export default function MarketChart({
         </div>
 
         {/* SVG chart */}
-        <div className="pointer-events-none absolute inset-x-3 top-10 bottom-8">
+        <div ref={svgContainerRef} className="pointer-events-none absolute inset-x-3 top-10 bottom-8">
           <svg
             viewBox={`0 0 ${chartWidth} ${chartHeight}`}
             preserveAspectRatio="none"
@@ -750,29 +773,18 @@ export default function MarketChart({
           {volumeLabel}
         </span>
         <div className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/65 p-1 text-[12px]">
-          {(
-            [
-              ["10B", "10m"],
-              ["25B", "25m"],
-              ["50B", "50m"],
-              ["100B", "100m"],
-            ] as const
-          ).map(([key, label]) => (
+          {(["30m", "1h", "4h", "1d"] as const).map((key) => (
             <button
               type="button"
               key={key}
-              onClick={() =>
-                useStore.setState({
-                  chartTimescale: key as ChartTimescale,
-                })
-              }
+              onClick={() => useStore.setState({ chartTimescale: key })}
               className={`rounded px-2 py-0.5 transition ${
                 chartTimescale === key
                   ? "bg-slate-700 text-slate-100"
                   : "text-slate-500 hover:bg-slate-800/70 hover:text-slate-300"
               }`}
             >
-              {label}
+              {key}
             </button>
           ))}
         </div>

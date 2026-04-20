@@ -135,7 +135,7 @@ A user restoring from mnemonic who holds YES/NO tokens but hasn't ingested the p
 
 ### Rendering Model
 
-Deadcat Live uses a Tauri v2 desktop shell with a vanilla TypeScript frontend. Components are pure functions returning HTML strings. State mutations trigger a synchronous full re-render via `app.innerHTML`. This is intentional — the DOM is small enough that full re-renders are fast (<16ms), and the simplicity eliminates an entire class of stale-state bugs that plague virtual DOM diffing.
+Deadcat Live uses a Tauri v2 desktop shell with a React 18 frontend (TypeScript + TSX). Components are React function components. State changes trigger React's virtual DOM reconciliation — only affected components re-render. The entry point is `src/main.tsx`, which wraps the app in a `QueryClientProvider` and renders `<App />`.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -144,23 +144,36 @@ Deadcat Live uses a Tauri v2 desktop shell with a vanilla TypeScript frontend. C
 │  │  deadcat-node (Rust)                      │  │
 │  │  ContractEngine + LWK Wallet + Nostr      │  │
 │  │  ─── IPC boundary (invoke / events) ───   │  │
-│  │  Frontend (TypeScript)                    │  │
-│  │  state.ts → components/*.ts → render()    │  │
+│  │  Frontend (React + TypeScript)            │  │
+│  │  Zustand store → components/*.tsx         │  │
+│  │  TanStack React Query → invoke() calls    │  │
 │  └───────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────┘
 ```
 
 ### State Management
 
-A single global `state` object holds all UI state. No stores, no reducers, no subscriptions. Event handlers mutate `state` directly, then call `render()`. This maps naturally to the core engine's own model: the engine exclusively owns its store, and all reads/writes go through the engine API. The UI mirrors this — `state` is the single source of truth, and all reads/writes go through handler functions.
+UI state is held in a **Zustand store** (`src/store/index.ts`) organised into logical slices: Navigation, Trading, WalletUi, WalletModals, MarketCreation, Onboarding, ChartUi, WalletBadge, Persistence. Components subscribe to the slices they need via `useStore((s) => s.property)` and update state via `useStore.setState({ ... })`. The store remains flat and large (~280 properties), preserving the original single-source-of-truth philosophy while gaining selective re-rendering — components only re-render when the specific slice they subscribe to changes.
 
-### Event Delegation
+**Server state** (markets, wallet snapshots, price history, orders, pools) is managed by **TanStack React Query** (`src/queries/`). Queries are invalidated on Tauri events and after mutations, keeping UI data fresh without manual polling loops.
 
-A single click listener on the root `#app` element handles all interactions via `data-action` attributes. This eliminates listener cleanup on re-render (innerHTML destroys old listeners, but the root listener persists). Input, keydown, and focusout handlers follow the same delegation pattern.
+### Component Event Handling
+
+React components handle interactions directly via `onClick`, `onChange`, and `onSubmit` props. There are no `data-action` attributes and no root-level event dispatcher. Mutations (trade execution, wallet ops, market creation) are encapsulated in React Query mutation hooks (`useTrading`, `useWalletOps`, `useMarketOps`, `useMarketCreation`) which manage loading/error/success states automatically.
+
+### Lifecycle Hooks
+
+Three hooks run on app mount in `App.tsx`:
+
+| Hook | Responsibility |
+| --- | --- |
+| `useBootstrap()` | Load Nostr identity, fetch relays + profile, check wallet status, dismiss splash |
+| `useTauriEvents()` | Subscribe to Tauri backend events; invalidate React Query caches on wallet/market/order updates |
+| `useActivityTracking()` | Report user activity to backend every 30s to prevent wallet auto-lock |
 
 ### IPC Bridge
 
-All Tauri commands (`invoke`) map 1:1 to core engine operations. The frontend never constructs PSETs, selects coins, or manages UTXOs — it sends intent ("buy 10 YES tokens on market X") and receives results ("txid, fee paid, tokens received"). The IPC boundary is the natural place for the protocol-to-UX translation described in Principle 1.
+All Tauri commands (`invoke`) map 1:1 to core engine operations. The frontend never constructs PSETs, selects coins, or manages UTXOs — it sends intent ("buy 10 YES tokens on market X") and receives results ("txid, fee paid, tokens received"). The IPC boundary is the natural place for the protocol-to-UX translation described in Principle 1. Direct `invoke` calls are wrapped inside React Query queries and mutations — components never call `invoke` directly.
 
 ## Visual Design Language
 
