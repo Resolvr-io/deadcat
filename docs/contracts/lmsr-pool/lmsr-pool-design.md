@@ -286,7 +286,19 @@ All reserve funds are returned to `funding.return_script`. The pool transitions 
 
 The pool covenant is **market-state-agnostic** — it doesn't know or care whether the parent prediction market has resolved. Swaps remain technically valid after resolution. However, no rational trader would swap after resolution (the outcome is known, so the token prices are known), so the pool naturally goes idle. The operator closes the pool when convenient, then redeems any winning tokens via the parent market's redemption path.
 
-**`deadcat-core` mirrors this**: trading remains routable through `quote_trade` / `build_trade_pset` regardless of parent market state. The engine does not gate post-resolution trading — the covenant is market-state-agnostic and the engine follows. Pool operators are responsible for closing pools via `build_lmsr_close_pset` after resolution to prevent informed drainage; this is an operator-policy decision, not something the engine enforces. See [`deadcat-core-design.md § Pool and Order Lifecycle at Market Resolution`](../../architecture/deadcat-core-design.md#pool-and-order-lifecycle-at-market-resolution) for the design rationale.
+### Why the pool covenant can't feasibly gate post-resolution trading
+
+A gated design would require the pool covenant to verify the parent market's state on every swap. Because a covenant can only introspect the current transaction, the only way for the pool to observe market state is to **co-spend the market covenant's UTXO as an input on every swap transaction** — the pool's spend path would require the market's Unresolved-phase collateral UTXO to be present in the same tx, and would reject the swap if the market wasn't in Trading state.
+
+This is architecturally possible but prohibitively expensive:
+- **Every swap tx grows by the full market co-spend** — adding the market's collateral input plus its witness (Simplicity program + control block) to the pool's own ~1,000-vbyte swap footprint. Realistically 1.5-2× the current swap size.
+- **Every swap pays this overhead** — whether or not the market is near resolution. A trader swapping on a market with years left until expiry pays the same per-trade co-spend cost as one trading right before resolution.
+- **Serialization constraint** — cross-outcome arb and other multi-pool patterns would compound: an N-pool-swap arb already co-spends the market in some directions; forcing co-spend on every pool swap regardless of direction makes these even heavier.
+- **No covenant-cheap alternative** — there's no way for a pool covenant to check market state without seeing the market UTXO. Merkle inclusion proofs against a market-state commitment would require the market contract to emit such commitments, which they don't (and wouldn't in v1).
+
+The cost falls on the 99%+ of swaps that happen during the market's active life — paying a permanent tax so that the <1% edge case (the informed-drainer attack right after resolution) is blocked. That trade is rejected: **operator-layer protection** (closing the pool via `build_lmsr_close_pset` after resolution) is the appropriate tool. Operators who keep pools open post-resolution are accepting the drain risk; those who don't, don't pay.
+
+**`deadcat-core` mirrors this at the engine layer**: trading remains routable through `quote_trade` / `build_trade_pset` regardless of parent market state. The engine does not gate post-resolution trading — the covenant is market-state-agnostic by the above architectural choice, and engine-layer gating would provide only false safety (sophisticated actors fork `deadcat-core` or bypass it). See [`deadcat-core-design.md § Pool and Order Lifecycle at Market Resolution`](../../architecture/deadcat-core-design.md#pool-and-order-lifecycle-at-market-resolution) and [Design Principles § Engine gates covenant-invalidity and impossibility, not unfavorability](../../architecture/deadcat-core-design.md#engine-gates-covenant-invalidity-and-impossibility-not-unfavorability).
 
 ## Pool Operator Economics
 
