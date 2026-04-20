@@ -148,11 +148,13 @@ The LMSR cost function `C(s) = b × ln(exp(s/b) + exp(-s/b))` involves transcend
 
 This matters because the F-values are committed to via a Merkle root. If two implementations produce different F-values from the same parameters, they produce different Merkle roots, and one of them won't match the on-chain commitment.
 
-### The Solution: Deterministic Integer Algorithm
+### The Solution: Deterministic Bignum Reference
 
-`deadcat-core` defines a canonical integer-only algorithm for generating F-values. The algorithm uses only operations with guaranteed deterministic results (addition, subtraction, multiplication, division, bit shifts) at sufficient precision (128-bit or higher intermediates) to produce bit-identical F-values on any platform.
+`deadcat-core` generates F-values via arbitrary-precision bignum evaluation of the closed-form expression `F(i) = max_loss_sats + floor(b × ln(cosh(s/b)))`. Working precision is deliberately over-provisioned (nominally 200+ bits via `num-bigint` + `num-rational`) so that implementation details of the transcendental step do not affect output — any compliant implementation produces the identical `Vec<u64>` of F-values, and thus the identical Merkle root, for a given `(b, half_payout_sats, q_step_lots)`.
 
-The specific algorithm (fixed-point arithmetic with defined precision, or series expansion with a fixed number of terms) requires a formal specification document. The key property is: **given the same `(b, half_payout_sats, q_step_lots)`, every implementation produces the identical `Vec<u64>` of F-values and thus the identical Merkle root.** The derivation chain involves transcendental constants (`1/ln(2)` for computing `b` from `max_loss_sats`, `ln(999) ≈ 6.9` for `q_step_lots`) and the cost function `b × ln(exp(s/b) + exp(-s/b))` — all of which must use exact rational approximations and defined-precision fixed-point arithmetic for cross-implementation determinism. The specification must also define the Merkle tree construction (hash function, leaf encoding) to match the `.simf` covenant's verification code. A separate satellite document with exact constants, algorithms, and test vectors is required before implementation.
+The full specification — derivation chain, Merkle tree format, precision budget, and reference fixtures — lives in [lmsr-deterministic-table-spec.md](lmsr-deterministic-table-spec.md). Cross-implementation conformance is anchored to a committed fixture set in `deadcat-codegen`: 256 Merkle roots (one per `(max_loss_sats, half_payout_sats)` combo) that any alternative implementation must reproduce byte-for-byte.
+
+**v1 ships bignum-only.** A hybrid implementation (bignum at compile-time, fixed-point Taylor at runtime) is a non-breaking performance optimization for a future release — switching implementations only requires reproducing the same 256 committed Merkle roots. See the plan's [deferred items](../../architecture/deadcat-core-implementation-plan.md#deferred--out-of-scope-items).
 
 ### Implications
 
@@ -164,9 +166,11 @@ Deterministic generation eliminates several problems:
 4. **Caveat emptor resolved**: Anyone can verify a pool's curve is well-formed by regenerating the table from params and inspecting the F-values. No trust in the pool creator's off-chain claims.
 5. **`interpret_transaction` works without stored manifests**: The engine regenerates the table for any pool whose params are known.
 
-The generation cost (~80ms for depth 16) is acceptable for one-time operations at pool ingestion or PSET building.
+The generation cost (~5-10 seconds per `(max_loss_sats, half_payout_sats)` combo at bignum precision per [lmsr-deterministic-table-spec.md § Reference Fixtures](lmsr-deterministic-table-spec.md#reference-fixtures)) is acceptable for one-time operations amortized by caching. `deadcat-core` maintains an in-memory cache keyed by combo; subsequent lookups are O(1).
 
-**Point evaluation for quoting**: The quoting hot path (`quote_trade`) does NOT need the full 65K-entry table. It evaluates the cost function at specific points using the same deterministic integer algorithm (~1us per evaluation). A binary search to find the optimal `new_s_index` for a given input amount requires ~16 evaluations = ~16us per pool. Compare: full table generation = ~80ms. This means `quote_trade` evaluating 5 candidate pools costs ~80us total, with no table caching needed. The full table is only required for Merkle proof generation (`build_trade_pset`, `build_lmsr_bootstrap_pset`) and pool ingestion verification — infrequent, user-initiated operations where ~80ms is acceptable.
+**Quoting via cached tables**: At bignum precision, individual F-value computations are ms-scale rather than microsecond-scale, so on-demand point evaluation during `quote_trade` would be prohibitively slow for multiple candidate pools. Instead, `deadcat-core` maintains an in-memory cache of full F-value tables keyed by `(max_loss_sats, half_payout_sats)` combos. The first quote for a given combo incurs the ~5-10s full-table generation cost; subsequent quotes (same pool or any pool sharing the combo) are O(1) lookups against the cache. With the 256-combo v1 param space and typical wallet usage, the cache amortizes well.
+
+A fixed-point Taylor runtime (deferred to v2 per the [implementation plan](../../architecture/deadcat-core-implementation-plan.md#deferred--out-of-scope-items)) would restore microsecond-scale point evaluation and enable uncached quoting if needed. Since the committed Merkle roots are the cross-implementation conformance set, that switch is non-breaking.
 
 ## Pool Lifecycle
 
@@ -279,6 +283,8 @@ All reserve funds are returned to `funding.return_script`. The pool transitions 
 ### Market Resolution
 
 The pool covenant is **market-state-agnostic** — it doesn't know or care whether the parent prediction market has resolved. Swaps remain technically valid after resolution. However, no rational trader would swap after resolution (the outcome is known, so the token prices are known), so the pool naturally goes idle. The operator closes the pool when convenient, then redeems any winning tokens via the parent market's redemption path.
+
+**`deadcat-core` mirrors this**: trading remains routable through `quote_trade` / `build_trade_pset` regardless of parent market state. The engine does not gate post-resolution trading — the covenant is market-state-agnostic and the engine follows. Pool operators are responsible for closing pools via `build_lmsr_close_pset` after resolution to prevent informed drainage; this is an operator-policy decision, not something the engine enforces. See [`deadcat-core-design.md § Pool and Order Lifecycle at Market Resolution`](../../architecture/deadcat-core-design.md#pool-and-order-lifecycle-at-market-resolution) for the design rationale.
 
 ## Pool Operator Economics
 

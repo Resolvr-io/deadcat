@@ -123,11 +123,11 @@ Each row maps a security property to the layer(s) that enforce it and notes any 
 
 | Property | Primary enforcement | Cross-layer dependency | What goes wrong without it |
 |---|---|---|---|
-| **Token supply = collateral / collateral_per_pair** | L2: covenant checks collateral on issuance | L2 must also enforce RT burns (see below) and `ensure_no_issuance` on non-issuance paths, because L1 reissuance/issuance mechanisms bypass L2 | Unbacked tokens dilute legitimate holders |
+| **Token supply = collateral / cp** (where `cp = base_payout × N`) | L2: covenant checks collateral on issuance | L2 must also enforce RT burns (see below) and `ensure_no_issuance` on non-issuance paths, because L1 reissuance/issuance mechanisms bypass L2 | Unbacked tokens dilute legitimate holders |
 | **RT destruction on terminal transitions** | L2: `ensure_blinded_reissuance_burn_output` verifies burn script + commitment | Required because L1 reissuance uses RT + ABF (public with deterministic blinding) — if RTs escape to wallet addresses, L1 reissuance bypasses L2 entirely | Attacker mints unbacked tokens via Elements reissuance |
 | **No parasitic issuance** | L2: `ensure_no_issuance` on every covenant input for non-issuance paths | L1 allows issuance fields on any input — without L2 checks, a builder could attach issuance to a resolution/swap/fill spend | Attacker mints tokens alongside a legitimate covenant transition |
 | **Oracle-only resolution** | L2: BIP-340 signature verification against `ORACLE_PUBLIC_KEY` | L1 provides the Schnorr verification primitive (secp256k1 jet) | Anyone can resolve markets, stealing from token holders |
-| **Collateral conservation** | L2: covenant checks `collateral = pairs × collateral_per_pair` | None — purely L2 | Issue tokens without backing |
+| **Collateral conservation** | L2: covenant checks `collateral = pairs × cp` (where `cp = base_payout × N`) | None — purely L2 | Issue tokens without backing |
 | **Correct redemption rates** | L2: covenant enforces half-value (expired) or full-value (resolved) | None — purely L2 | Expired-market holders redeem at full value |
 | **Deterministic RT blinding** | L2: covenant verifies commitments match deterministic ABF + CBF pass-through | L1 Pedersen balance constrains transaction structure (need confidential outputs for confidential inputs). L2 enforcement is the griefing defense — without it, L4 convention alone is insufficient | Malicious issuer locks the market for all participants |
 | **Swap pricing integrity** | L2: Merkle proofs for F(old_s) and F(new_s), conservation equation | None — purely L2 | Extract more tokens than the LMSR curve allows |

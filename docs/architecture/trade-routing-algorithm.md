@@ -53,7 +53,7 @@ A partial fill (filled_amount < requested_amount) is returned to the caller via 
 
 With P active pools for the trade's target outcome, full subset enumeration costs 2^P. To bound this:
 
-1. For each pool serving the target outcome, compute the **estimated average fill price** for the full requested amount using point evaluation of the LMSR cost function. This is one computation per pool — O(1), ~1-16μs.
+1. For each pool serving the target outcome, compute the **estimated average fill price** for the full requested amount via cached F-value lookups. This is O(1) per pool assuming the combo's table is cached (see [Integer Precision and Caching](#integer-precision-and-caching) for the bignum caching strategy; first-use per combo incurs a ~5-10s table generation cost).
 2. Rank pools by this estimate (lower = better).
 3. Take the top N pools (N = 5 constant). Discard the rest.
 
@@ -104,6 +104,18 @@ min_remaining = ORDER_MARGINAL_WEIGHT × fee_rate × DUST_MULTIPLIER
 
 Where `DUST_MULTIPLIER` is a constant (e.g., 2-3×) ensuring the order's depth meaningfully exceeds its activation cost. This filters dust orders at the store level, preventing an attacker from filling the top-K query slots with tiny orders that crowd out legitimate liquidity.
 
+## Quote Staleness
+
+A `TradeQuote` captures snapshots of the pool and order outpoints referenced by its legs at quote time. `build_trade_pset` verifies these snapshots are still current against the store's tracked outpoints; if any have changed, it returns `CoreError::StaleQuote` and the caller re-quotes. Causes:
+
+- **Pool swap**: another trade advanced the pool's s_index and produced new reserve outpoints.
+- **Pool admin adjust**: the operator changed reserves without changing s_index — the pricing curve is unchanged, but new outpoints are still produced, so the quote goes stale even though the LMSR math would be identical. This is a subtle case: a taker with a stale quote might expect it to still be valid because "nothing about the price changed," but the outpoint-level snapshot is what the freshness check uses.
+- **Order fill**: another taker filled the order leg, either partially (new active outpoint) or fully (outpoint consumed).
+- **Order cancel**: the maker cancelled, outpoint consumed.
+- **Parent market resolution**: this doesn't directly invalidate the quote — `deadcat-core` doesn't gate post-resolution trading. The pool/order outpoints themselves only change if the pool/order has also transitioned (e.g., an admin close following resolution). See [`deadcat-core-design.md § Pool and Order Lifecycle at Market Resolution`](deadcat-core-design.md#pool-and-order-lifecycle-at-market-resolution).
+
+A stale quote is not an error in the usual sense — it's an information-integrity signal that the world changed. Wallet UX is standard "re-quote and re-confirm."
+
 ## Transaction Weight Model
 
 The router tracks cumulative transaction weight to compute fees and enforce the weight cap:
@@ -122,13 +134,17 @@ A hard ceiling on transaction weight (e.g., 100,000 vbytes) prevents pathologica
 
 In practice, the fee-aware pricing limits leg count long before the weight cap — each additional leg must provide enough price improvement to justify its weight. The cap is a safety bound, not a typical constraint.
 
-## Integer Precision
+## Integer Precision and Caching
 
-All fill amounts and costs computed by the router must use the **exact same deterministic integer-only LMSR algorithm** that the covenant verifies on-chain. The router uses **point evaluation** — computing `F(s_index)` at specific points using the same integer algorithm as the full table generator, without materializing all 65K entries. This produces bit-identical values to a table lookup at ~1μs per evaluation (~16μs for a binary search), compared to ~80ms to generate the full table. The full table is only needed later by `build_trade_pset` for Merkle proof construction. If the router uses floating-point approximations or independent LMSR reimplementations, the quoted amounts may differ from what the covenant enforces, causing on-chain transaction failure.
+All fill amounts and costs computed by the router must use the **exact same deterministic LMSR algorithm** that the covenant verifies on-chain — the arbitrary-precision bignum algorithm specified in [lmsr-deterministic-table-spec.md](../contracts/lmsr-pool/lmsr-deterministic-table-spec.md). If the router uses floating-point approximations or independent LMSR reimplementations, the quoted amounts may differ from what the covenant enforces, causing on-chain transaction failure.
 
-This applies to:
-- **Pool fill computation**: tokens received for a given input amount (point evaluation of `F(new_s) - F(old_s)`)
-- **Crossover binary search**: finding the s_index where a pool's marginal price exceeds the next alternative (binary search over s_index range using point evaluation at each candidate)
+**Caching strategy at bignum speeds**: Individual F-value computations are ms-scale at arbitrary precision, so on-demand point evaluation during routing would be prohibitively slow when multiple candidate pools need evaluation. `deadcat-core` maintains an in-memory cache of full F-value tables keyed by `(max_loss_sats, half_payout_sats)` combos; the router serves all lookups from the cache. First-use cost per combo is ~5-10s (full table generation); subsequent operations — pool pre-selection, fee-aware greedy evaluation, Merkle proof generation at build time — are O(1) cache hits. The 256-combo v1 param space means the full cache stabilizes quickly under typical wallet usage.
+
+A fixed-point Taylor runtime (deferred to v2 — see [implementation plan § deferred items](deadcat-core-implementation-plan.md#deferred--out-of-scope-items)) would restore microsecond-scale point evaluation and enable truly uncached quoting. Committed Merkle roots are the cross-implementation conformance set, so that switch is non-breaking.
+
+Caching applies to:
+- **Pool fill computation**: tokens received for a given input amount (lookup of `F(new_s) - F(old_s)` from cached table)
+- **Crossover binary search**: finding the s_index where a pool's marginal price exceeds the next alternative (binary search over s_index range using cached lookups at each candidate)
 
 ## Full Algorithm
 
@@ -147,9 +163,9 @@ function quote_trade(market_id, spec, fee_rate):
     // orders are filtered by (outcome, side, direction), sorted by (price, creation_position)
     // — FIFO within same price
 
-    // 2. Pre-select top-N pools by average fill price (point evaluation, ~1-16μs per pool)
+    // 2. Pre-select top-N pools by average fill price (cached F-value lookup)
     for each pool in all_pools:
-        pool.estimated_cost = lmsr_point_eval_exact_input(pool, requested_amount)
+        pool.estimated_cost = lmsr_cached_lookup_exact_input(pool, requested_amount)
     candidate_pools = top_n_by_estimated_cost(all_pools, N=5)
 
     // 3. Enumerate pool subsets × fee-aware greedy
@@ -182,11 +198,11 @@ function fee_aware_greedy(pools, orders, requested_amount, fee_rate):
             marginal_w = if pool already in legs { 0 } else { POOL_WEIGHT }
             if weight + marginal_w > MAX_TX_WEIGHT: continue
 
-            // Use exact LMSR point evaluation: fill pool up to crossover point
+            // Use cached LMSR F-value lookups: fill pool up to crossover point
             // Crossover = s_index where pool marginal price exceeds next best alternative
-            // Binary search over s_index range using point evaluation (~16μs)
+            // Binary search over s_index range using cached lookups at each candidate
             next_best_price = best_alternative_price(orders, order_cursor, fee_rate)
-            (fill_amt, fill_cost) = lmsr_point_eval_fill_to_crossover(pool, remaining, next_best_price)
+            (fill_amt, fill_cost) = lmsr_cached_fill_to_crossover(pool, remaining, next_best_price)
             if fill_amt == 0: continue
 
             eff_price = (fill_cost + marginal_w × fee_rate) / fill_amt
@@ -232,7 +248,7 @@ function fee_aware_greedy(pools, orders, requested_amount, fee_rate):
 - P = pools in subset (≤5) → per-iteration pool evaluations
 - log S = LMSR point evaluation binary search depth (~16 for 16-bit s_index range)
 
-For typical values: 32 × 50 × (5 + 16) ≈ 33,600 point evaluations at ~1μs each ≈ ~34ms worst case, typically sub-millisecond (most greedy iterations terminate early).
+For typical values with warm caches: 32 × 50 × (5 + 16) ≈ 33,600 cache lookups ≈ sub-millisecond worst case, typically much faster (most greedy iterations terminate early). Cold-start (first use of a given `(max_loss_sats, half_payout_sats)` combo) incurs a ~5-10s full-table generation; this is a one-time cost per combo amortized across all subsequent quotes.
 
 **Space**: O(K + P) for the candidate lists.
 

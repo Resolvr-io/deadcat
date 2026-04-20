@@ -129,7 +129,7 @@ pub struct MultiOutcomeMarketParams {
 }
 ```
 
-Builder validates: `N` in supported range (proposed N=3..10), `base_payout` in 1-2-5 table, `expiry_time` on 60-block boundary. Expiry-redemption divisibility is structural under this model (`cp = base_payout × N` is trivially divisible by N), so no `cp mod N == 0` check is required at builder or covenant level.
+Builder validates: `N` in supported range (**v1: N ∈ {3, 4}**), `base_payout` in 1-2-5 table, `expiry_time` on 60-block boundary. Expiry-redemption divisibility is structural under this model (`cp = base_payout × N` is trivially divisible by N), so no `cp mod N == 0` check is required at builder or covenant level.
 
 ### Covenant Structure
 
@@ -182,9 +182,9 @@ Tag string matches the binary market. Domain separation is via `market_id`.
 
 ### Code Generation
 
-Each supported N has its own `.simf` file generated from a template at build time. Proposed initial range: **N=3 through N=10**. Above N=10, transaction weight from the 2N+1-way covenant co-spend becomes uncomfortable; large-N events should use hierarchical composition (markets-of-markets) or binary-market composition with arbitrage-based coherency.
+Each supported N has its own `.simf` file generated from a template at build time. **v1 supports N ∈ {3, 4}**. Expansion to larger N is non-breaking (new N → new template instantiation → new contract; existing contracts unaffected). Above N=10, transaction weight from the 2N+1-way covenant co-spend becomes uncomfortable; large-N events should use hierarchical composition (markets-of-markets) or binary-market composition with arbitrage-based coherency.
 
-N=2 is served by the binary `prediction_market.simf`; whether to regenerate N=2 from the multi-outcome template is a deferred decision.
+**N=2 is served by the binary `prediction_market.simf`** — not regenerated from the multi-outcome template. The binary market contract has been deeply reviewed and is hand-written; the multi-outcome template serves N ≥ 3 only. See [multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md).
 
 ## LMSR Pool
 

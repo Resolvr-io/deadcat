@@ -715,7 +715,7 @@ This was the blocker for FPMM in deadcat. Not a property defect of FPMM — just
 
 ### Open / deferred
 
-6. **Covenant implementation specifics for binary LMSR pool**: exact witness encoding, integer scaling for fixed-point arithmetic, rounding handling, and the deterministic table spec need concrete specification. See [`lmsr-pool/lmsr-deterministic-table-spec.md`](lmsr-pool/lmsr-deterministic-table-spec.md) — pending completion.
+6. ~~**Covenant implementation specifics for binary LMSR pool**~~: **Resolved.** Witness encoding, F-value generation (arbitrary-precision bignum), and Merkle proof format are specified in [`lmsr-pool/lmsr-deterministic-table-spec.md`](lmsr-pool/lmsr-deterministic-table-spec.md). Fixed-point Taylor is deferred to a post-v1 non-breaking optimization (committed Merkle roots are the conformance set).
 
 7. **Operator economics in production**: theoretical subsidy efficiency is one factor; actual operator P&L depends on trader behavior, fee structure, adverse selection, and LOB-vs-pool routing dynamics. LMSR has production history in non-Liquid environments but not in deadcat's specific setup. Real-world data will inform future parameter defaults.
 
