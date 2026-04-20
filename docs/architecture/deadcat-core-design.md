@@ -97,6 +97,29 @@ Reissuance token continuation outputs use covenant-enforced deterministic blindi
 
 Public view types (`Market<'a, S>`, `Pool<'a, S>`, `Order<'a, S>`, `MultiOutcomeMarket<'a, S>`) carry the store's lifetime. The borrow checker prevents a caller from holding a view across a mutation of the underlying store, eliminating the stale-view class of bugs without runtime checks. No freshness flags, no revalidation API — the type system enforces it.
 
+## Design Principles
+
+Policies that shape the `deadcat-core` public API. Invariants (above) are correctness constraints the system must uphold; principles are discretion constraints — they govern what the API chooses to offer vs. what it intentionally omits.
+
+### Engine gates covenant-invalidity and impossibility, not unfavorability
+
+`deadcat-core` provides operations that are **covenant-valid, possible, and not strictly dominated for the caller's role in that invocation**. An operation is "strictly dominated" when there is always a better way to achieve the same goal — the engine's router, for example, picks the best-price path rather than offering suboptimal alternatives.
+
+Operations may be unfavorable for counterparties. An informed trader dumping post-resolution tokens harms the pool operator; a taker filling a maker's order may not be what the maker wants post-resolution. That's inherent to adversarial markets. The engine's job is to serve each caller's role in their invocation cleanly; counterparties protect themselves through their own actions (pool operators close pools after resolution; makers cancel stale orders) or through covenant-level invariants.
+
+`CoreError` variants reflect this boundary:
+- **Covenant-invalidity**: `InvalidContractState` (state-machine rejection), `InvalidParams` (would fail covenant check), `CovenantInvariantViolation` (consensus-valid tx defies covenant — bug-adjacent)
+- **Impossibility**: `NoLiquidity` (can't fill any positive amount), `InsufficientFunds` (wallet can't cover)
+- **Information integrity**: `StaleQuote` (cached state no longer accurate), `ContractAlreadyTracked` (caller bug)
+
+No variant exists for "this is valid and possible but we refuse because it's inadvisable." Such a refusal would provide false safety against adversarial actors (who fork or bypass core) while adding friction for legitimate edge cases.
+
+### Multi-role patterns deferred to future versions
+
+v1 focuses on single-role operations — one caller, one role, one intent per invocation. Compositions that span multiple roles within a single atomic transaction (trader + LP self-routing, take-and-post-only remainder, market maker rebalancing across orders and pools, cross-outcome arbitrage, atomic market + pool creation) are recognized as valuable but not covered by v1's APIs.
+
+Until those compositions get first-class support, callers whose actual intent spans multiple roles construct PSETs directly against the covenant spec; the single-role APIs provide the ingredients (params, state inspection, contract compilation, LMSR math) but not the atomic composition. Specific named patterns deferred in the [implementation plan](deadcat-core-implementation-plan.md#deferred--out-of-scope-items) include cross-outcome arb and atomic issuance + pool bootstrap; other multi-role patterns are unnamed future work and will be added to the plan as concrete user needs emerge.
+
 ## ContractEngine
 
 `ContractEngine` is the central type in `deadcat-core`. It owns the store, manages contract state, processes transactions, and provides interpretation and asset identification.
@@ -1357,13 +1380,33 @@ Single-contract transitions (one market, one pool, one order) are fully describe
 
 ```rust
 impl InterpretedTransaction {
-    /// If this tx realizes a trade (pool swap plus zero or more LOB order fills),
-    /// returns structured trade details.
+    /// Returns trade details if this transaction realizes a single-outcome
+    /// taker trade: one pool swap AND/OR one-or-more resting LOB order fills,
+    /// all targeting the same `(market_id, outcome, side)`.
+    ///
+    /// Returns `None` for transactions that don't match this shape:
+    /// - Pool state change with no taker (admin adjustment, close)
+    /// - Market-only transitions (issuance, resolution, redemption)
+    /// - Cross-outcome arb patterns (market split/merge + pool swaps);
+    ///   use `as_cross_outcome_arb()` in v2
+    /// - Multi-outcome bundled trades (pool swaps on different outcomes
+    ///   in one tx without a market leg)
+    /// - Multi-pool same-outcome (unusual; not produced by `build_trade_pset`)
+    ///
+    /// Raw per-contract transitions are always available via `self.transitions`
+    /// regardless of whether this helper matches. See [`TradeRealized`](#traderealized)
+    /// for invariants on the returned value.
     pub fn as_trade(&self) -> Option<TradeRealized>;
 
     /// Net change in token and collateral balances attributable to a specific contract
     /// from this transaction. Rolls up per-contract transitions and external outputs.
     /// Returns None if the contract had no involvement in this transaction.
+    ///
+    /// `as_trade()` is pattern-classification (returns structured aggregate);
+    /// `net_effect_for()` is per-contract rollup (returns wallet-relevant deltas).
+    /// They answer different questions. A caller asking "what did this trade do
+    /// to my pool balance?" uses `net_effect_for(pool_id)`; a caller asking
+    /// "was this a trade and what were its legs?" uses `as_trade()`.
     pub fn net_effect_for(&self, contract_id: &ContractId) -> Option<ContractNetEffect>;
 }
 
@@ -1371,6 +1414,25 @@ impl InterpretedTransaction {
 // deferred to v2 alongside the arb PSET builder. See "Future: Cross-Outcome Arb API"
 // for the deferred surface.
 
+/// Aggregated details of a single-outcome taker trade.
+///
+/// ## Structure
+/// - `market_id`, `outcome`, `side`: all legs target this triple.
+/// - `pool_leg`: at most one pool swap (the router targets one pool per
+///   outcome; multi-pool-same-outcome patterns don't classify as trades).
+/// - `order_legs`: zero or more LOB fills on resting orders at this
+///   `(outcome, side)`, in fill order.
+/// - `total_input` / `total_output`: aggregated across all legs.
+///
+/// ## Invariants (engine-enforced at construction)
+/// - At least one leg present (`pool_leg.is_some()` OR `!order_legs.is_empty()`).
+/// - All `OrderLegRealized.market_id == market_id` and `.outcome == outcome`.
+/// - `PoolLegRealized.market_id == market_id` if present.
+///
+/// ## Future (v2)
+/// Multi-market and cross-outcome arb patterns will NOT extend this type;
+/// they get their own aggregation helpers (e.g. `CrossOutcomeArb`).
+/// `TradeRealized` remains strictly single-outcome.
 pub struct TradeRealized {
     pub market_id: ContractId,
     pub outcome: OutcomeIndex,                   // BINARY for binary markets
@@ -1512,10 +1574,95 @@ pub enum OrderTransition {
 
 **Each market transaction is exactly one covenant spend path.** The multi-outcome market covenant uses a single generic spend path for all Unresolved-phase transitions (see [`multi-outcome-market-contract.md § Operations`](../contracts/multi-outcome/multi-outcome-market-contract.md#operations)). That one spend path accepts any `(Δy, Δn, Δc)` preserving the solvency invariant — so a single on-chain transaction may represent a pure named primitive (IssuedPair, SplitYes, etc.), a classified cross-outcome swap, or an arbitrary composition of delta shapes.
 
-The engine classifies the tx's delta shape into a `MultiOutcomeMarketTransition` variant:
-- If deltas match exactly the shape of a named primitive (e.g., `Δy_i = Δn_i = sets`, all others zero → `IssuedPair`), emit that variant.
-- If deltas match the cross-outcome-swap shape (`Δy_i = −sets`, `Δn_j = sets ∀j≠i`, `Δc = sets·(N−2)·cp`) → emit `CrossOutcomeSwap`.
-- Otherwise, emit `Composite { delta_yes, delta_no, delta_collateral }` with the raw deltas preserved.
+The engine classifies the tx's delta shape into a `MultiOutcomeMarketTransition` variant. Each named variant corresponds to a canonical delta shape defined by the covenant (see [`multi-outcome-market-contract.md § Operations`](../contracts/multi-outcome/multi-outcome-market-contract.md#operations) for the covenant-level coefficients). The variants' shapes are pairwise disjoint by construction, so matching order is a formality — but the engine uses a consistent order for implementation clarity.
+
+**Canonical shape table** (all entries expressed in Δ-per-outcome for YES/NO token supplies and Δ for collateral; `cp := base_payout × N`; see the contract spec for `cp_yes_basket`, `cp_no_basket`, `cp_cross_swap` exact formulas):
+
+| Variant | Δy shape | Δn shape | Δc shape |
+|---|---|---|---|
+| `IssuedPair { outcome: i, pairs: p }` | Δy[i] = +p; all others 0 | Δn[i] = +p; all others 0 | +p × cp |
+| `CancelledPair { outcome: i, pairs_burned: p }` | Δy[i] = −p; all others 0 | Δn[i] = −p; all others 0 | −p × cp |
+| `SplitYes { sets: s }` | Δy[k] = +s for all k | all Δn = 0 | +s × cp_yes_basket |
+| `MergeYes { sets: s }` | Δy[k] = −s for all k | all Δn = 0 | −s × cp_yes_basket |
+| `SplitNo { sets: s }` | all Δy = 0 | Δn[k] = +s for all k | +s × cp_no_basket |
+| `MergeNo { sets: s }` | all Δy = 0 | Δn[k] = −s for all k | −s × cp_no_basket |
+| `CrossOutcomeSwap { from_outcome: i, sets: s }` | Δy[i] = −s; all others 0 | Δn[j] = +s for j ≠ i; Δn[i] = 0 | +s × cp_cross_swap |
+
+**Classification algorithm**:
+
+```rust
+fn classify_multi_outcome_transition(
+    delta_yes: &[i64],       // length N
+    delta_no: &[i64],        // length N
+    delta_collateral: i64,
+    params: &MultiOutcomeMarketParams,
+) -> MultiOutcomeMarketTransition {
+    let n = params.outcome_count as usize;
+    let yes_nz: Vec<(usize, i64)> = delta_yes.iter().enumerate()
+        .filter(|(_, &v)| v != 0).map(|(i, &v)| (i, v)).collect();
+    let no_nz: Vec<(usize, i64)> = delta_no.iter().enumerate()
+        .filter(|(_, &v)| v != 0).map(|(i, &v)| (i, v)).collect();
+
+    // 1. Pair (issue or cancel) — exactly one YES and one NO nonzero, same index, same value
+    if yes_nz.len() == 1 && no_nz.len() == 1 && yes_nz[0] == no_nz[0] {
+        let (i, d) = yes_nz[0];
+        let expected_dc = d * params.cp() as i64;
+        if delta_collateral == expected_dc {
+            return if d > 0 { IssuedPair { outcome: i.into(), pairs: d as u64, collateral_locked: expected_dc as u64 } }
+                   else     { CancelledPair { outcome: i.into(), pairs_burned: (-d) as u64, collateral_returned: (-expected_dc) as u64 } };
+        }
+    }
+
+    // 2. SplitYes / MergeYes — all N YES move together by the same amount, no NO change
+    if no_nz.is_empty() && yes_nz.len() == n {
+        let first = yes_nz[0].1;
+        if yes_nz.iter().all(|&(_, v)| v == first) && delta_collateral == first * params.cp_yes_basket() as i64 {
+            return if first > 0 { SplitYes { sets: first as u64, collateral_locked: delta_collateral as u64 } }
+                   else         { MergeYes { sets: (-first) as u64, collateral_returned: (-delta_collateral) as u64 } };
+        }
+    }
+
+    // 3. SplitNo / MergeNo — symmetric (all N NO move together, no YES change)
+    if yes_nz.is_empty() && no_nz.len() == n {
+        let first = no_nz[0].1;
+        if no_nz.iter().all(|&(_, v)| v == first) && delta_collateral == first * params.cp_no_basket() as i64 {
+            return if first > 0 { SplitNo { sets: first as u64, collateral_locked: delta_collateral as u64 } }
+                   else         { MergeNo { sets: (-first) as u64, collateral_returned: (-delta_collateral) as u64 } };
+        }
+    }
+
+    // 4. CrossOutcomeSwap — Δy[i] = -s (unique); Δn[j] = +s for each j ≠ i
+    if yes_nz.len() == 1 && no_nz.len() == n - 1 {
+        let (i, dy_i) = yes_nz[0];
+        let s = -dy_i;
+        if s > 0
+            && no_nz.iter().all(|&(j, v)| j != i && v == s)
+            && delta_collateral == s * params.cp_cross_swap() as i64 {
+            return CrossOutcomeSwap {
+                from_outcome: i.into(),
+                sets: s as u64,
+                collateral_cost: delta_collateral as u64,
+            };
+        }
+    }
+
+    // 5. Composite fallback — shape didn't match any named primitive. Preserves raw deltas.
+    Composite {
+        delta_yes: delta_yes.to_vec(),
+        delta_no: delta_no.to_vec(),
+        delta_collateral,
+    }
+}
+```
+
+**Matching precedence** (pairwise disjoint shapes mean order doesn't affect correctness, but the engine pins this order for consistency): Pair → SplitYes/MergeYes → SplitNo/MergeNo → CrossOutcomeSwap → Composite.
+
+**Shape match with wrong coefficient falls through to Composite.** If deltas satisfy a named variant's YES/NO shape but `delta_collateral` doesn't equal the expected covenant-computed amount, the algorithm falls through rather than emitting a misclassified named variant with incorrect numbers. For consensus-valid txs this shouldn't occur (covenant enforces coefficients); Composite is the safe default if a covenant bug ever let a mismatch through.
+
+**Edge cases**:
+- All-zero deltas: consensus-valid txs always change something, so this shouldn't occur. If it does, falls through to `Composite { all zeros }` — non-harmful.
+- Single-outcome Δy or Δn with zero Δc: doesn't match any shape → Composite.
+- Deltas with the shape of a named variant but numerically out-of-bounds (e.g., cancelling more than outstanding): covenant rejects at spend time; this code only sees consensus-valid txs.
 
 **Cross-outcome swap is now a single-transaction operation.** Under the generic spend path, a user (or wallet builder) constructs one transaction with the cross-outcome-swap delta shape and the covenant accepts it atomically. This is a change from an earlier design iteration where cross-outcome swap was necessarily a two-transaction composition (split-NO + pair-cancel); that was tied to the enumerated-primitives covenant design, which has since been replaced with the generic-path design.
 
@@ -1998,6 +2145,20 @@ Cross-outcome arb closes coherence gaps among a multi-outcome market's N pools: 
 - **Permissionless by construction.** The multi-outcome market's generic solvency-preservation spend path ([see multi-outcome-market-contract.md § Operations](../contracts/multi-outcome/multi-outcome-market-contract.md#operations)) admits cross-outcome arb as one of its delta shapes. External arb bots can construct and broadcast these txs directly against the covenant spec without a `deadcat-core`-provided builder.
 - **Advanced-actor-facing.** Arbitrageurs and keepers, not retail users. That audience tolerates external tooling while v1 ships.
 
+**v1 single-contract builders do not compose into arb PSETs.** `build_split_yes_pset` on the market and `build_swap_pset` on each pool each produce separate, independent PSETs — they cannot be merged into a single atomic multi-contract transaction. Arb requires one atomic PSET co-spending the market's generic spend path with N pool swaps simultaneously; this PSET must be constructed directly against the covenant spec by external tooling in v1.
+
+**What external arb tooling can leverage from `deadcat-core` v1**:
+
+| Available | Not available (must re-implement externally) |
+|---|---|
+| `engine.market(id).as_multi_outcome()` state inspection (supplies, asset IDs, params) | PSET construction for multi-contract atomic spends |
+| `engine.pool(id)` state (s_index, reserves, params) | Combined fee calculation across market + N pool inputs |
+| `LmsrPoolParams` + `MultiOutcomeMarketParams` full params for script derivation | Witness-stack layout for the generic solvency-preservation spend path |
+| LMSR F-value runtime (`pub` in v1) for quoting and Merkle proof generation | Cross-contract tx atomicity management |
+| `interpret_transaction` to verify a constructed arb tx before broadcast | Arb opportunity detection (coherence gap scanning) |
+
+The LMSR F-value runtime is specifically exposed as `pub` in v1 (not `pub(crate)`) so external tooling can compute identical Merkle proofs to what the covenant verifies, avoiding reimplementation of the bignum algorithm specified in [lmsr-deterministic-table-spec.md](../contracts/lmsr-pool/lmsr-deterministic-table-spec.md). Cross-implementation conformance remains anchored to the committed Merkle roots — tooling that reproduces them is provably equivalent.
+
 **Deferred API surface** (names reserved; signatures to be finalized before v2):
 
 - `MultiOutcomeMarket::quote_cross_outcome_arb(...) -> Result<Option<ArbQuote<'a>>, _>` — quote the best available arb direction.
@@ -2468,7 +2629,7 @@ Every consumer must implement this. Read methods take `&self`, write methods tak
 
 `apply_transitions` applies the full `&[StateUpdate]` slice produced from a single chain transaction. Required semantics:
 
-- **Per-transaction atomic**: the slice commits entirely or not at all. Typically implemented with a single database transaction around the body. See [Atomicity requirements](#atomicity-requirements-todo-anchor) below.
+- **Per-transaction atomic**: the slice commits entirely or not at all. Typically implemented with a single database transaction around the body. See the "Atomicity requirements" paragraph later in this section for full error-handling semantics.
 - **Durable on return**: the engine depends on this for crash safety — once the call returns `Ok`, the state must survive a process crash without further action.
 - **Idempotent per `(contract_id, txid)`**: calling `apply_transitions` twice with a `StateUpdate` sharing the same `(contract_id, txid)` is a no-op on the second call. Required because `process_transaction` is idempotent (for crash recovery and multi-step sync); that idempotency propagates through this method. For stores implementing `ContractHistory`, idempotency extends to history writes — don't create duplicate entries. The standard implementation checks whether a transition for `(contract_id, txid)` already exists before inserting.
 
@@ -2555,6 +2716,8 @@ The `Transition.external_outputs` bridges the gap — core identifies which outp
 All PSET builders are engine methods — no wallet access, no chain queries, no signing. The caller provides operation-specific arguments and a `WalletFunding` struct. The engine handles Simplicity contract compilation, script derivation, taproot tree construction, coin selection, and fee computation internally. Builders that involve reissuance token (RT) outputs return `UnblindedPset` — a newtype that enforces covenant blinding before the caller can sign (see [Confidential Transaction Blinding](#confidential-transaction-blinding)). All other builders return `PartiallySignedTransaction` directly.
 
 **Simplicity is fully encapsulated**: Consumers never see compiled contracts (`CompiledPredictionMarket`, `CompiledLmsrPool`, `CompiledMakerOrder`), Commitment Merkle Roots (CMRs), taproot trees, or witness encoding. These are internal to the engine. Consumers provide contract params (plain data: oracle keys, asset IDs, prices, expiry times) and receive PSETs back. The word "Simplicity" need not appear in consumer code.
+
+**State preconditions**: every transition-producing builder requires the contract to be in a specific set of states (e.g., `build_issuance_pset` requires `Trading`; `build_redemption_pset` requires a terminal variant with unredeemed supply). Violating the state precondition returns `CoreError::InvalidContractState { contract_id, kind: InvalidStateKind::WrongVariant { expected, actual } }`. Runtime preconditions beyond state (e.g., sufficient basket supply for `build_merge_yes_pset`; chain height ≥ expiry for `build_expire_transition_pset`) produce `InvalidStateKind::ConditionFailed { condition, detail }`. See [State Machine Summary](#state-machine-summary) for the full valid-transition matrix. Per-builder rustdoc states the "Valid from:" precondition concisely and references this matrix for the complete picture.
 
 ### Coin Selection and Fee Computation
 
@@ -2676,7 +2839,11 @@ pub fn quote_trade(
 ) -> Result<TradeQuote, CoreError<S::Error>>;
 ```
 
-The engine computes the optimal route across all available pools and orders for the market, minimizing total cost to the taker including transaction fee overhead. The `fee_rate` parameter is required because the routing algorithm uses fee-adjusted effective prices — each liquidity source's activation cost (transaction weight) is weighted by the fee rate to determine whether including it improves the route. The routing algorithm uses pool-subset enumeration combined with fee-aware greedy order selection — see [trade-routing-algorithm.md](trade-routing-algorithm.md) for the full specification. Returns a `TradeQuote` representing the best available fill, including `estimated_fee` computed from the route's total transaction weight and the provided fee rate. Returns `Err(CoreError::NoLiquidity)` only when zero liquidity is available; any positive fill returns `Ok` (see [TradeQuote](#tradequote-and-related-types) for partial fill handling).
+The engine computes the optimal route across all available pools and orders for the market, minimizing total cost to the taker including transaction fee overhead. The `fee_rate` parameter is required because the routing algorithm uses fee-adjusted effective prices — each liquidity source's activation cost (transaction weight) is weighted by the fee rate to determine whether including it improves the route. The routing algorithm uses pool-subset enumeration combined with fee-aware greedy order selection — see [trade-routing-algorithm.md](trade-routing-algorithm.md) for the full specification. Returns a `TradeQuote` representing the best available fill, including `estimated_fee` computed from the route's total transaction weight and the provided fee rate.
+
+Returns `Err(CoreError::NoLiquidity { market_id, outcome, side, direction })` only when the router cannot fill any positive amount for the target `(market, outcome, side, direction)` — all pools at minimum reserves in the trade direction, all orders dust, or no tracked sources. Any `filled_amount > 0` returns `Ok(TradeQuote)`, including heavily partial fills where the caller may want to abandon. Partial-fill decision-making is the caller's responsibility — inspect `TradeQuote.filled_amount` vs `TradeQuote.requested_amount`. See [TradeQuote](#tradequote-and-related-types) for details.
+
+Post-resolution trading is not gated — `quote_trade` succeeds regardless of the parent market's state as long as routable liquidity exists. See [Pool and Order Lifecycle at Market Resolution](#pool-and-order-lifecycle-at-market-resolution).
 
 **Step 2: Build** (engine method):
 
@@ -2688,7 +2855,17 @@ pub fn build_trade_pset(
 ) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 ```
 
-Takes the accepted quote and the caller's wallet funding. The engine validates that `funding.fee_rate` matches the fee rate used during quoting — if they differ, it returns `CoreError::InvalidParams` because the route was optimized for the quote's fee rate (a different rate could make the route suboptimal; the caller should re-quote with the current rate). The engine recompiles contracts from stored params, selects the needed UTXOs, computes the actual fee from the real transaction weight, and builds the PSET. The actual fee may differ from `TradeQuote.estimated_fee` because the quote's weight model assumes a single wallet input, while coin selection may add more — display the quote's fee as an estimate, not a guarantee. The quote captures a snapshot of all contract state needed at quote time (outpoints, route parameters). If the underlying contracts change between quoting and building (a `process_transaction` call consumed the snapshotted outpoints), the engine returns `CoreError::StaleQuote` — the caller should re-quote. If the quote is still valid at build time but the transaction later fails on-chain (spent inputs due to a block arriving between build and broadcast), the caller re-quotes. This is standard trading UX — quotes are inherently ephemeral.
+Takes the accepted quote and the caller's wallet funding. The engine validates that `funding.fee_rate` matches the fee rate used during quoting — if they differ, it returns `CoreError::InvalidParams` because the route was optimized for the quote's fee rate (a different rate could make the route suboptimal; the caller should re-quote with the current rate). The engine recompiles contracts from stored params, selects the needed UTXOs, computes the actual fee from the real transaction weight, and builds the PSET. The actual fee may differ from `TradeQuote.estimated_fee` because the quote's weight model assumes a single wallet input, while coin selection may add more — display the quote's fee as an estimate, not a guarantee.
+
+**Freshness check algorithm**: the quote captures outpoint snapshots at quote time (one `SlotIdentity`-labeled set per leg). `build_trade_pset` verifies each leg's snapshot is still current by comparing against `store.contract_outpoints(leg.contract_id)`. If any snapshotted outpoint is no longer in the corresponding contract's current outpoint set, returns `CoreError::StaleQuote { reason }` with one of:
+
+- `StaleQuoteReason::OutpointsChanged { contract_id }` — another `process_transaction` advanced the contract (pool swap/adjust, order fill, order cancel).
+- `StaleQuoteReason::ContractUntracked { contract_id }` — the contract was untracked between quote and build.
+- `StaleQuoteReason::ContractRemoved { contract_id }` — the contract was removed by `rollback_to_height` between quote and build (e.g., reorged out).
+
+The check is O(L) store reads where L is the number of legs (typically 1 pool + ~5 orders) — negligible overhead. Partial freshness is not supported: if any leg is stale, the entire quote is, and the caller re-quotes. Note the subtle case of pool admin adjust — the pricing curve doesn't change (s_index stays put), but the covenant still produces new outpoints, so a quote made pre-adjust goes stale despite the LMSR math being identical.
+
+If the quote is still valid at build time but the transaction later fails on-chain (spent inputs due to a block arriving between build and broadcast), the caller re-quotes. This is standard trading UX — quotes are inherently ephemeral.
 
 See [Trade Types](#trade-types) and [TradeQuote](#tradequote-and-related-types) for full type definitions.
 
@@ -2879,6 +3056,29 @@ The root cause of the split: pool scripts encode the `s_index`, which changes on
 
 The store exposes this through `synced_to` on `ContractEntry` (readable by the caller for informational purposes like "last synced: block 2000") and through `stale_contracts(tip_height)` (used by the engine to efficiently find contracts needing work). See [ContractStore](#required-contractstore).
 
+## Pool and Order Lifecycle at Market Resolution
+
+The pool and order covenants are **market-state-agnostic** — they accept swaps and fills regardless of whether the parent market has resolved or expired. See [lmsr-pool-design.md § Market Resolution](../contracts/lmsr-pool/lmsr-pool-design.md#market-resolution). `deadcat-core` mirrors this at the policy layer: **trading through resolved-parent pools and orders is not gated**.
+
+### What remains available regardless of parent market state
+
+- `quote_trade` and `build_trade_pset` route through pools and orders on resolved-parent markets normally. Quotes return `Ok(TradeQuote)` if routable liquidity exists; PSETs build successfully.
+- `build_lmsr_adjust_pset` and `build_lmsr_close_pset` on the `Pool` view remain callable.
+- `build_cancel_pset` on the `Order` view remains callable.
+- Market operations (`build_resolution_pset`, `build_expire_transition_pset`, `build_redemption_pset`) proceed according to the market's own state-machine transitions.
+
+### Pool operator responsibilities
+
+The operator closes the pool via `build_lmsr_close_pset` when convenient after market resolution. Until they do, the pool remains tradable at stale prices (YES ≈ 1 at YES-resolved markets, half each at expiry), and an informed trader could drain reserves by buying out winning-token inventory. This is **not protected by `deadcat-core`** — the engine's policy is that pool operators manage their own liquidity carefully, including closing pools at terminal market states. The only airtight protection against post-resolution trading would be covenant-level co-spending of the market contract on every swap, which is rejected on transaction-weight grounds.
+
+### Order maker responsibilities
+
+Order makers cancel unfilled orders via `build_cancel_pset` when convenient; otherwise takers may fill them post-resolution. As with pools, the engine does not gate this.
+
+### UI-layer warnings are appropriate
+
+Wallet UIs concerned about post-resolution trading risk can warn users before routing trades by checking `Market::state()` independently. This provides the honest-user protection without a false sense of airtight gating — adversarial actors would fork or bypass core regardless. See [Design Principles § Engine gates covenant-invalidity and impossibility, not unfavorability](#engine-gates-covenant-invalidity-and-impossibility-not-unfavorability) for the full rationale.
+
 ## Simplicity Contracts (Internal)
 
 Core contains the `.simf` Simplicity contract source code and the compiler integration. Given contract parameters and a network type (testnet/mainnet), core internally:
@@ -2935,6 +3135,77 @@ fn prune_finalized(&mut self, current_height: u32, finality_depth: u32) -> Resul
 The caller periodically calls `prune_finalized` with the current chain tip and the network's finality depth (2 for Liquid). This keeps the processing log bounded without sacrificing correctness.
 
 **Important**: Pruning the processing log (for reorg rollback) is independent from retaining transition history (for price charts, audit trails). The `ContractHistory` trait stores historical transitions permanently — `prune_finalized` only removes the rollback metadata that's no longer needed.
+
+## State Machine Summary
+
+This section consolidates the valid-transition matrices for each contract type into a single reference. Per-builder rustdoc references this section via "Valid from: [state list]" clauses, and `InvalidContractState { kind: WrongVariant { expected, actual } }` surfaces mismatches programmatically. The matrices are the source of truth; per-state-enum definitions and per-builder rustdoc comments defer to these tables.
+
+### Creation Builders
+
+Creation builders don't operate on existing state — they produce brand-new contracts. Listed separately from the transition matrices:
+
+| Builder | Produces | Preconditions |
+|---|---|---|
+| `build_binary_market_creation_pset` | `Trading { outstanding_pairs: 0 }` binary market | Convention-valid params (`base_payout` in 1-2-5 table, expiry on 60-block boundary) |
+| `build_multi_outcome_market_creation_pset` | `Trading { supplies: [empty; N] }` multi-outcome market | Same plus `N ∈ {3, 4}` for v1 |
+| `build_lmsr_bootstrap_pset` | `Active { ... }` LMSR pool | Parent market tracked; convention-valid params; reserves available |
+| `build_create_order_pset` | `Active { tracking, offered_amount, total_filled: 0 }` order | Parent market tracked; convention-valid params |
+
+After the creation tx confirms on-chain, the caller ingests via the corresponding `ingest_*` method to begin tracking.
+
+### Binary Market transitions
+
+| From state | Valid builder | To state | Additional condition |
+|---|---|---|---|
+| `Trading` | `build_issuance_pset` | `Trading` (outstanding + Δ) | — |
+| `Trading { outstanding > 0 }` | `build_partial_cancellation_pset` | `Trading` (outstanding − Δ) | Δ < outstanding |
+| `Trading { outstanding > 0 }` | `build_full_cancellation_pset` | `Trading { outstanding: 0 }` | — |
+| `Trading` | `build_oracle_resolve_pset` | `ResolvedYes` or `ResolvedNo` | valid oracle BIP-340 sig |
+| `Trading` | `build_expire_transition_pset` | `Expired` | chain height ≥ `expiry_block_height` |
+| `ResolvedYes \| ResolvedNo \| Expired` (outstanding > 0) | `build_redemption_pset` | same variant, outstanding decremented (terminal if 0) | outstanding > 0 |
+
+All other (builder, state) pairs return `InvalidContractState { kind: WrongVariant { ... } }`. Terminal states (`outstanding_pairs == 0` on any non-`Trading` variant) admit no further transitions.
+
+### Multi-Outcome Market transitions
+
+| From state | Valid builder | To state | Condition |
+|---|---|---|---|
+| `Trading` | `build_issuance_pset(outcome)` | `Trading` (supply[outcome] +p) | — |
+| `Trading` | `build_split_yes_pset` \| `build_split_no_pset` | `Trading` (all supplies +s) | — |
+| `Trading` | `build_merge_yes_pset` | `Trading` (all yes supplies −s) | all `supplies[k].yes ≥ s` |
+| `Trading` | `build_merge_no_pset` | `Trading` (all no supplies −s) | all `supplies[k].no ≥ s` |
+| `Trading` | `build_resolution_pset(k)` | `Resolved { winning: k, ... }` | valid oracle sig |
+| `Trading` | `build_expiry_pset` | `Expired` | chain height ≥ expiry |
+| `Resolved \| Expired` (unredeemed > 0) | `build_redemption_pset` | same variant, `collateral_unredeemed` decremented (terminal if 0) | collateral_unredeemed > 0 |
+
+Cross-outcome swap is not a builder in v1 (it's a `CrossOutcomeSwap` transition classification for observed txs, and v2 gets a dedicated arb quote/build API). See [Future: Cross-Outcome Arb API (v2)](#future-cross-outcome-arb-api-v2).
+
+### LMSR Pool transitions
+
+| From state | Valid builder | To state | Condition |
+|---|---|---|---|
+| `Active` | (swap via `engine.build_trade_pset`) | `Active` (new s_index, new reserves) | s_index within table, reserves ≥ MIN_POOL_RESERVE |
+| `Active` | `build_lmsr_adjust_pset` | `Active` (new reserves, same s_index) | admin key signature, non-zero delta |
+| `Active` | `build_lmsr_close_pset` | `Closed { final_txid }` | admin key signature |
+
+Pool operations remain valid regardless of parent market state — see [Pool and Order Lifecycle at Market Resolution](#pool-and-order-lifecycle-at-market-resolution). Closed pools admit no further transitions.
+
+### Order transitions
+
+| From state | Valid builder | To state | Condition |
+|---|---|---|---|
+| `Active` | (fill via `engine.build_trade_pset`) | `Active` (partial) or `Consumed` (full) | sufficient remaining liquidity |
+| `Active` | `build_cancel_pset` | `Cancelled` | maker key signature |
+
+`Consumed` and `Cancelled` are terminal. Under `tracking: EphemeralFresh` or `EphemeralMidLife`, the engine auto-untracks the order past finality via `prune_finalized` (see [OrderState](#orderstate) for details).
+
+### Error reporting for matrix violations
+
+Every (builder, invalid-state) pair returns `CoreError::InvalidContractState { contract_id, kind }` where:
+- `InvalidStateKind::WrongVariant { expected, actual }` — the state variant itself is wrong for this builder (e.g., `build_issuance_pset` on `ResolvedYes`).
+- `InvalidStateKind::ConditionFailed { condition, detail }` — state variant is fine but a runtime precondition failed (e.g., `build_partial_cancellation_pset` with Δ > outstanding; `build_expire_transition_pset` before the timelock height).
+
+Callers can pattern-match on the kind to distinguish "fundamentally wrong call" from "temporarily unmet condition" for UX purposes.
 
 ## Thread Safety
 
