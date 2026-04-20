@@ -136,7 +136,21 @@ impl<S: ContractStore> ContractEngine<S> {
         snapshot: PoolSnapshot,
     ) -> Result<ContractId, CoreError<S::Error>>;
 
-    pub fn ingest_order(
+    /// Ingest for ownership monitoring: full history, persistent storage,
+    /// no auto-cleanup on terminal state. Requires the creation tx.
+    /// Sets `OrderState.tracking = OrderTracking::Persistent`.
+    pub fn ingest_persistent_order(
+        &mut self,
+        params: &MakerOrderParams,
+        creation_tx: &ChainTransaction,
+    ) -> Result<ContractId, CoreError<S::Error>>;
+
+    /// Ingest for routing/discovery: no history, auto-untracks past finality
+    /// when terminal. Accepts either a `Creation` snapshot (accurate
+    /// `offered_amount`) or a `Current` snapshot (baseline-at-discovery
+    /// `offered_amount`). Sets `OrderState.tracking` to `EphemeralFresh` or
+    /// `EphemeralMidLife` respectively.
+    pub fn ingest_ephemeral_order(
         &mut self,
         params: &MakerOrderParams,
         snapshot: OrderSnapshot,
@@ -360,12 +374,25 @@ pub enum PoolSnapshot {
 
 With `PoolSnapshot::Creation`, the engine processes the creation transaction to derive initial state — same as market ingestion. The engine also verifies the pool's curve is well-formed: it derives `b` from `params.max_loss_sats`, recomputes `q_step_lots`, regenerates the full F-value table, and checks the Merkle root matches `params.lmsr_table_root`. A mismatch indicates the pool was created with a non-canonical table generation algorithm — the engine returns `CoreError::InvalidParams`. This verification costs ~80ms (table generation) and runs once at ingestion. With `PoolSnapshot::Current`, the engine starts tracking from the provided state without verifying history back to creation. The trade-off: `Current` = fast start (no history replay needed), but no prior transition history is recoverable. `Creation` = full history available via forward-sync from creation. Note: `Current` also sidesteps s_index derivation entirely (the caller provides `s_index` directly), making it useful for ingesting untrusted pools from unknown operators where the creation transaction's OP_RETURN may not be available or trustworthy.
 
-#### ingest_order
+#### ingest_persistent_order and ingest_ephemeral_order
 
-Orders support both creation-tx and non-initial ingestion:
+Orders have two ingestion methods corresponding to the two tracking modes. The method signals the caller's intent at call sites (is this an order I own and want to audit, or one I'm tracking for routing?):
 
 ```rust
-pub fn ingest_order(
+/// Maker monitoring their own order: full history, persistent storage.
+/// Requires the creation tx — accurate starting state is a prerequisite
+/// for meaningful history. Sets tracking = Persistent.
+pub fn ingest_persistent_order(
+    &mut self,
+    params: &MakerOrderParams,
+    creation_tx: &ChainTransaction,
+) -> Result<ContractId, CoreError<S::Error>>;
+
+/// Taker / discoverer: no history, auto-untracks past finality when terminal.
+/// Accepts either a Creation snapshot (accurate offered_amount, tracking
+/// set to EphemeralFresh) or a Current snapshot (baseline-at-discovery
+/// offered_amount, tracking set to EphemeralMidLife).
+pub fn ingest_ephemeral_order(
     &mut self,
     params: &MakerOrderParams,
     snapshot: OrderSnapshot,
@@ -382,7 +409,13 @@ pub enum OrderSnapshot {
 }
 ```
 
-Same trade-off as pools: `Creation` gives full fill history; `Current` gives fast start with no history. Takers typically use `Current` (they only care about the current state for filling). Makers who want fill history use `Creation`.
+**Who calls which**:
+- Makers ingest their own orders via `ingest_persistent_order`.
+- Takers discovering orders for routing use `ingest_ephemeral_order` — typically with a `Current` snapshot (they don't have the creation tx), but `Creation` is accepted too when the discovery channel carries the creation tx (enabling honest fill-progress displays without the history storage cost).
+
+**Tracking mode is immutable after ingestion**: to change tracking mode, call `untrack_contract` first, then re-ingest via the other method. This is slow for the `Ephemeral → Persistent` direction because the re-ingestion via `ingest_persistent_order` forward-syncs all fills from creation to rebuild history. Acceptable for the rare promotion scenario; not optimized further.
+
+**Duplicate ingestion uniformly errors**: calling either method on an already-tracked `ContractId` returns `CoreError::ContractAlreadyTracked { contract_id }`, regardless of which method was used first. `ContractId` is derived from `CMR + creation_txid`, so the same underlying order produces the same `ContractId` through either method.
 
 #### Common ingestion behavior
 
@@ -397,10 +430,10 @@ let contract_id = match engine.ingest_market(&params, &creation_tx) {
     Err(e) => return Err(e),
 };
 // `params` is `MarketParams` (Binary(..) or MultiOutcome(..)); passed by reference consistent with
-// ingest_pool / ingest_order.
+// ingest_pool / ingest_persistent_order / ingest_ephemeral_order.
 ```
 
-**Parent market required**: `ingest_pool` and `ingest_order` validate that the referenced token asset IDs correspond to a known market. If the parent market isn't tracked, the engine returns `CoreError::InvalidParams`. `ingest_market` has no parent requirement.
+**Parent market required**: `ingest_pool`, `ingest_persistent_order`, and `ingest_ephemeral_order` validate that the referenced token asset IDs correspond to a known market. If the parent market isn't tracked, the engine returns `CoreError::InvalidParams`. `ingest_market` has no parent requirement.
 
 ### untrack_contract
 
@@ -493,7 +526,7 @@ Relationship queries live on view types, not on the engine. See [View Types § M
 
 The relationship is encoded in pool/order params (they reference the market's token asset IDs — binary markets: `yes_token_asset_id` / `no_token_asset_id`; multi-outcome markets: `yes_token_asset_ids[k]` / `no_token_asset_ids[k]` for a specific outcome k). The store maintains a secondary index on market_id for efficient lookups, built during ingestion by resolving the pool/order's token asset IDs via the store's own `find_by_asset_id` index.
 
-**Ingestion ordering constraint**: Pools and orders require their parent market to be ingested first. During `ingest_pool` or `ingest_order`, the engine validates that the referenced token asset IDs correspond to a known market. If the parent market isn't tracked, the engine returns `CoreError::InvalidParams`. This is a natural constraint — you shouldn't track a pool for a market you don't know about, and discovery naturally produces markets before their pools/orders.
+**Ingestion ordering constraint**: Pools and orders require their parent market to be ingested first. During `ingest_pool` or either order-ingestion method, the engine validates that the referenced token asset IDs correspond to a known market. If the parent market isn't tracked, the engine returns `CoreError::InvalidParams`. This is a natural constraint — you shouldn't track a pool for a market you don't know about, and discovery naturally produces markets before their pools/orders.
 
 Pools and orders are split into separate accessors (`market.pools()` vs `market.orders()`) because they scale differently — a market typically has a handful of pools but potentially thousands of orders at Polymarket scale. Both are paginated.
 
@@ -705,11 +738,49 @@ Outpoints are not exposed in the public state — they are internal to the engin
 
 See [collateral-per-pair-refactor.md](../contracts/prediction-market/collateral-per-pair-refactor.md) for the binary covenant parameter rename.
 
-#### SlotType and CovenantPhase (Internal)
+#### SlotIdentity and CovenantPhase
 
-`SlotType` and `CovenantPhase` are internal types (`pub(crate)`) used for script matching and PSET routing. They are not exposed in the public API but are described here as an implementation spec. Split per market kind because slot layouts differ (binary has 8 slots, multi-outcome has 5N+2 slots that are parameterized by outcome index):
+`SlotIdentity` is the public type that labels each tracked outpoint with its slot role — used at the engine↔store boundary for labeled outpoints (see [ContractMatch](#contractmatch), [InitialContractState](#initialcontractstate), [StateUpdate](#stateupdate), and [`ContractStore::contract_outpoints`](#required-contractstore)). `CovenantPhase` is internal (`pub(crate)`) and used for script matching and PSET routing.
 
 ```rust
+pub enum SlotIdentity {
+    BinaryMarket(BinaryMarketSlot),
+    MultiOutcomeMarket(MultiOutcomeMarketSlot),
+    Pool(PoolSlot),
+    Order(OrderSlot),
+}
+
+pub enum BinaryMarketSlot {
+    DormantYesRt,          // Dormant phase
+    DormantNoRt,           // Dormant phase
+    UnresolvedYesRt,       // Unresolved phase
+    UnresolvedNoRt,        // Unresolved phase
+    UnresolvedCollateral,  // Unresolved phase
+    ResolvedYesCollateral, // ResolvedYes phase
+    ResolvedNoCollateral,  // ResolvedNo phase
+    ExpiredCollateral,     // Expired phase
+}
+
+pub enum MultiOutcomeMarketSlot {
+    DormantYesRt(OutcomeIndex),
+    DormantNoRt(OutcomeIndex),
+    UnresolvedYesRt(OutcomeIndex),
+    UnresolvedNoRt(OutcomeIndex),
+    UnresolvedCollateral,
+    ResolvedCollateral,     // single slot in the Resolved(k) phase
+    ExpiredCollateral,
+}
+
+pub enum PoolSlot {
+    YesReserve,
+    NoReserve,
+    CollateralReserve,
+}
+
+pub enum OrderSlot {
+    Utxo,
+}
+
 // pub(crate) — internal to the engine. Market-only; pool and order phase/lifecycle
 // tracking lives in their respective state enums (LmsrPoolState, OrderState).
 pub(crate) enum CovenantPhase {
@@ -731,33 +802,9 @@ pub(crate) enum MultiOutcomeCovenantPhase {
     Resolved(OutcomeIndex),   // which outcome won
     Expired,
 }
-
-pub(crate) enum SlotType {
-    Binary(BinarySlotType),
-    MultiOutcome(MultiOutcomeSlotType),
-}
-
-pub(crate) enum BinarySlotType {
-    DormantYesRt,          // slot 0
-    DormantNoRt,           // slot 1
-    UnresolvedYesRt,       // slot 2
-    UnresolvedNoRt,        // slot 3
-    UnresolvedCollateral,  // slot 4
-    ResolvedYesCollateral, // slot 5
-    ResolvedNoCollateral,  // slot 6
-    ExpiredCollateral,     // slot 7
-}
-
-pub(crate) enum MultiOutcomeSlotType {
-    DormantYesRt(OutcomeIndex),      // slots 0..N-1
-    DormantNoRt(OutcomeIndex),       // slots N..2N-1
-    UnresolvedYesRt(OutcomeIndex),   // slots 2N..3N-1
-    UnresolvedNoRt(OutcomeIndex),    // slots 3N..4N-1
-    UnresolvedCollateral,            // slot 4N
-    ResolvedCollateral(OutcomeIndex),// slots 4N+1..5N — one per outcome that could win
-    ExpiredCollateral,               // slot 5N+1
-}
 ```
+
+`SlotIdentity` uniquely identifies a tracked UTXO's role. Within a contract, each `SlotIdentity` value appears at most once in the outpoint set (a hard invariant verified by compliance tests). Pairing each outpoint with its label at the store boundary replaces the earlier positional-ordering convention — it moves slot identity from "implicit in `Vec` index" to "explicit in the data," which eliminates a class of silent-mis-ordering bugs and handles variable-N multi-outcome markets cleanly.
 
 Each `CovenantPhase` maps to a specific subset of slots. This mapping is the bridge between the state machine and the UTXO-following model — when a market transitions between phases, the engine knows which slots to expect in the new outputs.
 
@@ -817,24 +864,62 @@ Active pools track their reserves and s_index. Outpoints are internal to the eng
 ```rust
 pub enum OrderState {
     Active {
+        tracking: OrderTracking,
+        active_txid: Txid,
         offered_amount: u64,
         total_filled: u64,
     },
     Consumed {
+        tracking: OrderTracking,
         final_txid: Txid,
         offered_amount: u64,
     },
     Cancelled {
+        tracking: OrderTracking,
         cancel_txid: Txid,
         offered_amount: u64,
         total_filled: u64,
     },
 }
+
+/// How the engine tracks an order. Controls both persistence behavior
+/// and the accuracy of `offered_amount`.
+pub enum OrderTracking {
+    /// Ingested from the order's creation transaction, with full fill history
+    /// and permanent storage. The engine persists every transition to
+    /// `ContractHistory` (if implemented) and never auto-untracks the order
+    /// upon reaching terminal state. `offered_amount` is the true original
+    /// offered value.
+    ///
+    /// Use for orders you've created and want to audit (fill-by-fill history,
+    /// cancellation detection, recovery).
+    Persistent,
+
+    /// Ingested from the creation transaction but tracked ephemerally.
+    /// `offered_amount` is the true original. No history is persisted.
+    /// The engine auto-untracks the order past finality when it reaches
+    /// a terminal state (Consumed or Cancelled).
+    ///
+    /// Use for freshly-discovered orders (e.g. via Nostr announcement that
+    /// includes the creation tx) where accurate fill-progress display matters
+    /// but storing the full audit trail does not.
+    EphemeralFresh,
+
+    /// Ingested from a mid-lifecycle snapshot (no creation tx available).
+    /// `offered_amount` reflects the value at discovery time, not the true
+    /// original — any fills that happened before ingestion are unobservable.
+    /// No history is persisted. Auto-untracks past finality when terminal.
+    ///
+    /// Use for discovered orders encountered mid-life (order books, routing).
+    EphemeralMidLife,
+}
 ```
 
-`offered_amount` is the total value the maker locked when the order was created. For `Creation` ingestion, this is the initial UTXO value (the true original). For `Current` ingestion, this is `locked_value` from the snapshot (the remaining at discovery time — the best available without history). `total_filled` is cumulative fills since ingestion. Both are denominated in the order's locked asset — the asset the maker offered (BASE for sell-base orders, QUOTE for sell-quote orders, per `MakerOrderParams.direction`). Remaining liquidity is `offered_amount - total_filled`.
+`offered_amount` is the order's baseline value for fill-progress calculations. Under `Persistent` and `EphemeralFresh` tracking, it equals the true original offered amount (the creation tx's locked output value). Under `EphemeralMidLife`, it's the locked value at discovery — fills that occurred before ingestion aren't captured. `total_filled` is cumulative fills since ingestion. Both are denominated in the order's locked asset — the asset the maker offered (BASE for sell-base orders, QUOTE for sell-quote orders, per `MakerOrderParams.direction`). Remaining liquidity is always `offered_amount - total_filled` regardless of tracking mode.
 
-`Active` enables "5,000 of 10,000 sats filled" display. `Consumed` stores `offered_amount` (which equals `total_filled` by definition — only one is needed). `Cancelled` enables "5,000 of 10,000 filled, then cancelled" display (if `total_filled == 0`, it was a clean cancellation). Outpoints are internal to the engine and not exposed in the public state.
+Engine behavior forks on `tracking`: `ContractHistory` writes are skipped for the two `Ephemeral*` variants, and `prune_finalized` auto-untracks terminal `Ephemeral*` orders past finality. The `Persistent` variant behaves like other persistent contracts (markets, pools) — history written if the store supports it, terminal state preserved until explicitly untracked.
+
+UX forks on the `offered_amount` accuracy implied by `tracking`: "X of Y filled" displays are honest under `Persistent` and `EphemeralFresh`; under `EphemeralMidLife`, the denominator is "baseline at discovery" rather than "true original," which UIs should clarify. View-layer helpers (`Order::has_full_origin()`, etc.) expose this distinction for callers. Outpoints are internal to the engine and not exposed in the public state.
 
 ### Pagination Types
 
@@ -1015,22 +1100,22 @@ Permanent data derived from Simplicity compilation, passed to the store during c
 
 ```rust
 pub struct InitialContractState {
-    pub outpoints: Vec<OutPoint>,
+    pub outpoints: Vec<(SlotIdentity, OutPoint)>,
     pub position: ChainPosition,
 }
 ```
 
-The mutable initial state of a contract at ingestion time, passed to the store via `track_contract`. Groups the two fields that describe "where the contract is right now": `outpoints` are the contract's current tracked UTXOs (derived from the creation transaction or provided via a `Current` snapshot), and `position` is the chain position at which those outpoints were confirmed.
+The mutable initial state of a contract at ingestion time, passed to the store via `track_contract`. Groups the two fields that describe "where the contract is right now": `outpoints` are the contract's current tracked UTXOs (derived from the creation transaction or provided via a `Current` snapshot), each labeled with its [`SlotIdentity`](#slotidentity-and-covenantphase); `position` is the chain position at which those outpoints were confirmed.
 
 This is intentionally separate from `DerivedContractData`, which contains permanent data derived from Simplicity compilation (scripts, asset IDs). `InitialContractState` contains mutable state — `outpoints` change with every transition (via `apply_transitions`), and `position` sets the initial `synced_to` height. The two structs represent different categories of data the engine pre-computes for the store.
 
-**Outpoints per contract type** (positional ordering — index = slot identity):
-- **Binary markets**: 2 outpoints `[DormantYesRt, DormantNoRt]` for initial Dormant state. In Unresolved: `[UnresolvedYesRt, UnresolvedNoRt, UnresolvedCollateral]`. In ResolvedYes/No/Expired: `[collateral_slot]`.
-- **Multi-outcome markets** (with `N = outcome_count`): 2N outpoints `[DormantYesRt(0), ..., DormantYesRt(N-1), DormantNoRt(0), ..., DormantNoRt(N-1)]` for initial Dormant state. In Unresolved: 2N+1 outpoints `[UnresolvedYesRt(0..N-1), UnresolvedNoRt(0..N-1), UnresolvedCollateral]`. In Resolved(k) or Expired: `[collateral_slot]`.
-- **Pools**: 3 outpoints `[YES reserve, NO reserve, Collateral reserve]`.
-- **Orders**: 1 outpoint `[order UTXO]`.
+**Outpoints per contract type** (each outpoint labeled with its [`SlotIdentity`](#slotidentity-and-covenantphase)):
+- **Binary markets**: Dormant phase has 2 outpoints labeled `DormantYesRt` and `DormantNoRt`. Unresolved has 3 labeled `UnresolvedYesRt`, `UnresolvedNoRt`, `UnresolvedCollateral`. Terminal phases (ResolvedYes/ResolvedNo/Expired) have 1 labeled with the corresponding `*Collateral` slot.
+- **Multi-outcome markets** (with `N = outcome_count`): Dormant has 2N outpoints labeled `DormantYesRt(k)` and `DormantNoRt(k)` for k ∈ [0, N). Unresolved has 2N+1 (the 2N per-outcome RTs plus `UnresolvedCollateral`). Terminal phases have 1 labeled `ResolvedCollateral` (with the winning outcome implicit from market state) or `ExpiredCollateral`.
+- **Pools**: 3 outpoints labeled `YesReserve`, `NoReserve`, `CollateralReserve`.
+- **Orders**: 1 outpoint labeled `Utxo`.
 
-**Positional ordering is a hard invariant**: The engine, store, and PSET builders all depend on `Vec<OutPoint>` index positions matching slot identity. The engine produces outpoints in this canonical order during ingestion (`InitialContractState`) and transitions (`StateUpdate.new_outpoints`). The store must preserve insertion order. `contract_outpoints` must return outpoints in the same positional order they were stored. PSET builders use the index to place the correct outpoint at the correct transaction input position for Simplicity witness encoding.
+**Slot identity is explicit, not positional**: the engine, store, and PSET builders work with `Vec<(SlotIdentity, OutPoint)>` — each outpoint carries its own label rather than deriving identity from its position in a `Vec`. The engine produces labels deterministically from the current covenant phase during ingestion (`InitialContractState`) and transitions (`StateUpdate.new_outpoints`). The store persists the `(SlotIdentity, OutPoint)` pairs. `contract_outpoints` returns them. PSET builders look up the needed slot by `SlotIdentity` — no positional convention to maintain or accidentally violate. Within a single contract, each `SlotIdentity` value appears at most once (engine-enforced on write; compliance-tested at the store boundary).
 
 ### Oracle Attestation
 
@@ -1225,14 +1310,16 @@ The three reserves are in different assets (YES tokens, NO tokens, collateral). 
 
 ### ContractMatch
 
-Returned by `ContractStore::find_by_outpoints`. Used internally by the engine to identify which tracked contracts are affected by a transaction and which specific outpoints matched. Callers of the engine never see this type — it exists at the engine-store boundary only.
+Returned by `ContractStore::find_by_outpoints`. Used internally by the engine to identify which tracked contracts are affected by a transaction and which specific outpoints (and their slot roles) matched. Callers of the engine never see this type — it exists at the engine-store boundary only.
 
 ```rust
 pub struct ContractMatch {
     pub contract_id: ContractId,
-    pub matched_outpoints: Vec<OutPoint>,
+    pub matched_outpoints: Vec<(SlotIdentity, OutPoint)>,
 }
 ```
+
+`matched_outpoints` carries slot labels so the engine can dispatch per-slot logic (e.g., "the UnresolvedCollateral slot was spent, this is a cancellation or resolution") without cross-referencing against `contract_outpoints`. The store indexes outpoints alongside their `SlotIdentity` labels; lookup returns both.
 
 ### Transaction-Level Types
 
@@ -1307,18 +1394,22 @@ pub struct ContractNetEffect {
 
 ### StateUpdate
 
-The write-path type passed to the store via `apply_transitions`. Contains outpoints needed for state advancement and rollback, but NOT used on the read path (history queries return `HistoryEntry` which omits outpoints). Does not include the computed output classification (`external_outputs`) since those are derived from the transaction at query time and do not need to be persisted:
+The write-path type passed to the store via `apply_transitions`. Contains the full state-advancement delta: old + new contract state, labeled old + new outpoints, and the transition details. Not used on the read path (history queries return `HistoryEntry` which omits outpoints). Does not include the computed output classification (`external_outputs`) since those are derived from the transaction at query time and do not need to be persisted:
 
 ```rust
 pub struct StateUpdate {
     pub contract_id: ContractId,
     pub txid: Txid,
     pub position: ChainPosition,
-    pub old_outpoints: Vec<OutPoint>,
-    pub new_outpoints: Vec<OutPoint>,
+    pub old_state: Contract,
+    pub new_state: Contract,
+    pub old_outpoints: Vec<(SlotIdentity, OutPoint)>,
+    pub new_outpoints: Vec<(SlotIdentity, OutPoint)>,
     pub details: TransitionDetails,
 }
 ```
+
+**Why `old_state` and `new_state`**: rollback needs the pre-transition state to restore (several transitions aren't reversible from `TransitionDetails` alone — e.g., `PoolTransition::Closed` doesn't carry the old `s_index`). The engine computes both and passes them along; the store persists whatever it needs for its durability and rollback requirements. Having the engine compute `new_state` (rather than the store deriving it from `(old_state, details)`) keeps all domain logic in the engine — the store is a plain persistence layer without Simplicity or contract-math knowledge.
 
 **Why two types**: `ProcessedTransaction` (and its inner `InterpretedTransaction`) is the caller-facing view (full data, including ephemeral computed fields like output roles). `StateUpdate` is the storage-facing view (only what needs to be persisted). The engine converts between them internally. This prevents store implementors from accidentally persisting wallet-specific data (output roles, classifications) alongside contract state, while ensuring callers always get the full picture.
 
@@ -1540,16 +1631,84 @@ pub enum CoreError<E: std::error::Error> {
     ChainSource(Box<dyn std::error::Error + Send + Sync>),
     InvalidCreationTx { reason: String },
     InvalidParams { detail: String },
-    InvalidContractState { contract_id: ContractId, detail: String },
+    InvalidContractState { contract_id: ContractId, kind: InvalidStateKind },
     ContractNotFound { contract_id: ContractId },
     ContractAlreadyTracked { contract_id: ContractId },
     InsufficientFunds { shortfalls: Vec<Shortfall> },
-    NoLiquidity { market_id: ContractId },
-    StaleQuote { detail: String },
+    NoLiquidity {
+        market_id: ContractId,
+        outcome: OutcomeIndex,
+        side: Side,
+        direction: TradeDirection,
+    },
+    StaleQuote { reason: StaleQuoteReason },
+    CovenantInvariantViolation {
+        contract_id: ContractId,
+        kind: InvariantViolationKind,
+    },
+}
+
+/// Structured reason a builder rejected a contract's state for the
+/// requested operation. Distinguishes "wrong variant" from "right variant
+/// but unmet condition." See [State Machine Summary](#state-machine-summary)
+/// for the full valid-transition matrix.
+pub enum InvalidStateKind {
+    /// The contract's state variant is incompatible with the requested
+    /// operation (e.g., calling `build_issuance_pset` on a Resolved market).
+    WrongVariant {
+        expected: &'static [&'static str],
+        actual: &'static str,
+    },
+    /// The state variant is compatible but a runtime precondition failed
+    /// (e.g., `build_merge_yes_pset` with insufficient basket supply;
+    /// `build_expire_transition_pset` called before the timelock height).
+    ConditionFailed {
+        condition: &'static str,
+        detail: String,
+    },
+}
+
+/// Why `build_trade_pset` rejected a quote as stale. Callers should
+/// re-quote and re-confirm with the user before retrying (prices may
+/// have moved).
+pub enum StaleQuoteReason {
+    /// A referenced contract advanced (pool swap, pool admin adjust,
+    /// order fill, order cancel) between quote and build, producing
+    /// new outpoints the snapshot doesn't match.
+    OutpointsChanged { contract_id: ContractId },
+    /// A referenced contract was untracked between quote and build.
+    ContractUntracked { contract_id: ContractId },
+    /// A referenced contract was removed by `rollback_to_height`
+    /// between quote and build (e.g., its creation tx was reorged out).
+    ContractRemoved { contract_id: ContractId },
+}
+
+/// A consensus-valid transaction violated a covenant-enforced invariant
+/// that should have made the transaction impossible. Indicates either a
+/// covenant bug, chain-data corruption, or a version mismatch between the
+/// running `deadcat-core` and the on-chain covenant. Should not occur in
+/// correct operation; callers should treat this as a signal to investigate
+/// (and re-ingest from scratch if necessary) rather than retry.
+///
+/// Kept as an explicit variant even post-covenant-proof as defense-in-depth
+/// against bugs outside the proof's scope (interpretation layer, chain
+/// backend, version mismatch). Can be removed once an engine-level proof
+/// covers all pathways.
+pub enum InvariantViolationKind {
+    /// A pool transition was observed but the expected covenant-enforced
+    /// output window (3 consecutive outputs with `[YES, NO, Collateral]`
+    /// asset IDs sharing a script pubkey) was absent or malformed.
+    PoolWindowMalformed { detail: String },
+    /// A binary or multi-outcome market transition produced outputs that
+    /// don't match any recognized covenant phase layout.
+    MarketOutputLayoutInvalid { detail: String },
+    /// A maker order transition produced outputs that don't match the
+    /// covenant's expected fill or cancellation shape.
+    OrderOutputLayoutInvalid { detail: String },
 }
 ```
 
-`ChainSource` wraps errors from the `ChainSource` trait implementation during `step`. The chain error type is boxed rather than generic to keep the engine at a single generic parameter (`S`) — `step` introduces `C: ChainSource` only at the call site. The `ChainSource::Error` bound includes `Send + Sync + 'static` to enable boxing into `Box<dyn Error + Send + Sync>`. Integrators can display/debug the error or downcast if they need the concrete type. `InvalidParams` covers caller-provided inputs that violate covenant constraints (e.g., issuance amount exceeds limits, invalid collateral asset, pool/order referencing an unknown parent market, calling `oracle_attestation_spec` on a non-market contract). `InvalidContractState` is returned by PSET builders when the contract is in the wrong state for the requested operation (e.g., `build_issuance_pset` on a settled market, `build_redemption_pset` on a trading market). `InsufficientFunds` is returned by PSET builders when the caller's available UTXOs don't cover the required amounts — the `shortfalls` vec reports all insufficient assets at once (e.g., "need 50 more YES tokens AND 3,000 more sats"), enabling wallet UX that shows all missing resources rather than one at a time. `StaleQuote` is returned by `build_trade_pset` when the quote's snapshotted outpoints are no longer current (a `step` call consumed them between quoting and building) — the caller should re-quote. Internal construction errors (e.g., Pedersen commitment math failure) indicate bugs in core and panic rather than returning an error — every `CoreError` variant represents a condition the caller can meaningfully respond to.
+`ChainSource` wraps errors from the `ChainSource` trait implementation during `step`. The chain error type is boxed rather than generic to keep the engine at a single generic parameter (`S`) — `step` introduces `C: ChainSource` only at the call site. The `ChainSource::Error` bound includes `Send + Sync + 'static` to enable boxing into `Box<dyn Error + Send + Sync>`. Integrators can display/debug the error or downcast if they need the concrete type. `InvalidParams` covers caller-provided inputs that violate covenant constraints (e.g., issuance amount exceeds limits, invalid collateral asset, pool/order referencing an unknown parent market, calling `oracle_attestation_spec` on a non-market contract). `InvalidContractState` is returned by PSET builders when the contract is in the wrong state for the requested operation; `InvalidStateKind` distinguishes `WrongVariant` (state machine rejection) from `ConditionFailed` (runtime precondition unmet, e.g., insufficient basket supply). `InsufficientFunds` is returned by PSET builders when the caller's available UTXOs don't cover the required amounts — the `shortfalls` vec reports all insufficient assets at once (e.g., "need 50 more YES tokens AND 3,000 more sats"), enabling wallet UX that shows all missing resources rather than one at a time. `NoLiquidity` is returned by `quote_trade` only when the router can't fill any positive amount (all pools exhausted, all orders dust, or no tracked sources); it carries the trade's target tuple so UIs can show "No liquidity to BUY YES on outcome 2 of market X." Partial fills do not return `NoLiquidity` — any `filled_amount > 0` returns `Ok(TradeQuote)` and the caller decides. `StaleQuote` is returned by `build_trade_pset` when the quote's snapshot is no longer current; `StaleQuoteReason` identifies the specific cause for both UI messaging and diagnostics. `CovenantInvariantViolation` indicates a should-be-impossible consensus-valid transaction violated a covenant-enforced property; this is bug-adjacent and callers should not loop-retry. Internal construction errors (e.g., Pedersen commitment math failure) indicate bugs in core and panic rather than returning an error — every `CoreError` variant represents a condition the caller can meaningfully respond to.
 
 **Why generic over the store error**: The engine is already generic over `S: ContractStore`, so `CoreError<S::Error>` adds no new generic parameters. Store error types are preserved — consumers can match on `CoreError::Store(e)` and handle their specific store error without downcasting. Store implementors define their own error type independently via an associated type on the trait.
 
@@ -2023,7 +2182,7 @@ Two specific transitions produce no new covenant outputs, making the spend path 
 
 #### Prediction Markets
 
-The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [SlotType and CovenantPhase](#slottype-and-covenantphase-internal)). The transition type is determined by which slot scripts the new outputs match, combined with witness-based path detection where output matching is ambiguous.
+The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [SlotIdentity and CovenantPhase](#slotidentity-and-covenantphase)). The transition type is determined by which slot scripts the new outputs match, combined with witness-based path detection where output matching is ambiguous.
 
 **Binary markets** (8 slots):
 
@@ -2160,7 +2319,7 @@ The three ingestion methods handle the different needs of each contract type:
 
 **Pools** (`ingest_pool`): Support both creation-tx and non-initial ingestion via `PoolSnapshot`. Pools can accumulate thousands of state transitions (one per swap), making forward-sync from creation expensive. Non-initial ingestion via `PoolSnapshot::Current` allows a trader to start using a pool immediately from its current state without replaying history.
 
-**Orders** (`ingest_order`): Support both creation-tx and non-initial ingestion via `OrderSnapshot`. Takers need only the current state for filling — order history is irrelevant. Makers who need fill history (monitoring, recovery) use `OrderSnapshot::Creation`.
+**Orders** (`ingest_persistent_order` / `ingest_ephemeral_order`): Makers monitoring their own orders use `ingest_persistent_order` (creation tx required, full history). Takers discovering orders for routing use `ingest_ephemeral_order` — accepts either a Creation snapshot (accurate `offered_amount`, no history, auto-cleanup past finality) or a Current snapshot (mid-life discovery, baseline-at-ingestion `offered_amount`, same auto-cleanup). Tracking mode is immutable post-ingestion; untrack + re-ingest to switch.
 
 ### What each snapshot variant provides
 
@@ -2187,7 +2346,7 @@ With `step` managing all sync internally, the consumer flow is uniform across co
 //    methods take params by reference.
 let market_id = engine.ingest_market(&market_params, &creation_tx)?;
 let pool_id = engine.ingest_pool(&pool_params, PoolSnapshot::Creation(pool_creation_tx))?;
-let order_id = engine.ingest_order(&order_params, OrderSnapshot::Current { ... })?;
+let order_id = engine.ingest_ephemeral_order(&order_params, OrderSnapshot::Current { ... })?;
 
 // 2. Sync — step handles catch-up, subscription setup, and steady-state
 engine.step(&mut chain)?;
@@ -2232,8 +2391,8 @@ let (params, masked_index) = derive_order_params(
 let pset = engine.build_create_order_pset(&params, offered_amount, masked_index, &funding)?;
 let signed = signer.sign(pset)?;
 chain.broadcast(signed)?;
-// After confirmation: ingest and step catches it up
-let order_id = engine.ingest_order(&params, OrderSnapshot::Creation(creation_tx))?;
+// After confirmation: ingest as persistent (maker wants full history) and step catches it up
+let order_id = engine.ingest_persistent_order(&params, &creation_tx)?;
 engine.step(&mut chain)?;
 ```
 
@@ -2259,7 +2418,7 @@ pub trait ContractStore {
 
     // Sync support — &self (used by step internally)
     fn stale_contracts(&self, tip_height: u32) -> Result<StaleContracts, Self::Error>;
-    fn contract_outpoints(&self, contract_id: &ContractId) -> Result<Vec<OutPoint>, Self::Error>;
+    fn contract_outpoints(&self, contract_id: &ContractId) -> Result<Vec<(SlotIdentity, OutPoint)>, Self::Error>;
 
     // Per-type listing — &self (typed results, not Contract enum)
     fn list_markets(&self, filter: StateFilter, page: Pagination) -> Result<Page<MarketEntry>, Self::Error>;
@@ -2300,14 +2459,18 @@ pub struct ScriptContractInfo {
 
 pub struct OutpointContractInfo {
     pub contract_id: ContractId,
-    pub outpoints: Vec<OutPoint>,
+    pub outpoints: Vec<(SlotIdentity, OutPoint)>,
     pub synced_to: u32,
 }
 ```
 
 Every consumer must implement this. Read methods take `&self`, write methods take `&mut self` — mirroring the engine's own borrow semantics. The engine calls read methods during interpretation (`&self` on the engine borrows the store as `&self`) and write methods during processing (`&mut self` on the engine borrows the store as `&mut self`).
 
-`apply_transitions` must be durable when it returns — the engine depends on this for crash safety. It must also be **idempotent**: calling it twice with the same `StateUpdate` (same `contract_id` + `txid`) must be a no-op on the second call. This is required because `process_transaction` is idempotent, which flows through to `apply_transitions`. For stores implementing `ContractHistory`, idempotency means avoiding duplicate history entries — the store should check whether a transition for the given `(contract_id, txid)` already exists before inserting.
+`apply_transitions` applies the full `&[StateUpdate]` slice produced from a single chain transaction. Required semantics:
+
+- **Per-transaction atomic**: the slice commits entirely or not at all. Typically implemented with a single database transaction around the body. See [Atomicity requirements](#atomicity-requirements-todo-anchor) below.
+- **Durable on return**: the engine depends on this for crash safety — once the call returns `Ok`, the state must survive a process crash without further action.
+- **Idempotent per `(contract_id, txid)`**: calling `apply_transitions` twice with a `StateUpdate` sharing the same `(contract_id, txid)` is a no-op on the second call. Required because `process_transaction` is idempotent (for crash recovery and multi-step sync); that idempotency propagates through this method. For stores implementing `ContractHistory`, idempotency extends to history writes — don't create duplicate entries. The standard implementation checks whether a transition for `(contract_id, txid)` already exists before inserting.
 
 `find_by_outpoints` is the hot-path method called on every internal `process_transaction`. It is not paginated because its input is bounded by the transaction's input count (constrained by Liquid's transaction size limits).
 
@@ -2329,7 +2492,9 @@ Every consumer must implement this. Read methods take `&self`, write methods tak
 
 **Processing log**: The store must persist enough rollback metadata during `apply_transitions` for `rollback_to_height` to reverse transitions. At minimum: the contract ID, old outpoints, new outpoints, old contract state, and block height for each processed transition. The old contract state (the `MarketState`, `LmsrPoolState`, or `OrderState` value before the transition) is required because several transitions are not reversible from `TransitionDetails` alone — e.g., `PoolTransition::Closed` doesn't carry the old `s_index`, `OrderTransition::Cancelled` doesn't carry the old `total_filled`. Persisting the old state makes rollback mechanical (restore old state + old outpoints) regardless of transition type. `prune_finalized` removes this metadata for transitions below the finality threshold. This processing log is separate from `ContractHistory`'s transition history — it exists for rollback, not for user-facing queries. `rollback_to_height` must also clean up derived data (asset ID index, covenant scripts) for contracts removed during rollback.
 
-**Atomicity requirements**: Contract-level atomicity is a hard requirement — a single contract's state update (old outpoints -> new outpoints + state change) must be all-or-nothing. A half-updated contract is corrupted state. Transaction-level atomicity (all contracts updated together for a multi-contract transaction) is recommended but not strictly required for correctness. A "jagged" state where one contract has processed a transaction but another hasn't is indistinguishable from staggered ingestion — which is already a normal condition when contracts are discovered at different times. The system self-heals: re-processing the transaction advances the remaining contracts while already-processed contracts are a no-op (idempotency). Transaction-level atomicity is recommended because it's typically not much extra burden on top of the already-required contract-level atomicity (e.g., a single SQLite transaction) and avoids the jagged-view window.
+**Atomicity requirements**: `apply_transitions` is **per-transaction atomic** — the full `&[StateUpdate]` slice passed in a single call commits as a unit or not at all. The engine invokes `apply_transitions` once per processed chain transaction; cross-contract transactions (e.g., routed trades) produce slices with more than one `StateUpdate`. Per-transaction atomicity is required (not merely recommended) because the engine's error semantics rely on it: on `CovenantInvariantViolation` during a multi-contract transaction, the current transaction's batch must roll back as a unit so the engine's retry and rollback logic sees a consistent state. Store implementations typically achieve this with a single database transaction around the `apply_transitions` body. Within a batch, contract-level consistency follows from per-batch atomicity — a single contract's state update (old outpoints → new outpoints + state change) commits atomically by construction.
+
+Across multiple transactions processed in one `step` call, each transaction's batch commits independently. On error mid-step, transactions processed before the error stay committed; the erroring transaction's batch is rolled back; unprocessed transactions remain to be processed on retry. Retrying `step` picks up where it left off via `apply_transitions`'s per-`(contract_id, txid)` idempotency.
 
 ### Optional: ContractHistory
 
@@ -2641,6 +2806,15 @@ The **steady-state** methods manage a notification registration system. `registe
 
 **Gap-free handoff**: `register_scripts` takes `from_height` — the chain source guarantees delivery of all matching transactions at or above this height. The engine registers with `from_height = synced_to`, creating overlap with the catch-up scan rather than a gap. Overlap is harmless (`process_transaction` is idempotent). `register_spends` does NOT take `from_height` — instead, the chain source checks if the outpoint is already spent and includes the spending transaction in the next `drain_notifications` call if so. This binary spent/unspent check is sufficient because outpoints (unlike scripts) have a single possible event.
 
+**Subscription semantics — idempotent set operations**:
+
+- `register_scripts(scripts, from_height)` adds each script to the active watch set. If a script is already registered, the effective `from_height` becomes `min(existing, new)` — re-registration only widens coverage, never narrows it. This matters for the engine's re-initialization path (after rollback or subscription-state invalidation): `step` calls `register_scripts` for all applicable contracts again; already-registered scripts are not an error.
+- `register_spends(outpoints)` adds each outpoint to the active watch set. No `from_height` concern (binary spent/unspent check). Duplicate registrations collapse to one active watch.
+- `unregister_scripts(scripts)` and `unregister_spends(outpoints)` remove each from the active watch set. Unregistering a script or outpoint that was never registered (or was already unregistered) is a **no-op, not an error** — makes cleanup and rollback handling forgiving.
+- Notifications are delivered **per registered item**, not per registration call. Registering the same script or outpoint twice does not produce duplicate notifications.
+
+These semantics free the engine from bookkeeping "have I already registered this?" state. The engine calls `register_*` when it wants coverage and `unregister_*` when it wants to release coverage; the chain source handles the set-membership details.
+
 **The trait is a read-only data source, not a service.** It makes no writes to the chain, does no broadcasting, and performs no fee estimation. The engine treats it as an immutable data accessor. The `&mut self` on registration methods reflects internal state management (tracking what's registered), not external side effects.
 
 **`drain_notifications` returns confirmed transactions only** (with `ChainPosition`), **in chain order** (ascending by `ChainPosition`). This matches the ordering guarantee of `transactions_by_scripts`. The engine processes notifications sequentially — out-of-order delivery could cause it to miss a transaction whose inputs reference outpoints created by a not-yet-processed earlier transaction. Mempool/unconfirmed transactions are out of scope — the caller handles mempool awareness separately via `interpret_transaction` if they want pending UX.
@@ -2764,7 +2938,7 @@ The caller periodically calls `prune_finalized` with the current chain tip and t
 
 ## Thread Safety
 
-Write methods on the engine (`step`, `ingest_market`, `ingest_pool`, `ingest_order`, `untrack_contract`, `rollback_to_height`, `prune_finalized`) take `&mut self`. Read methods on the engine (`interpret_transaction`, `identify_asset`, `contract`, `list_markets`, `list_pools`, `list_orders`, `market`, `pool`, `order`, `quote_trade`, and all engine-level PSET builders — creation and trade) take `&self`. View types (`Market`, `MultiOutcomeMarket`, `Pool`, `Order`) are constructed from `&self` engine methods and hold `&'a ContractEngine<S>` internally — all their methods (state accessors, PSET builders, oracle helpers, relationship queries, history) are effectively `&self` reads as far as the engine is concerned. While any view is alive, the engine cannot be mutably borrowed.
+Write methods on the engine (`step`, `ingest_market`, `ingest_pool`, `ingest_persistent_order`, `ingest_ephemeral_order`, `untrack_contract`, `rollback_to_height`, `prune_finalized`) take `&mut self`. Read methods on the engine (`interpret_transaction`, `identify_asset`, `contract`, `list_markets`, `list_pools`, `list_orders`, `market`, `pool`, `order`, `quote_trade`, and all engine-level PSET builders — creation and trade) take `&self`. View types (`Market`, `MultiOutcomeMarket`, `Pool`, `Order`) are constructed from `&self` engine methods and hold `&'a ContractEngine<S>` internally — all their methods (state accessors, PSET builders, oracle helpers, relationship queries, history) are effectively `&self` reads as far as the engine is concerned. While any view is alive, the engine cannot be mutably borrowed.
 
 Rust's borrow rules provide compile-time `RwLock` semantics: multiple concurrent readers OR one exclusive writer, enforced without runtime overhead. For single-threaded consumers this is invisible. For multi-threaded consumers who need concurrent access, wrap the engine in `RwLock<ContractEngine<S>>`:
 
@@ -2915,7 +3089,7 @@ When a wallet is restored from a mnemonic, Deadcat positions need to be rediscov
 | PSET builders | All three creation builders | Convention violations for manually-constructed params (defense in depth) |
 | Market ingestion | `ingest_market` | Non-conforming markets from external sources (protects all downstream users) |
 
-Market conventions are enforced at ingestion because non-conforming markets break ALL downstream users — token holders, order makers, and pool operators all trace back to the market's OP_RETURN for chain-only recovery. Pool and order conventions are enforced at creation time only (derive functions + builders) because they affect only the creator's own recovery. `ingest_pool` and `ingest_order` do NOT enforce pool/order-specific conventions — a non-conforming pool or order created by a custom tool is still fully functional for trading, and rejecting it at ingestion would prevent takers from using valid liquidity. Pool and order ingestion does validate the parent market relationship (transitively ensuring the parent market is conforming). See [chain-only-recovery.md](../protocol/chain-only-recovery.md) for the full recovery specification.
+Market conventions are enforced at ingestion because non-conforming markets break ALL downstream users — token holders, order makers, and pool operators all trace back to the market's OP_RETURN for chain-only recovery. Pool and order conventions are enforced at creation time only (derive functions + builders) because they affect only the creator's own recovery. `ingest_pool`, `ingest_persistent_order`, and `ingest_ephemeral_order` do NOT enforce pool/order-specific conventions — a non-conforming pool or order created by a custom tool is still fully functional for trading, and rejecting it at ingestion would prevent takers from using valid liquidity. Pool and order ingestion does validate the parent market relationship (transitively ensuring the parent market is conforming). See [chain-only-recovery.md](../protocol/chain-only-recovery.md) for the full recovery specification.
 
 **Wallet-funded prerequisite**: OP_RETURN recovery hints are found by scanning wallet-funded transactions. Token holder recovery uses `ChainSource::issuance_transaction` to trace asset IDs back to their creation transactions. Both paths are chain-only — no external services.
 
@@ -3724,7 +3898,7 @@ Note: Covenant scripts are used internally by `step` for catch-up scanning and s
 
 ### Per-Type Ingestion Methods
 
-**Chosen**: `ingest_market`, `ingest_pool`, `ingest_order` with type-specific snapshot enums.
+**Chosen**: `ingest_market`, `ingest_pool`, and the split `ingest_persistent_order` / `ingest_ephemeral_order` with type-specific snapshot enums. Orders have two ingestion methods because persistence behavior is distinct (maker-owned orders keep history and persist through terminal states; taker-tracked orders skip history and auto-untrack past finality).
 **Rejected**: Unified `ingest_contract(ContractParams, ChainTransaction)`.
 **Why**: Different contract types have genuinely different ingestion needs. Markets always need the creation tx (few transitions, fast catch-up). Pools and orders benefit from non-initial ingestion (pools can have thousands of transitions; order takers don't need history). Per-type methods make each contract's recommended pattern explicit in the type system. The snapshot enums (`PoolSnapshot`, `OrderSnapshot`) document the trade-off at the type level: `Creation` = full history + verified; `Current` = fast start, no prior history, no verification back to creation.
 
@@ -3802,7 +3976,7 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 
 ### Pool/Order Ingestion Requires Parent Market
 
-**Chosen**: `ingest_pool` and `ingest_order` validate that the referenced token asset IDs correspond to a known market. If the parent market isn't tracked, returns `CoreError::InvalidParams`. `ingest_market` has no parent requirement.
+**Chosen**: `ingest_pool`, `ingest_persistent_order`, and `ingest_ephemeral_order` validate that the referenced token asset IDs correspond to a known market. If the parent market isn't tracked, returns `CoreError::InvalidParams`. `ingest_market` has no parent requirement.
 **Rejected**: (a) Allow orphaned pools/orders with later backfill. (b) Engine pre-computes parent ID and passes it to store.
 **Why**: The store builds its own parent-market index by resolving token asset IDs via `find_by_asset_id` during `track_contract`. This requires the parent market to already be in the asset index. Allowing orphans would require backfill machinery (scan for orphans when a market is ingested) — significant complexity for a case that shouldn't happen. Discovery naturally produces markets before their pools/orders. The simpler option (engine pre-computes parent ID and passes it via `DerivedContractData`) was rejected because it duplicates work the store can already do with its existing asset index.
 
