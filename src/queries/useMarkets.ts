@@ -1,41 +1,42 @@
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { discoveredToMarket } from "../services/markets";
+import { useStore } from "../store";
 import type { ChainTipResponse, DiscoveredMarket, Market } from "../types";
+
+// Chain tip is fetched once and cached in module scope.
+// Updated in the background — never blocks market display.
+let cachedHeight = 0;
+invoke<ChainTipResponse>("fetch_chain_tip", { network: "liquid-testnet" })
+  .then((tip) => {
+    cachedHeight = tip.height;
+  })
+  .catch(() => {});
 
 export function useMarkets() {
   return useQuery({
     queryKey: ["markets"],
     queryFn: async (): Promise<Market[]> => {
-      // Fetch chain tip so time-remaining calculations are accurate.
-      let currentHeight = 0;
+      let stored: DiscoveredMarket[];
       try {
-        const tip = await invoke<ChainTipResponse>("fetch_chain_tip", {
-          network: "liquid-testnet",
-        });
-        currentHeight = tip.height;
-      } catch {
-        // Non-fatal — falls back to 0 (shows raw block distance)
-      }
-
-      try {
-        const stored = await invoke<DiscoveredMarket[]>("discover_contracts");
-        return stored.map((d) => ({
-          ...discoveredToMarket(d),
-          currentHeight,
-        }));
+        stored = await invoke<DiscoveredMarket[]>("discover_contracts");
       } catch {
         try {
-          const stored = await invoke<DiscoveredMarket[]>("list_contracts");
-          return stored.map((d) => ({
-            ...discoveredToMarket(d),
-            currentHeight,
-          }));
+          stored = await invoke<DiscoveredMarket[]>("list_contracts");
         } catch (error) {
           console.warn("Failed to load markets:", error);
           return [];
         }
       }
+
+      const markets = stored.map((d) => ({
+        ...discoveredToMarket(d),
+        currentHeight: cachedHeight,
+      }));
+      if (markets.length > 0 && useStore.getState().marketsLoading) {
+        useStore.setState({ marketsLoading: false });
+      }
+      return markets;
     },
     staleTime: 30_000,
   });

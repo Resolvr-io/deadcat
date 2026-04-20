@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useState } from "react";
 import { baseCurrencyOptions } from "../../constants";
+import { useLockScroll } from "../../hooks/useLockScroll";
 import { queryClient } from "../../queries/queryClient";
 import { useStore } from "../../store";
 import type { BaseCurrency, RelayEntry } from "../../types";
@@ -1209,21 +1211,17 @@ export function SettingsPanel() {
   const settingsOpen = useStore((s) => s.settingsOpen);
   const nostrReplacePanel = useStore((s) => s.nostrReplacePanel);
 
-  useEffect(() => {
-    if (settingsOpen) {
-      document.body.style.overflow = "hidden";
-      document.documentElement.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-    }
-    return () => {
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-    };
-  }, [settingsOpen]);
-
   if (!settingsOpen) return null;
+
+  return <SettingsPanelContent nostrReplacePanel={nostrReplacePanel} />;
+}
+
+function SettingsPanelContent({
+  nostrReplacePanel,
+}: {
+  nostrReplacePanel: boolean;
+}) {
+  useLockScroll();
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 backdrop-blur-sm py-8">
@@ -1257,9 +1255,53 @@ export function SettingsPanel() {
                 </SettingsAccordion>
               )}
             </div>
+            <VersionFooter />
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function VersionFooter() {
+  const [display, setDisplay] = useState<string>("");
+
+  useEffect(() => {
+    invoke<{ display: string }>("get_app_version")
+      .then((v) => setDisplay(v.display))
+      .catch(() => setDisplay(""));
+  }, []);
+
+  if (!display) return null;
+
+  return (
+    <div className="flex items-center justify-center gap-4 border-t border-slate-800 px-6 py-3 text-slate-600">
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 260 267"
+        className="h-4 w-4 shrink-0"
+        fill="currentColor"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path d="M0.146484 9.04596C0.146625 1.23444 10.9146 -3.15996 16.7881 2.6983L86.5566 71.7335C100.141 68.0293 114.765 66.0128 130 66.0128C145.239 66.0128 159.865 68.0305 173.453 71.7364L243.212 2.71197C249.085 -3.1467 259.853 1.24702 259.854 9.05865V161.26C259.949 162.835 260 164.419 260 166.013C260 221.241 201.797 266.013 130 266.013C58.203 266.013 0 221.241 0 166.013C4.78859e-06 164.419 0.0506708 162.835 0.146484 161.26V9.04596ZM100.287 187.013L120.892 207.087V208.903C120.892 217.907 114.199 225.23 105.974 225.231H91.0049C87.1409 225.231 84.0001 228.319 84 232.118C84 235.918 87.1446 239.013 91.0049 239.013H105.974C114.534 239.013 122.574 235.049 128.02 228.383C133.461 235.045 141.502 239.013 150.065 239.013C166.019 239.013 179 225.506 179 208.903C179 205.104 175.856 202.013 171.992 202.013C168.128 202.013 164.984 205.104 164.983 208.903C164.983 217.907 158.291 225.231 150.065 225.231C141.84 225.23 135.147 217.907 135.147 208.903V207.049L155.713 187.013H100.287ZM70.4697 140.12L52.4219 122.072L44 130.495L62.0469 148.542L44.0596 166.53L52.4824 174.953L70.4697 156.965L88.5176 175.013L96.9404 166.591L78.8916 148.542L97 130.435L88.5781 122.013L70.4697 140.12ZM195.367 123.557C200.554 128.783 204 138.006 204 148.513C204 158.3 201.01 166.973 196.408 172.339C216.243 169.73 231 159.83 231 148.013C231 135.99 215.724 125.951 195.367 123.557ZM175.489 123.7C155.707 126.33 141 136.216 141 148.013C141 159.603 155.197 169.349 174.456 172.181C169.931 166.803 167 158.204 167 148.513C167 138.102 170.382 128.951 175.489 123.7Z" />
+      </svg>
+      <span className="text-xs">v{display}</span>
+      <button
+        type="button"
+        onClick={() => void openUrl("https://github.com/Resolvr-io/deadcat")}
+        className="flex items-center gap-1.5 text-xs text-slate-600 transition hover:text-slate-400"
+      >
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          className="h-3.5 w-3.5 shrink-0"
+          fill="currentColor"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.27-.01-1-.02-1.96-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.55-.29-5.23-1.28-5.23-5.7 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.47.11-3.06 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.77.11 3.06.73.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.41-5.25 5.69.41.36.78 1.06.78 2.14 0 1.55-.02 2.79-.02 3.17 0 .31.21.68.8.56C20.21 21.38 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z" />
+        </svg>
+        <span>Report bugs or contribute</span>
+      </button>
     </div>
   );
 }

@@ -8,11 +8,12 @@ import { TopShell } from "./components/layout/TopShell";
 import { NostrEventModal } from "./components/modals/NostrEventModal";
 import OnboardingOverlay from "./components/onboarding/OnboardingOverlay";
 import ProfilePage from "./components/profile/ProfilePage";
-import { OverlayLoader } from "./components/shared/OverlayLoader";
+
 import { ToastContainer } from "./components/shared/Toast";
 import { WalletPage } from "./components/wallet/WalletPage";
 import { useActivityTracking } from "./hooks/useActivityTracking";
 import { useBootstrap } from "./hooks/useBootstrap";
+import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useStore } from "./store";
 
@@ -27,6 +28,8 @@ function CloseConfirmDialog() {
     void invoke("confirm_quit");
   }, []);
 
+  useEscapeKey(open, handleCancel);
+
   if (!open) return null;
 
   return (
@@ -36,7 +39,8 @@ function CloseConfirmDialog() {
           Quit Deadcat Live?
         </h2>
         <p className="mt-2 text-sm text-slate-400">
-          Make sure you&apos;ve saved your work before quitting.
+          Your wallet and identity are saved. Pending operations will be
+          interrupted.
         </p>
         <div className="mt-6 flex gap-3">
           <button
@@ -64,6 +68,18 @@ export default function App() {
   useTauriEvents();
   useActivityTracking();
 
+  // Tag <html> with the host OS so CSS can key off it (e.g. reserve space
+  // for macOS traffic lights without affecting other platforms).
+  useEffect(() => {
+    const ua = navigator.userAgent;
+    const os = /Mac/i.test(ua)
+      ? "macos"
+      : /Win/i.test(ua)
+        ? "windows"
+        : "linux";
+    document.documentElement.dataset.os = os;
+  }, []);
+
   // Listen for close-requested from Rust (Cmd+Q / window close)
   useEffect(() => {
     const unlisten = listen("close-requested", () => {
@@ -78,7 +94,6 @@ export default function App() {
   const walletOpen = useStore((s) => s.walletOpen);
   const setupModalOpen = useStore((s) => s.setupModalOpen);
   const nostrEventModal = useStore((s) => s.nostrEventModal);
-  const marketsLoading = useStore((s) => s.marketsLoading);
 
   return (
     <>
@@ -96,7 +111,6 @@ export default function App() {
       {walletOpen && <WalletPage />}
       {setupModalOpen && <OnboardingOverlay />}
       {nostrEventModal && <NostrEventModal />}
-      {marketsLoading && <OverlayLoader message="Loading markets..." />}
       <CloseConfirmDialog />
       <ToastContainer />
     </>

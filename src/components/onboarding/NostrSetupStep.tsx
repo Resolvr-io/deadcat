@@ -2,7 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile, readTextFile } from "@tauri-apps/plugin-fs";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useStore } from "../../store";
 import type { IdentityResponse, NostrProfile } from "../../types";
 import { generateAvatarDataUri } from "../../utils-react/avatar";
@@ -45,6 +51,14 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const [dragOver, setDragOver] = useState(false);
   const [mnemonicExpanded, setMnemonicExpanded] = useState(false);
   const [restorePasswordRevealed, setRestorePasswordRevealed] = useState(false);
+  const mnemonicTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Focus the mnemonic textarea only when first expanded, not on every re-render
+  useEffect(() => {
+    if (mnemonicExpanded && mnemonicTextareaRef.current) {
+      mnemonicTextareaRef.current.focus();
+    }
+  }, [mnemonicExpanded]);
   const nostrMode = useStore((s) => s.onboardingNostrMode);
   const nostrDone = useStore((s) => s.onboardingNostrDone);
   const loading = useStore((s) => s.onboardingLoading);
@@ -1394,9 +1408,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                 rows={3}
                 className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
                 disabled={loading}
-                ref={(el) => {
-                  if (mnemonicExpanded && el) el.focus();
-                }}
+                ref={mnemonicTextareaRef}
                 onBlur={() => {
                   if (!restoreMnemonic.trim()) setMnemonicExpanded(false);
                 }}
@@ -1639,7 +1651,13 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             )}
           </div>
           {hasFile && (
-            <>
+            <form
+              className="space-y-4"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleFileRestore();
+              }}
+            >
               <input
                 type="password"
                 value={restorePassword}
@@ -1653,14 +1671,13 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                 disabled={loading}
               />
               <button
-                type="button"
-                onClick={handleFileRestore}
+                type="submit"
                 disabled={loading || !restorePassword}
                 className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
                 {loading ? "Restoring..." : "Restore Account"}
               </button>
-            </>
+            </form>
           )}
         </div>
 
@@ -1672,6 +1689,8 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               onClick={() =>
                 useStore.setState({
                   onboardingNostrMode: "manual-restore",
+                  onboardingRestorePassword: "",
+                  onboardingWalletPasswordConfirm: "",
                   onboardingError: "",
                 })
               }
@@ -1736,6 +1755,8 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           onClick={() =>
             useStore.setState({
               onboardingNostrMode: "restore",
+              onboardingRestorePassword: "",
+              onboardingWalletPasswordConfirm: "",
               onboardingError: "",
             })
           }

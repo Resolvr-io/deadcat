@@ -54,6 +54,15 @@ pub struct LiquidSendResult {
     pub fee: deadcat_sdk::ResolvedMinerFee,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareSendResult {
+    pub address: String,
+    pub amount_sat: u64,
+    pub fee_sat: u64,
+    pub fee: deadcat_sdk::ResolvedMinerFee,
+}
+
 /// Serializable event payload pushed to the frontend whenever the wallet
 /// snapshot changes (after every `with_sdk` call).
 #[derive(Debug, Clone, Serialize)]

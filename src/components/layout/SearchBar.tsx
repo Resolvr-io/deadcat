@@ -23,7 +23,7 @@ export function SearchBar() {
       <input
         value={search}
         onChange={handleChange}
-        className="hidden h-9 w-48 min-w-[160px] max-w-[320px] flex-1 rounded-full border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-300 transition focus:ring-2 lg:block"
+        className="hidden h-9 w-48 min-w-[160px] max-w-[320px] flex-1 rounded-full border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-300 transition focus:ring-2 md:block"
         placeholder="Search"
       />
 
@@ -31,7 +31,7 @@ export function SearchBar() {
       <button
         type="button"
         onClick={openSearch}
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 lg:hidden"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 md:hidden"
       >
         <svg
           aria-hidden="true"
@@ -50,7 +50,7 @@ export function SearchBar() {
 
       {/* Mobile search overlay */}
       {searchOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm lg:hidden">
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm md:hidden">
           <div className="flex items-center gap-3 border-b border-slate-800 bg-slate-950 px-4 py-3">
             <input
               value={search}

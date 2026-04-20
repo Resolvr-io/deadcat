@@ -24,7 +24,10 @@
 }
 
 html {
+  /* Solid dark so the scrollbar gutter and any macOS elastic-overscroll
+     exposure match the top-left stop of the body gradient below. */
   background: #020617;
+  color-scheme: dark;
 }
 
 html,
@@ -62,6 +65,12 @@ select {
   -webkit-user-select: text;
   user-select: text;
   color-scheme: dark;
+}
+
+button:focus-visible,
+[role="button"]:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 9999px rgba(51, 65, 85, 0.38);
 }
 
 /* ===== Form components ===== */
@@ -103,6 +112,34 @@ select {
     padding-left: var(--space-4);
     padding-right: var(--space-4);
   }
+}
+
+/* Reserve vertical space at the top of the header so the logo sits below
+   the macOS traffic-light buttons (which the OS anchors at top-left).
+   Scoped to the <header>'s container so page-content .phi-container
+   instances are unaffected. */
+:root[data-os="macos"] .top-shell__title-row {
+  padding-top: 32px;
+}
+
+/* Soft "hood" behind the macOS traffic lights so content that scrolls
+   under them reads as subordinate. Fades to transparent over 32px so it
+   doesn't add a hard edge. Pointer-events:none lets the native drag
+   region and traffic-light clicks pass through. */
+:root[data-os="macos"]::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  background: linear-gradient(
+    to bottom,
+    rgba(2, 6, 23, 0.92),
+    rgba(2, 6, 23, 0)
+  );
+  pointer-events: none;
+  z-index: 1000;
 }
 
 .phi-title {
@@ -453,29 +490,24 @@ select {
   }
 }
 
+/* Narrow, dark scrollbar. The track uses a vertical approximation of the
+   body's diagonal gradient so it blends with the page at both the top
+   (#020617) and the bottom (#0f172a) instead of reading as a dark slab
+   on the lighter part of the page. */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
-
-::-webkit-scrollbar-thumb {
-  border-radius: 9999px;
-  border: 2px solid #0b1222;
-  background-color: #0b1222;
-}
-
-body:hover::-webkit-scrollbar-thumb {
-  background-color: #1e293b;
-}
-
-body:hover::-webkit-scrollbar-thumb:hover {
-  background-color: #334155;
-}
-
 ::-webkit-scrollbar-track {
-  background: #0b1222;
+  background: linear-gradient(to bottom, #020617 0%, #0b1222 45%, #0f172a 100%);
 }
-
 ::-webkit-scrollbar-corner {
-  background: #0b1222;
+  background-color: #0f172a;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
 }

@@ -20,6 +20,9 @@ use state::{AppState, AppStateManager, PaymentSwap, AUTO_LOCK_TIMEOUT_SECS};
 /// How often (in seconds) to sync the wallet in the background while unlocked.
 const WALLET_SYNC_INTERVAL_SECS: u64 = 15;
 
+/// Default confirmation target for fee estimation (Liquid blocks).
+const DEFAULT_FEE_TARGET_BLOCKS: u16 = 6;
+
 const APP_STATE_UPDATED_EVENT: &str = "app_state_updated";
 
 /// Holds the DeadcatNode behind a tokio Mutex for async access.
@@ -41,6 +44,19 @@ impl Default for NodeState {
     fn default() -> Self {
         Self {
             node: tokio::sync::Mutex::new(None),
+        }
+    }
+}
+
+/// Holds a prepared send transaction awaiting user confirmation.
+pub struct PendingSendState {
+    pub prepared: tokio::sync::Mutex<Option<deadcat_sdk::PreparedSendLbtc>>,
+}
+
+impl Default for PendingSendState {
+    fn default() -> Self {
+        Self {
+            prepared: tokio::sync::Mutex::new(None),
         }
     }
 }
@@ -699,6 +715,121 @@ async fn get_wallet_transactions(
         .collect())
 }
 
+/// Drain the entire L-BTC balance to the given address, deducting the fee
+/// from the send amount. No change output, no iteration — uses LWK's
+/// native drain support. Stores the prepared tx for `confirm_send`.
+#[tauri::command]
+async fn estimate_max_send(
+    address: String,
+    app: AppHandle,
+) -> Result<wallet::types::PrepareSendResult, String> {
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+
+    let tx_options = deadcat_sdk::TxOptions {
+        fee_policy: deadcat_sdk::MinerFeePolicy::ConfirmationTargetBlocks {
+            blocks: DEFAULT_FEE_TARGET_BLOCKS,
+        },
+    };
+
+    let prepared = node
+        .prepare_drain_lbtc(address, tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    let result = wallet::types::PrepareSendResult {
+        address: prepared.address.clone(),
+        amount_sat: prepared.amount_sat,
+        fee_sat: prepared.prepared_tx.fee.amount_sat,
+        fee: prepared.prepared_tx.fee.clone(),
+    };
+
+    drop(guard);
+    let pending = app.state::<PendingSendState>();
+    *pending.prepared.lock().await = Some(prepared);
+
+    Ok(result)
+}
+
+/// Prepare a Liquid send transaction without broadcasting. Stores the
+/// prepared tx in state and returns the fee breakdown for confirmation.
+#[tauri::command]
+async fn prepare_send(
+    address: String,
+    amount_sat: u64,
+    tx_options: deadcat_sdk::TxOptions,
+    app: AppHandle,
+) -> Result<wallet::types::PrepareSendResult, String> {
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let prepared = node
+        .prepare_send_lbtc(address, amount_sat, tx_options)
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    let result = wallet::types::PrepareSendResult {
+        address: prepared.address.clone(),
+        amount_sat: prepared.amount_sat,
+        fee_sat: prepared.prepared_tx.fee.amount_sat,
+        fee: prepared.prepared_tx.fee.clone(),
+    };
+    drop(guard);
+
+    let pending = app.state::<PendingSendState>();
+    *pending.prepared.lock().await = Some(prepared);
+
+    Ok(result)
+}
+
+/// Broadcast the previously prepared send transaction.
+#[tauri::command]
+async fn confirm_send(app: AppHandle) -> Result<wallet::types::LiquidSendResult, String> {
+    let prepared = {
+        let pending = app.state::<PendingSendState>();
+        let mut guard = pending.prepared.lock().await;
+        guard.take().ok_or("No pending send to confirm")?
+    };
+
+    let node_state = app.state::<NodeState>();
+    let guard = node_state.node.lock().await;
+    let node = guard.as_ref().ok_or("Node not initialized")?;
+    let fee = prepared.prepared_tx.fee.clone();
+    let (txid, fee_sat) = node
+        .broadcast_prepared_send_lbtc(prepared)
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    let wallet_balance = node.balance().ok().map(|m| {
+        m.into_iter()
+            .filter(|(_, v)| *v > 0)
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    });
+    drop(guard);
+
+    let app_handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let manager = app_handle.state::<Mutex<AppStateManager>>();
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        mgr.bump_revision();
+        let state = mgr.snapshot_with_balance(wallet_balance);
+        emit_state(&app_handle, &state);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| format!("confirm_send state task failed: {e}"))??;
+
+    Ok(wallet::types::LiquidSendResult {
+        txid: txid.to_string(),
+        fee_sat,
+        fee,
+    })
+}
+
 #[tauri::command]
 async fn send_lbtc(
     address: String,
@@ -1271,6 +1402,35 @@ fn confirm_quit(app: AppHandle) {
     app.exit(0);
 }
 
+#[derive(serde::Serialize)]
+struct AppVersion {
+    version: &'static str,
+    commit: &'static str,
+    modified: bool,
+    /// SemVer build-metadata form: `0.1.0+abc1234` (or `+abc1234.modified`).
+    display: String,
+}
+
+/// Version string assembled from Cargo package version + git short hash
+/// embedded at build time. Shown in Settings.
+#[tauri::command]
+fn get_app_version() -> AppVersion {
+    let version = env!("CARGO_PKG_VERSION");
+    let commit = env!("GIT_HASH");
+    let modified = env!("GIT_DIRTY") == "1";
+    let display = if modified {
+        format!("{version}+{commit}.modified")
+    } else {
+        format!("{version}+{commit}")
+    };
+    AppVersion {
+        version,
+        commit,
+        modified,
+        display,
+    }
+}
+
 // ============================================================================
 // App Entry Point
 // ============================================================================
@@ -1325,8 +1485,12 @@ pub fn run() {
 
             app.manage(Mutex::new(manager));
             app.manage(NodeState::default());
+            app.manage(PendingSendState::default());
             app.manage(nostr_state);
             app.manage(WalletStoreState::default());
+
+            // Load persisted relay market cache for instant cold-start display
+            commands::load_relay_cache(app.handle());
 
             // Custom macOS menu — Cmd+Q routes through frontend quit confirmation
             let quit_item = MenuItemBuilder::with_id("confirm-quit", "Quit Deadcat Live")
@@ -1483,6 +1647,9 @@ pub fn run() {
             get_cached_mnemonic,
             get_mnemonic_word_count,
             get_mnemonic_word,
+            estimate_max_send,
+            prepare_send,
+            confirm_send,
             send_lbtc,
             // Activity / auto-lock
             record_activity,
@@ -1497,6 +1664,7 @@ pub fn run() {
             // Legacy
             fetch_chain_tip,
             confirm_quit,
+            get_app_version,
             // SDK / Nostr
             commands::init_nostr_identity,
             commands::generate_nostr_identity,

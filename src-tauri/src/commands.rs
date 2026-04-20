@@ -18,10 +18,50 @@ use crate::{NodeState, NostrAppState};
 
 const ORDER_INDEX_AUTO_RESOLVE_SENTINEL: u32 = u32::MAX;
 
-/// Cache of markets fetched from relays but not yet promoted in the store.
-/// Persists across `discover_contracts` calls so markets don't flash and disappear.
+/// Cache of markets fetched from relays. Persisted to disk as JSON so
+/// markets are available instantly on cold start without waiting for relays.
 static RELAY_MARKET_CACHE: once_cell::sync::Lazy<std::sync::Mutex<Vec<DiscoveredMarket>>> =
     once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+const RELAY_CACHE_FILE: &str = "relay_market_cache.json";
+
+fn relay_cache_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join(RELAY_CACHE_FILE))
+}
+
+pub fn load_relay_cache(app: &tauri::AppHandle) {
+    let Some(path) = relay_cache_path(app) else {
+        return;
+    };
+    let Ok(data) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(markets) = serde_json::from_str::<Vec<DiscoveredMarket>>(&data) else {
+        return;
+    };
+    if let Ok(mut cache) = RELAY_MARKET_CACHE.lock() {
+        *cache = markets;
+    }
+}
+
+fn save_relay_cache(app: &tauri::AppHandle) {
+    let Some(path) = relay_cache_path(app) else {
+        return;
+    };
+    let Ok(cache) = RELAY_MARKET_CACHE.lock() else {
+        return;
+    };
+    if cache.is_empty() {
+        return;
+    }
+    let Ok(json) = serde_json::to_string(&*cache) else {
+        return;
+    };
+    let _ = std::fs::write(path, json);
+}
 
 fn validate_request(request: &CreateContractRequest) -> Result<(), String> {
     if request.question.trim().is_empty() || request.question.len() > 140 {
@@ -203,16 +243,18 @@ async fn construct_and_store_node(
         _t0.elapsed()
     );
 
-    // Start the background Nostr subscription loop (guard is released)
-    if let Some(node) = node_arc.as_ref() {
-        if let Err(e) = node.start_subscription().await {
-            log::warn!("failed to start discovery subscription: {e}");
-        }
+    // Start the Nostr subscription in the background — do NOT await.
+    // This connects to relays and starts the event loop. The node is
+    // already stored in NodeState so commands like discover_contracts
+    // can use it immediately (they handle missing relay data gracefully).
+    if let Some(node) = node_arc.clone() {
+        tokio::spawn(async move {
+            if let Err(e) = node.start_subscription().await {
+                log::warn!("failed to start discovery subscription: {e}");
+            }
+            log::info!("discovery subscription started");
+        });
     }
-    log::info!(
-        "[restore-trace] construct_and_store_node: subscription started at {:?}",
-        _t0.elapsed()
-    );
 
     // Forward discovery events to the frontend
     let app_handle = app.clone();
@@ -1003,7 +1045,7 @@ pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredM
         }
     }
 
-    // Fetch from Nostr relays in the background and update the cache.
+    // Refresh from relays in the background.
     let node = {
         let node_state = app.state::<NodeState>();
         let guard = node_state.node.lock().await;
@@ -1013,9 +1055,6 @@ pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredM
         let app_handle = app.clone();
         tauri::async_runtime::spawn(async move {
             if let Ok(markets) = node.fetch_markets().await {
-                // Only replace the cache when the relay returned results;
-                // an empty response (timeout / transient failure) should
-                // not wipe markets the user was just looking at.
                 if markets.is_empty() {
                     return;
                 }
@@ -1030,6 +1069,8 @@ pub async fn discover_contracts(app: tauri::AppHandle) -> Result<Vec<DiscoveredM
                         let _ = app_handle.emit("discovery:market-refresh", ());
                     }
                 }
+                // Persist cache to disk for instant cold-start display
+                save_relay_cache(&app_handle);
             }
         });
     }

@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useMemo } from "react";
 import { categories } from "../../constants";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useStore } from "../../store";
 import type { NavCategory } from "../../types";
 import { formatCompactSats } from "../../utils-react/wallet";
@@ -8,6 +10,16 @@ import { CloseButton } from "../shared/CloseButton";
 import { SearchBar } from "./SearchBar";
 import { SettingsPanel } from "./SettingsPanel";
 import { UserMenu } from "./UserMenu";
+
+// Empty header space becomes a window drag handle. Children with their own
+// interactive behavior (buttons, inputs) are not `event.target`, so they
+// still receive their normal click events.
+function onDragMouseDown(e: React.MouseEvent<HTMLElement>): void {
+  if (e.buttons !== 1) return;
+  if (e.target !== e.currentTarget) return;
+  e.preventDefault();
+  void getCurrentWindow().startDragging();
+}
 
 /* ── Category icon helper ──────────────────────────────────────────── */
 
@@ -106,6 +118,13 @@ export function categoryIcon(
           <path d="m19 9-5 5-4-4-3 3" />
         </svg>
       );
+    case "Resolved":
+      return (
+        <svg aria-hidden="true" {...a}>
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+          <polyline points="22 4 12 14.01 9 11.01" />
+        </svg>
+      );
     case "My Markets":
       return (
         <svg aria-hidden="true" {...a}>
@@ -139,6 +158,8 @@ function LogoutModal() {
       logoutPasswordInput: "",
     });
   }, []);
+
+  useEscapeKey(logoutOpen, closeLogout);
 
   const confirmLogout = useCallback(async () => {
     // Lock first to ensure clean state, then delete
@@ -447,7 +468,7 @@ function CategoryBar() {
                 }`}
               >
                 {icon}
-                {category}
+                {category === "Ending Soon" ? "Ending" : category}
               </button>
             );
           })}
@@ -572,7 +593,7 @@ function WalletButton() {
 function Logo() {
   return (
     <svg
-      className="h-10"
+      className="h-9"
       viewBox="0 0 1274 267"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
@@ -642,14 +663,24 @@ export function TopShell() {
   const activeCategory = useStore((s) => s.activeCategory);
 
   const goHome = useCallback(() => {
-    useStore.setState({ view: "home", selectedMarketId: "" });
+    useStore.setState({
+      view: "home",
+      activeCategory: "Trending",
+      selectedMarketId: "",
+    });
   }, []);
 
   return (
     <>
-      <header className="relative z-30 border-b border-slate-800 bg-slate-950/80 backdrop-blur">
-        <div className="phi-container py-4 lg:py-5">
-          <div className="flex items-end gap-5">
+      <header
+        className="relative z-30 border-b border-slate-800 bg-slate-950/80 backdrop-blur"
+        onMouseDown={onDragMouseDown}
+      >
+        <div
+          className="phi-container top-shell__title-row py-4 lg:py-5"
+          onMouseDown={onDragMouseDown}
+        >
+          <div className="flex items-end gap-5" onMouseDown={onDragMouseDown}>
             {/* Logo */}
             <button
               type="button"
@@ -660,12 +691,18 @@ export function TopShell() {
             </button>
 
             {/* Center: search bar */}
-            <div className="flex flex-1 justify-center pb-[5px]">
+            <div
+              className="flex flex-1 justify-center pb-[5px]"
+              onMouseDown={onDragMouseDown}
+            >
               <SearchBar />
             </div>
 
             {/* Right side: wallet + user menu */}
-            <div className="flex shrink-0 items-center gap-2 pb-[5px]">
+            <div
+              className="flex shrink-0 items-center gap-2 pb-[5px]"
+              onMouseDown={onDragMouseDown}
+            >
               {nostrPubkey && (
                 <button
                   type="button"

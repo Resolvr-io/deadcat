@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { useCallback, useEffect, useState } from "react";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
+import { useLockScroll } from "../../hooks/useLockScroll";
 import { useStore } from "../../store";
 import { generateAvatarDataUri } from "../../utils-react/avatar";
 import { CloseButton } from "../shared/CloseButton";
@@ -64,6 +66,11 @@ async function pickAndUpload(mediaType: "avatar" | "banner"): Promise<string> {
 
 export default function ProfilePage() {
   const profileOpen = useStore((s) => s.profileOpen);
+  if (!profileOpen) return null;
+  return <ProfilePageContent />;
+}
+
+function ProfilePageContent() {
   const nostrNpub = useStore((s) => s.nostrNpub);
   const nostrProfile = useStore((s) => s.nostrProfile);
 
@@ -95,28 +102,19 @@ export default function ProfilePage() {
     }
   }, [nostrProfile]);
 
-  useEffect(() => {
-    if (profileOpen) {
-      document.body.style.overflow = "hidden";
-      document.documentElement.style.overflow = "hidden";
-      // Fetch latest profile from relays
-      invoke<import("../../types").NostrProfile | null>("fetch_nostr_profile")
-        .then((profile) => {
-          if (profile) useStore.setState({ nostrProfile: profile });
-        })
-        .catch(() => {});
-    } else {
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-    }
-    return () => {
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-    };
-  }, [profileOpen]);
-
   const close = useCallback(() => {
     useStore.setState({ profileOpen: false });
+  }, []);
+
+  useLockScroll();
+  useEscapeKey(true, close);
+
+  useEffect(() => {
+    invoke<import("../../types").NostrProfile | null>("fetch_nostr_profile")
+      .then((profile) => {
+        if (profile) useStore.setState({ nostrProfile: profile });
+      })
+      .catch(() => {});
   }, []);
 
   const handleBackdropClick = useCallback(
@@ -160,8 +158,6 @@ export default function ProfilePage() {
     }
     setSaving(false);
   }, [name, displayName, picture, banner, about, website, nip05, lud16, close]);
-
-  if (!profileOpen) return null;
 
   return (
     <div
