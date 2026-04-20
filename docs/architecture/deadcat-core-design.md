@@ -2697,6 +2697,67 @@ The current contract state (stored via `ContractStore`) carries enough informati
 
 Transition history is for richer features: price charts, fill-by-fill order breakdowns, full audit trails.
 
+### ContractStore Compliance Test Kit
+
+Store correctness is enforced by a separate crate, `deadcat-core-store-testkit`, that integrators depend on as a dev-dependency. The crate exposes `pub fn run_store_compliance(store: &mut impl ContractStore) -> TestResult` (plus `pub fn run_chain_source_compliance(chain: &mut impl ChainSource) -> TestResult` for `ChainSource` implementations). Integrators call one function per trait in their own test suite and get automated conformance checking. Pattern matches `sqlx::testing`, Diesel backend compliance suites, iroh's blob store kit — a well-established approach for trait-based APIs with pluggable backends.
+
+The test kit enforces the following invariant categories. Each category maps to one or more concrete test cases in the kit:
+
+**Outpoint tracking and slot identity**
+- Outpoint round-trip: after `apply_transitions` writes `(slot, outpoint)`, `find_by_outpoints(&[outpoint])` returns a `ContractMatch` with the same `(slot, outpoint)` pair.
+- Outpoint uniqueness across contracts: no two tracked contracts share an outpoint.
+- Slot label uniqueness within a contract: `contract_outpoints` returns at most one entry per `SlotIdentity` value.
+- Slot-type containment: `PoolSlot` values only appear in pool contracts, `MarketSlot` only in market contracts, etc.
+
+**Contract lifecycle**
+- `track_contract` on an already-tracked `ContractId` errors with `ContractAlreadyTracked`.
+- `untrack_contract` removes the contract and all derived data (asset-id index entries, covenant scripts, processing log entries, history entries for `ContractHistory` implementors).
+- `DerivedContractData` is immutable after `track_contract`.
+
+**Sync state**
+- `synced_to` monotonically advances per contract; `advance_synced_heights` with a lower value is rejected or no-op.
+- `stale_contracts` groups by emptiness of `DerivedContractData.covenant_scripts` (empty → `outpoint_contracts`, non-empty → `script_contracts`) and returns only contracts with `synced_to < tip_height`.
+
+**Write-path atomicity and idempotency**
+- `apply_transitions` is per-transaction atomic: the full slice commits as a unit or not at all.
+- `apply_transitions` is idempotent on `(contract_id, txid)`: the second call is a no-op, with no duplicate history entries for `ContractHistory` implementors.
+- `apply_transitions` is durable on return.
+
+**Indexing**
+- Asset-ID index consistency: `find_by_asset_id(a)` returns contract X iff X's `DerivedContractData.asset_ids` includes `a`.
+- `covenant_scripts(contract_id)` returns exactly the scripts from `DerivedContractData.covenant_scripts`.
+
+**Rollback**
+- `rollback_to_height(N)` restores each contract's state to its most recent transition at or below N.
+- Contracts whose creation transaction was in blocks strictly above N are removed.
+- After rollback, `synced_to = min(old_synced_to, N)` for remaining contracts.
+- Rollback is idempotent; `rollback_to_height(N)` for N ≥ current tip is a no-op.
+
+**Pagination**
+- Cursor stability under concurrent writes: opaque cursors continue to function correctly when new contracts are ingested between pages (no duplicates, no missed items for contracts ordered before the cursor position).
+- Cursor scope: a cursor from one method is rejected when passed to a different method or with different filters.
+
+**Query-level ordering**
+- `best_orders_for_market` returns orders in price order with FIFO by `ChainPosition` among ties; filtered to `Active` state with sufficient remaining liquidity.
+- `transition_history` returns in ascending `ChainPosition` (oldest-first).
+
+**Processing log vs. history separation**
+- `prune_finalized` removes rollback metadata but does NOT remove `ContractHistory` entries.
+- Stores that don't implement `ContractHistory` can still roll back correctly (processing log is independent).
+
+**Tracking mode behavior (order-specific)**
+- `OrderTracking::Persistent` orders accumulate history if the store implements `ContractHistory`.
+- `OrderTracking::EphemeralFresh` and `OrderTracking::EphemeralMidLife` orders produce no `ContractHistory` entries regardless of whether the store implements the trait.
+- `prune_finalized` auto-untracks terminal Ephemeral orders past the finality depth.
+
+**ChainSource invariants** (for `run_chain_source_compliance`)
+- `register_*` is idempotent with set semantics: re-registering same scripts/outpoints collapses to one active watch; `from_height` re-registration uses `min(existing, new)` to widen coverage.
+- `unregister_*` of never-registered items is a no-op, not an error.
+- Notifications delivered per registered item, not per call (no duplicate notifications from duplicate registrations).
+- `transactions_by_scripts` returns results in chain order with complete-block guarantees.
+
+This is the source of truth for compliance. The categories above are the user-facing overview; the crate's source code enumerates the specific test cases, fixtures, and edge cases. As new invariants surface during implementation (Phases 3-6), they land in the kit first and in this list second.
+
 ## Separation of Concerns: Wallet vs Contract Layer
 
 A key design principle: the contract layer and wallet layer have complementary, non-overlapping views of the same transaction.
@@ -3074,6 +3135,15 @@ The operator closes the pool via `build_lmsr_close_pset` when convenient after m
 ### Order maker responsibilities
 
 Order makers cancel unfilled orders via `build_cancel_pset` when convenient; otherwise takers may fill them post-resolution. As with pools, the engine does not gate this.
+
+### Ephemeral orders and rollback
+
+For orders tracked as `OrderTracking::EphemeralFresh` or `OrderTracking::EphemeralMidLife`, terminal states (`Consumed`, `Cancelled`) remain visible in storage during the finality window and auto-untrack at `prune_finalized` past finality (depth 2 on Liquid). Rollback interacts with this as follows:
+
+- **Rollback within finality**: processing log still contains the transitions. `rollback_to_height(N)` reverses them normally — a Consumed Ephemeral order returns to Active state if the terminal transition occurred in blocks above N, same as any other rollback.
+- **Rollback past a finalized terminal transition**: the order was auto-untracked at `prune_finalized`; its processing log entries and stored state are gone. Rollback cannot restore it. On the new canonical chain, if the order exists again (e.g., its creation tx didn't get reorged), the caller must re-discover from Nostr and re-ingest. This matches the general "contracts above rollback height are removed; caller re-discovers" rule for Ephemeral orders specifically.
+
+Persistent orders never auto-untrack, so they rollback cleanly within the finality window and otherwise behave identically to markets and pools.
 
 ### UI-layer warnings are appropriate
 
@@ -3971,11 +4041,13 @@ This is the same pattern used elsewhere in the codebase: keep per-kind semantic 
 **Rejected**: Two-step pattern where the engine returns results and the caller manually triggers persistence.
 **Why**: Since the engine exclusively owns the store, there's no reason for the caller to inspect results before deciding to persist — the transitions are deterministic from the transaction. Splitting compute and persist would create a window where a crash could leave the engine's in-memory state ahead of the store. The single-call pattern eliminates this by design.
 
-### Contract-Level Atomicity Required, Transaction-Level Recommended
+### Per-Transaction Atomicity Required
 
-**Chosen**: Store must apply each contract's state update atomically. Applying all contracts from a multi-contract transaction atomically is recommended but not required.
-**Rejected**: Requiring strict transaction-level atomicity.
-**Why**: Contract-level atomicity is non-negotiable — a half-updated contract (outpoints changed but state not, or vice versa) is corrupted state. Transaction-level atomicity (all contracts in one tx updated together) is a "nice to have" for view consistency but not a correctness requirement. A "jagged" state where one contract has processed a tx but another hasn't is indistinguishable from staggered ingestion — which is already a normal condition when contracts are discovered at different times. Re-processing the transaction advances the remaining contracts (idempotency), and already-processed contracts are a no-op. Transaction-level atomicity is recommended because it's typically minimal extra burden (e.g., a single database transaction) and avoids the temporary jagged-view window.
+**Chosen**: `apply_transitions` is per-transaction atomic — the full `&[StateUpdate]` slice passed in one call commits as a unit or not at all. Typically implemented with a single database transaction around the method body.
+
+**Rejected**: Contract-level atomicity with transaction-level merely "recommended" (an earlier iteration). Under that weaker contract, a `CovenantInvariantViolation` mid-multi-contract-transaction could leave one contract advanced while another rolled back, producing a torn state the engine's retry logic couldn't safely recover from.
+
+**Why**: Cross-contract transactions (routed trades, and in v2 cross-outcome arbs) produce multiple `StateUpdate` values that must commit together for the engine's error semantics to work. On `CovenantInvariantViolation` during a multi-contract transaction, the current transaction's batch must roll back as a unit so the engine sees a consistent state; partial commits would leave the store in a configuration the engine can't reach via normal transitions. Across multiple transactions within one `step` call, each transaction's batch commits independently — prior transactions stay committed on error, the erroring transaction rolls back, unprocessed transactions remain to be processed on retry. Per-batch atomicity is the minimum guarantee required; it's also cheap to implement (one SQLite transaction per call) and compatible with integrators who already have transactional backends. See the "Atomicity requirements" paragraph under the Store Trait section for the full error-handling semantics.
 
 ### Idempotent Transaction Processing
 
@@ -4417,3 +4489,52 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 **Chosen**: `estimate_bootstrap` takes `max_loss_sats`, `half_payout_sats`, and `starting_price_bps` — no `fee_bps`.
 **Rejected**: Including `fee_bps` for API symmetry with `derive_pool_params`.
 **Why**: The bootstrap reserves depend on the LMSR cost function shape (`b`, `q_step_lots`, `half_payout_sats`) and starting position (`starting_price_bps`). The fee has no effect on the cost function, initial reserves, or s_index mapping — it's a per-swap spread applied by the covenant, not a curve parameter. Accepting an unused parameter misleads callers into thinking fees affect capital requirements.
+
+### Labeled Outpoints at the Engine↔Store Boundary
+
+**Chosen**: `Vec<(SlotIdentity, OutPoint)>` at every engine↔store boundary where outpoint sets appear (`InitialContractState.outpoints`, `ContractMatch.matched_outpoints`, `StateUpdate.old_outpoints` / `new_outpoints`, `OutpointContractInfo.outpoints`, `ContractStore::contract_outpoints` return). Slot identity lives in the data, not in the `Vec` index.
+
+**Rejected**:
+- (a) Convention-only positional ordering — documentation-enforced invariant that the store implementor could silently violate (e.g., with a hash-backed index that scrambles insertion order).
+- (b) Compliance tests alone — documentation plus testkit, but still convention at the type level. Better than (a) but still requires store implementors to opt in.
+- (c) Type-level fixed shapes (`[OutPoint; 3]` for pools, typed structs like `PoolOutpoints { yes, no, collateral }` per contract type) — clean for pools and orders but forces a parallel shape for variable-N multi-outcome markets. Partial type-level enforcement is worse than picking a lane.
+- (d-unrefined) Dropping ordering entirely with raw `Vec<OutPoint>` — fails because `OutPoint` alone is `(txid, vout)` with no way to determine which slot the engine meant without re-fetching the previous output from chain. Labels are the refinement that makes (d) work.
+
+**Why**: (a) is fragile. (b) helps but is opt-in. (c) partially type-enforces but forces awkward variable-N handling. (d) with labels is strictly better: the store's contract becomes unambiguous ("persist these labeled pairs"), the engine/builders look up slots by `SlotIdentity` without positional conventions, and variable-N markets fit naturally via the `u8` outcome-index field in `MultiOutcomeMarketSlot` variants. Slot-label uniqueness within a contract is an engine-enforced invariant and is compliance-tested at the store boundary. See [SlotIdentity](#slotidentity-and-covenantphase) and the [ContractStore Compliance Test Kit](#contractstore-compliance-test-kit).
+
+### Two Order Ingestion Methods, Not One
+
+**Chosen**: `ingest_persistent_order(params, creation_tx)` and `ingest_ephemeral_order(params, snapshot)` — two distinct engine methods that signal caller intent at the call site.
+
+**Rejected**:
+- Single `ingest_order(params, snapshot, tracking: OrderTracking)` with a tracking-mode parameter. Less self-documenting at call sites (readers must trace the `tracking` argument to understand whether this is a maker-monitoring or taker-discovery call).
+- Single `ingest_order(params, snapshot)` inferring tracking mode from snapshot type. Loses the `EphemeralFresh` case (creation tx discovered from Nostr, but no history desired) — that combination doesn't get expressed.
+- Keeping tracking mode implicit and supplying only one method — taker and maker use cases diverge too much; a single method forces callers to remember which behaviors they get.
+
+**Why**: The two methods make caller intent explicit at the call site — `ingest_persistent_order(params, tx)` obviously means "I own this and want full history," `ingest_ephemeral_order(params, snapshot)` obviously means "I'm tracking this for routing or display." The tracking-mode field in `OrderState` is still needed because it governs downstream engine behavior (history writes, `prune_finalized` cleanup), but callers don't pass a mode argument — the method-name-as-intent signal is cleaner. See [OrderState](#orderstate), [OrderTracking](#orderstate), and the engine's [Ingestion](#contract-ingestion) section.
+
+### No Atomic Order Promotion Method
+
+**Chosen**: Changing an order's tracking mode requires `untrack_contract` followed by re-ingestion via the other method. No dedicated `promote_to_owned` / `demote_to_discovered` engine method.
+
+**Rejected**: A `promote_to_owned(contract_id, creation_tx)` engine method that updates tracking mode in place (cheap, no history backfill) or triggers forward-sync from creation (slow, full history rebuild).
+
+**Why**: YAGNI. The promotion use case (a taker who initially tracked ephemerally decides they want to audit a specific order's history) is genuinely rare. The demotion case (a maker who owns an order decides they don't want history anymore, for storage cleanup) is even rarer — and they can just untrack the order entirely if storage cleanup is the goal. Dedicated promotion/demotion methods would add API surface and engine-level complexity for a use case nobody has asked for. If concrete demand surfaces post-v1, adding such methods is a pure non-breaking API addition. Until then, the two-step `untrack_contract` → re-ingest path is documented as the explicit migration for callers who need it.
+
+### Post-Resolution Trading Not Gated
+
+**Chosen**: `deadcat-core` does not gate trades through pools or orders whose parent market has resolved or expired. `quote_trade`, `build_trade_pset`, and all pool/order admin operations remain callable regardless of parent market state.
+
+**Rejected**:
+- Halting `quote_trade` / `build_trade_pset` with a `MarketNotTrading` error variant when the parent market is non-`Trading`.
+- Adding a safety-mode flag that callers can toggle to opt in or out of the gate.
+
+**Why**: The covenants are market-state-agnostic (they accept swaps and fills indefinitely) and the only airtight protection against post-resolution trading would be covenant-level co-spending of the market on every swap — rejected on transaction-weight grounds. Gating at the engine layer provides no protection against adversarial actors (who would fork or bypass `deadcat-core`), while adding friction for legitimate edge cases (an informed trader dumping now-worthless tokens benefits from the covenant-valid trade even though it's bad for the pool operator). The engine's responsibility is covenant-validity and impossibility, not unfavorability. See the broader principle at [Design Principles § Engine gates covenant-invalidity and impossibility, not unfavorability](#engine-gates-covenant-invalidity-and-impossibility-not-unfavorability) and the operational consequences at [Pool and Order Lifecycle at Market Resolution](#pool-and-order-lifecycle-at-market-resolution). Pool operators protect themselves by closing pools after resolution (`build_lmsr_close_pset`); UI-layer warnings handle the honest-user protection case.
+
+### CovenantInvariantViolation Retained as Defense-in-Depth
+
+**Chosen**: Keep the `CoreError::CovenantInvariantViolation { contract_id, kind }` variant even after a covenant-level formal proof lands, annotated in rustdoc as "unreachable post-proof in the covenant layer but retained as defense-in-depth for layers the proof doesn't cover (interpretation, chain-source, version-mismatch)."
+
+**Rejected**: Removing the variant once a covenant proof is published, on the grounds that the proof renders the violation unreachable.
+
+**Why**: A covenant-level proof eliminates the possibility that the covenant accepts a malformed transaction — but doesn't guarantee the interpretation layer correctly identifies well-formed outputs, that `RedeemNode::decode` has no bugs, or that the `ChainSource` backend isn't returning spoofed or truncated data. Failure modes at those layers still surface as "malformed covenant window" at the engine. Removing the variant post-covenant-proof would require an engine-level end-to-end proof (much larger lift) to be fully justified. Keeping the variant as defense-in-depth costs little (dead-code-post-proof) and catches real-world bugs outside the proof's scope. When/if an engine-level proof does land, the variant can be removed at that point with genuine code-simplicity gain.

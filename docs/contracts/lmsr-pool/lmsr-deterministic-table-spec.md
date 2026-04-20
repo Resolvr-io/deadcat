@@ -196,6 +196,20 @@ Correctness validation uses the committed Merkle root approach rather than per-i
 - **Cross-implementation conformance**: future alternative implementations (Taylor, CORDIC, cross-language ports) target the same committed Merkle roots. Any implementation reproducing all 256 roots byte-for-byte is provably equivalent to the bignum reference over the entire valid parameter space.
 - **No per-index test vector is committed** — the Merkle root over 65,536 F-values is a stronger equivalence check than any finite sample of individual F-values. If two implementations agree on the root, they agree on every F-value.
 
+## Precision Calibration
+
+The "200+ bits working precision is sufficient" claim is empirically validated, not assumed. During `deadcat-codegen` development, a one-time calibration run establishes the minimum safe precision for the chosen bignum method:
+
+1. **Establish ground truth**: generate all 256 Merkle roots at a very high precision (e.g., 512 bits). Re-generate at 1024 bits and assert the results match byte-for-byte. If they don't, the starting precision is too low — go higher. Once two consecutive precision levels agree, the higher one is "trusted truth."
+2. **Binary-search downward**: halve the precision repeatedly (512 → 256 → 128 → 64 → …). At each level, regenerate all 256 roots plus their underlying 16.7M F-values (65,536 per combo × 256 combos) and compare to ground truth.
+3. **Record the threshold**: the first precision where any root or F-value disagrees with ground truth is the "minimum safe precision" for this bignum method. The precision budget pinned in the spec (nominally 200 bits) must exceed this threshold by a comfortable margin.
+
+The calibration is a **one-time development artifact**, not a per-CI regression. Its output is a documented fact pinned in the satellite spec (e.g., "empirical minimum for our bignum method is X bits; we use 200 bits for Y bits of safety margin"). The ongoing regression check remains the committed Merkle roots — any implementation that reproduces them byte-for-byte is provably equivalent.
+
+The threshold is **specific to the chosen bignum method** (Taylor series at high precision, continued fractions, MPFR-backed evaluation, etc.). An alternative implementation with a different method may have a different minimum; it only needs to reproduce the committed roots, not the threshold. Implementations whose published conformance demands that they document their precision strategy (for auditability) may cite this calibration result as the justification for their chosen working precision.
+
+A CLI subcommand in `deadcat-codegen` (`just calibrate-precision`) runs the calibration and emits a report. Integrators and auditors can re-run it against a fork or alternative implementation to validate the precision claim.
+
 ## Key Files
 
 - `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — `lmsr_table_leaf_hash`, `lmsr_table_node_hash`, `merkle_proof_step_fn` (the on-chain verification code — the authoritative definition of the Merkle format)

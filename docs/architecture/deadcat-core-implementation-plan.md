@@ -108,6 +108,7 @@ Phase numbering reflects execution order. Within each phase, items are listed in
 7. **Multi-outcome drift test** — for each supported N: regenerate in-memory, assert byte-match against the committed file, then invoke the SimplicityHL compiler on the generated source with a canonical test param set and assert compilation succeeds (catches both drift and semantically invalid template output).
 8. **Directory consistency checks** — assert no extraneous files exist under `contracts/multi_outcome/` and no expected files are missing.
 9. **smplx artifact drift test** — runs on every `cargo test`. Re-invokes `simplex build` against each `.simf` source and asserts the regenerated `src/artifacts/*.rs` files match the committed versions byte-for-byte. Catches stale artifacts after `.simf` source changes (analogous to the LMSR fixture drift test and the multi-outcome `.simf` drift test). Regeneration via `just regenerate-artifacts` when intentional changes are being committed.
+10. **Precision calibration** — one-time dev artifact. Generates all 256 Merkle roots at progressively lower bignum precision (binary-search from 512 bits down), identifying the minimum precision at which the output diverges from high-precision ground truth. Result is a pinned empirical fact in [lmsr-deterministic-table-spec.md § Precision Calibration](../contracts/lmsr-pool/lmsr-deterministic-table-spec.md#precision-calibration) — not a per-CI regression. CLI subcommand `just calibrate-precision` re-runs the calibration on demand (for validating alternative bignum methods or auditing the precision claim).
 
 **Quality gate**: `cargo test` passes at the workspace root with both `deadcat-codegen` drift tests running. `just generate-simf` and `just regenerate-lmsr-fixtures` both produce outputs that match their committed counterparts when run on a clean repo.
 
@@ -127,8 +128,9 @@ Phase numbering reflects execution order. Within each phase, items are listed in
 6. **Minimal in-memory `ContractStore` implementation** — sufficient for integration testing in subsequent phases. Not production-quality; that's `deadcat-node`'s job.
 7. **LMSR F-value runtime** — the bignum F-value computation, with per-pool-combo in-memory cache. Optional disk cache can wait for a later pass.
 8. **`ContractId` derivation** — `contract_cmr(params, network) -> Cmr` standalone function and the engine-integrated version.
+9. **Compliance test kit crate** — a separate workspace crate (`deadcat-core-store-testkit`) that integrators depend on as a dev-dependency. Exposes two top-level entry points: `run_store_compliance(&mut impl ContractStore)` and `run_chain_source_compliance(&mut impl ChainSource)`. Bootstraps here in Phase 3 with the core outpoint round-trip and rollback invariants; grows through Phases 4-6 as new invariants surface from integration tests. See [deadcat-core-design.md § ContractStore Compliance Test Kit](deadcat-core-design.md#contractstore-compliance-test-kit) for the invariant categories the kit enforces. Pattern matches sqlx, diesel, iroh — integrators call one function in their own test suite and get automated conformance checking.
 
-**Quality gate**: crate compiles. Core types have tests for construction and basic invariants (e.g., `OutcomeIndex::BINARY == OutcomeIndex::new(0)`). LMSR F-value runtime produces values matching `deadcat-codegen`'s committed fixtures for at least the three canonical param combos (binding proof that runtime and reference agree).
+**Quality gate**: crate compiles. Core types have tests for construction and basic invariants (e.g., `OutcomeIndex::BINARY == OutcomeIndex::new(0)`). LMSR F-value runtime produces values matching `deadcat-codegen`'s committed fixtures for at least the three canonical param combos (binding proof that runtime and reference agree). The minimal in-memory `ContractStore` implementation passes `run_store_compliance`.
 
 ### Phase 4 — `ContractEngine` mechanics
 
@@ -136,7 +138,7 @@ Phase numbering reflects execution order. Within each phase, items are listed in
 
 **Deliverables**:
 
-1. **Ingestion methods** — `ingest_market`, `ingest_pool`, `ingest_order` per [deadcat-core-design.md § Contract Ingestion](deadcat-core-design.md#contract-ingestion). Each verifies creation-tx authenticity by re-deriving the covenant script pubkey from params and matching against the on-chain output.
+1. **Ingestion methods** — `ingest_market`, `ingest_pool`, `ingest_persistent_order`, `ingest_ephemeral_order` per [deadcat-core-design.md § Contract Ingestion](deadcat-core-design.md#contract-ingestion). Each verifies creation-tx authenticity by re-deriving the covenant script pubkey from params and matching against the on-chain output.
 2. **Transaction interpretation** — `interpret_transaction` + `InterpretedTransaction` with `TransitionDetails` per-contract variants. Dispatches to per-contract interpretation logic.
 3. **State-step mechanics** — `step` method, `StateUpdate` write-path type, `ProcessedTransaction` result type.
 4. **Chain-sync scaffolding** — `ChainSource` trait per [chain-only-recovery.md § ChainSource Addition](../protocol/chain-only-recovery.md#chainsource-addition), including `issuance_transaction` lookup. Abstract; concrete Esplora/Electrs backends live outside this crate.
@@ -216,6 +218,7 @@ Enumerated so they don't surprise anyone mid-phase:
 3. **Multi-outcome template correctness** — a template bug propagates to every generated N. Mitigation: the drift test's in-memory SimplicityHL compile check catches syntactic issues; cover each generated N with integration tests that exercise the full spend-path set.
 4. **Ingestion script-pubkey verification** — the authenticity check that every other engine guarantee depends on. If this is loose (e.g., accepts spoofed params with a coincidentally-matching txid), recovery breaks. Mitigation: exhaustive positive and negative tests in Phase 4.
 5. **PSET builder correctness across cross-contract composition** — atomic trades (pool + maker orders) and (in v2) arb (market + pools) layer constraints from multiple covenants into one tx. Any builder that produces txs that one covenant accepts but another rejects is a bug that only surfaces at broadcast time. Mitigation: integration tests specifically targeting multi-contract atomic transactions in Phase 5.
+6. **smplx API churn (pre-1.0)** — adopting typed artifacts from Phase 1 commits us to `simplex build` output compatibility. A breaking change in smplx between our pin point and v1 release could force re-generation and test updates. Mitigation: direct collaboration with the Blockstream team building smplx — they've committed to fixing issues we surface. The Nix pin on v0.0.3 provides a reproducible baseline; upgrades are explicit and auditable via `flake.lock` diff. Worst case (collaboration breakdown), the committed `src/artifacts/*.rs` files are plain Rust source that can be frozen and manually maintained.
 
 ## Simplicity testing with smplx
 

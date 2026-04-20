@@ -84,6 +84,8 @@ Everything else is either derived or a protocol constant.
 | `S_MAX_INDEX` | 65,535 | Full table range. The LMSR cost function naturally makes extremes expensive — no need to artificially limit. |
 | `MIN_POOL_RESERVE` | 1,000 sats | Applied to all three reserves (YES, NO, Collateral). Well above Liquid's dust limit (~546 sats), negligible locked capital (3,000 sats total per pool). |
 
+**Encoding in `.simf`**: SimplicityHL lacks `const::` declarations, so protocol constants are encoded as zero-argument functions that return the literal value (e.g., `fn min_pool_reserve() -> u64 { 1000 }`), with call sites referencing `min_pool_reserve()` instead of the raw literal. This produces CMRs identical to inline literals (SimplicityHL inlines the function at compile time) while giving auditors a single named declaration per constant — easier to review than searching for `1000` throughout the program. All four constants are hard-baked covenant structure, not params: `TABLE_DEPTH` is structurally required (Merkle verification is unrolled 16 times in the program source because SimplicityHL has no loops); `S_BIAS` and `S_MAX_INDEX` derive from `TABLE_DEPTH` and mismatching them would be semantically nonsensical; `MIN_POOL_RESERVE` has no strategic decision to make at the per-pool level (it's a dust floor). The only amount-axis parameter is per-pool (`max_loss_sats`, `half_payout_sats`).
+
 ### Why Fixed Depth 16
 
 The table depth determines the number of discrete price points (2^depth) and affects Merkle proof size:
