@@ -202,7 +202,7 @@ Parallelization opportunities:
 
 Tracked here so they don't fall off the radar before public release:
 
-- **SLIP-0044 coin_type registration PR** — deadcat uses HD path `m/86'/1145390932'/...` (coin_type `0x44434154` = ASCII "DCAT"). Submit a PR to [satoshilabs/slips](https://github.com/satoshilabs/slips/blob/master/slip-0044.md) registering this coin_type slot before public release. See [chain-only-recovery.md § HD Paths](../protocol/chain-only-recovery.md#hd-paths). If the SLIP-0044 maintainers assign a different number, document the migration in the decisions log — since we're pre-implementation, no on-chain state is affected.
+- **SLIP-0044 coin_type registration PR** — deadcat uses HD path `m/86'/1145258324'/...` (coin_type `0x44434154` = ASCII "DCAT"). Submit a PR to [satoshilabs/slips](https://github.com/satoshilabs/slips/blob/master/slip-0044.md) registering this coin_type slot before public release. See [chain-only-recovery.md § HD Paths](../protocol/chain-only-recovery.md#hd-paths). If the SLIP-0044 maintainers assign a different number, document the migration in the decisions log — since we're pre-implementation, no on-chain state is affected.
 
 ## Deferred / out-of-scope items
 

@@ -59,7 +59,7 @@ The builder/application layer. Conventions enforced by `deadcat-core` during PSE
 
 **Mechanisms:**
 - OP_RETURN recovery hints (chain-only recovery)
-- Standard denomination conventions (1-2-5 table, 26-value mantissa)
+- Standard denomination conventions (shared 16-value 1-2-5 table for market `base_payout` and pool `max_loss_sats` / `half_payout_sats`)
 - Deterministic key and nonce derivation
 - Output layout conventions for multi-covenant transactions
 - Convention validation in derive functions and PSET builders

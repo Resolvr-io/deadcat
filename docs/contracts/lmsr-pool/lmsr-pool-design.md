@@ -71,7 +71,7 @@ Everything else is either derived or a protocol constant.
 |---|---|---|
 | `b` | `max_loss_sats` | `b = max_loss_sats / ln(2)` (deterministic integer math) |
 | `q_step_lots` | `b`, `half_payout_sats` | Derived to ensure the 0.1%-99.9% price range fits within the table. For most pools, `q_step_lots = 1`. See [lmsr-deterministic-table-spec.md](lmsr-deterministic-table-spec.md) for the canonical formula. |
-| `s_index` (initial) | `starting_price_bps` | Nearest valid s_index for the requested price, derived from the inverse logistic function |
+| `s_index` (initial) | `starting_price_bps` | Nearest valid s_index for the requested price. Computed inside `estimate_bootstrap` and returned as `initial_s_index`; downstream (`derive_pool_params`, `build_lmsr_bootstrap_pset`, the OP_RETURN hint) consumes the snapped value directly — no inverse conversion lives anywhere. |
 | `lmsr_table_root` | `b`, `half_payout_sats`, `q_step_lots` | Merkle root of the deterministically generated F-value table |
 | Initial reserves | `b`, `starting_price_bps`, `half_payout_sats` | Balanced allocation — equal trading depth in both directions from starting price |
 
