@@ -43,6 +43,8 @@ export interface NavigationSlice {
   view: ViewMode;
   previousView: ViewMode | null;
   activeCategory: NavCategory;
+  categorySortMode: "trending" | "frequency";
+  categoryFilter: "all" | "live" | "ending-soon";
   search: string;
   trendingIndex: number;
   userMenuOpen: boolean;
@@ -297,6 +299,8 @@ export const useStore = create<StoreState>()(() => ({
   view: "home",
   previousView: null,
   activeCategory: "Trending",
+  categorySortMode: "trending",
+  categoryFilter: "all",
   search: "",
   trendingIndex: 0,
   userMenuOpen: false,
@@ -497,7 +501,7 @@ export const useStore = create<StoreState>()(() => ({
   // ── Chart UI ────────────────────────────────────────────────────
   chartHoverMarketId: null,
   chartHoverX: null,
-  chartTimescale: "25B",
+  chartTimescale: "1h",
   chartAspectHome: 2.8,
   chartAspectDetail: 3.35,
 

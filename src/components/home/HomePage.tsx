@@ -708,10 +708,29 @@ function CategoryPageView({
   search: string;
   nostrPubkey: string | null;
 }) {
+  const categorySortMode = useStore((s) => s.categorySortMode);
+  const categoryFilter = useStore((s) => s.categoryFilter);
+
   const categoryMarkets = useMemo(
     () => getFilteredMarkets(markets, search, category, nostrPubkey),
     [markets, search, category, nostrPubkey],
   );
+
+  const filteredMarkets = useMemo(() => {
+    if (categoryFilter === "live")
+      return categoryMarkets.filter((m) => m.isLive);
+    if (categoryFilter === "ending-soon")
+      return categoryMarkets.filter(
+        (m) => m.isLive && m.expiryHeight - m.currentHeight <= 200,
+      );
+    return categoryMarkets;
+  }, [categoryMarkets, categoryFilter]);
+
+  const sortedMarkets = useMemo(() => {
+    if (categorySortMode === "frequency")
+      return [...filteredMarkets].sort((a, b) => b.traderCount - a.traderCount);
+    return [...filteredMarkets].sort((a, b) => b.volumeBtc - a.volumeBtc);
+  }, [filteredMarkets, categorySortMode]);
 
   const liveContracts = useMemo(
     () => categoryMarkets.filter((m) => m.isLive).slice(0, 4),
@@ -738,30 +757,31 @@ function CategoryPageView({
     [categoryMarkets],
   );
 
+  const sidebarFilters = [
+    { key: "all", label: "All markets" },
+    { key: "live", label: "Live now" },
+    { key: "ending-soon", label: "Ending soon" },
+  ] as const;
+
   return (
     <div className="phi-container py-6 lg:py-8">
       <div className="grid gap-[21px] xl:grid-cols-[233px_1fr_320px]">
         {/* Left sidebar */}
         <aside className="hidden xl:block">
           <div className="space-y-1 text-sm text-slate-400">
-            <button
-              type="button"
-              className="block w-full rounded-md bg-slate-900/70 px-2 py-2 text-left text-emerald-300 focus-visible:outline-none focus-visible:bg-slate-900/90 focus-visible:text-emerald-200"
-            >
-              All markets
-            </button>
-            <button
-              type="button"
-              className="block w-full rounded-md px-2 py-2 text-left transition focus-visible:outline-none focus-visible:bg-slate-900/70 focus-visible:text-emerald-300 hover:bg-slate-900/40 hover:text-slate-200"
-            >
-              Live now
-            </button>
-            <button
-              type="button"
-              className="block w-full rounded-md px-2 py-2 text-left transition focus-visible:outline-none focus-visible:bg-slate-900/70 focus-visible:text-emerald-300 hover:bg-slate-900/40 hover:text-slate-200"
-            >
-              Resolved soon
-            </button>
+            {sidebarFilters.map(({ key, label }) => {
+              const active = categoryFilter === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => useStore.setState({ categoryFilter: key })}
+                  className={`block w-full rounded-md px-2 py-2 text-left transition focus-visible:outline-none ${active ? "bg-slate-900/70 text-emerald-300 focus-visible:bg-slate-900/90 focus-visible:text-emerald-200" : "hover:bg-slate-900/40 hover:text-slate-200 focus-visible:bg-slate-900/70 focus-visible:text-emerald-300"}`}
+                >
+                  {label}
+                </button>
+              );
+            })}
           </div>
         </aside>
 
@@ -775,25 +795,23 @@ function CategoryPageView({
               {category}
             </h1>
             <div className="flex items-center gap-2 text-sm text-slate-400">
-              <button
-                type="button"
-                className="rounded-full border border-slate-700 px-3 py-1.5"
-              >
-                Trending
-              </button>
-              <button
-                type="button"
-                className="rounded-full border border-slate-700 px-3 py-1.5"
-              >
-                Frequency
-              </button>
+              {(["trending", "frequency"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => useStore.setState({ categorySortMode: mode })}
+                  className={`rounded-full border px-3 py-1.5 capitalize transition ${categorySortMode === mode ? "border-slate-500 text-slate-100" : "border-slate-700 hover:border-slate-500 hover:text-slate-300"}`}
+                >
+                  {mode}
+                </button>
+              ))}
             </div>
           </div>
           <div className="mb-4 grid gap-2 sm:grid-cols-3">
             <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
               <p className="text-xs text-slate-500">Contracts</p>
               <p className="text-lg font-medium text-slate-100">
-                {categoryMarkets.length}
+                {sortedMarkets.length}
               </p>
             </div>
             <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
@@ -815,7 +833,7 @@ function CategoryPageView({
             </div>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
-            {categoryMarkets.map((market, idx) => (
+            {sortedMarkets.map((market, idx) => (
               <MarketCard key={market.id} market={market} index={idx} />
             ))}
           </div>
@@ -880,27 +898,27 @@ function CategoryPageView({
 
           <section className="rounded-2xl border border-slate-800 bg-slate-950/55 p-4">
             <h3 className="mb-3 text-sm font-medium text-slate-400">
-              State mix
+              Market states
             </h3>
             <div className="space-y-2 text-sm text-slate-300">
               <p className="flex items-center justify-between">
-                <span>State 0 · Uninitialized</span>
+                <span>Dormant</span>
                 <span>{stateMix[0]}</span>
               </p>
               <p className="flex items-center justify-between">
-                <span>State 1 · Unresolved</span>
+                <span className="text-emerald-400">Live</span>
                 <span>{stateMix[1]}</span>
               </p>
               <p className="flex items-center justify-between">
-                <span>State 2 · Resolved YES</span>
+                <span>Resolved YES</span>
                 <span>{stateMix[2]}</span>
               </p>
               <p className="flex items-center justify-between">
-                <span>State 3 · Resolved NO</span>
+                <span>Resolved NO</span>
                 <span>{stateMix[3]}</span>
               </p>
               <p className="flex items-center justify-between">
-                <span>State 4 · Expired</span>
+                <span className="text-amber-400">Expired</span>
                 <span>{stateMix[4]}</span>
               </p>
             </div>
