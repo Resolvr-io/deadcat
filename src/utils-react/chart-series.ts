@@ -22,6 +22,8 @@ const SCALE_BLOCKS_BY_KEY: Record<ChartTimescale, number> = {
   "1d": 1440,
   "3d": 4320,
   "7d": 10080,
+  "1M": 43200,
+  all: 0, // computed dynamically from history span
 };
 
 const POINT_COUNT_BY_KEY: Record<ChartTimescale, number> = {
@@ -30,20 +32,27 @@ const POINT_COUNT_BY_KEY: Record<ChartTimescale, number> = {
   "1d": 96,
   "3d": 108,
   "7d": 120,
+  "1M": 130,
+  all: 150,
 };
 
 function clampProbability(value: number): number {
   return Math.max(0.02, Math.min(0.98, value));
 }
 
-function scaleConfig(timescale: ChartTimescale): {
+function scaleConfig(
+  timescale: ChartTimescale,
+  historySpanBlocks = 0,
+): {
   pointCount: number;
   scaleBlocks: number;
 } {
-  return {
-    scaleBlocks: SCALE_BLOCKS_BY_KEY[timescale],
-    pointCount: POINT_COUNT_BY_KEY[timescale],
-  };
+  const pointCount = POINT_COUNT_BY_KEY[timescale];
+  const scaleBlocks =
+    timescale === "all"
+      ? Math.max(SCALE_BLOCKS_BY_KEY["7d"], historySpanBlocks)
+      : SCALE_BLOCKS_BY_KEY[timescale];
+  return { pointCount, scaleBlocks };
 }
 
 /** Approximate wall-clock date for a given block height. */
@@ -103,7 +112,7 @@ function blockHeightToAxisLabel(
     if (sameDay) return timeStr;
     return date.toLocaleDateString([], { month: "short", day: "numeric" });
   }
-  // 3d, 7d: date only — multi-day views don't need time precision
+  // 3d, 7d, 1M, all: date only — multi-day views don't need time precision
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
@@ -207,9 +216,14 @@ export function buildChartFromHistory(
   history: PriceHistoryEntry[],
   timescale: ChartTimescale,
 ): ChartSeriesData {
-  const { pointCount, scaleBlocks } = scaleConfig(timescale);
+  const firstHistoryHeight = history.length > 0 ? history[0].block_height : 0;
   const latestHistoryHeight =
     history.length > 0 ? history[history.length - 1].block_height : 0;
+  const historySpanBlocks =
+    latestHistoryHeight > firstHistoryHeight
+      ? latestHistoryHeight - firstHistoryHeight
+      : 0;
+  const { pointCount, scaleBlocks } = scaleConfig(timescale, historySpanBlocks);
   const endBlockHeight = Math.max(
     scaleBlocks,
     market.currentHeight || 0,

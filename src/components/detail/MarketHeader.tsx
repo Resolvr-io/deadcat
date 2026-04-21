@@ -40,7 +40,6 @@ export default function MarketHeader({ market }: { market: Market }) {
   const walletData = useStore((s) => s.walletData);
   const walletNetwork = useStore((s) => s.walletNetwork);
 
-  const noPrice = market.yesPrice != null ? 1 - market.yesPrice : null;
   const estimatedSettlementDate = getEstimatedSettlementDate(market);
   const positions = getPositionContracts(market, walletData);
 
@@ -120,30 +119,6 @@ export default function MarketHeader({ market }: { market: Market }) {
           <span className="text-lg font-normal text-slate-500">chance</span>
         </p>
       )}
-
-      {/* Yes / No quick-buy buttons */}
-      <div className="mb-4 flex items-center gap-3">
-        <button
-          type="button"
-          onClick={() =>
-            useStore.setState({ selectedSide: "yes", tradeIntent: "open" })
-          }
-          className="w-36 rounded-full bg-emerald-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-emerald-400"
-        >
-          {market.yesPrice != null
-            ? `Yes ${Math.round(market.yesPrice * 100)}%`
-            : "Buy Yes"}
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            useStore.setState({ selectedSide: "no", tradeIntent: "open" })
-          }
-          className="w-36 rounded-full bg-rose-500 px-4 py-2.5 text-center text-lg font-semibold text-white transition hover:bg-rose-400"
-        >
-          {noPrice != null ? `No ${Math.round(noPrice * 100)}%` : "Buy No"}
-        </button>
-      </div>
 
       {/* Market stats */}
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
