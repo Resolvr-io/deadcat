@@ -508,7 +508,7 @@ export type PriceHistoryEntry = {
   block_height: number;
 };
 
-export type ChartTimescale = "10B" | "25B" | "50B" | "100B";
+export type ChartTimescale = "1h" | "4h" | "1d" | "3d" | "7d";
 
 export type CreateLmsrPoolResponse = {
   txid: string;
