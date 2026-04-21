@@ -10,15 +10,15 @@ Personas covered: **Pool Operator** and **Order Maker**. See [ux-design.md](../d
 
 **Acceptance criteria**:
 - Pool creation form (accessible from market detail in maker mode) collects: max loss (sats), half payout (sats), fee (bps), starting price (bps)
-- `estimate_bootstrap(max_loss_sats, half_payout_sats, starting_price_bps)` shows required capital: initial YES reserve, initial NO reserve, initial collateral reserve
-- `derive_pool_params(xprv, market_params, pool_index, max_loss_sats, half_payout_sats, fee_bps, starting_price_bps)` generates params + masked index
-- On `ConventionError`: display which constraint was violated (e.g., "max_loss_sats must fit the 26-value mantissa encoding")
-- `build_lmsr_bootstrap_pset(params, starting_price_bps, masked_index, funding)` → sign → broadcast
+- `estimate_bootstrap(max_loss_sats, half_payout_sats, starting_price_bps)` shows required capital: initial YES reserve, initial NO reserve, initial collateral reserve — and returns the `initial_s_index` corresponding to the chosen `starting_price_bps`
+- `derive_pool_params(xprv, market_params, outcome, pool_index, max_loss_sats, half_payout_sats, fee_bps, initial_s_index)` generates params + masked index. For binary markets, pass `OutcomeIndex::BINARY`; for multi-outcome, pass the outcome this pool serves.
+- On `ConventionError`: display which constraint was violated (e.g., "max_loss_sats must be one of the 16 values in the 1-2-5 table")
+- `build_lmsr_bootstrap_pset(params, initial_s_index, masked_index, funding)` → sign → broadcast
 - After confirmation: `ingest_pool(params, PoolSnapshot::Creation(creation_tx))` to begin tracking with full history
 
 **Interaction design**:
 - **Capital preview**: Before creating, `estimate_bootstrap` shows a breakdown: "To start a pool at 50% YES price with 100k sats max loss, you need: 50 YES tokens, 50 NO tokens, 95,000 sats collateral. Total capital: ~195,000 sats." This helps the operator plan capital acquisition (they may need to issue token pairs first).
-- **Parameter constraints**: All inputs are constrained to convention-valid values. Max loss and half payout use dropdowns or validated inputs matching the 26-value mantissa set. Fee uses a slider (0-40.95%, 0.01% steps). Starting price uses a slider (1-99%).
+- **Parameter constraints**: All inputs are constrained to convention-valid values. Max loss and half payout use dropdowns constrained to the 16-value 1-2-5 table (shared with market `base_payout` encoding). Fee uses a slider (0-40.95%, 0.01% steps). Starting price uses a slider (1-99%).
 - **Risk disclosure**: Show max loss prominently: "Your maximum possible loss from this pool is X sats. This occurs if the price moves from Y% to 0% or 100%."
 
 ---

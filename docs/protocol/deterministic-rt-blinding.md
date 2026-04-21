@@ -248,7 +248,7 @@ Same hand-rolled blinding for RT outputs, but the ABF is derived from the input 
 ### Nostr Announcement Format
 
 **Current**: Includes `PredictionMarketAnchor` payload (creation_txid + 4 blinding factors)
-**New**: Drops anchor entirely — only `PredictionMarketParams` + creation_txid needed. Discoverers derive everything from public on-chain data.
+**New**: Drops anchor entirely — only `BinaryMarketParams` + creation_txid needed. Discoverers derive everything from public on-chain data.
 
 ## Functions Affected
 
@@ -261,7 +261,7 @@ Same hand-rolled blinding for RT outputs, but the ABF is derived from the input 
 | `compute_issuance_entropy` | Takes ABFs from anchor | Derives ABFs from defining outpoints |
 | `validate_prediction_market_creation_tx` | Uses anchor blinding factors for verification | Derives blinding factors from creation tx |
 | Market Nostr announcement | Includes anchor payload | Drops anchor — only params + creation_txid |
-| `ingest_market` (deadcat-core) | Takes `PredictionMarketParams` + `PredictionMarketAnchor` + `ChainTransaction` | Takes `PredictionMarketParams` + `ChainTransaction` only |
+| `ingest_market` (deadcat-core) | Takes `BinaryMarketParams` + `PredictionMarketAnchor` + `ChainTransaction` | Takes `BinaryMarketParams` + `ChainTransaction` only |
 | `verify_token_commitment` (.simf) | Takes `(ABF, VBF)` from witness | Takes `(ABF, CBF)`, output ABF computed by covenant |
 | Issuance/cancellation paths (.simf) | Output blinding from free witness data | Output ABF enforced deterministic, CBF passed through |
 
@@ -290,7 +290,7 @@ The anchor elimination simplifies the `ingest_market` API:
 // Before: 3 parameters
 pub fn ingest_market(
     &mut self,
-    params: &PredictionMarketParams,
+    params: &BinaryMarketParams,
     anchor: PredictionMarketAnchor,
     creation_tx: &ChainTransaction,
 ) -> Result<ContractId, CoreError<S::Error>>;
@@ -298,9 +298,9 @@ pub fn ingest_market(
 // After: 2 parameters
 pub fn ingest_market(
     &mut self,
-    params: &PredictionMarketParams,
+    params: &BinaryMarketParams,
     creation_tx: &ChainTransaction,
 ) -> Result<ContractId, CoreError<S::Error>>;
 ```
 
-`PredictionMarketParams` stays pure — only data needed to derive the contract's identity and addresses. No creation-time secrets. The `PredictionMarketAnchor` type and the `anchor` field on `Contract::PredictionMarket` are both eliminated. See [deadcat-core design doc](../architecture/deadcat-core-design.md) for the full API.
+`BinaryMarketParams` stays pure — only data needed to derive the contract's identity and addresses. No creation-time secrets. The `PredictionMarketAnchor` type and the `anchor` field on `Contract::PredictionMarket` are both eliminated. See [deadcat-core design doc](../architecture/deadcat-core-design.md) for the full API.

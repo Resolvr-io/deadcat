@@ -128,7 +128,7 @@ Personas covered: **Trader (Taker)** and **Token Holder (Recovery)**. See [ux-de
 
 **Acceptance criteria**:
 - After wallet restore, standard rescan finds YES/NO token UTXOs (they're normal confidential assets at wallet addresses)
-- Unknown asset IDs trigger the recovery flow: `ChainSource::issuance_transaction(asset_id)` → market creation tx → read OP_RETURN → reconstruct `PredictionMarketParams` → `ingest_market` → `identify_asset`
+- Unknown asset IDs trigger the recovery flow: `ChainSource::issuance_transaction(asset_id)` → market creation tx → read OP_RETURN → reconstruct `MarketParams` (binary or multi-outcome per hint type tag) → `ingest_market` → `identify_asset`
 - After recovery, tokens display with proper names: "YES — Will BTC hit $200k by 2027?"
 - Redemption is available if the market is resolved/expired
 

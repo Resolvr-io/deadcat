@@ -29,7 +29,7 @@ Both market contracts uphold the same set of covenant-enforced principles (permi
 ### Parameters
 
 ```rust
-pub struct PredictionMarketParams {
+pub struct BinaryMarketParams {
     pub oracle_public_key: XOnlyPublicKey,      // BIP-340 Schnorr pubkey for oracle attestation
     pub collateral_asset_id: AssetId,           // L-BTC, USDt, or other Elements asset
     pub yes_token_asset_id: AssetId,            // derivable from creation tx issuance entropy
@@ -182,7 +182,7 @@ Tag string matches the binary market. Domain separation is via `market_id`.
 
 ### Code Generation
 
-Each supported N has its own `.simf` file generated from a template at build time. **v1 supports N ∈ {3, 4}**. Expansion to larger N is non-breaking (new N → new template instantiation → new contract; existing contracts unaffected). Above N=10, transaction weight from the 2N+1-way covenant co-spend becomes uncomfortable; large-N events should use hierarchical composition (markets-of-markets) or binary-market composition with arbitrage-based coherency.
+Each supported N has its own `.simf` file generated from a template by `deadcat-codegen` at **dev time**. The generated `.simf` sources are **committed to the repo** under `crates/deadcat-core/contracts/multi_outcome/`, and the compiled Simplicity artifacts (`src/artifacts/*.rs`, produced by `simplex build`) are also committed. Runtime reads these via `include_bytes!` and imports the typed artifact modules directly — no template instantiation or compilation happens at `cargo build` time. Regeneration is triggered explicitly by developers via `just generate-simf` + `just regenerate-artifacts` when an intentional change is being committed; drift tests catch stale committed outputs on every `cargo test`. **v1 supports N ∈ {3, 4}**. Expansion to larger N is non-breaking (new N → new template instantiation → new committed `.simf` + artifacts → new contract; existing contracts unaffected). Above N=10, transaction weight from the 2N+1-way covenant co-spend becomes uncomfortable; large-N events should use hierarchical composition (markets-of-markets) or binary-market composition with arbitrage-based coherency.
 
 **N=2 is served by the binary `prediction_market.simf`** — not regenerated from the multi-outcome template. The binary market contract has been deeply reviewed and is hand-written; the multi-outcome template serves N ≥ 3 only. See [multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md).
 
@@ -260,7 +260,7 @@ pub enum OrderDirection {
 pub struct MakerOrderParams {
     pub base_asset_id: AssetId,             // YES or NO token from parent market
     pub quote_asset_id: AssetId,            // collateral asset from parent market
-    pub price: u64,                         // quote units per base unit (convention: <= 2^24)
+    pub price: u64,                         // quote units per base unit (convention: <= 0xFFFFFF = u24 max)
     pub min_fill_lots: u64,                 // minimum base units per fill (convention: 1-255)
     pub min_remainder_lots: u64,            // minimum base units remaining after partial fill (convention: 1-255)
     pub direction: OrderDirection,

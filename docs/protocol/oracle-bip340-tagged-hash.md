@@ -1,5 +1,7 @@
 # Oracle Attestation: BIP-340 Tagged Hash Migration
 
+> **Scope note**: this document specifies the oracle attestation format **for binary markets only**. The `verify_oracle_signature` code sample and the `oracle_attestation_message(yes_asset_id, no_asset_id, outcome_yes: bool)` Rust signature below are the binary-specific surface. Multi-outcome markets use a different `market_id` derivation (over all 2N token asset IDs) and a `u8` outcome index instead of a bool — see [deadcat-core-design.md § Oracle Attestation](../architecture/deadcat-core-design.md#oracle-attestation) for the unified `MarketResolution` API that covers both binary and multi-outcome. The tag string (`"deadcat/oracle_attestation"`) is shared; domain separation between binary and multi-outcome is achieved via the different `market_id` derivation.
+
 ## Problem
 
 The current oracle signature scheme uses a plain SHA256 hash for the attestation message:

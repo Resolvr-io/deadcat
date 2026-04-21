@@ -156,10 +156,10 @@ Phase numbering reflects execution order. Within each phase, items are listed in
 **Deliverables** — in increasing complexity (each builder depends on Phases 3–4's read-path mechanics, which are by now stable):
 
 1. **View type bodies** — `Market`, `Pool`, `Order`, `MultiOutcomeMarket` per [deadcat-core-design.md § View Types](deadcat-core-design.md). State accessors, relationship queries, and oracle helpers land here alongside their builders.
-2. **Binary market builders** — `build_issuance_pset`, `build_partial_cancellation_pset`, `build_full_cancellation_pset`, `build_resolution_pset`, `build_redemption_pset`, `build_expiry_pset` on `Market` view.
-3. **Maker order builders** — `build_order_creation_pset` on the engine, `build_fill_pset` on `Order`, `build_cancel_pset` on `Order`.
-4. **LMSR pool builders** — `build_pool_creation_pset` on the engine (consumes the LMSR F-value runtime from Phase 3 to generate Merkle root for covenant params), `build_swap_pset` / `build_adjust_pset` / `build_close_pset` on `Pool`.
-5. **Multi-outcome generic-path builders** — `build_issuance_pset` on `MultiOutcomeMarket` (accepts an `OutcomeIndex`), `build_split_yes_pset` / `build_merge_yes_pset` / `build_split_no_pset` / `build_merge_no_pset`, `build_resolution_pset`, `build_redemption_pset`, `build_expiry_pset`.
+2. **Binary market creation + lifecycle builders** — `build_binary_market_creation_pset` on the engine; `build_issuance_pset`, `build_cancellation_pset` (partial and full — `pairs_to_burn: Option<u64>`), `build_oracle_resolve_pset`, `build_redemption_pset`, `build_expire_transition_pset` on `Market` view.
+3. **Maker order builders** — `build_create_order_pset` on the engine; `build_cancel_pset` on `Order` view. **Taker fills go through the trade router** (`engine.quote_trade` + `engine.build_trade_pset`), not a per-order builder — verified as part of the Phase 6 trade-routing deliverable. See [deadcat-core-design.md § Order](deadcat-core-design.md#order) and [Taker Order Fills Via Trade Router](deadcat-core-design.md#taker-order-fills-via-trade-router).
+4. **LMSR pool builders** — `build_lmsr_bootstrap_pset` on the engine (consumes the LMSR F-value runtime from Phase 3 to generate Merkle root for covenant params); `build_adjust_pset` / `build_close_pset` on `Pool` view. Pool swaps also flow through the trade router, not a per-pool builder.
+5. **Multi-outcome market creation + cross-outcome builders** — `build_multi_outcome_market_creation_pset` on the engine; `build_issuance_pset` (accepts an `OutcomeIndex`), `build_cancellation_pset`, `build_oracle_resolve_pset`, `build_redemption_pset`, `build_expire_transition_pset` on `Market` view (shared with binary via the unified view); `build_split_yes_pset` / `build_merge_yes_pset` / `build_split_no_pset` / `build_merge_no_pset` on `MultiOutcomeMarket` specialization.
 
 **Quality gate**: for each builder, an integration test that (a) constructs the PSET, (b) signs and broadcasts to a regtest chain, (c) observes the confirmation via the engine's read path, (d) asserts the resulting state matches expectations. End-to-end round trip per contract-type primitive.
 
@@ -192,8 +192,17 @@ Phase numbering reflects execution order. Within each phase, items are listed in
 
 Parallelization opportunities:
 - LMSR bignum reference (Phase 2) can be written alongside Phase 1 contract work; they touch disjoint areas.
-- Phase 3 core type work is independent of SimplicityHL contracts and can be drafted in parallel with late-stage Phase 1 if scoped carefully.
+- Phase 3 core type work can be drafted in parallel with late-stage Phase 1, split by covenant dependence. The three buckets:
+  - **Independent of Phase 1 — safe to draft now**: small value types (`OutcomeIndex`, `Side`, `FeeRate`, `Network`, `ChainPosition`), `MarketResolution`, `WalletFunding`, `UnblindedUtxo`, `ExplicitValues`, pagination types (`Page<T>`, `Pagination`, `StateFilter`), error types (`CoreError` skeleton, `ConventionError`, `BlindingError`), `ContractStore` trait method signatures, creation-params structs (`BinaryMarketCreationParams`, `MultiOutcomeMarketCreationParams`), `MarketId`, `OracleAttestationSpec`, and the `ContractId` struct shape.
+  - **Must wait for Phase 1 to finalize**: per-contract `<Name>Params` / `<Name>State` / `<Name>Transition` types — they must match `simplex build` typed artifacts byte-for-byte — plus `TransitionDetails` per-contract variants, `UnblindedPset` / `PreparedPset` (private fields depend on RT blinding implementation), `SlotIdentity` enum (depends on covenant slot layout), and anything importing from `src/artifacts/`.
+  - **Soft dependency — sketch early, finalize late**: `Contract` umbrella enum and `ContractEntry`, `MarketParams` umbrella enum, `ContractEngine` skeleton (method signatures land; implementations defer), and the in-memory `ContractStore` implementation (structure sketchable, outpoint-tracking details defer).
 - Phase 5 builders are mostly independent of each other; can be implemented in parallel once Phase 4 lands.
+
+## Pre-v1-ship action items
+
+Tracked here so they don't fall off the radar before public release:
+
+- **SLIP-0044 coin_type registration PR** — deadcat uses HD path `m/86'/1145390932'/...` (coin_type `0x44434154` = ASCII "DCAT"). Submit a PR to [satoshilabs/slips](https://github.com/satoshilabs/slips/blob/master/slip-0044.md) registering this coin_type slot before public release. See [chain-only-recovery.md § HD Paths](../protocol/chain-only-recovery.md#hd-paths). If the SLIP-0044 maintainers assign a different number, document the migration in the decisions log — since we're pre-implementation, no on-chain state is affected.
 
 ## Deferred / out-of-scope items
 

@@ -181,17 +181,17 @@ A fixed-point Taylor runtime (deferred to v2 per the [implementation plan](../..
 The pool creator:
 
 1. Specifies `max_loss_sats`, `half_payout_sats`, `fee_bps`, `starting_price_bps`
-2. Calls `estimate_bootstrap(max_loss_sats, half_payout_sats, starting_price_bps)` to see the required reserves (YES tokens, NO tokens, collateral) — lightweight, called on every slider change (note: `fee_bps` does not affect reserves)
+2. Calls `estimate_bootstrap(max_loss_sats, half_payout_sats, starting_price_bps)` to see the required reserves (YES tokens, NO tokens, collateral) and the resulting `initial_s_index` — lightweight, called on every slider change (note: `fee_bps` does not affect reserves). The snap function (`starting_price_bps → initial_s_index`) lives here; every downstream consumer reads `initial_s_index` from this result.
 3. Obtains the required YES and NO tokens by issuing pairs on the parent prediction market
-4. Calls `derive_pool_params(deadcat_xprv, market_params, pool_index, ...)` to construct the full `LmsrPoolParams` with all derived fields (admin pubkey, table root, q_step_lots, asset IDs) and the XOR-masked pool index — heavier, called once when the user commits to creating
-5. Calls `build_lmsr_bootstrap_pset(&params, starting_price_bps, masked_index, &funding)` to build the transaction
+4. Calls `derive_pool_params(deadcat_xprv, market_params, outcome, pool_index, max_loss_sats, half_payout_sats, fee_bps, initial_s_index)` to construct the full `LmsrPoolParams` with all derived fields (admin pubkey, table root, q_step_lots, asset IDs) and the XOR-masked pool index — heavier, called once when the user commits to creating
+5. Calls `build_lmsr_bootstrap_pset(&params, initial_s_index, masked_index, &funding)` to build the transaction
 6. Signs and broadcasts
 
-`derive_pool_params` is a standalone pure function that takes the parent market's `PredictionMarketParams` (for asset IDs), the creator's four params, and the admin pubkey (from mnemonic). It derives `b`, `q_step_lots`, generates the F-value table deterministically, computes the Merkle root, and returns a fully-formed `LmsrPoolParams`. The builder then compiles the Simplicity covenant from these params and constructs the creation transaction with three reserve outputs (YES, NO, Collateral) and an OP_RETURN recovery hint.
+`derive_pool_params` is a standalone pure function that takes the parent market's `MarketParams` umbrella (binary or multi-outcome), an `OutcomeIndex` selecting which outcome's YES/NO pair the pool serves (pass `OutcomeIndex::BINARY` for binary markets), the creator's four params plus `initial_s_index`, and derives the admin pubkey internally from the mnemonic. It derives `b`, `q_step_lots`, generates the F-value table deterministically, computes the Merkle root, and returns a fully-formed `LmsrPoolParams`. The builder then compiles the Simplicity covenant from these params and constructs the creation transaction with three reserve outputs (YES, NO, Collateral) and an OP_RETURN recovery hint.
 
 Note: an integrator COULD construct `LmsrPoolParams` manually (it's a plain data struct with public fields), but `derive_pool_params` is strongly recommended because it guarantees the canonical deterministic table generation algorithm is used. A different implementation would produce a different Merkle root, and the covenant would reject all swaps.
 
-The starting `s_index` is computed from `starting_price_bps` — the engine maps the requested price to the nearest valid discrete s_index. The initial reserves are computed as a balanced allocation: equal trading depth in both directions from the starting price.
+`initial_s_index` represents the nearest valid discrete s_index for the requested starting price. It is computed by `estimate_bootstrap` (the UI uses the returned value for live feedback), passed through `derive_pool_params` and `build_lmsr_bootstrap_pset` unchanged, and stored directly in the pool OP_RETURN for recovery. The initial reserves are computed as a balanced allocation: equal trading depth in both directions from the starting price.
 
 ### Estimation
 
@@ -219,16 +219,17 @@ The `initial_yes_reserve` and `initial_no_reserve` are determined by the pool's 
 ```rust
 pub fn derive_pool_params(
     deadcat_xprv: &Xpriv,
-    market_params: &PredictionMarketParams,
+    market_params: &MarketParams,        // umbrella: binary or multi-outcome
+    outcome: OutcomeIndex,                // which outcome's YES/NO pair the pool serves
     pool_index: u16,
     max_loss_sats: u64,
     half_payout_sats: u64,
     fee_bps: u16,
-    starting_price_bps: u16,
+    initial_s_index: u16,
 ) -> Result<(LmsrPoolParams, u16 /* masked_index */), ConventionError>;
 ```
 
-A standalone pure function that constructs the full `LmsrPoolParams` with all derived fields. Returns `ConventionError` if inputs violate OP_RETURN encoding conventions (`max_loss_sats` and `half_payout_sats` not in the 26-value mantissa set, `fee_bps > 4095`, `starting_price_bps` outside (0, 10000) exclusive). Called once when the user commits to creating a pool — heavier than `estimate_bootstrap` because it generates the full 65K-entry F-value table and computes the Merkle root (~80ms). The `starting_price_bps` parameter is needed to compute `initial_s_index` for the XOR mask context (see [chain-only-recovery.md](../../protocol/chain-only-recovery.md)). The resulting `LmsrPoolParams` is passed directly to `build_lmsr_bootstrap_pset`.
+A standalone pure function that constructs the full `LmsrPoolParams` with all derived fields. Returns `ConventionError` if inputs violate OP_RETURN encoding conventions (`max_loss_sats` and `half_payout_sats` not in the 16-value 1-2-5 table, `fee_bps > 4095`, `initial_s_index` corresponding to an implied YES price outside `(0, 10000)` bps exclusive). Called once when the user commits to creating a pool — heavier than `estimate_bootstrap` because it generates the full 65K-entry F-value table and computes the Merkle root (~80ms). `initial_s_index` is sourced from `estimate_bootstrap` at creation time and directly from the pool OP_RETURN hint at recovery time — no inverse conversion from `starting_price_bps` is required. The resulting `LmsrPoolParams` is passed directly to `build_lmsr_bootstrap_pset`.
 
 ### Trading (Swaps)
 
@@ -340,7 +341,7 @@ The first 8 fields are covenant parameters (compiled into the Simplicity program
 
 ## OP_RETURN Recovery Hint
 
-The pool creation transaction includes a **41-byte** zero-value OP_RETURN output for mnemonic-based recovery. The hint uses compressed encoding: `max_loss_sats` and `half_payout_sats` as 9-bit values (26-value mantissa x 10^exponent, supporting non-L-BTC assets), `fee_bps` as u12 (0.01% granularity), `initial_s_index` as u16 (the starting table index, enabling direct script verification during creation-tx recovery), plus an XOR-masked pool operator derivation index.
+The pool creation transaction includes a **40-byte** zero-value OP_RETURN output for mnemonic-based recovery. The hint uses compressed encoding: `max_loss_sats` and `half_payout_sats` as 4-bit 1-2-5 table indices each (shared with the market `base_payout` encoding, range 100 to 10,000,000 sats), `fee_bps` as u12 (0.01% granularity), `initial_s_index` as u16 (the starting table index, enabling direct script verification during creation-tx recovery), plus an XOR-masked pool operator derivation index.
 
 All other covenant params are derived: `b` from `max_loss_sats`, `q_step_lots` from `b` and `half_payout_sats`, `lmsr_table_root` from deterministic F-value generation, token asset IDs from the parent market, admin pubkey from the mnemonic at `pool_index`. Protocol constants require no encoding.
 
