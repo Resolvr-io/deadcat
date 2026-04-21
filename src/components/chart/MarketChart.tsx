@@ -9,7 +9,6 @@ import {
   lastDefinedChartProbability,
   sampleChartProbabilityAtFraction,
 } from "../../utils-react/chart-series";
-import { fullContractSats } from "../../utils-react/market";
 
 // ── Constants ───────────────────────────────────────────────────────
 
@@ -30,8 +29,6 @@ const PAW_PATHS = [
   "M65.95,49.84c-2.36-2.86-4.3-6.01-6.45-9.02-.89-1.24-1.8-2.47-2.78-3.65-2.76-3.35-7.24-5.02-11.72-5.02s-8.96,1.68-11.72,5.02c-.98,1.19-1.89,2.41-2.78,3.65-2.15,3.01-4.08,6.15-6.45,9.02-1.77,2.15-4.25,3.82-6.11,5.92-4.14,4.69-4.72,9.96-1.94,15.3,2.79,5.37,8.01,7.6,14.41,7.9,4.82.23,9.23-1.95,13.98-2.16.22-.01.42-.01.62-.01s.4,0,.61.01c4.75.21,9.16,2.38,13.98,2.16,6.39-.3,11.62-2.53,14.41-7.9,2.77-5.34,2.2-10.61-1.94-15.3-1.87-2.1-4.35-3.77-6.12-5.92h0Z",
 ];
 
-const MIN_SERIES_SEPARATION = 6.2;
-
 // ── Helper functions ────────────────────────────────────────────────
 
 function markerSvg(
@@ -39,16 +36,19 @@ function markerSvg(
   y: number,
   fill: string,
   scale = 1,
+  flip = false,
 ): React.JSX.Element {
   const width = MARKER_WIDTH * scale;
   const height = MARKER_HEIGHT * scale;
-  return (
+  const inner = (
     <g
       transform={`translate(${x - width / 2} ${y - height / 2}) scale(${width / MARKER_VIEWBOX_WIDTH} ${height / MARKER_VIEWBOX_HEIGHT})`}
     >
       <path d={CHART_LOGO_PATH} fill={fill} />
     </g>
   );
+  if (!flip) return inner;
+  return <g transform={`rotate(180 ${x} ${y})`}>{inner}</g>;
 }
 
 function pulseSvg(x: number, y: number, toneClass: string): React.JSX.Element {
@@ -68,35 +68,6 @@ function pulseSvg(x: number, y: number, toneClass: string): React.JSX.Element {
       </g>
     </g>
   );
-}
-
-function separateSeriesY(
-  yesYRaw: number,
-  noYRaw: number,
-  plotTop: number,
-  plotBottom: number,
-): { yesY: number; noY: number } {
-  let yesY = yesYRaw;
-  let noY = noYRaw;
-  const gap = Math.abs(noY - yesY);
-  if (gap < MIN_SERIES_SEPARATION) {
-    const mid = (yesY + noY) / 2;
-    yesY = mid - MIN_SERIES_SEPARATION / 2;
-    noY = mid + MIN_SERIES_SEPARATION / 2;
-  }
-  const minY = plotTop + 0.9;
-  const maxY = plotBottom - 0.9;
-  if (yesY < minY) {
-    const shift = minY - yesY;
-    yesY += shift;
-    noY += shift;
-  }
-  if (noY > maxY) {
-    const shift = noY - maxY;
-    yesY -= shift;
-    noY -= shift;
-  }
-  return { yesY, noY };
 }
 
 type PointXY = { x: number; y: number };
@@ -204,11 +175,11 @@ function buildPawTrail(
 
 // ── Legend icon ──────────────────────────────────────────────────────
 
-function LegendIcon({ fill }: { fill: string }) {
+function LegendIcon({ fill, flip = false }: { fill: string; flip?: boolean }) {
   return (
     <svg
       viewBox="0 0 260 267"
-      className="h-[11px] w-[11px] shrink-0"
+      className={`h-[11px] w-[11px] shrink-0${flip ? " rotate-180" : ""}`}
       aria-hidden="true"
     >
       <path d={CHART_LOGO_PATH} fill={fill} />
@@ -237,6 +208,16 @@ export default function MarketChart({
   const hoverRef = useRef<HTMLDivElement>(null);
   const svgContainerRef = useRef<HTMLDivElement>(null);
   const isHomeChart = mode === "home";
+  const [showYesLine, setShowYesLine] = useState(true);
+  const [showNoLine, setShowNoLine] = useState(false);
+  const toggleYes = () => {
+    if (showYesLine && !showNoLine) return;
+    setShowYesLine((v) => !v);
+  };
+  const toggleNo = () => {
+    if (showNoLine && !showYesLine) return;
+    setShowNoLine((v) => !v);
+  };
 
   // Measure the actual SVG container so the viewBox always matches the pixel
   // ratio exactly — prevents non-uniform stretching with preserveAspectRatio="none".
@@ -278,9 +259,10 @@ export default function MarketChart({
   const chartWidth = Math.round(chartHeight * clampedAspect);
   const plotLeft = 2;
   const axisTickGutter = isHomeChart ? 22 : 24;
-  const readoutRailWidth = isHomeChart ? 18 : 22;
-  const plotRight = chartWidth - axisTickGutter - readoutRailWidth;
-  const plotTop = 2.5;
+  const plotRight = chartWidth - axisTickGutter;
+  // Reserve top strip for the hover timestamp box (height 15.8 + 2 gap)
+  const hoverTimeBoxHeight = 10.5;
+  const plotTop = hoverTimeBoxHeight + 2;
   const plotBottom = chartHeight - 2.5;
   const plotXSpan = plotRight - plotLeft;
   const plotYSpan = plotBottom - plotTop;
@@ -291,48 +273,42 @@ export default function MarketChart({
   );
 
   // ── Build series points ───────────────────────────────────────────
-  const { yesPoints, noPoints } = useMemo(() => {
-    const separatedPoints = yesSeries.map((price, idx) => {
-      if (price === null) return null;
-      const t = pointCount === 1 ? 1 : idx / (pointCount - 1);
-      const x = plotLeft + t * plotXSpan;
-      const separated = separateSeriesY(
-        yFromProbability(price),
-        yFromProbability(1 - price),
-        plotTop,
-        plotBottom,
-      );
-      return { x, yesY: separated.yesY, noY: separated.noY };
-    });
-
-    const visible = separatedPoints.filter(
-      (p): p is { x: number; yesY: number; noY: number } => p !== null,
-    );
-
-    return {
-      yesPoints: visible.map((p) => ({ x: p.x, y: p.yesY })),
-      noPoints: visible.map((p) => ({ x: p.x, y: p.noY })),
-    };
-  }, [yesSeries, pointCount, plotXSpan, plotBottom, yFromProbability]);
+  const yesPoints = useMemo(() => {
+    return yesSeries
+      .map((price, idx) => {
+        if (price === null) return null;
+        const t = pointCount === 1 ? 1 : idx / (pointCount - 1);
+        const x = plotLeft + t * plotXSpan;
+        return { x, y: yFromProbability(price) };
+      })
+      .filter((p): p is { x: number; y: number } => p !== null);
+  }, [yesSeries, pointCount, plotXSpan, yFromProbability]);
 
   const yesLinePoints = yesPoints
     .map((p) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`)
     .join(" ");
+
+  const noPoints = useMemo(() => {
+    return yesSeries
+      .map((price, idx) => {
+        if (price === null) return null;
+        const t = pointCount === 1 ? 1 : idx / (pointCount - 1);
+        const x = plotLeft + t * plotXSpan;
+        return { x, y: yFromProbability(1 - price) };
+      })
+      .filter((p): p is { x: number; y: number } => p !== null);
+  }, [yesSeries, pointCount, plotXSpan, yFromProbability]);
+
   const noLinePoints = noPoints
     .map((p) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`)
     .join(" ");
-
-  // Guide lines
-  const guideLineYs = [0, 25, 50, 75, 100].map((level) =>
-    yFromProbability(level / 100),
-  );
 
   // Endpoints
   const defaultPoint = { x: plotRight, y: plotTop + plotYSpan / 2 };
   const yesEnd = yesPoints[yesPoints.length - 1] ?? defaultPoint;
   const noEnd = noPoints[noPoints.length - 1] ?? defaultPoint;
   const yesPct = Math.round(displayedYes * 100);
-  const noPct = 100 - yesPct;
+  const noPct = Math.round((1 - displayedYes) * 100);
 
   // ── Hover state ───────────────────────────────────────────────────
   const hoverRequested =
@@ -347,45 +323,39 @@ export default function MarketChart({
   const hoverYesValue = sampleChartProbabilityAtFraction(seriesData, hoverT);
   const hoverActive = hoverRequested && hoverYesValue !== null;
 
-  const separatedHover =
-    hoverActive && hoverYesValue !== null
-      ? separateSeriesY(
-          yFromProbability(hoverYesValue),
-          yFromProbability(1 - hoverYesValue),
-          plotTop,
-          plotBottom,
-        )
-      : null;
   const yesHover =
-    hoverActive && separatedHover
-      ? { x: hoverX, y: separatedHover.yesY }
+    hoverActive && hoverYesValue !== null
+      ? { x: hoverX, y: yFromProbability(hoverYesValue) }
       : null;
-  const noHover =
-    hoverActive && separatedHover ? { x: hoverX, y: separatedHover.noY } : null;
+
+  const hoverNoValue =
+    hoverActive && hoverYesValue !== null ? 1 - hoverYesValue : null;
+  const noHoverPoint =
+    hoverNoValue !== null
+      ? { x: hoverX, y: yFromProbability(hoverNoValue) }
+      : null;
 
   const hoverBlockHeight = Math.round(startBlockHeight + scaleBlocks * hoverT);
   const hoverYesPct =
     hoverYesValue === null ? 0 : Math.round(hoverYesValue * 100);
-  const hoverNoPct = 100 - hoverYesPct;
+  const hoverNoPct = hoverNoValue === null ? 0 : Math.round(hoverNoValue * 100);
   const endpointOpacity = hoverActive ? "0.4" : "1";
   const showCurrentPulse = !hoverActive || hoverT > 0.985;
   const fadeX = hoverX;
   const fadeW = Math.max(0, plotRight - fadeX);
-  const hoverAvailable = hoverActive && yesHover !== null && noHover !== null;
+  const hoverAvailable = hoverActive && yesHover !== null;
 
   // ── Paw trails skip zones ─────────────────────────────────────────
   const pawSkipZones = useMemo(
     () => [
       { x: yesEnd.x, y: yesEnd.y, r: 3.5 },
-      { x: noEnd.x, y: noEnd.y, r: 3.5 },
-      ...(hoverAvailable
-        ? [
-            { x: yesHover?.x, y: yesHover?.y, r: 3.3 },
-            { x: noHover?.x, y: noHover?.y, r: 3.3 },
-          ]
+      ...(showNoLine ? [{ x: noEnd.x, y: noEnd.y, r: 3.5 }] : []),
+      ...(hoverAvailable ? [{ x: yesHover?.x, y: yesHover?.y, r: 3.3 }] : []),
+      ...(hoverAvailable && showNoLine && noHoverPoint
+        ? [{ x: noHoverPoint.x, y: noHoverPoint.y, r: 3.3 }]
         : []),
     ],
-    [yesEnd, noEnd, hoverAvailable, yesHover, noHover],
+    [yesEnd, noEnd, showNoLine, hoverAvailable, yesHover, noHoverPoint],
   );
 
   // ── Readout positioning ───────────────────────────────────────────
@@ -393,16 +363,28 @@ export default function MarketChart({
   const readoutRestOffset = isHomeChart ? 6.2 : 6.8;
   const readoutMinX = plotLeft + 4;
   const readoutMaxX = chartWidth - axisTickGutter - 2.2;
-  const readoutAnchorX = hoverActive
-    ? hoverX + readoutHoverOffset
-    : yesEnd.x + readoutRestOffset;
-  const readoutX = Math.max(readoutMinX, Math.min(readoutMaxX, readoutAnchorX));
-  const readoutLabelFont = isHomeChart ? 4.8 : 5.2;
-  const readoutPctFont = isHomeChart ? 9.6 : 10.4;
-  const readoutLineGap = isHomeChart ? 0.86 : 0.95;
-  const readoutBlockHeight = readoutLabelFont + readoutLineGap + readoutPctFont;
-  const readoutStrokeWidth = isHomeChart ? 0.24 : 0.28;
-  const readoutTokenOffsetY = readoutLabelFont + 0.96;
+  const readoutFont = isHomeChart ? 5.2 : 5.6;
+  const readoutPadX = 2.5;
+  const readoutPadY = 1.4;
+  const readoutBgHeight = readoutFont + readoutPadY * 2;
+  // "Yes 100%" is the widest text (8 chars); estimate width from char count
+  const readoutEstWidth = Math.round(readoutFont * 0.6 * 8 + readoutPadX * 2);
+  const readoutBlockHeight = readoutBgHeight;
+
+  const readoutAnchorPoint = hoverActive ? hoverX : yesEnd.x;
+  const readoutOffset = hoverActive ? readoutHoverOffset : readoutRestOffset;
+  const readoutRightX = readoutAnchorPoint + readoutOffset;
+  // Flip to left side when right-side placement would overflow the axis gutter.
+  const readoutFlipLeft = readoutRightX + readoutEstWidth > readoutMaxX;
+  const readoutX = Math.max(
+    readoutMinX,
+    readoutFlipLeft
+      ? Math.min(
+          readoutMaxX - readoutEstWidth,
+          readoutAnchorPoint - readoutOffset - readoutEstWidth,
+        )
+      : Math.min(readoutMaxX - readoutEstWidth, readoutRightX),
+  );
 
   const clampReadoutTop = useCallback(
     (y: number): number =>
@@ -410,32 +392,32 @@ export default function MarketChart({
         plotTop + 0.6,
         Math.min(plotBottom - readoutBlockHeight - 0.6, y),
       ),
-    [plotBottom, readoutBlockHeight],
+    [plotTop, plotBottom, readoutBlockHeight],
   );
 
-  const noAnchorY = hoverAvailable ? noHover?.y : noEnd.y;
   const yesAnchorY = hoverAvailable ? yesHover?.y : yesEnd.y;
-  let readoutNoTop = clampReadoutTop(noAnchorY - (readoutLabelFont + 0.8));
-  let readoutYesTop = clampReadoutTop(yesAnchorY - (readoutLabelFont + 0.8));
-  const minReadoutGap = readoutBlockHeight + 1.4;
-  if (readoutNoTop - readoutYesTop < minReadoutGap) {
-    const mid = (readoutNoTop + readoutYesTop) / 2;
-    readoutNoTop = mid + minReadoutGap / 2;
-    readoutYesTop = mid - minReadoutGap / 2;
+  const noAnchorY = noHoverPoint ? noHoverPoint.y : noEnd.y;
+
+  // Compute pill positions and push apart if they'd overlap.
+  const pillGap = 1.5;
+  const minPillSep = readoutBgHeight + pillGap;
+  let yesBgY = clampReadoutTop(yesAnchorY - readoutBgHeight / 2);
+  let noBgY = clampReadoutTop(noAnchorY - readoutBgHeight / 2);
+  if (showNoLine) {
+    const sep = noBgY - yesBgY;
+    if (Math.abs(sep) < minPillSep) {
+      const mid = (yesBgY + noBgY) / 2;
+      yesBgY = clampReadoutTop(mid - minPillSep / 2);
+      noBgY = clampReadoutTop(mid + minPillSep / 2);
+    }
   }
-  readoutNoTop = clampReadoutTop(readoutNoTop);
-  readoutYesTop = clampReadoutTop(readoutYesTop);
-  if (readoutNoTop - readoutYesTop < minReadoutGap) {
-    readoutNoTop = clampReadoutTop(readoutYesTop + minReadoutGap);
-  }
-  const readoutNoLabelY = readoutNoTop + readoutTokenOffsetY;
-  const readoutYesLabelY = readoutYesTop + readoutTokenOffsetY;
-  const readoutNoPctY = readoutNoLabelY + readoutLineGap + readoutPctFont;
-  const readoutYesPctY = readoutYesLabelY + readoutLineGap + readoutPctFont;
-  const readoutNoPct = hasPrice ? (hoverActive ? hoverNoPct : noPct) : null;
-  const readoutYesPct = hasPrice ? (hoverActive ? hoverYesPct : yesPct) : null;
-  const legendNoPct = hasPrice ? (hoverActive ? hoverNoPct : noPct) : null;
-  const legendYesPct = hasPrice ? (hoverActive ? hoverYesPct : yesPct) : null;
+  const readoutBgY = yesBgY;
+  const pillTextOffsetY = readoutBgHeight / 2 + readoutFont * 0.35;
+  const readoutTextY = readoutBgY + pillTextOffsetY;
+  const noTextY = noBgY + pillTextOffsetY;
+  const pillCenterX = readoutX + readoutEstWidth / 2;
+  const readoutPct = hasPrice ? (hoverActive ? hoverYesPct : yesPct) : null;
+  const legendPct = hasPrice ? (hoverActive ? hoverYesPct : yesPct) : null;
 
   // ── Hover time box ────────────────────────────────────────────────
   const hoverTimeX = Math.max(plotLeft + 18, Math.min(plotRight - 18, hoverX));
@@ -443,12 +425,11 @@ export default function MarketChart({
     hoverBlockHeight,
     market.currentHeight || hoverBlockHeight,
   );
-  const hoverTimeFontSize = isHomeChart ? 7.8 : 8.4;
-  const hoverTimeStrokeWidth = isHomeChart ? 0.16 : 0.2;
-  const hoverTimeBoxHeight = 15.8;
+  const hoverTimeFontSize = isHomeChart ? 5.2 : 5.6;
+  const hoverTimeStrokeWidth = isHomeChart ? 0.14 : 0.16;
   const hoverTimeBoxWidth = Math.max(
-    70,
-    Math.min(178, hoverTimeText.length * 3.4 + 18),
+    48,
+    Math.min(130, hoverTimeText.length * 2.3 + 14),
   );
   const hoverTimeBoxX = Math.max(
     plotLeft + 1.2,
@@ -458,8 +439,10 @@ export default function MarketChart({
     ),
   );
   const hoverTimeTextX = hoverTimeBoxX + hoverTimeBoxWidth / 2;
-  const hoverTimeBoxY = plotTop + 0.25;
-  const hoverTimeTextY = hoverTimeBoxY + hoverTimeBoxHeight / 2 + 2.8;
+  // Timestamp lives in the reserved top strip, above the plot area.
+  const hoverTimeBoxY = 0.5;
+  const hoverTimeTextY =
+    hoverTimeBoxY + hoverTimeBoxHeight / 2 + hoverTimeFontSize * 0.35;
 
   const volumeLabel = `${market.volumeBtc.toLocaleString(undefined, {
     minimumFractionDigits: market.volumeBtc < 1 ? 2 : 1,
@@ -491,15 +474,22 @@ export default function MarketChart({
 
   // ── Paw trails (memoized) ─────────────────────────────────────────
   const yesPawTrail = useMemo(
-    () => buildPawTrail(yesPoints, "#3fbcae", market.isLive, pawSkipZones),
-    [yesPoints, market.isLive, pawSkipZones],
-  );
-  const noPawTrail = useMemo(
-    () => buildPawTrail(noPoints, "#e06b7f", market.isLive, pawSkipZones),
-    [noPoints, market.isLive, pawSkipZones],
+    () =>
+      showYesLine
+        ? buildPawTrail(yesPoints, "#3fbcae", market.isLive, pawSkipZones)
+        : [],
+    [showYesLine, yesPoints, market.isLive, pawSkipZones],
   );
 
-  const fc = fullContractSats(market);
+  const noPawTrail = useMemo(
+    () =>
+      showNoLine
+        ? buildPawTrail(noPoints, "#f87171", market.isLive, pawSkipZones)
+        : [],
+    [showNoLine, noPoints, market.isLive, pawSkipZones],
+  );
+
+  const noReadoutPct = hasPrice ? (hoverActive ? hoverNoPct : noPct) : null;
 
   return (
     <div style={{ fontVariantNumeric: "tabular-nums" }}>
@@ -507,22 +497,54 @@ export default function MarketChart({
         className={`relative ${isHomeChart ? "h-[17.5rem]" : "h-[19.5rem]"} rounded-xl border border-slate-800 bg-slate-950/60 p-3`}
       >
         {/* Legend bar */}
-        <div className="mb-2 flex items-center gap-4 text-[14px] font-medium text-slate-300">
-          <span className="inline-flex items-center gap-1 text-slate-200">
-            <LegendIcon fill="#5eead4" />
-            Yes {legendYesPct != null ? `${legendYesPct}%` : "\u2014"}
-          </span>
-          <span className="inline-flex items-center gap-1 text-slate-200">
-            <LegendIcon fill="#fb7185" />
-            No {legendNoPct != null ? `${legendNoPct}%` : "\u2014"}
-          </span>
-          <span className="text-slate-500">Yes + No = {fc} sats</span>
+        <div className="mb-2 flex items-center gap-3 text-[14px] font-medium">
+          {showYesLine && (
+            <span className="inline-flex items-center gap-1 text-emerald-400">
+              <LegendIcon fill="#34d399" />
+              {legendPct != null ? `Yes ${legendPct}%` : "\u2014"}
+            </span>
+          )}
+          {showNoLine && (
+            <span className="inline-flex items-center gap-1 text-rose-400">
+              <LegendIcon fill="#f87171" flip />
+              No {noReadoutPct != null ? `${noReadoutPct}%` : "\u2014"}
+            </span>
+          )}
           {market.isLive && (
             <span className="inline-flex items-center gap-1 text-xs font-semibold text-rose-400">
               <span className="liveIndicatorDot" />
               Live · Round 1
             </span>
           )}
+          <div className="ml-auto inline-flex items-center gap-1">
+            <button
+              type="button"
+              onClick={toggleYes}
+              className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs font-semibold transition ${
+                showYesLine
+                  ? "border-emerald-800 bg-emerald-950/60 text-emerald-400"
+                  : "border-slate-700 text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              <LegendIcon fill={showYesLine ? "#34d399" : "#64748b"} />
+              Yes
+            </button>
+            <button
+              type="button"
+              onClick={toggleNo}
+              className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs font-semibold transition ${
+                showNoLine
+                  ? "border-rose-800 bg-rose-950/60 text-rose-400"
+                  : "border-slate-700 text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              <LegendIcon
+                fill={showNoLine ? "#f87171" : "#64748b"}
+                flip={showNoLine}
+              />
+              No
+            </button>
+          </div>
         </div>
 
         {/* SVG chart */}
@@ -536,23 +558,38 @@ export default function MarketChart({
             className="h-full w-full"
             aria-hidden="true"
           >
-            {/* Guide lines */}
-            {guideLineYs.map((y) => (
-              <line
-                key={y}
-                x1="0"
-                y1={y}
-                x2={chartWidth}
-                y2={y}
-                stroke="#64748b"
-                strokeOpacity="0.24"
-                strokeWidth="0.28"
-                strokeDasharray="0.45 2.15"
-              />
-            ))}
+            {/* Guide lines + y-axis labels */}
+            {[1, 0.75, 0.5, 0.25, 0].map((level) => {
+              const y = yFromProbability(level);
+              return (
+                <g key={level}>
+                  <line
+                    x1="0"
+                    y1={y}
+                    x2={chartWidth}
+                    y2={y}
+                    stroke="#64748b"
+                    strokeOpacity="0.24"
+                    strokeWidth="0.28"
+                    strokeDasharray="0.45 2.15"
+                  />
+                  <text
+                    x={chartWidth - 1}
+                    y={y}
+                    fill="#64748b"
+                    fontSize={isHomeChart ? 4 : 4.5}
+                    fontWeight="400"
+                    dominantBaseline="middle"
+                    textAnchor="end"
+                  >
+                    {`${level * 100}%`}
+                  </text>
+                </g>
+              );
+            })}
 
             {/* Series lines */}
-            {hasPrice && (
+            {hasPrice && showYesLine && (
               <>
                 <polyline
                   fill="none"
@@ -561,18 +598,21 @@ export default function MarketChart({
                   strokeWidth="1.08"
                   points={yesLinePoints}
                 />
+                {yesPawTrail}
+              </>
+            )}
+            {hasPrice && showNoLine && (
+              <>
                 <polyline
                   fill="none"
-                  stroke="#fb7185"
-                  strokeOpacity="0.6"
+                  stroke="#f87171"
+                  strokeOpacity="0.64"
                   strokeWidth="1.08"
                   points={noLinePoints}
                 />
-                {yesPawTrail}
                 {noPawTrail}
               </>
             )}
-
             {/* Hover fade + crosshair */}
             {hoverAvailable && (
               <>
@@ -597,28 +637,27 @@ export default function MarketChart({
             )}
 
             {/* Pulse animation at current point */}
-            {hasPrice && showCurrentPulse && (
-              <>
-                {pulseSvg(yesEnd.x, yesEnd.y, "chartLivePulseYes")}
-                {pulseSvg(noEnd.x, noEnd.y, "chartLivePulseNo")}
-              </>
-            )}
+            {hasPrice &&
+              showYesLine &&
+              showCurrentPulse &&
+              pulseSvg(yesEnd.x, yesEnd.y, "chartLivePulseYes")}
 
             {/* Endpoint markers */}
             {hasPrice && (
               <g opacity={endpointOpacity}>
-                {markerSvg(yesEnd.x, yesEnd.y, "#5eead4")}
-                {markerSvg(noEnd.x, noEnd.y, "#fb7185")}
+                {showYesLine && markerSvg(yesEnd.x, yesEnd.y, "#5eead4")}
+                {showNoLine && markerSvg(noEnd.x, noEnd.y, "#f87171", 1, true)}
               </g>
             )}
 
             {/* Hover markers */}
-            {hoverAvailable && (
-              <>
-                {markerSvg(yesHover?.x, yesHover?.y, "#5eead4", 1.16)}
-                {markerSvg(noHover?.x, noHover?.y, "#fb7185", 1.16)}
-              </>
-            )}
+            {hoverAvailable &&
+              showYesLine &&
+              markerSvg(yesHover?.x, yesHover?.y, "#5eead4", 1.16)}
+            {hoverAvailable &&
+              showNoLine &&
+              noHoverPoint &&
+              markerSvg(noHoverPoint.x, noHoverPoint.y, "#f87171", 1.16, true)}
 
             {/* Hover time box */}
             {hoverAvailable && (
@@ -654,68 +693,50 @@ export default function MarketChart({
               </>
             )}
 
-            {/* Readout labels */}
-            {readoutNoPct != null && (
+            {/* Readout pills — hover only */}
+            {hoverAvailable && showYesLine && readoutPct != null && (
               <>
-                <text
+                <rect
                   x={readoutX}
-                  y={readoutNoLabelY}
-                  fill="#fda4af"
-                  fontSize={readoutLabelFont}
-                  fontWeight="520"
-                  style={{
-                    paintOrder: "stroke",
-                    stroke: "#020617",
-                    strokeWidth: readoutStrokeWidth,
-                    strokeOpacity: 0.82,
-                  }}
+                  y={readoutBgY}
+                  width={readoutEstWidth}
+                  height={readoutBgHeight}
+                  rx="2.2"
+                  fill="#5eead4"
+                  fillOpacity="0.92"
+                />
+                <text
+                  x={pillCenterX}
+                  y={readoutTextY}
+                  fill="#020617"
+                  fontSize={readoutFont}
+                  fontWeight="600"
+                  textAnchor="middle"
                 >
-                  NO
+                  Yes {readoutPct}%
                 </text>
-                <text
+              </>
+            )}
+            {hoverAvailable && showNoLine && noReadoutPct != null && (
+              <>
+                <rect
                   x={readoutX}
-                  y={readoutNoPctY}
-                  fill="#f98fa2"
-                  fontSize={readoutPctFont}
-                  fontWeight="560"
-                  style={{
-                    paintOrder: "stroke",
-                    stroke: "#020617",
-                    strokeWidth: readoutStrokeWidth,
-                    strokeOpacity: 0.82,
-                  }}
-                >
-                  {readoutNoPct}%
-                </text>
+                  y={noBgY}
+                  width={readoutEstWidth}
+                  height={readoutBgHeight}
+                  rx="2.2"
+                  fill="#f87171"
+                  fillOpacity="0.92"
+                />
                 <text
-                  x={readoutX}
-                  y={readoutYesLabelY}
-                  fill="#99f6e4"
-                  fontSize={readoutLabelFont}
-                  fontWeight="520"
-                  style={{
-                    paintOrder: "stroke",
-                    stroke: "#020617",
-                    strokeWidth: readoutStrokeWidth,
-                    strokeOpacity: 0.82,
-                  }}
+                  x={pillCenterX}
+                  y={noTextY}
+                  fill="#020617"
+                  fontSize={readoutFont}
+                  fontWeight="600"
+                  textAnchor="middle"
                 >
-                  YES
-                </text>
-                <text
-                  x={readoutX}
-                  y={readoutYesPctY}
-                  fill="#84f4cb"
-                  fontSize={readoutPctFont}
-                  fontWeight="560"
-                  style={{
-                    paintOrder: "stroke",
-                    stroke: "#020617",
-                    strokeWidth: readoutStrokeWidth,
-                    strokeOpacity: 0.82,
-                  }}
-                >
-                  {readoutYesPct}%
+                  No {noReadoutPct}%
                 </text>
               </>
             )}
@@ -747,22 +768,15 @@ export default function MarketChart({
           onMouseLeave={handleMouseLeave}
         />
 
-        {/* Y-axis labels */}
-        <div
-          className="pointer-events-none absolute right-1 top-10 bottom-8 flex flex-col justify-between text-[12px] font-normal text-slate-500"
-          style={{ textShadow: "0 1px 1px rgba(2, 6, 23, 0.35)" }}
-        >
-          <span>100%</span>
-          <span>75%</span>
-          <span>50%</span>
-          <span>25%</span>
-          <span>0%</span>
-        </div>
-
         {/* X-axis labels */}
         <div
           className="pointer-events-none absolute inset-x-3 bottom-1 flex items-center justify-between text-[12px] font-normal text-slate-500"
-          style={{ textShadow: "0 1px 1px rgba(2, 6, 23, 0.35)" }}
+          style={{
+            textShadow: "0 1px 1px rgba(2, 6, 23, 0.35)",
+            // Align last label with plotRight by reserving the same proportion
+            // as axisTickGutter occupies in the SVG coordinate space.
+            paddingRight: `${(axisTickGutter / chartWidth) * 100}%`,
+          }}
         >
           {xLabels.map((label, i) => (
             <span key={i}>{label}</span>
@@ -776,7 +790,7 @@ export default function MarketChart({
           {volumeLabel}
         </span>
         <div className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/65 p-1 text-[12px]">
-          {(["1h", "4h", "1d", "3d", "7d"] as const).map((key) => (
+          {(["1h", "4h", "1d", "3d", "7d", "1M", "all"] as const).map((key) => (
             <button
               type="button"
               key={key}
@@ -787,7 +801,7 @@ export default function MarketChart({
                   : "text-slate-500 hover:bg-slate-800/70 hover:text-slate-300"
               }`}
             >
-              {key}
+              {key === "all" ? "ALL" : key}
             </button>
           ))}
         </div>
