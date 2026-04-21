@@ -233,9 +233,11 @@ export function buildChartFromHistory(
   // Include one point before startBlockHeight so left-edge interpolation works:
   // without it, any sample between startBlockHeight and the first in-window
   // point would clamp to that point rather than interpolating from before it.
-  const lastBeforeWindow = allSorted
-    .filter((p) => p.blockHeight < startBlockHeight)
-    .at(-1);
+  const beforeWindow = allSorted.filter(
+    (p) => p.blockHeight < startBlockHeight,
+  );
+  const lastBeforeWindow =
+    beforeWindow.length > 0 ? beforeWindow[beforeWindow.length - 1] : undefined;
 
   const inWindow = allSorted.filter(
     (p) => p.blockHeight >= startBlockHeight && p.blockHeight <= endBlockHeight,
