@@ -237,6 +237,12 @@ export type RedemptionResult = {
 
 export type IdentityResponse = { pubkey_hex: string; npub: string };
 
+export type PreviewIdentityResponse = {
+  pubkey_hex: string;
+  npub: string;
+  nsec: string;
+};
+
 export type RelayEntry = { url: string; has_backup: boolean };
 export type RelayBackupResult = { url: string; has_backup: boolean };
 export type WalletEntry = { name: string; d_tag: string };

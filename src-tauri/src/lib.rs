@@ -38,12 +38,17 @@ pub struct NodeState {
     pub node: tokio::sync::Mutex<
         Option<std::sync::Arc<deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>>>,
     >,
+    /// JoinHandles for background tasks spawned per node (relay subscription,
+    /// discovery event forwarding, wallet snapshot forwarding). When a node is
+    /// replaced or dropped these are aborted so tasks don't leak.
+    pub task_handles: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl Default for NodeState {
     fn default() -> Self {
         Self {
             node: tokio::sync::Mutex::new(None),
+            task_handles: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -1668,6 +1673,7 @@ pub fn run() {
             // SDK / Nostr
             commands::init_nostr_identity,
             commands::generate_nostr_identity,
+            commands::preview_nostr_identity,
             commands::get_nostr_identity,
             commands::export_nostr_nsec,
             commands::delete_nostr_identity,
