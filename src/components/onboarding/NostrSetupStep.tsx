@@ -10,7 +10,11 @@ import {
   useState,
 } from "react";
 import { useStore } from "../../store";
-import type { IdentityResponse, NostrProfile } from "../../types";
+import type {
+  IdentityResponse,
+  NostrProfile,
+  PreviewIdentityResponse,
+} from "../../types";
 import { generateAvatarDataUri } from "../../utils-react/avatar";
 import { randomCatName } from "../../utils-react/random-name";
 import { showToast } from "../shared/Toast";
@@ -52,6 +56,9 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const [mnemonicExpanded, setMnemonicExpanded] = useState(false);
   const [restorePasswordRevealed, setRestorePasswordRevealed] = useState(false);
   const mnemonicTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // Guard against rapid clicks of the identity-randomize button spawning
+  // concurrent preview_nostr_identity calls.
+  const randomizingRef = useRef(false);
 
   // Focus the mnemonic textarea only when first expanded, not on every re-render
   useEffect(() => {
@@ -201,17 +208,18 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   }, [nostrDone, nostrMode]);
 
   // ── Generate handler ────────────────────────────────────────────────
+  // Previews a fresh identity (no disk write, no node construction). The
+  // identity is only committed at handleCreateAccount via import_nostr_nsec.
   const handleGenerate = useCallback(async () => {
     useStore.setState({ onboardingLoading: true, onboardingError: "" });
     try {
-      const identity = await invoke<IdentityResponse>(
-        "generate_nostr_identity",
+      const identity = await invoke<PreviewIdentityResponse>(
+        "preview_nostr_identity",
       );
-      const nsec = await invoke<string>("export_nostr_nsec");
       useStore.setState({
         onboardingPendingPubkey: identity.pubkey_hex,
         onboardingPendingNpub: identity.npub,
-        onboardingNostrGeneratedNsec: nsec,
+        onboardingNostrGeneratedNsec: identity.nsec,
         onboardingProfileStep: true,
         onboardingNostrDisplayName: randomCatName(),
       });
@@ -351,8 +359,13 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
       });
       // 2. Create wallet
       const mnemonic = await invoke<string>("create_wallet", { password });
-      // 3. Init nostr node + unlock wallet
-      await invoke("init_nostr_identity");
+      // 3. Persist the previewed nsec + construct nostr node
+      //    (preview_nostr_identity didn't touch disk or spawn tasks, so we
+      //    commit it here via import_nostr_nsec — the single place that
+      //    should ever build a DeadcatNode in the generate flow).
+      await invoke<IdentityResponse>("import_nostr_nsec", {
+        nsec: s.onboardingNostrGeneratedNsec,
+      });
       await invoke<void>("unlock_wallet", { password });
       useStore.setState({ walletSessionPassword: password });
       // 4. Publish kind 0 with name (avatar is DiceBear, generated client-side)
@@ -644,15 +657,16 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             <button
               type="button"
               onClick={async () => {
+                if (randomizingRef.current) return;
+                randomizingRef.current = true;
                 try {
-                  const identity = await invoke<IdentityResponse>(
-                    "generate_nostr_identity",
+                  const identity = await invoke<PreviewIdentityResponse>(
+                    "preview_nostr_identity",
                   );
-                  const nsec = await invoke<string>("export_nostr_nsec");
                   useStore.setState({
                     onboardingPendingPubkey: identity.pubkey_hex,
                     onboardingPendingNpub: identity.npub,
-                    onboardingNostrGeneratedNsec: nsec,
+                    onboardingNostrGeneratedNsec: identity.nsec,
                     onboardingNostrDisplayName: randomCatName(),
                   });
                 } catch {
@@ -660,6 +674,8 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                   useStore.setState({
                     onboardingNostrDisplayName: randomCatName(),
                   });
+                } finally {
+                  randomizingRef.current = false;
                 }
               }}
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200"

@@ -238,27 +238,40 @@ async fn construct_and_store_node(
         guard.as_ref().cloned()
     };
 
+    // Abort any background tasks from the previous node. Without this, each
+    // replacement leaks the relay subscription + two forwarder loops until
+    // their channels close (which requires the Arc to drop — blocked by the
+    // tasks themselves holding clones). See fix/preview-nostr-identity.
+    {
+        let mut handles = node_state.task_handles.lock().await;
+        for h in handles.drain(..) {
+            h.abort();
+        }
+    }
+
     log::info!(
         "[restore-trace] construct_and_store_node: node stored, starting subscription at {:?}",
         _t0.elapsed()
     );
+
+    let mut new_handles: Vec<tokio::task::JoinHandle<()>> = Vec::with_capacity(3);
 
     // Start the Nostr subscription in the background — do NOT await.
     // This connects to relays and starts the event loop. The node is
     // already stored in NodeState so commands like discover_contracts
     // can use it immediately (they handle missing relay data gracefully).
     if let Some(node) = node_arc.clone() {
-        tokio::spawn(async move {
+        new_handles.push(tokio::spawn(async move {
             if let Err(e) = node.start_subscription().await {
                 log::warn!("failed to start discovery subscription: {e}");
             }
             log::info!("discovery subscription started");
-        });
+        }));
     }
 
     // Forward discovery events to the frontend
     let app_handle = app.clone();
-    tokio::spawn(async move {
+    new_handles.push(tokio::spawn(async move {
         use deadcat_sdk::DiscoveryEvent;
         while let Ok(event) = rx.recv().await {
             match event {
@@ -281,13 +294,13 @@ async fn construct_and_store_node(
             }
         }
         log::info!("discovery event forwarding loop ended");
-    });
+    }));
 
     // Forward wallet snapshot changes to the frontend, throttled to avoid
     // flooding the main thread with large serialized payloads during sync.
     let app_snapshot = app.clone();
     let policy_asset = sdk_network.into_lwk().policy_asset();
-    tokio::spawn(async move {
+    new_handles.push(tokio::spawn(async move {
         let mut last_emit = std::time::Instant::now() - std::time::Duration::from_secs(1);
         let min_interval = std::time::Duration::from_millis(500);
 
@@ -324,7 +337,13 @@ async fn construct_and_store_node(
             last_emit = std::time::Instant::now();
         }
         log::info!("wallet snapshot forwarding loop ended");
-    });
+    }));
+
+    // Store handles so the next construct_and_store_node call can abort them.
+    {
+        let mut handles = node_state.task_handles.lock().await;
+        handles.extend(new_handles);
+    }
 
     Ok(())
 }
@@ -387,6 +406,37 @@ pub async fn generate_nostr_identity(app: tauri::AppHandle) -> Result<IdentityRe
 
     construct_and_store_node(&app, keys).await?;
     Ok(response)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewIdentityResponse {
+    pub pubkey_hex: String,
+    pub npub: String,
+    pub nsec: String,
+}
+
+/// Generate a fresh keypair WITHOUT persisting to disk or constructing a
+/// DeadcatNode. Used during onboarding to preview an identity (avatar, npub)
+/// before the user commits. The full identity is committed later via
+/// `import_nostr_nsec` once the user finishes onboarding.
+///
+/// This separation prevents the freeze that occurred when each randomize
+/// click spawned a new DeadcatNode + relay subscription tasks (which were
+/// not aborted on replacement, accumulating background loops).
+#[tauri::command]
+pub fn preview_nostr_identity() -> Result<PreviewIdentityResponse, String> {
+    let keys = Keys::generate();
+    Ok(PreviewIdentityResponse {
+        pubkey_hex: keys.public_key().to_hex(),
+        npub: keys
+            .public_key()
+            .to_bech32()
+            .map_err(|e| format!("bech32 error: {e}"))?,
+        nsec: keys
+            .secret_key()
+            .to_bech32()
+            .map_err(|e| format!("bech32 error: {e}"))?,
+    })
 }
 
 #[tauri::command]
@@ -466,7 +516,7 @@ pub async fn export_nostr_nsec(app: tauri::AppHandle) -> Result<String, String> 
 
 #[tauri::command]
 pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> {
-    // Lock wallet and drop node
+    // Lock wallet, abort background tasks, and drop node
     {
         let node_state = app.state::<NodeState>();
         let mut guard = node_state.node.lock().await;
@@ -474,6 +524,10 @@ pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> 
             node.lock_wallet();
         }
         *guard = None;
+        let mut handles = node_state.task_handles.lock().await;
+        for h in handles.drain(..) {
+            h.abort();
+        }
     }
 
     // Clear wallet state and payment swaps
