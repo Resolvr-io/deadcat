@@ -111,7 +111,7 @@ A new contract type that natively handles N outcomes:
 
 Keep binary markets. Add a new "event" contract that holds N binary markets' RTs and orchestrates atomic cross-market operations.
 
-**Verdict: infeasible without modifying the binary market contract.** The existing binary market uses hardcoded output indices (`current_index() == 0/1/2`), which structurally prevents co-spending multiple markets in one transaction. Even if we modified the binary market, Approach B has capital inefficiency issues (N:1 capital lockup vs 1:1 for A).
+**Verdict: still unattractive.** An earlier version of this analysis assumed the binary market used hardcoded output indices (`current_index() == 0/1/2`), which would have blocked co-spending multiple markets in one transaction. That premise is now superseded by the witness-parameterized market design. Even with that fix, Approach B remains worse than A because it adds wrapper complexity while still suffering capital inefficiency (N:1 capital lockup vs 1:1 for A).
 
 ### Approach C: Application-only composition
 

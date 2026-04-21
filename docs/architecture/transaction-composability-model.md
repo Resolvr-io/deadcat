@@ -48,11 +48,13 @@ Each output uses the protection model best suited to its risk profile:
 - `maker_order.simf`: the fill validation functions accept `remainder_idx` from witness data instead of computing `safe_add_32(i, 1)`. Remainder output script and value checks use the witness-provided index.
 - `witness::REMAINDER_IDX` is added as a new witness declaration (replaces the implicit `i+1`).
 
-### Prediction Market: Hardcoded Absolute Indices (No Change Needed)
+### Prediction Market: Witness-Parameterized (Cluster 1 Decision)
 
-The market covenant asserts `current_index() == 0` and checks outputs at fixed positions (0, 1, 2, 3, 4, 5...). This is acceptable because all market lifecycle operations (issuance, cancellation, resolution, redemption, expiry) are single-contract — there is no practical reason to co-spend two markets' covenant UTXOs in the same transaction. The rigid layout fully specifies the transaction structure for each operation.
+Both market contracts now follow the same composability model as the pool covenant: the witness provides `in_base` and `out_base`, the covenant asserts the current input is at `in_base + slot_offset`, and it validates a bounded contiguous input/output window rooted at those bases. This preserves covenant correctness while allowing the market to sit anywhere in a larger transaction.
 
-**Future consideration:** The atomic issuance + pool bootstrap enhancement ([future-atomic-issuance-lmsr.md](../contracts/lmsr-pool/future-atomic-issuance-lmsr.md)) would co-spend market RT UTXOs while creating pool reserve outputs. The market covenant's hardcoded indices may already accommodate this (the covenant doesn't constrain token output destinations, and extra outputs between the token outputs and the fee output may be tolerated). This requires verification against the exact `.simf` logic when that feature is scoped.
+For binary markets, this is a covenant-level capability decision, not a promise that every v1 builder uses arbitrary placement. The standard creation/issuance/cancellation/resolution/expiry/redemption builders may still choose a canonical layout for simplicity, but the committed contract semantics no longer hardcode absolute transaction positions. That preserves the option to add future multi-contract builders without changing already-created markets.
+
+The anti-aliasing story matches the general model in [market-contract-principles.md](../contracts/market-contract-principles.md): witness flexibility only selects the contract's inspection window; it does not relax script verification, asset verification, or output-window bounds. A malicious builder can move the window, but cannot make the covenant accept another contract's outputs as its own.
 
 ## Script Uniqueness Guarantee
 
@@ -157,6 +159,6 @@ During mnemonic recovery, if the user creates new contracts before completing ch
 
 - `src-tauri/crates/deadcat-sdk/contract/maker_order.simf` — order covenant: change remainder from `current_index() + 1` to `witness::REMAINDER_IDX`
 - `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — pool covenant: already uses witness-based `in_base`/`out_base` (no changes needed)
-- `src-tauri/crates/deadcat-sdk/contract/prediction_market.simf` — market covenant: hardcoded indices (no changes needed for v1)
+- `src-tauri/crates/deadcat-sdk/contract/prediction_market.simf` — market covenant: witness-parameterized `in_base`/`out_base` for flexible transaction composition
 - `docs/contracts/contract-specification.md` — pending refactors table: add order remainder witness-parameterization
 - `docs/architecture/deadcat-core-design.md` — `build_trade_pset` output layout algorithm

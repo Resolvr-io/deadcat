@@ -19,20 +19,29 @@ The covenant must enforce that new RT outputs use deterministic blinding, making
 
 ### Creation Transaction (Initial RT Outputs)
 
-The market creation transaction issues two reissuance tokens (YES and NO). Their blinding factors are derived via BIP-340-style tagged hashes from the defining outpoints:
+The market creation transaction issues one reissuance token per outcome-side leg:
+
+- **Binary market**: 2 legs total (`YES_0`, `NO_0`)
+- **Multi-outcome market**: `2N` legs total (`YES_0`, `NO_0`, `YES_1`, `NO_1`, ..., `YES_{N-1}`, `NO_{N-1}`)
+
+For multi-outcome markets, the defining-input order is canonical:
 
 ```
-YES_RT_ABF = tagged_hash("deadcat/rt_abf", yes_defining_outpoint)
-NO_RT_ABF  = tagged_hash("deadcat/rt_abf", no_defining_outpoint)
+input 2k     = YES_k defining input
+input 2k + 1 = NO_k  defining input
+```
 
-YES_RT_VBF = tagged_hash("deadcat/rt_vbf", yes_defining_outpoint)
-NO_RT_VBF  = tagged_hash("deadcat/rt_vbf", no_defining_outpoint)
+Each leg's RT blinding factors are derived via BIP-340-style tagged hashes from that leg's defining outpoint:
+
+```
+RT_ABF(leg) = tagged_hash("deadcat/rt_abf", leg_defining_outpoint)
+RT_VBF(leg) = tagged_hash("deadcat/rt_vbf", leg_defining_outpoint)
 ```
 
 Where:
 - `tagged_hash(tag, data) = SHA256(SHA256(tag) || SHA256(tag) || data)` (BIP-340 convention)
-- `yes_defining_outpoint` — serialized outpoint of input 0 of the creation transaction (YES defining UTXO)
-- `no_defining_outpoint` — serialized outpoint of input 1 of the creation transaction (NO defining UTXO)
+- `leg_defining_outpoint` is the serialized outpoint of the defining input for that specific leg
+- For binary markets, the canonical order is simply: input 0 = `YES_0`, input 1 = `NO_0`
 
 RT outputs always hold exactly 1 satoshi. Both ABF and VBF are publicly derivable.
 
@@ -47,28 +56,29 @@ where cbf = v * abf + vbf = abf + vbf  (for v = 1)
 
 The **combined blinding factor** `cbf = abf + vbf` (mod secp256k1 group order) is the quantity that must balance across inputs and outputs. This is the key insight for the cross-transition blinding scheme.
 
-At creation time:
+At creation time, each leg gets its own constant combined blinding factor:
+
 ```
-YES_RT_CBF = YES_RT_ABF + YES_RT_VBF (mod n)
-NO_RT_CBF  = NO_RT_ABF  + NO_RT_VBF  (mod n)
+RT_CBF(leg) = RT_ABF(leg) + RT_VBF(leg)  (mod n)
 ```
 
 ### Subsequent Transitions (CBF Pass-Through)
 
-For all transitions that produce new RT outputs (issuance, cancellation), the blinding scheme is:
+For all transitions that produce new RT outputs (issuance, cancellation), the blinding scheme is applied **per RT leg**:
 
 - **ABF**: Independently deterministic per transition — derived from the input outpoint being consumed:
   ```
-  out_abf = tagged_hash("deadcat/rt_abf", spent_rt_outpoint)
+  out_abf(leg) = tagged_hash("deadcat/rt_abf", spent_rt_outpoint(leg))
   ```
-- **CBF**: Passed through unchanged from the input: `out_cbf = in_cbf`
-- **VBF**: Implied: `out_vbf = out_cbf - out_abf` (mod n). Not stored or transmitted — computed by `deadcat-core` in Rust when needed for PSET construction.
+- **CBF**: Passed through unchanged from that same leg's input: `out_cbf(leg) = in_cbf(leg)`
+- **VBF**: Implied: `out_vbf(leg) = out_cbf(leg) - out_abf(leg)` (mod n). Not stored or transmitted — computed by `deadcat-core` in Rust when needed for PSET construction.
 
-The CBF is constant for the entire lifetime of each RT (YES and NO independently). It is set at creation time and never changes. The ABF changes on every transition (different input outpoint → different hash), and the VBF adjusts accordingly to maintain the same CBF.
+The CBF is constant for the entire lifetime of each RT leg. It is set at creation time and never changes. The ABF changes on every transition (different input outpoint → different hash), and the VBF adjusts accordingly to maintain the same CBF for that leg.
 
-**Why CBF pass-through self-balances**: Since `out_cbf = in_cbf` for both YES and NO RTs:
+**Why CBF pass-through self-balances**: since `out_cbf(leg) = in_cbf(leg)` for every continuing RT leg:
+
 ```
-cbf_yes_out + cbf_no_out = cbf_yes_in + cbf_no_in  ✓ (identical values)
+Σ_legs cbf_out(leg) = Σ_legs cbf_in(leg)  ✓
 ```
 
 The RT portion of the blinding factor balance always holds, regardless of how many or few blinded wallet outputs the transaction has. The wallet's `blind_last` handles the wallet-side balance independently. This means:
@@ -86,10 +96,10 @@ The RT portion of the blinding factor balance always holds, regardless of how ma
 To reconstruct blinding factors for any RT output in the market's history:
 
 1. Find the market creation tx (via OP_RETURN or `issuance_transaction`)
-2. Derive creation ABFs and VBFs from the defining outpoints (tagged hashes)
-3. Compute `cbf = abf + vbf` (mod n) at creation time — this is constant forever
-4. For any specific RT output: `abf = tagged_hash("deadcat/rt_abf", input_outpoint_that_created_it)` — derivable from chain
-5. `vbf = cbf - abf` (mod n) — simple modular arithmetic in Rust
+2. Derive creation ABFs and VBFs for every RT leg from the canonical defining-input order and the tagged hashes
+3. Compute `cbf(leg) = abf(leg) + vbf(leg)` (mod n) at creation time — constant forever for that leg
+4. For any specific RT output, derive `abf = tagged_hash("deadcat/rt_abf", input_outpoint_that_created_it)` — derivable from chain
+5. Recover `vbf = cbf(leg) - abf` (mod n) — simple modular arithmetic in Rust
 
 No witness parsing needed for VBF recovery. No chain of derivations to follow. One-shot CBF computation from creation data, then ABF + modular subtraction for any specific output.
 
@@ -145,21 +155,17 @@ fn compute_deterministic_abf(input_index: u32) -> u256 {
 }
 ```
 
-**Enforce CBF pass-through** by using the verified input CBF directly as the output CBF:
+**Enforce CBF pass-through** by using the verified input CBF directly as the output CBF for each RT leg:
 
 ```simplicity
 // In issuance/cancellation paths:
-// 1. Verify input RT commitments (ABF + CBF from witness)
-verify_input_rt(0, YES_RT, yes_in_abf, yes_in_cbf);
-verify_input_rt(1, NO_RT, no_in_abf, no_in_cbf);
-
-// 2. Compute deterministic output ABFs
-let yes_out_abf: u256 = compute_deterministic_abf(0);
-let no_out_abf: u256 = compute_deterministic_abf(1);
-
-// 3. CBF passes through — covenant enforces this
-verify_output_rt(0, YES_RT, yes_out_abf, yes_in_cbf);  // cbf_out = cbf_in
-verify_output_rt(1, NO_RT, no_out_abf, no_in_cbf);      // cbf_out = cbf_in
+// Canonical leg order:
+// binary:        [YES_0, NO_0]
+// multi-outcome: [YES_0, NO_0, YES_1, NO_1, ..., YES_{N-1}, NO_{N-1}]
+for each continuing RT leg `leg` with input index `in_idx` and continuation output index `out_idx`:
+    verify_input_rt(in_idx, token_id(leg), in_abf(leg), in_cbf(leg));
+    let out_abf: u256 = compute_deterministic_abf(in_idx);
+    verify_output_rt(out_idx, token_id(leg), out_abf, in_cbf(leg));  // cbf_out = cbf_in
 ```
 
 All required jets are already in use in the existing covenant: `input_prev_outpoint`, SHA256 context APIs, `generate`, `gej_ge_add`, `gej_normalize`, `eq_256`. No new Simplicity capabilities required.
@@ -202,12 +208,12 @@ Since `blind_last` and `blind_non_last` always generate random `AssetBlindingFac
 
 **Current flow** (`build_creation_pset` + blinding in `sdk.rs`):
 1. Creates RT outputs as unblinded placeholders
-2. Marks outputs 0, 1 with `blinding_key` for `blind_last`
+2. Marks the RT outputs with `blinding_key` for `blind_last`
 3. `blind_last` generates random ABFs/VBFs, constructs Pedersen commitments, range proofs, surjection proofs
 
 **New flow**:
 1. Create RT outputs as unblinded placeholders (same as before)
-2. **Do NOT set `blinding_key`** on outputs 0, 1 — exclude them from `blind_last`
+2. **Do NOT set `blinding_key`** on the RT outputs — exclude them from `blind_last`
 3. Compute deterministic ABFs/VBFs from the defining outpoints via tagged hash
 4. For each RT output, manually:
    - Construct the blinded asset generator: `secp256k1_generator_generate_blinded(token_asset_id, abf)`

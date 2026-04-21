@@ -37,17 +37,17 @@ pub struct BinaryMarketParams {
     pub yes_reissuance_token_id: AssetId,       // derivable from creation tx issuance entropy
     pub no_reissuance_token_id: AssetId,        // derivable from creation tx issuance entropy
     pub base_payout: u64,                       // primary denomination (1-2-5 table); cp = base_payout × 2 is the pair cost
-    pub expiry_time: u32,                       // block height deadline (convention: snapped to 60-block boundary)
+    pub expiry_time: u32,                       // block height deadline (convention: rounded up to next 60-block boundary)
 }
 ```
 
 4 of 8 fields are derivable from the creation transaction's issuance entropy. The remaining 4 are stored in the OP_RETURN recovery hint. See [chain-only-recovery.md](../protocol/chain-only-recovery.md).
 
-**Denomination model**: The primary covenant param is `base_payout` — the per-outcome YES-expiry payout unit. The pair cost `cp = base_payout × N` (with `N = 2` for binary markets) is derived at covenant compile time. This model is shared with the multi-outcome market contract; see [multi-outcome-market-contract.md § Denomination model](multi-outcome/multi-outcome-market-contract.md#denomination-model) for the rationale.
+**Denomination model**: The primary covenant param is `base_payout` — the per-outcome YES-expiry payout unit. Binary markets derive `cp = base_payout × 2`. Multi-outcome markets derive `cp = base_payout × outcome_count`. This keeps the two market kinds on one denomination model without conflating the binary API's single outcome with the binary settlement multiplier of 2. See [multi-outcome-market-contract.md § Denomination model](multi-outcome/multi-outcome-market-contract.md#denomination-model) for the rationale.
 
 **Unit convention**: All amounts (`base_payout`, `max_loss_sats`, `half_payout_sats`, token counts, reserve values) are denominated in the **smallest indivisible unit** of the respective asset — satoshis for L-BTC (10^-8 BTC), 10^-8 for USDt on Liquid, etc. The `_sats` suffix on some fields reflects the L-BTC-as-canonical-example convention, not an L-BTC-only restriction. Protocol constants like `MIN_POOL_RESERVE = 1,000` are in smallest units regardless of asset.
 
-Builder validates: `base_payout` in 1-2-5 table, `expiry_time` on 60-block boundary, `collateral_asset_id` in well-known set or exotic-escape-compatible.
+Builder validates: `base_payout` in the 1-2-5 table, accepts any future `expiry_time`, rounds it up to the next 60-block boundary, and validates the rounded value against the recovery conventions. `collateral_asset_id` must be in the well-known set or exotic-escape-compatible.
 
 ### Covenant Structure
 
@@ -184,7 +184,7 @@ Tag string matches the binary market. Domain separation is via `market_id`.
 
 Each supported N has its own `.simf` file generated from a template by `deadcat-codegen` at **dev time**. The generated `.simf` sources are **committed to the repo** under `crates/deadcat-core/contracts/multi_outcome/`, and the compiled Simplicity artifacts (`src/artifacts/*.rs`, produced by `simplex build`) are also committed. Runtime reads these via `include_bytes!` and imports the typed artifact modules directly — no template instantiation or compilation happens at `cargo build` time. Regeneration is triggered explicitly by developers via `just generate-simf` + `just regenerate-artifacts` when an intentional change is being committed; drift tests catch stale committed outputs on every `cargo test`. **v1 supports N ∈ {3, 4}**. Expansion to larger N is non-breaking (new N → new template instantiation → new committed `.simf` + artifacts → new contract; existing contracts unaffected). Above N=10, transaction weight from the 2N+1-way covenant co-spend becomes uncomfortable; large-N events should use hierarchical composition (markets-of-markets) or binary-market composition with arbitrage-based coherency.
 
-**N=2 is served by the binary `prediction_market.simf`** — not regenerated from the multi-outcome template. The binary market contract has been deeply reviewed and is hand-written; the multi-outcome template serves N ≥ 3 only. See [multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md).
+**The binary market stays separate from the multi-outcome template.** `prediction_market.simf` is the canonical binary contract and is not regenerated from the multi-outcome template. The template serves markets with 3 or more outcomes only in v1. See [multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md).
 
 ## LMSR Pool
 

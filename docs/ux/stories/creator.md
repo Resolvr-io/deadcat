@@ -10,7 +10,7 @@ Personas covered: **Market Creator** and **Oracle**. See [ux-design.md](../desig
 
 **Acceptance criteria**:
 - Create form collects: question text, description, category, resolution source, oracle pubkey (defaults to own Nostr pubkey), collateral asset (L-BTC default), collateral per pair (constrained to the 16-value 1-2-5 denomination table per convention), settlement date/time
-- Settlement date input snaps to the nearest 60-block boundary (matching the `expiry_time` covenant convention)
+- Settlement date input rounds up to the next 60-block boundary (matching the `expiry_time` covenant convention)
 - On submit: constructs `MarketCreationParams { oracle_public_key, collateral_asset_id, collateral_per_pair, expiry_time }` → `build_creation_pset` → sign → broadcast
 - `build_binary_market_creation_pset` returns `(UnblindedPset, BinaryMarketParams)` — the UI stores the returned full params for ingestion after confirmation
 - After confirmation: `ingest_market(params, creation_tx)` to begin tracking, then publishes a Nostr announcement event for discovery
@@ -20,7 +20,7 @@ Personas covered: **Market Creator** and **Oracle**. See [ux-design.md](../desig
 **Interaction design**:
 - **Guided form**: Single-page form with clear sections. Question at top (large text input), description below (textarea), then parameters in a structured grid.
 - **CPT selector**: Dropdown constrained to valid 1-2-5 denominations (1000, 2000, 5000, 10000, 20000, 50000 sats etc.). Not a free-text input — impossible to enter non-conforming values.
-- **Settlement picker**: Calendar + time picker. The selected datetime is converted to an estimated block height using current chain tip + ~1 min/block. The snapped block height is shown: "Settles around block 2,150,400 (~June 15, 2027)."
+- **Settlement picker**: Calendar + time picker. The selected datetime is converted to an estimated block height using current chain tip + ~1 min/block. The rounded-up block height is shown: "Settles around block 2,150,400 (~June 15, 2027)."
 - **Oracle default**: Pre-fills with the user's own Nostr pubkey. Advanced users can paste a different oracle's pubkey. The form validates it's a valid 32-byte hex or npub.
 - **Cost preview**: Before submission, show estimated creation cost: "Transaction fee: ~X sats. This creates the market contract on-chain."
 - **Post-creation flow**: After the market is created and confirmed, prompt: "Issue initial token pairs?" This naturally leads to US-MC2.

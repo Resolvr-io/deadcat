@@ -132,7 +132,7 @@ pub struct MultiOutcomeMarketParams {
 }
 ```
 
-`4N` of the fields (the asset ID arrays) are derivable from the creation transaction's issuance entropy. The remaining `outcome_count + 4` fields are stored in the OP_RETURN recovery hint. See [OP_RETURN Recovery Hint](#op_return-recovery-hint).
+`4N` of the fields (the asset ID arrays) are derivable from the creation transaction's issuance entropy. The remaining 4 non-derivable fields (`oracle_public_key`, `collateral_asset_id`, `base_payout`, `expiry_time`) are stored in the OP_RETURN recovery hint. See [OP_RETURN Recovery Hint](#op_return-recovery-hint).
 
 **Unit convention**: same as binary market — all amounts in the smallest indivisible unit of the respective asset.
 
@@ -140,14 +140,14 @@ pub struct MultiOutcomeMarketParams {
 
 The primary covenant param is `base_payout` — the amount of collateral one YES token returns on expiry redemption. The derived quantity `cp := base_payout × N` is the total collateral backing one `(YES_i + NO_i)` pair. All issuance, cancellation, and redemption formulas in this document use `cp` for readability; implementations compute `cp = base_payout × N` inline (with `N` a file-level literal in each generated `.simf`).
 
-This model is unified across the binary and multi-outcome market contracts: both parameterize on `base_payout` drawn from the same 1-2-5 table, and both derive `cp = base_payout × N` (with `N = 2` for binary). See [market-contract-principles.md § 12. Correct redemption rates](../market-contract-principles.md#12-correct-redemption-rates).
+This model is unified across the binary and multi-outcome market contracts: both parameterize on `base_payout` drawn from the same 1-2-5 table. Binary markets derive `cp = base_payout × 2`; multi-outcome markets derive `cp = base_payout × N`. See [market-contract-principles.md § 12. Correct redemption rates](../market-contract-principles.md#12-correct-redemption-rates).
 
 **Why this model rather than `cp` as the primary param**: parameterizing on `cp` directly would require the covenant to enforce `cp mod N == 0` to prevent integer-division rounding losses on expiry redemption (losses that scale linearly with pairs issued). Parameterizing on `base_payout` makes the divisibility automatic by construction — `cp = base_payout × N` is trivially divisible by N — so no runtime assertion is needed and no denomination table entry is unreachable for any supported N. The 4-bit OP_RETURN encoding is unchanged; only the semantic of the indexed value shifts from "pair cost" to "per-outcome payout unit."
 
 **Constraints**:
-- `N ≥ 2` and `N ≤ MAX_N` per the set of generated `.simf` files. *(builder-enforced; each N uses a separate `.simf` file.)*
+- **v1 supports `N ∈ {3, 4}`**. Each supported N uses its own generated `.simf` file. The binary market stays a separate hand-written contract; the multi-outcome template begins at 3 outcomes in v1. Expanding to additional N values later is non-breaking because each new N is a new contract artifact.
 - `base_payout` drawn from the canonical 1-2-5 mantissa table. *(builder-enforced; recovery decodability — bucket 2 of the [self-enforcement classification](../market-contract-principles.md#covenant-self-enforcement).)*
-- `expiry_time` snapped to 60-block boundary. *(builder-enforced; recovery decodability.)*
+- `expiry_time` rounded up to the next 60-block boundary. *(builder-enforced; recovery decodability.)*
 - `collateral_asset_id` in the well-known set or exotic-escape-compatible. *(builder-enforced; recovery decodability.)*
 
 ## Covenant Structure
@@ -275,7 +275,7 @@ Per-outcome operations (issue pair, cancel pair) issue or burn only two RTs wort
 
 ## Oracle Attestation
 
-Identical scheme to the binary market, with the outcome encoded as a u8 index:
+Uses the shared tagged-hash protocol defined in [oracle-bip340-tagged-hash.md](../../protocol/oracle-bip340-tagged-hash.md). For the multi-outcome contract, the market-specific pieces are:
 
 ```
 message = tagged_hash("deadcat/oracle_attestation", market_id || outcome_index)
@@ -311,9 +311,9 @@ pub struct PairSupply {
 
 `Trading` covers both Dormant (all supplies zero) and Unresolved phases. From the user's perspective, a market is either open for trading, resolved, or expired.
 
-## Witness-Parameterized Output Indices
+## Witness-Parameterized Input and Output Indices
 
-Same approach as the original multi-outcome proposal: the covenant accepts `out_base` from the witness and places outputs at `out_base..out_base + 2N` (2N RT outputs + 1 collateral output). See [transaction-composability-model.md](../../architecture/transaction-composability-model.md) for the general framework.
+The covenant accepts both `in_base` and `out_base` from the witness. It asserts that the current input sits at `in_base + slot_offset`, validates the full `2N + 1` covenant-input window rooted at `in_base`, and places continuation outputs at `out_base..out_base + 2N` (2N RT outputs + 1 collateral output). This gives the contract covenant-level flexibility for future multi-contract composition while preserving correctness through bounded-window checks plus explicit script/asset verification. See [transaction-composability-model.md](../../architecture/transaction-composability-model.md) for the general framework.
 
 Aliasing defense: script uniqueness per slot + per-market script derivation means no output can alias another contract's output or another slot within this contract.
 
@@ -381,7 +381,7 @@ crates/deadcat-codegen/
 
 crates/deadcat-core/
   contracts/
-    prediction_market.simf                       # binary market (hand-maintained, N=2)
+    prediction_market.simf                       # binary market (hand-maintained, separate contract family)
     multi_outcome/
       multi_outcome_market_n3.simf               # committed, generator output
       multi_outcome_market_n4.simf               # committed, generator output
@@ -421,28 +421,29 @@ Consequence for codegen: we do **not** cache per-N CMRs at build time. The only 
 
 ## OP_RETURN Recovery Hint
 
-**Fixed portion** (independent of N, ~40 bytes, matching binary):
-- `base_payout` (4-bit index into the 1-2-5 denomination table; `cp = base_payout × N` is derived at decode time)
+**Fixed portion** (independent of N, 37 bytes total with well-known collateral, matching binary):
+- `base_payout` (4-bit index into the 1-2-5 denomination table; `cp = base_payout × outcome_count` is derived at decode time)
 - `expiry_time` (per existing convention)
 - `oracle_public_key` (32 bytes)
 - `collateral_asset_id` (1 byte index into well-known set, or 32 bytes)
-- `outcome_count` (1 byte)
+
+`outcome_count` is **not stored** in the hint. Recovery derives it from the creation transaction's new-issuance count (`2N` issuances → `N` outcomes), keeping the market hint layout identical to the binary market's layout aside from the type-tag byte.
 
 **Variable portion**: the 4N asset IDs (2N tokens + 2N RTs) are derivable from the creation transaction's issuance entropy. Not stored in the hint.
 
-Total hint size: ~40 bytes regardless of N.
+Total hint size: 37 bytes with well-known collateral, or 69 bytes with exotic collateral.
 
 See [chain-only-recovery.md](../../protocol/chain-only-recovery.md). Recovery flow: wallet scans for an asset ID that matches one of a market's `{yes,no}_token_asset_ids`, queries the issuance transaction, reads the OP_RETURN, reconstructs params, ingests the market.
 
 ## Relationship to the Binary Market
 
-For N=2, the multi-outcome market is structurally very close to the binary market but not byte-for-byte identical:
+For the hypothetical 2-outcome member of the multi-outcome family, the structure would be very close to the binary market but not byte-for-byte identical:
 
 - 2 YES tokens (YES_0, YES_1) + 2 NO tokens (NO_0, NO_1) = 4 token types. The binary market has 2 (YES, NO) because its single-outcome framing makes `YES = YES_0 = NO_1` and `NO = NO_0 = YES_1`. The multi-outcome contract still holds 4 distinct assets even when they'd be economically equivalent.
 - `5N+2 = 12` slots vs. binary's 8.
 - Oracle signs u8 outcome_index rather than a single outcome_byte.
 
-**Chosen for v1: `prediction_market.simf` stays canonical for N=2.** The multi-outcome template serves N ≥ 3 only. Binary remains the high-volume case and the existing contract is already deeply validated; the two-token-per-outcome redundancy of running N=2 through the template would cost tx weight at the common case for no structural benefit. The decision can be revisited after the generator ships and we measure real tx weights, but the path of least risk is to keep the two contracts independent.
+**Chosen for v1: `prediction_market.simf` stays the canonical binary market contract.** The hypothetical 2-outcome member of the multi-outcome family is not used in v1; the template serves markets with 3 or more outcomes only. Binary remains the high-volume case and the existing contract is already deeply validated; the two-token-per-outcome redundancy of forcing binary through the multi-outcome template would cost tx weight at the common case for no structural benefit. The decision can be revisited after the generator ships and we measure real tx weights, but the path of least risk is to keep the two contracts independent.
 
 ## Security Properties
 
@@ -519,12 +520,10 @@ Retained as an **option for very large N** (N > the 2N-contract ceiling) and for
 
 | Item | Purpose |
 |---|---|
-| Prototype the code generator | Produce generated `.simf` for N=3 and N=5. Verify all spend paths. |
+| Prototype the code generator | Produce generated `.simf` for N=3 and N=4. Verify all spend paths. |
 | Compile prototype `.simf` files | Confirm SimplicityHL handles generated code. Measure program size and witness size per N. |
 | Benchmark transaction weights | Measure actual vBytes for issue/cancel/split/merge/resolution at each N. Validate scaling. |
-| Validate sibling UTXO check scaling | Confirm the 2N+1-way `prev_txid` check fits witness budget up to MAX_N. |
-| Confirm MAX_N | Final decision on the upper N supported by a single multi-outcome contract (proposal: N=10). |
-| Decide N=2 migration path | Keep `prediction_market.simf` as canonical N=2, or regenerate from template. |
+| Validate sibling UTXO check scaling | Confirm the 2N+1-way `prev_txid` check fits witness budget for the v1 set `{3, 4}` and characterize headroom for future N expansion. |
 | Write `.simf` template formally | Document template format, parameterization, generator algorithm. |
 | Specify builder convention validation | Permitted N, outcome ordering, naming conventions. |
 | Generate test vectors | Per-N vectors covering creation, each operation, resolution per outcome, redemption (winning YES and winning NO sides), expiry, and edge cases. |

@@ -230,7 +230,7 @@ Including contract-specific params in the context ensures different contracts ge
 | 6 | 10,000 | 14 | 5,000,000 |
 | 7 | 20,000 | 15 | 10,000,000 |
 
-The derived pair-cost `cp = base_payout × N` (with `N = 2` for binary markets, `N ∈ [3, MAX_N]` for multi-outcome) is the total collateral backing one `(YES_i + NO_i)` pair. Parameterizing on `base_payout` rather than `cp` makes expiry-redemption rates exact integers by construction: a YES token always pays `base_payout`; a NO token always pays `base_payout × (N-1)` at expiry. No covenant-level divisibility check is needed, and every denomination-table index is usable for every supported N. See [multi-outcome-market-contract.md § Denomination model](../contracts/multi-outcome/multi-outcome-market-contract.md#denomination-model) for the full rationale.
+Binary markets derive `cp = base_payout × 2`. Multi-outcome markets derive `cp = base_payout × N`. This pair-cost is the total collateral backing one `(YES_i + NO_i)` pair. Parameterizing on `base_payout` rather than `cp` makes expiry-redemption rates exact integers by construction: a YES token always pays `base_payout`; a NO token always pays `base_payout × (N-1)` at expiry. No covenant-level divisibility check is needed, and every denomination-table index is usable for every supported N. See [multi-outcome-market-contract.md § Denomination model](../contracts/multi-outcome/multi-outcome-market-contract.md#denomination-model) for the full rationale.
 
 This determines order price resolution: order `PRICE` is an integer bounded by `cp = base_payout × N`, so the number of distinct expressible probability values equals `cp`. For a binary market at `base_payout = 100` (`cp = 200`): 0.5% increments. At `base_payout = 10,000` (`cp = 20,000`): 0.005% increments. Markets with low `cp` have limited price resolution for limit orders but work fine for LMSR pool trading (pools use their own pricing curve).
 
@@ -291,7 +291,7 @@ If `collateral_asset` index = 15 (escape): 32 additional bytes of raw `collatera
 |---|---|---|---|
 | `oracle_public_key` | Yes | 32 bytes | Not derivable — chosen by market creator |
 | `collateral_asset_id` | Yes (indexed) | 4 bits | Not derivable — well-known index, escape for exotic |
-| `base_payout` | Yes (indexed) | 4 bits | Not derivable — 1-2-5 convention, 16 values. `cp = base_payout × N` is derived at decode time from the market's outcome count (binary: N=2; multi-outcome: N from the creation tx — see below). |
+| `base_payout` | Yes (indexed) | 4 bits | Not derivable — 1-2-5 convention, 16 values. Binary markets derive `cp = base_payout × 2`; multi-outcome markets derive `cp = base_payout × outcome_count`, with `outcome_count` recovered from the creation tx (see below). |
 | `expiry_time` | Yes (absolute) | 3 bytes | Not derivable — u24 absolute encoding (see below) |
 | `outcome_count` | **No** | — | **Derivable from creation tx issuance count** (multi-outcome only; binary is implicitly N=2) |
 | `yes_token_asset_id(s)` | No | — | Derivable from creation tx issuance entropy |
@@ -299,7 +299,7 @@ If `collateral_asset` index = 15 (escape): 32 additional bytes of raw `collatera
 | `yes_reissuance_token_id(s)` | No | — | Derivable from creation tx issuance entropy |
 | `no_reissuance_token_id(s)` | No | — | Derivable from creation tx issuance entropy |
 
-**Expiry time encoding** (u24): `encoded = expiry_time / 60` stored as 3 bytes big-endian. Recovery: `expiry_time = encoded × 60`. The PSET builder **snaps** `expiry_time` to the nearest 60-block boundary (the covenant uses the snapped value, making the encoding lossless). At Liquid's target rate of 1 block per minute, each unit represents approximately 1 hour. The u24 range (0 to 2^24 - 1 = 16,777,215) covers block heights from the Liquid genesis block (mined September 26, 2018) to approximately the year 3931, providing 1-hour granularity with ~1,900 years of headroom. This absolute encoding was chosen over a creation-block-relative delta because the creation block height is unknown at PSET build time (the transaction hasn't been broadcast yet), making delta-based recovery produce incorrect values due to confirmation drift.
+**Expiry time encoding** (u24): `encoded = expiry_time / 60` stored as 3 bytes big-endian. Recovery: `expiry_time = encoded × 60`. The PSET builder accepts any future height and **rounds `expiry_time` up to the next 60-block boundary** before constructing the covenant params; the covenant and returned params use that rounded value, making the encoding lossless. At Liquid's target rate of 1 block per minute, each unit represents approximately 1 hour. The u24 range (0 to 2^24 - 1 = 16,777,215) covers block heights from the Liquid genesis block (mined September 26, 2018) to approximately the year 3931, providing 1-hour granularity with ~1,900 years of headroom. This absolute encoding was chosen over a creation-block-relative delta because the creation block height is unknown at PSET build time (the transaction hasn't been broadcast yet), making delta-based recovery produce incorrect values due to confirmation drift.
 
 **Deriving `outcome_count` for multi-outcome markets.** The creation tx mints 2N token pairs (one `AssetIssuance` per outcome's YES or NO leg), so `outcome_count = issuance_count / 2` where the count is over **new-issuance** `AssetIssuance` structures with both `amount` and `inflation_keys` non-null:
 
@@ -321,6 +321,8 @@ The filter components:
 - `amount` and `inflation_keys` both non-null — defensive filter that rules out asymmetric ("half-issuance") records. Elements consensus permits an `AssetIssuance` with one of the two null and the other set; the deadcat convention is that every market-creation issuance mints both an asset and its reissuance token. Asymmetric records would not be produced by `build_multi_outcome_market_creation_pset` and would fail covenant-script verification downstream, but the filter rejects them at count time for a clearer error.
 
 The covenant script is the authoritative binding between N and the creation tx: if the derived `outcome_count` is wrong, the compiled covenant won't match any tx output and ingestion fails loudly. This makes the count-based derivation equivalent in correctness to storing `outcome_count` in the hint, but saves 1 byte and keeps binary and multi-outcome hint layouts unified.
+
+**v1 support note**: the binary market remains a separate contract family. The multi-outcome contract supports `outcome_count ∈ {3, 4}` in v1; expansion to additional outcome counts later is non-breaking because each supported count gets its own generated contract artifact.
 
 ### Order Hint (40 bytes)
 

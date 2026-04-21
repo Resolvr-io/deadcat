@@ -333,7 +333,7 @@ Calls `useMarketOps` mutation (oracle attest + execute resolution).
 | Category | `CategoryDropdown` | Required | Nostr event tag |
 | Resolution source | Text input | Optional | Nostr event content |
 | Collateral per pair | Constrained dropdown (1-2-5 table) | Must be valid denomination | `MarketCreationParams.collateral_per_pair` |
-| Settlement date | `SettlementPicker` (calendar + time) | Must be in the future | `MarketCreationParams.expiry_time` (snapped to 60-block boundary) |
+| Settlement date | `SettlementPicker` (calendar + time) | Must be in the future | `MarketCreationParams.expiry_time` (rounded up to 60-block boundary) |
 
 **Submit flow**: Validate → `useCreateMarket` mutation → `invoke("build_creation_pset")` → sign → broadcast → `ingest_market` → publish Nostr event → navigate to detail view.
 
