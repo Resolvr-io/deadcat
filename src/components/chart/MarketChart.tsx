@@ -761,8 +761,8 @@ export default function MarketChart({
           className="pointer-events-none absolute inset-x-3 bottom-1 flex items-center justify-between text-[12px] font-normal text-slate-500"
           style={{ textShadow: "0 1px 1px rgba(2, 6, 23, 0.35)" }}
         >
-          {xLabels.map((label) => (
-            <span key={label}>{label}</span>
+          {xLabels.map((label, i) => (
+            <span key={i}>{label}</span>
           ))}
         </div>
       </div>
@@ -773,7 +773,7 @@ export default function MarketChart({
           {volumeLabel}
         </span>
         <div className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/65 p-1 text-[12px]">
-          {(["30m", "1h", "4h", "1d"] as const).map((key) => (
+          {(["1h", "4h", "1d", "3d", "7d"] as const).map((key) => (
             <button
               type="button"
               key={key}

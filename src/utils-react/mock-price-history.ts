@@ -163,7 +163,7 @@ function shapePath(
  */
 export function generateMockPriceHistory(
   market: Market,
-  pointCount = 80,
+  pointCount = 200,
 ): PriceHistoryEntry[] {
   const seed = hashCode(market.marketId);
   const shape = SHAPES[seed % SHAPES.length];
@@ -172,11 +172,12 @@ export function generateMockPriceHistory(
 
   const rawPath = shapePath(shape, endNorm, seed, pointCount);
 
-  const rangeBlocks = Math.min(
-    500,
-    Math.max(20, market.currentHeight - (market.expiryHeight - 500)),
-  );
-  const startBlock = market.currentHeight - rangeBlocks;
+  // Always cover exactly the last 7 days (10,080 blocks) relative to
+  // currentHeight, so every timescale window (1h–7d) finds points to plot.
+  // Spanning from block 0 to currentHeight would spread 200 points across
+  // millions of blocks, leaving no points inside a 240-block (4h) window.
+  const rangeBlocks = 10080;
+  const startBlock = Math.max(0, (market.currentHeight || rangeBlocks) - rangeBlocks);
 
   return rawPath.map((norm, i) => {
     const bps = clampBps(norm * 10000);

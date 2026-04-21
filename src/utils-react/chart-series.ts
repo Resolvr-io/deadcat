@@ -17,17 +17,19 @@ export type ChartSeriesData = {
 
 // Liquid: ~1 block per minute
 const SCALE_BLOCKS_BY_KEY: Record<ChartTimescale, number> = {
-  "30m": 30,
   "1h": 60,
   "4h": 240,
   "1d": 1440,
+  "3d": 4320,
+  "7d": 10080,
 };
 
 const POINT_COUNT_BY_KEY: Record<ChartTimescale, number> = {
-  "30m": 30,
   "1h": 60,
   "4h": 80,
   "1d": 96,
+  "3d": 108,
+  "7d": 120,
 };
 
 function clampProbability(value: number): number {
@@ -52,21 +54,6 @@ function blockHeightToDate(blockHeight: number, currentHeight: number): Date {
 }
 
 /** Format a block height as a short x-axis label (e.g. "12:30", "Apr 3"). */
-function blockHeightToTimeLabel(
-  blockHeight: number,
-  currentHeight: number,
-): string {
-  const date = blockHeightToDate(blockHeight, currentHeight);
-  const now = new Date();
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
-  if (sameDay) {
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  }
-  return date.toLocaleDateString([], { month: "short", day: "numeric" });
-}
 
 /**
  * Format a block height as a precise hover tooltip timestamp.
@@ -94,16 +81,46 @@ export function blockHeightToHoverLabel(
   return `${dateStr} ${timeStr}`;
 }
 
+function blockHeightToAxisLabel(
+  blockHeight: number,
+  currentHeight: number,
+  timescale: ChartTimescale,
+): string {
+  const date = blockHeightToDate(blockHeight, currentHeight);
+  const timeStr = date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  // Intraday views: time only
+  if (timescale === "1h" || timescale === "4h") return timeStr;
+  // 1d: time only (all labels fall within ~1 day, same or adjacent day)
+  if (timescale === "1d") {
+    const now = new Date();
+    const sameDay =
+      date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth() &&
+      date.getDate() === now.getDate();
+    if (sameDay) return timeStr;
+    return date.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+  // 3d, 7d: always include date + time so same-day labels stay distinct
+  const dateStr = date.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
+  return `${dateStr} ${timeStr}`;
+}
+
 function buildXAxisLabels(
   startBlockHeight: number,
   scaleBlocks: number,
   currentHeight: number,
+  timescale: ChartTimescale,
 ): string[] {
-  const fractions =
-    scaleBlocks >= 100 ? [0, 0.25, 0.5, 0.75, 1] : [0, 1 / 3, 2 / 3, 1];
+  const fractions = [0, 0.25, 0.5, 0.75, 1];
   return fractions.map((fraction) => {
     const height = Math.round(startBlockHeight + fraction * scaleBlocks);
-    return blockHeightToTimeLabel(height, currentHeight);
+    return blockHeightToAxisLabel(height, currentHeight, timescale);
   });
 }
 
@@ -112,7 +129,10 @@ function sampleHistoryProbabilityAtHeight(
   sampleHeight: number,
 ): number | null {
   if (historyPoints.length === 0) return null;
-  if (sampleHeight < historyPoints[0].blockHeight) return null;
+  // Clamp to first known value instead of returning null — this fills the
+  // left portion of the chart when the first history point is mid-window.
+  if (sampleHeight <= historyPoints[0].blockHeight)
+    return historyPoints[0].probability;
 
   let leftPoint = historyPoints[0];
   for (let idx = 1; idx < historyPoints.length; idx += 1) {
@@ -172,6 +192,7 @@ export function buildChartSeriesData(
     startBlockHeight,
     scaleBlocks,
     market.currentHeight || endBlockHeight,
+    timescale,
   );
 
   return {
@@ -203,18 +224,30 @@ export function buildChartFromHistory(
     startBlockHeight,
     scaleBlocks,
     market.currentHeight || endBlockHeight,
+    timescale,
   );
-  const historyPoints = history
+  // Sort all entries first so we can find the last point before the window.
+  const allSorted = history
     .map((entry) => ({
       blockHeight: entry.block_height,
       probability: clampProbability(entry.implied_yes_price_bps / 10_000),
     }))
-    .filter(
-      (point) =>
-        point.blockHeight >= startBlockHeight &&
-        point.blockHeight <= endBlockHeight,
-    )
     .sort((a, b) => a.blockHeight - b.blockHeight);
+
+  // Include one point before startBlockHeight so left-edge interpolation works:
+  // without it, any sample between startBlockHeight and the first in-window
+  // point would clamp to that point rather than interpolating from before it.
+  const lastBeforeWindow = allSorted.filter(
+    (p) => p.blockHeight < startBlockHeight,
+  ).at(-1);
+
+  const inWindow = allSorted.filter(
+    (p) => p.blockHeight >= startBlockHeight && p.blockHeight <= endBlockHeight,
+  );
+
+  const historyPoints = lastBeforeWindow
+    ? [lastBeforeWindow, ...inWindow]
+    : inWindow;
   const yesSeries: Array<number | null> = [];
   const fallbackYes = market.yesPrice ?? 0.5;
 
