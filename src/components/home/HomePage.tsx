@@ -717,7 +717,8 @@ function CategoryPageView({
   );
 
   const filteredMarkets = useMemo(() => {
-    if (categoryFilter === "live") return categoryMarkets.filter((m) => m.isLive);
+    if (categoryFilter === "live")
+      return categoryMarkets.filter((m) => m.isLive);
     if (categoryFilter === "ending-soon")
       return categoryMarkets.filter(
         (m) => m.isLive && m.expiryHeight - m.currentHeight <= 200,

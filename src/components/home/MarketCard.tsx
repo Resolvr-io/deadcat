@@ -2,7 +2,6 @@ import { useCallback } from "react";
 import { usePriceHistory } from "../../queries/usePools";
 import { useStore } from "../../store";
 import type { Market, Side, TradeIntent } from "../../types";
-import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
 import {
   formatPercent,
   formatSatsInput,
@@ -14,6 +13,7 @@ import {
   getPositionContracts,
   setLimitPriceSats,
 } from "../../utils-react/market";
+import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
 
 // ── Inline SVG icons ─────────────────────────────────────────────────
 function TrendUpIcon() {

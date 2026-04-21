@@ -84,7 +84,10 @@ function shapePath(
 
     case "v-shape": {
       // Drops to a trough at 40% of series, then recovers to endNorm.
-      const troughNorm = Math.max(0.05, endNorm - 0.35 - seededRand(seed) * 0.15);
+      const troughNorm = Math.max(
+        0.05,
+        endNorm - 0.35 - seededRand(seed) * 0.15,
+      );
       const startNorm = endNorm + (seededRand(seed + 1) - 0.5) * 0.1;
       const troughAt = 0.4;
       return Array.from({ length: pointCount }, (_, i) => {
@@ -92,7 +95,8 @@ function shapePath(
         const base =
           t < troughAt
             ? startNorm + (troughNorm - startNorm) * (t / troughAt)
-            : troughNorm + (endNorm - troughNorm) * ((t - troughAt) / (1 - troughAt));
+            : troughNorm +
+              (endNorm - troughNorm) * ((t - troughAt) / (1 - troughAt));
         return base + noise(i, 0.02);
       });
     }
@@ -114,21 +118,24 @@ function shapePath(
 
     case "late-spike": {
       // Flat for 65% of the series, then rapid move to endNorm.
-      const flatNorm = endNorm - (endNorm > 0.5 ? 0.25 : -0.25) - seededRand(seed) * 0.1;
+      const flatNorm =
+        endNorm - (endNorm > 0.5 ? 0.25 : -0.25) - seededRand(seed) * 0.1;
       const spikeStart = 0.65;
       return Array.from({ length: pointCount }, (_, i) => {
         const t = i / (pointCount - 1);
         const base =
           t < spikeStart
             ? flatNorm
-            : flatNorm + (endNorm - flatNorm) * ((t - spikeStart) / (1 - spikeStart));
+            : flatNorm +
+              (endNorm - flatNorm) * ((t - spikeStart) / (1 - spikeStart));
         return base + noise(i, t < spikeStart ? 0.015 : 0.03);
       });
     }
 
     case "early-peak": {
       // Fast move in first 30%, then gradual drift to endNorm.
-      const peakNorm = endNorm + (endNorm < 0.5 ? 0.3 : -0.3) + seededRand(seed) * 0.1;
+      const peakNorm =
+        endNorm + (endNorm < 0.5 ? 0.3 : -0.3) + seededRand(seed) * 0.1;
       const peakAt = 0.25 + seededRand(seed + 1) * 0.1;
       return Array.from({ length: pointCount }, (_, i) => {
         const t = i / (pointCount - 1);
@@ -177,7 +184,10 @@ export function generateMockPriceHistory(
   // Spanning from block 0 to currentHeight would spread 200 points across
   // millions of blocks, leaving no points inside a 240-block (4h) window.
   const rangeBlocks = 10080;
-  const startBlock = Math.max(0, (market.currentHeight || rangeBlocks) - rangeBlocks);
+  const startBlock = Math.max(
+    0,
+    (market.currentHeight || rangeBlocks) - rangeBlocks,
+  );
 
   return rawPath.map((norm, i) => {
     const bps = clampBps(norm * 10000);

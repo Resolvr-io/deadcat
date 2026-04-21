@@ -526,7 +526,10 @@ export default function MarketChart({
         </div>
 
         {/* SVG chart */}
-        <div ref={svgContainerRef} className="pointer-events-none absolute inset-x-3 top-10 bottom-8">
+        <div
+          ref={svgContainerRef}
+          className="pointer-events-none absolute inset-x-3 top-10 bottom-8"
+        >
           <svg
             viewBox={`0 0 ${chartWidth} ${chartHeight}`}
             preserveAspectRatio="none"
