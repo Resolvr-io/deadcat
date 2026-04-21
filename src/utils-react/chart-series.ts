@@ -103,12 +103,8 @@ function blockHeightToAxisLabel(
     if (sameDay) return timeStr;
     return date.toLocaleDateString([], { month: "short", day: "numeric" });
   }
-  // 3d, 7d: always include date + time so same-day labels stay distinct
-  const dateStr = date.toLocaleDateString([], {
-    month: "short",
-    day: "numeric",
-  });
-  return `${dateStr} ${timeStr}`;
+  // 3d, 7d: date only — multi-day views don't need time precision
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function buildXAxisLabels(
