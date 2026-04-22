@@ -93,27 +93,27 @@ The most common user. Browses markets, buys/sells YES or NO tokens through the t
 
 ### Market Creator
 
-Creates prediction markets via `build_creation_pset`. Defines the question, oracle, collateral asset, settlement date. Also issues initial token pairs via `build_issuance_pset`. May also act as Trader. Requires "Market maker mode" enabled.
+Creates prediction markets via `build_binary_market_creation_pset` or `build_multi_outcome_market_creation_pset`. Defines the question, oracle, collateral asset, settlement date. Also issues initial token pairs via `build_issuance_pset`. May also act as Trader. Requires "Market maker mode" enabled.
 
 **Key UI surfaces**: Create Market form, Detail (issue/cancel tabs), Home (My Markets filter)
 
-**Core API touchpoints**: `build_creation_pset`, `build_issuance_pset`, `build_cancellation_pset`, `ingest_market`
+**Core API touchpoints**: `build_binary_market_creation_pset`, `build_multi_outcome_market_creation_pset`, `build_issuance_pset`, `build_cancellation_pset`, `ingest_market`
 
 ### Pool Operator
 
-Creates and manages LMSR liquidity pools via `build_lmsr_bootstrap_pset`. Adjusts liquidity (`build_lmsr_adjust_pset`), monitors reserves, closes pools (`build_lmsr_close_pset`). Ingests pools via `PoolSnapshot::Creation` (needs full history for fee revenue tracking). Requires "Market maker mode" enabled.
+Creates and manages LMSR liquidity pools via `build_lmsr_bootstrap_pset`. Adjusts liquidity (`Pool::build_adjust_pset`), monitors reserves, closes pools (`Pool::build_close_pset`). Ingests pools via `PoolSnapshot::Creation` (needs full history for fee revenue tracking). Requires "Market maker mode" enabled.
 
 **Key UI surfaces**: Pool management panel, Detail (pool reserves display), Home (My Pools)
 
-**Core API touchpoints**: `derive_pool_params`, `estimate_bootstrap`, `build_lmsr_bootstrap_pset`, `build_lmsr_adjust_pset`, `build_lmsr_close_pset`, `pool_history`
+**Core API touchpoints**: `derive_pool_params`, `estimate_bootstrap`, `build_lmsr_bootstrap_pset`, `Pool::build_adjust_pset`, `Pool::build_close_pset`, `pool_history`
 
 ### Order Maker
 
-Places limit orders via `build_create_order_pset`. Monitors fill progress (`OrderState::Active { total_filled }`). Cancels unfilled orders (`build_cancel_order_pset`). Ingests own orders via `OrderSnapshot::Creation` (needs fill history). Requires "Market maker mode" enabled.
+Places limit orders via `build_create_order_pset`. Monitors fill progress (`OrderState::Active { total_filled }`). Cancels unfilled orders (`Order::build_cancel_pset`). Ingests own orders via `OrderSnapshot::Creation` (needs fill history). Requires "Market maker mode" enabled.
 
 **Key UI surfaces**: Detail (limit order composer), My Orders list, Order fill notifications
 
-**Core API touchpoints**: `derive_order_params`, `build_create_order_pset`, `build_cancel_order_pset`, `order_history`
+**Core API touchpoints**: `derive_order_params`, `build_create_order_pset`, `Order::build_cancel_pset`, `order_history`
 
 ### Oracle
 

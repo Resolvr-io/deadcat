@@ -71,16 +71,16 @@ With key-spend as the only cancellation mechanism, the engine can use a simple s
 
 Key-spend vs script-spend is trivially distinguishable from the witness stack structure — key-spend has a single stack element (64-byte signature), script-spend has multiple elements (witness data + script + control block). This is a Bitcoin/Elements-level structural check, not Simplicity witness decoding. It does not require compiled contracts.
 
-### build_cancel_order_pset
+### build_cancel_pset
 
-`build_cancel_order_pset` constructs a key-spend transaction. This is simpler than the current implementation — no Simplicity witness encoding needed, just a taproot key-spend signature. The PSET builder still needs to know the taproot internal key and merkle root (to compute the tweak), but does not need the compiled Simplicity contract.
+`build_cancel_pset` constructs a key-spend transaction. This is simpler than the current implementation — no Simplicity witness encoding needed, just a taproot key-spend signature. The PSET builder still needs to know the taproot internal key and merkle root (to compute the tweak), but does not need the compiled Simplicity contract.
 
 ## Consistency Across Contract Types
 
 | Contract | Internal Key | Can Key-Spend? | Script Paths |
 |---|---|---|---|
 | Prediction Market | NUMS | No | Issuance, resolution, redemption, cancellation, expiry |
-| LMSR Pool | NUMS | No | Swap, admin adjust, close |
+| LMSR Pool | NUMS | No | Public, admin adjust, close |
 | Maker Order | `maker_pubkey` | Yes (cancellation) | Fill only |
 
 Maker orders intentionally use a real internal key — the maker's ability to key-spend is the sole cancellation mechanism. Markets and pools use NUMS because their lifecycle is governed by covenant logic, not a single party's key.

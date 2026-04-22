@@ -77,14 +77,13 @@ Note: Outpoints are internal to the engine and not exposed in the public state. 
 ### New PSET Builder
 
 ```rust
-pub fn build_lmsr_close_pset(
+pub fn build_close_pset(
     &self,
-    contract_id: &ContractId,
     funding: &WalletFunding,
 ) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 ```
 
-Takes only the contract ID and wallet funding. The engine reads the current reserves from the stored state, compiles the covenant for witness encoding, and builds the PSET. All reserve outputs go to `funding.return_script`.
+Takes only wallet funding. The `Pool` view already identifies the contract being closed; the engine reads the current reserves from stored state, compiles the covenant for witness encoding, and builds the PSET. All reserve outputs go to `funding.return_script`.
 
 ### State Advancement
 

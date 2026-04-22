@@ -11,7 +11,7 @@ Personas covered: **Market Creator** and **Oracle**. See [ux-design.md](../desig
 **Acceptance criteria**:
 - Create form collects: question text, description, category, resolution source, oracle pubkey (defaults to own Nostr pubkey), collateral asset (L-BTC default), collateral per pair (constrained to the 16-value 1-2-5 denomination table per convention), settlement date/time
 - Settlement date input rounds up to the next 60-block boundary (matching the `expiry_time` covenant convention)
-- On submit: constructs `MarketCreationParams { oracle_public_key, collateral_asset_id, collateral_per_pair, expiry_time }` → `build_creation_pset` → sign → broadcast
+- On submit: constructs `MarketCreationParams { oracle_public_key, collateral_asset_id, collateral_per_pair, expiry_time }` → `build_binary_market_creation_pset` → sign → broadcast
 - `build_binary_market_creation_pset` returns `(UnblindedPset, BinaryMarketParams)` — the UI stores the returned full params for ingestion after confirmation
 - After confirmation: `ingest_market(params, creation_tx)` to begin tracking, then publishes a Nostr announcement event for discovery
 - On `CoreError::InvalidParams`: display specific validation error (e.g., "Collateral per pair must be one of: 1000, 2000, 5000, 10000...")

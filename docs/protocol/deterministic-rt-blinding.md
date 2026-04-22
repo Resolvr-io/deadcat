@@ -206,7 +206,7 @@ Since `blind_last` and `blind_non_last` always generate random `AssetBlindingFac
 
 ### Creation PSET Builder
 
-**Current flow** (`build_creation_pset` + blinding in `sdk.rs`):
+**Current flow** (`build_binary_market_creation_pset` + blinding in `sdk.rs`):
 1. Creates RT outputs as unblinded placeholders
 2. Marks the RT outputs with `blinding_key` for `blind_last`
 3. `blind_last` generates random ABFs/VBFs, constructs Pedersen commitments, range proofs, surjection proofs
@@ -260,7 +260,7 @@ Same hand-rolled blinding for RT outputs, but the ABF is derived from the input 
 
 | Function | Current | After |
 | -------- | ------- | ----- |
-| `build_creation_pset` | Marks RT outputs for `blind_last` | Manually blinds RT outputs with deterministic ABFs/VBFs |
+| `build_binary_market_creation_pset` | Marks RT outputs for `blind_last` | Manually blinds RT outputs with deterministic ABFs/VBFs |
 | `build_issuance_pset` | Marks RT outputs for `blind_last` | Manually blinds with deterministic ABF + CBF-derived VBF |
 | `build_cancellation_pset` | Marks RT outputs for `blind_last` | Same as issuance |
 | `recover_creation_anchor` | Extracts blinding factors from blinded outputs | **Eliminated** |

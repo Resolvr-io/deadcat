@@ -2190,7 +2190,7 @@ Cross-outcome arb closes coherence gaps among a multi-outcome market's N pools: 
 - **Permissionless by construction.** The multi-outcome market's generic solvency-preservation spend path ([see multi-outcome-market-contract.md § Operations](../contracts/multi-outcome/multi-outcome-market-contract.md#operations)) admits cross-outcome arb as one of its delta shapes. External arb bots can construct and broadcast these txs directly against the covenant spec without a `deadcat-core`-provided builder.
 - **Advanced-actor-facing.** Arbitrageurs and keepers, not retail users. That audience tolerates external tooling while v1 ships.
 
-**v1 single-contract builders do not compose into arb PSETs.** `build_split_yes_pset` on the market and `build_swap_pset` on each pool each produce separate, independent PSETs — they cannot be merged into a single atomic multi-contract transaction. Arb requires one atomic PSET co-spending the market's generic spend path with N pool swaps simultaneously; this PSET must be constructed directly against the covenant spec by external tooling in v1.
+**v1 core builders do not compose into arb PSETs.** The market's single-contract builders (`build_split_yes_pset`, `build_merge_yes_pset`, etc.) and the engine-managed trade builder (`build_trade_pset`) each construct complete transactions for their own scope — they cannot be merged into one atomic multi-contract arb transaction. Arb requires one bespoke PSET co-spending the market's generic spend path with N pool public-path spends simultaneously; external tooling must construct that transaction directly against the covenant spec in v1.
 
 **What external arb tooling can leverage from `deadcat-core` v1**:
 
@@ -2985,11 +2985,11 @@ See [Trade Types](#trade-types) and [TradeQuote](#tradequote-and-related-types) 
 
 On Liquid, transaction outputs can be **explicit** (asset and value visible) or **confidential** (hidden behind Pedersen commitments with range and surjection proofs). The three Deadcat covenants require all covenant outputs (collateral, reserves, order locked value) to be **explicit** — the Simplicity programs use `unwrap_right()` on output introspection jets, which fails on confidential outputs. The one exception is reissuance token (RT) outputs, which Elements requires to be blinded for reissuance mechanics to work.
 
-**Which builders need RT blinding**: The 5 prediction market builders that involve RT outputs (`build_creation_pset`, `build_issuance_pset`, `build_cancellation_pset`, `build_oracle_resolve_pset`, `build_expire_transition_pset`). The remaining 7 builders have no RT involvement — their covenant outputs are all explicit and require no blinding by core.
+**Which builders need RT blinding**: The 6 prediction market builders that involve RT outputs (`build_binary_market_creation_pset`, `build_multi_outcome_market_creation_pset`, `build_issuance_pset`, `build_cancellation_pset`, `build_oracle_resolve_pset`, `build_expire_transition_pset`). The remaining builders have no RT involvement — their covenant outputs are all explicit and require no blinding by core.
 
 **Deterministic RT blinding**: RT blinding factors are derived deterministically from public on-chain data (see [deterministic-rt-blinding.md](../protocol/deterministic-rt-blinding.md)), not generated randomly. This is essential for core's architecture: the engine internally manages RT outpoints and must reconstruct blinding factors when building future PSETs that spend those outpoints. With deterministic derivation, the engine recomputes the factors on demand without needing to persist blinding secrets.
 
-**`UnblindedPset` newtype**: The 5 RT-involving builders return `UnblindedPset` — an opaque type whose private fields capture the explicit PSET, deterministic RT blinding factors, and all input secrets (both covenant inputs with zero blinding factors and wallet inputs with real blinding factors from `UnblindedUtxo`). The type enforces that the caller cannot extract a `PartiallySignedTransaction` without going through a blinding method, making "forgot to blind" unrepresentable at the type level.
+**`UnblindedPset` newtype**: The 6 RT-involving builders return `UnblindedPset` — an opaque type whose private fields capture the explicit PSET, deterministic RT blinding factors, and all input secrets (both covenant inputs with zero blinding factors and wallet inputs with real blinding factors from `UnblindedUtxo`). The type enforces that the caller cannot extract a `PartiallySignedTransaction` without going through a blinding method, making "forgot to blind" unrepresentable at the type level.
 
 ```rust
 pub struct UnblindedPset { /* private */ }
@@ -3173,13 +3173,13 @@ The pool and order covenants are **market-state-agnostic** — they accept swaps
 ### What remains available regardless of parent market state
 
 - `quote_trade` and `build_trade_pset` route through pools and orders on resolved-parent markets normally. Quotes return `Ok(TradeQuote)` if routable liquidity exists; PSETs build successfully.
-- `build_lmsr_adjust_pset` and `build_lmsr_close_pset` on the `Pool` view remain callable.
+- `build_adjust_pset` and `build_close_pset` on the `Pool` view remain callable.
 - `build_cancel_pset` on the `Order` view remains callable.
-- Market operations (`build_resolution_pset`, `build_expire_transition_pset`, `build_redemption_pset`) proceed according to the market's own state-machine transitions.
+- Market operations (`build_oracle_resolve_pset`, `build_expire_transition_pset`, `build_redemption_pset`) proceed according to the market's own state-machine transitions.
 
 ### Pool operator responsibilities
 
-The operator closes the pool via `build_lmsr_close_pset` when convenient after market resolution. Until they do, the pool remains tradable at stale prices (YES ≈ 1 at YES-resolved markets, half each at expiry), and an informed trader could drain reserves by buying out winning-token inventory. This is **not protected by `deadcat-core`** — the engine's policy is that pool operators manage their own liquidity carefully, including closing pools at terminal market states.
+The operator closes the pool via `build_close_pset` when convenient after market resolution. Until they do, the pool remains tradable at stale prices (YES ≈ 1 at YES-resolved markets, half each at expiry), and an informed trader could drain reserves by buying out winning-token inventory. This is **not protected by `deadcat-core`** — the engine's policy is that pool operators manage their own liquidity carefully, including closing pools at terminal market states.
 
 **Why this isn't enforced at the covenant layer**: airtight protection would require the pool covenant to observe the parent market's state on every swap, and a covenant can only introspect the current transaction — so the only mechanism is to **co-spend the market covenant's UTXO as an input on every swap transaction**. That would make every swap substantially heavier (adding the market's collateral input + witness to the pool's ~1,000-vbyte footprint), and the cost would fall on every trade, not just ones near resolution. Paying a permanent per-trade tax to block the informed-drainer attack in the narrow window between resolution and operator-close isn't a trade worth making. See [lmsr-pool-design.md § Why the pool covenant can't feasibly gate post-resolution trading](../contracts/lmsr-pool/lmsr-pool-design.md#why-the-pool-covenant-cant-feasibly-gate-post-resolution-trading) for the full analysis.
 
@@ -3295,8 +3295,8 @@ All other (builder, state) pairs return `InvalidContractState { kind: WrongVaria
 | `Trading` | `build_split_yes_pset` \| `build_split_no_pset` | `Trading` (all supplies +s) | — |
 | `Trading` | `build_merge_yes_pset` | `Trading` (all yes supplies −s) | all `supplies[k].yes ≥ s` |
 | `Trading` | `build_merge_no_pset` | `Trading` (all no supplies −s) | all `supplies[k].no ≥ s` |
-| `Trading` | `build_resolution_pset(k)` | `Resolved { winning: k, ... }` | valid oracle sig |
-| `Trading` | `build_expiry_pset` | `Expired` | chain height ≥ expiry |
+| `Trading` | `build_oracle_resolve_pset(k)` | `Resolved { winning: k, ... }` | valid oracle sig |
+| `Trading` | `build_expire_transition_pset` | `Expired` | chain height ≥ expiry |
 | `Resolved \| Expired` (unredeemed > 0) | `build_redemption_pset` | same variant, `collateral_unredeemed` decremented (terminal if 0) | collateral_unredeemed > 0 |
 
 Cross-outcome swap is not a builder in v1 (it's a `CrossOutcomeSwap` transition classification for observed txs, and v2 gets a dedicated arb quote/build API). See [Future: Cross-Outcome Arb API (v2)](#future-cross-outcome-arb-api-v2).
@@ -3306,8 +3306,8 @@ Cross-outcome swap is not a builder in v1 (it's a `CrossOutcomeSwap` transition 
 | From state | Valid builder | To state | Condition |
 |---|---|---|---|
 | `Active` | (public pool path via `engine.build_trade_pset`; plain or market-assisted) | `Active` (new s_index, new reserves) | s_index within table, reserves ≥ MIN_POOL_RESERVE |
-| `Active` | `build_lmsr_adjust_pset` | `Active` (new reserves, same s_index) | admin key signature, non-zero delta |
-| `Active` | `build_lmsr_close_pset` | `Closed { final_txid }` | admin key signature |
+| `Active` | `build_adjust_pset` | `Active` (new reserves, same s_index) | admin key signature, non-zero delta |
+| `Active` | `build_close_pset` | `Closed { final_txid }` | admin key signature |
 
 Pool operations remain valid regardless of parent market state — see [Pool and Order Lifecycle at Market Resolution](#pool-and-order-lifecycle-at-market-resolution). Market-assisted pool legs disappear once the parent market no longer supports issuance/cancellation, but plain pool trading and admin operations remain callable. Closed pools admit no further transitions.
 
@@ -3495,7 +3495,7 @@ Token recovery is automatic. YES and NO tokens are standard Elements confidentia
 
 ### Prediction Market Positions
 
-Markets have no on-chain "owner" — the taproot internal key is NUMS. However, `build_creation_pset` includes an OP_RETURN recovery hint in the market creation transaction. This serves two purposes: (1) enabling the market creator to re-discover and re-announce their market, and (2) providing the anchor for chain-only pool and order recovery — pool and order hints point to the market creation transaction by txid. It also enables token holder recovery: `issuance_transaction(asset_id)` traces any YES/NO token back to this transaction.
+Markets have no on-chain "owner" — the taproot internal key is NUMS. However, the market creation builders include an OP_RETURN recovery hint in the market creation transaction. This serves two purposes: (1) enabling the market creator to re-discover and re-announce their market, and (2) providing the anchor for chain-only pool and order recovery — pool and order hints point to the market creation transaction by txid. It also enables token holder recovery: `issuance_transaction(asset_id)` traces any YES/NO token back to this transaction.
 
 **37 bytes** (known collateral asset) / **69 bytes** (exotic collateral). Uses compressed encoding: 4-bit well-known collateral asset index (L-BTC=0, USDt=1, escape=15), 4-bit 1-2-5 denomination convention for `base_payout`, and absolute `expiry_time` as u24 (block height divided by 60, giving hour-level granularity with range from the Liquid genesis block to approximately the year 3931). The builder accepts any future height, rounds `expiry_time` up to the next 60-block boundary, and commits that rounded value into the covenant params — making the encoding lossless. Only 4 of 8 `BinaryMarketParams` fields need encoding — the other 4 (token and RT asset IDs) are derivable from the creation transaction's issuance entropy. See [chain-only-recovery.md](../protocol/chain-only-recovery.md) for the exact byte layout and per-field justification.
 
@@ -4192,7 +4192,7 @@ This is the same pattern used elsewhere in the codebase: keep per-kind semantic 
 
 ### UnblindedPset Newtype for RT-Involving Builders
 
-**Chosen**: The 5 prediction market builders that involve reissuance token outputs return `UnblindedPset` — an opaque newtype with `prepare(pubkey)` and `finalize()` methods. The 7 remaining builders return `PartiallySignedTransaction` directly.
+**Chosen**: The 6 prediction market builders that involve reissuance token outputs return `UnblindedPset` — an opaque newtype with `prepare(pubkey)` and `finalize()` methods. The 7 remaining builders return `PartiallySignedTransaction` directly.
 **Rejected**: (a) All 12 builders return `UnblindedPset` (uniform but unnecessary wrapping for RT-free builders). (b) All builders return raw `PartiallySignedTransaction` (no enforcement). (c) Builders take blinding parameters and handle all blinding internally (conflates construction with wallet-level blinding, requires RNG/secp context parameters). (d) Two builder functions per RT-involving transaction type — one fully-blinded, one partially-blinded (doubles API surface, the fully-blinded variant has a hidden precondition about wallet input confidentiality).
 **Why**: RT blinding is deadcat-specific, non-standard, and easy to forget — the newtype makes "forgot to blind" a compile error. Wallet output blinding for RT-free builders is standard Elements wallet behavior that every integrator already handles — wrapping it adds ceremony without preventing a novel mistake. The `prepare`/`finalize` choice is a simple privacy decision (confidential vs explicit wallet outputs), not a technical one about input types. The `UnblindedPset` captures all needed state at build time (PSET, deterministic RT factors, input secrets from `WalletFunding`), so neither method requires additional crypto parameters from the caller. Core implements deterministic blinding using public `elements`/`secp256k1-zkp` APIs — no fork needed.
 
@@ -4264,9 +4264,9 @@ This is the same pattern used elsewhere in the codebase: keep per-kind semantic 
 
 ### Creation Builders Take Concrete Param Types
 
-**Chosen**: Creation builders take concrete param types (`&MarketCreationParams`, `&LmsrPoolParams`, `&MakerOrderParams`) instead of the `ContractParams` enum. `build_creation_pset` takes `MarketCreationParams` (only non-derivable fields) rather than full `BinaryMarketParams` because the 4 token/RT asset IDs depend on coin selection (see [MarketCreationParams](#marketcreationparams)).
+**Chosen**: Creation builders take concrete param types (`&MarketCreationParams`, `&LmsrPoolParams`, `&MakerOrderParams`) instead of the `ContractParams` enum. `build_binary_market_creation_pset` takes `MarketCreationParams` (only non-derivable fields) rather than full `BinaryMarketParams` because the 4 token/RT asset IDs depend on coin selection (see [MarketCreationParams](#marketcreationparams)).
 **Rejected**: All creation builders take `&ContractParams`, with runtime validation of the variant.
-**Why**: Passing the wrong variant (e.g., `ContractParams::LmsrPool` to `build_creation_pset`) would only be caught at runtime. Taking concrete types makes wrong-variant errors compile-time errors. The standalone `contract_cmr()` still takes `ContractParams` (the enum) since it is genuinely polymorphic.
+**Why**: Passing the wrong variant (e.g., `ContractParams::LmsrPool` to `build_binary_market_creation_pset`) would only be caught at runtime. Taking concrete types makes wrong-variant errors compile-time errors. The standalone `contract_cmr()` still takes `ContractParams` (the enum) since it is genuinely polymorphic.
 
 ### Single Return Script for All Non-Covenant Outputs
 
@@ -4366,11 +4366,11 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 
 **Chosen**: Order filling (taker side) is handled exclusively through the trade system (`quote_trade` + `build_trade_pset`). No `build_fill_order_pset`.
 **Rejected**: Direct `build_fill_order_pset` builder for explicit single-order fills.
-**Why**: The trade router optimizes across all available pools and orders for best execution. A direct fill builder would allow suboptimal execution and create an inconsistency (pool swaps already go through the trade router — `build_lmsr_swap_pset` doesn't exist). The maker's lifecycle is directly exposed (`build_create_order_pset`, `build_cancel_order_pset`) because those are single-contract operations that don't benefit from routing. If explicit order targeting becomes a requested feature, a direct fill builder can be added as a non-breaking change (new engine method, no store or type changes).
+**Why**: The trade router optimizes across all available pools and orders for best execution. A direct fill builder would allow suboptimal execution and create an inconsistency (pool trading already goes through the trade router; there is no standalone pool swap builder). The maker's lifecycle is directly exposed (`build_create_order_pset`, `build_cancel_pset`) because those are single-contract operations that don't benefit from routing. If explicit order targeting becomes a requested feature, a direct fill builder can be added as a non-breaking change (new engine method, no store or type changes).
 
 ### LMSR Adjust API Uses Deltas
 
-**Chosen**: `build_lmsr_adjust_pset` takes `pair_delta: i64` (applied equally to YES and NO) and `collateral_delta: i64`, not `target_reserves: &PoolReserves`.
+**Chosen**: `Pool::build_adjust_pset` takes `pair_delta: i64` (applied equally to YES and NO) and `collateral_delta: i64`, not `target_reserves: &PoolReserves`.
 **Rejected**: Absolute target reserves with runtime validation of the paired-delta constraint.
 **Why**: The LMSR covenant enforces that YES and NO reserve deltas are equal on the admin path. By taking a single `pair_delta` parameter, the API makes this constraint unrepresentable as an error — the caller cannot express asymmetric deltas. The only remaining validation is reserve floors (computed targets must meet minimums), which is a meaningful constraint rather than an input formatting error. Wallets can present absolute-target UIs by computing deltas from current reserves on their side.
 
@@ -4520,7 +4520,7 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 
 ### MarketCreationParams for Market Creation Builder
 
-**Chosen**: `build_creation_pset` takes `&MarketCreationParams` (4 non-derivable fields) and returns `(UnblindedPset, BinaryMarketParams)`. The builder derives the 4 token/RT asset IDs from the selected defining inputs.
+**Chosen**: `build_binary_market_creation_pset` takes `&MarketCreationParams` (4 non-derivable fields) and returns `(UnblindedPset, BinaryMarketParams)`. The builder derives the 4 token/RT asset IDs from the selected defining inputs.
 **Rejected**: (a) Builder takes full `&BinaryMarketParams` (caller can't fill in the 4 derivable asset ID fields because they depend on coin selection, which happens inside the builder). (b) Caller pre-selects defining inputs (breaks the "pass all UTXOs, builder selects" pattern).
 **Why**: The 4 asset IDs are derived from issuance entropy = `hash(defining_outpoint || contract_hash)`. The defining outpoints are UTXOs selected by the builder during coin selection. Since coin selection happens inside the builder, the caller can't know the asset IDs beforehand. `MarketCreationParams` makes the API honest about what data flows in which direction — the caller provides what they know, the builder returns what it computed.
 
@@ -4606,7 +4606,7 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 
 **Why**: The covenants are market-state-agnostic — they accept swaps and fills indefinitely, not by oversight but by architectural necessity. Covenants can only introspect the current transaction, so the only way for the pool covenant to verify the parent market's state is to **co-spend the market covenant's UTXO as an input on every swap transaction**. That would roughly double every swap's on-chain footprint (adding the market's collateral input + Simplicity witness to the pool's ~1,000 vbytes) and impose the cost on every legitimate trade — not just ones near resolution. Paying a permanent per-trade tax to block the informed-drainer attack in the narrow post-resolution / pre-operator-close window isn't a trade worth making. See [lmsr-pool-design.md § Why the pool covenant can't feasibly gate post-resolution trading](../contracts/lmsr-pool/lmsr-pool-design.md#why-the-pool-covenant-cant-feasibly-gate-post-resolution-trading) for the full analysis.
 
-Given that the covenant can't feasibly enforce the gate, engine-layer gating would provide only false safety (sophisticated actors fork or bypass `deadcat-core`), while adding friction for legitimate edge cases (an informed trader dumping now-worthless tokens benefits from the covenant-valid trade even though it's bad for the pool operator). The engine's responsibility is covenant-validity and impossibility, not unfavorability. See the broader principle at [Design Principles § Engine gates covenant-invalidity and impossibility, not unfavorability](#engine-gates-covenant-invalidity-and-impossibility-not-unfavorability) and the operational consequences at [Pool and Order Lifecycle at Market Resolution](#pool-and-order-lifecycle-at-market-resolution). Pool operators protect themselves by closing pools after resolution (`build_lmsr_close_pset`); UI-layer warnings handle the honest-user protection case.
+Given that the covenant can't feasibly enforce the gate, engine-layer gating would provide only false safety (sophisticated actors fork or bypass `deadcat-core`), while adding friction for legitimate edge cases (an informed trader dumping now-worthless tokens benefits from the covenant-valid trade even though it's bad for the pool operator). The engine's responsibility is covenant-validity and impossibility, not unfavorability. See the broader principle at [Design Principles § Engine gates covenant-invalidity and impossibility, not unfavorability](#engine-gates-covenant-invalidity-and-impossibility-not-unfavorability) and the operational consequences at [Pool and Order Lifecycle at Market Resolution](#pool-and-order-lifecycle-at-market-resolution). Pool operators protect themselves by closing pools after resolution (`build_close_pset`); UI-layer warnings handle the honest-user protection case.
 
 ### CovenantInvariantViolation Retained as Defense-in-Depth
 

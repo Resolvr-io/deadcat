@@ -46,7 +46,7 @@ Personas covered: **Pool Operator** and **Order Maker**. See [ux-design.md](../d
 
 **Acceptance criteria**:
 - Adjust form on pool detail shows current reserves and allows delta inputs
-- `build_lmsr_adjust_pset(contract_id, pair_delta, collateral_delta, funding)` — pair_delta applied equally to YES and NO reserves
+- `pool.build_adjust_pset(pair_delta, collateral_delta, funding)` — pair_delta applied equally to YES and NO reserves
 - The UI presents absolute target inputs and computes deltas internally: "Set YES/NO reserves to X" → `pair_delta = X - current`
 - On `CoreError::InvalidParams` (zero deltas or below minimum reserve floor): show specific error
 - After confirmation: reserves update in pool detail
@@ -64,7 +64,7 @@ Personas covered: **Pool Operator** and **Order Maker**. See [ux-design.md](../d
 
 **Acceptance criteria**:
 - Close button on pool detail (only for Active pools)
-- `build_lmsr_close_pset(contract_id, funding)` → sign → broadcast
+- `pool.build_close_pset(funding)` → sign → broadcast
 - All three reserve UTXOs reclaimed atomically to `funding.return_script`
 - After confirmation: pool state transitions to `Closed`
 
@@ -99,7 +99,7 @@ Personas covered: **Pool Operator** and **Order Maker**. See [ux-design.md](../d
 **Acceptance criteria**:
 - "My Orders" list shows all orders from `fetchOwnOrders`: market, direction, price, offered amount, fill status, order state
 - Fill progress: `OrderState::Active { offered_amount, total_filled }` → progress bar showing "X of Y sats filled"
-- Cancel button calls `build_cancel_order_pset(contract_id, funding)` → sign → broadcast
+- Cancel button calls `order.build_cancel_pset(funding)` → sign → broadcast
 - After cancellation: `OrderState::Cancelled { total_filled }` — show "Cancelled (X of Y filled before cancellation)"
 - Consumed orders (`OrderState::Consumed`): show "Fully filled" with green check
 

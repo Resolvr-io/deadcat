@@ -74,7 +74,7 @@ The following can be removed:
 ## Problem 2: Misleading "Cosigner" Name for Pool Admin Key
 
 The LMSR pool covenant uses `COSIGNER_PUBKEY` for the key that authorizes admin operations (adjust, close). This is misleading:
-- The swap path is permissionless — no "co-signing" happens.
+- The public pool path is permissionless — no "co-signing" happens.
 - The admin/close paths use this key as the **sole** authorization, not a co-signature.
 - The pool operator controls the key themselves — no second party involved.
 

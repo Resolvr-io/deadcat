@@ -271,9 +271,8 @@ At the public API layer, `quote_trade` / `build_trade_pset` use this path for or
 The pool operator can adjust reserves without changing the s_index (and thus without changing the pricing curve). This is the admin path, authorized by the operator's admin key signature.
 
 ```rust
-pub fn build_lmsr_adjust_pset(
+pub fn build_adjust_pset(
     &self,
-    contract_id: &ContractId,
     pair_delta: i64,
     collateral_delta: i64,
     funding: &WalletFunding,
@@ -294,9 +293,8 @@ Admin adjustments change **capacity**, not **pricing**. The F-values (and thus t
 The pool operator closes the pool via the dedicated close script path, atomically consuming all three reserve UTXOs. See [lmsr-pool-close-path.md](lmsr-pool-close-path.md).
 
 ```rust
-pub fn build_lmsr_close_pset(
+pub fn build_close_pset(
     &self,
-    contract_id: &ContractId,
     funding: &WalletFunding,
 ) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
 ```
@@ -321,7 +319,7 @@ This is architecturally possible but prohibitively expensive:
 - **Serialization constraint** — cross-outcome arb and other multi-pool patterns would compound: an N-pool-swap arb already co-spends the market in some directions; forcing co-spend on every pool swap regardless of direction makes these even heavier.
 - **No covenant-cheap alternative** — there's no way for a pool covenant to check market state without seeing the market UTXO. Merkle inclusion proofs against a market-state commitment would require the market contract to emit such commitments, which they don't (and wouldn't in v1).
 
-The cost falls on the 99%+ of swaps that happen during the market's active life — paying a permanent tax so that the <1% edge case (the informed-drainer attack right after resolution) is blocked. That trade is rejected: **operator-layer protection** (closing the pool via `build_lmsr_close_pset` after resolution) is the appropriate tool. Operators who keep pools open post-resolution are accepting the drain risk; those who don't, don't pay.
+The cost falls on the 99%+ of swaps that happen during the market's active life — paying a permanent tax so that the <1% edge case (the informed-drainer attack right after resolution) is blocked. That trade is rejected: **operator-layer protection** (closing the pool via `build_close_pset` after resolution) is the appropriate tool. Operators who keep pools open post-resolution are accepting the drain risk; those who don't, don't pay.
 
 **`deadcat-core` mirrors this at the engine layer**: trading remains routable through `quote_trade` / `build_trade_pset` regardless of parent market state. The engine does not gate post-resolution trading — the covenant is market-state-agnostic by the above architectural choice, and engine-layer gating would provide only false safety (sophisticated actors fork `deadcat-core` or bypass it). See [`deadcat-core-design.md § Pool and Order Lifecycle at Market Resolution`](../../architecture/deadcat-core-design.md#pool-and-order-lifecycle-at-market-resolution) and [Design Principles § Engine gates covenant-invalidity and impossibility, not unfavorability](../../architecture/deadcat-core-design.md#engine-gates-covenant-invalidity-and-impossibility-not-unfavorability).
 

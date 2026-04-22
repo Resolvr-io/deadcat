@@ -335,7 +335,7 @@ Calls `useMarketOps` mutation (oracle attest + execute resolution).
 | Collateral per pair | Constrained dropdown (1-2-5 table) | Must be valid denomination | `MarketCreationParams.collateral_per_pair` |
 | Settlement date | `SettlementPicker` (calendar + time) | Must be in the future | `MarketCreationParams.expiry_time` (rounded up to 60-block boundary) |
 
-**Submit flow**: Validate → `useCreateMarket` mutation → `invoke("build_creation_pset")` → sign → broadcast → `ingest_market` → publish Nostr event → navigate to detail view.
+**Submit flow**: Validate → `build_binary_market_creation_pset(params, funding)` → sign `UnblindedPset` → broadcast → await confirmation → `ingest_market` → publish Nostr event → redirect to detail view.
 
 ---
 

@@ -25,7 +25,7 @@ The swap witness provides six values: `old_s_index`, `new_s_index`, `f_old`, `f_
    ```
    Each proof is a list of `(sibling_hash, is_right)` pairs, folded from leaf to root. The covenant asserts the computed root equals `LMSR_TABLE_ROOT` and the proof depth equals `TABLE_DEPTH`.
 
-2. **Uses f_old and f_new in the conservation equation** — the swap path computes `base_notional` from `f_old`, `f_new`, `traded_lots`, and `half_payout_sats`, then enforces fee-adjusted pricing via 128-bit integer inequality:
+2. **Uses f_old and f_new in the conservation equation** — the public path's LMSR movement computes `base_notional` from `f_old`, `f_new`, `traded_lots`, and `half_payout_sats`, then enforces fee-adjusted pricing via 128-bit integer inequality:
    ```
    buy:  delta_in  × fee_c    ≥ base_notional × FEE_DENOM
    sell: delta_out × FEE_DENOM ≤ base_notional × fee_c
