@@ -52,6 +52,19 @@ export function MarketHeaderTop({ market }: { market: Market }) {
       ? `${market.change24h > 0 ? "+" : ""}${(market.change24h * 100).toFixed(1)}%`
       : null;
 
+  const blocksLeft = market.expiryHeight - market.currentHeight;
+  const closesColor =
+    blocksLeft < 2880
+      ? "text-rose-400"
+      : blocksLeft < 10080
+        ? "text-amber-400"
+        : "text-slate-200";
+
+  const changePct =
+    market.change24h !== 0
+      ? `${market.change24h > 0 ? "+" : ""}${(market.change24h * 100).toFixed(1)}%`
+      : null;
+
   return (
     <>
       {/* Top bar: back button + badges */}
