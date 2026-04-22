@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { tauriApi } from "../../api/tauri";
+import { setWalletNeedsBackup } from "../../hooks/useWalletNeedsBackup";
 import { DEFAULT_TX_OPTIONS } from "../../services/tx";
 import { useStore } from "../../store";
 import type {
@@ -21,6 +22,7 @@ export function useCreateWallet() {
       const mnemonic = await invoke<string>("create_wallet", {
         password: params.password,
       });
+      setWalletNeedsBackup(true);
       // Ensure a Nostr node exists before unlocking (unlock_wallet requires it)
       if (!useStore.getState().nostrPubkey) {
         const identity = await invoke<{ pubkey_hex: string; npub: string }>(

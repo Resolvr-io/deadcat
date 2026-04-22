@@ -162,7 +162,7 @@ function ProfilePageContent() {
   return (
     <div
       onClick={handleBackdropClick}
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      className="macos-overlay-safe-top fixed inset-0 z-40 flex items-center justify-center bg-black/50 backdrop-blur-sm"
     >
       <div className="relative mx-4 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
         <div className="flex-1 overflow-y-auto">
@@ -221,10 +221,14 @@ function ProfilePageContent() {
             </button>
           </div>
 
-          {/* Avatar overlapping banner */}
-          <div className="px-6 pt-2">
-            <div className="relative -mt-8 mb-8 flex items-end gap-4">
-              <div className="relative">
+          {/* Avatar overlaps banner; name/NIP-05/npub sit to its right,
+              starting below the banner edge so nothing overlaps the image.
+              items-start prevents the flex from stretching the avatar
+              container (which would push its absolute-positioned camera
+              button away from the avatar itself). */}
+          <div className="px-6">
+            <div className="-mt-8 mb-8 flex items-start gap-5">
+              <div className="relative shrink-0">
                 <img
                   src={avatarSrc}
                   alt="Avatar"
@@ -267,10 +271,32 @@ function ProfilePageContent() {
                   </svg>
                 </button>
               </div>
-              <div className="min-w-0 flex-1 pb-1">
+              {/* mt-8 cancels the row's -mt-8 (back to banner edge), plus
+                  an extra pt-3 for breathing room between banner and name. */}
+              <div className="mt-8 min-w-0 flex-1 pt-3">
                 <p className="text-lg font-medium text-slate-100 truncate">
                   {displayName || name || "Unnamed"}
                 </p>
+                {nip05 && (
+                  <p className="mt-1.5 flex items-center gap-1.5 text-sm text-slate-300">
+                    <svg
+                      aria-hidden="true"
+                      className="h-4 w-4 shrink-0"
+                      viewBox="0 0 122.88 116.87"
+                    >
+                      <polygon
+                        fill="#a855f7"
+                        fillRule="evenodd"
+                        points="61.37 8.24 80.43 0 90.88 17.79 111.15 22.32 109.15 42.85 122.88 58.43 109.2 73.87 111.15 94.55 91 99 80.43 116.87 61.51 108.62 42.45 116.87 32 99.08 11.73 94.55 13.73 74.01 0 58.43 13.68 42.99 11.73 22.32 31.88 17.87 42.45 0 61.37 8.24"
+                      />
+                      <path
+                        fill="#fff"
+                        d="M37.92,65c-6.07-6.53,3.25-16.26,10-10.1,2.38,2.17,5.84,5.34,8.24,7.49L74.66,39.66C81.1,33,91.27,42.78,84.91,49.48L61.67,77.2a7.13,7.13,0,0,1-9.9.44C47.83,73.89,42.05,68.5,37.92,65Z"
+                      />
+                    </svg>
+                    {nip05}
+                  </p>
+                )}
                 {nostrNpub && (
                   <button
                     type="button"
@@ -278,13 +304,13 @@ function ProfilePageContent() {
                       void navigator.clipboard.writeText(nostrNpub);
                       showToast("Copied npub to clipboard");
                     }}
-                    className="mt-0.5 flex items-center gap-1.5 mono text-xs text-slate-500 hover:text-slate-300 transition"
+                    className="group mt-0.5 flex items-center gap-1.5 mono text-xs text-slate-400 hover:text-white transition"
                     title="Click to copy"
                   >
                     {nostrNpub.slice(0, 16)}...{nostrNpub.slice(-6)}
                     <svg
                       aria-hidden="true"
-                      className="h-3 w-3 shrink-0 text-slate-500"
+                      className="h-3 w-3 shrink-0 text-slate-500 group-hover:text-slate-400"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"

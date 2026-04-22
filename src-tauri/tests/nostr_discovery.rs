@@ -176,7 +176,10 @@ async fn publish_discover_roundtrip() {
     // Build announcement
     let (announcement, params) = test_market_announcement(oracle_pubkey, 0x11);
 
-    let event = build_announcement_event(&keys, &announcement, NETWORK_TAG).unwrap();
+    let event = build_announcement_event(&announcement, NETWORK_TAG)
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
 
     // Connect client and publish
     let client = Client::new(keys.clone());
@@ -233,7 +236,10 @@ async fn oracle_attestation_roundtrip() {
     let market_id_hex = hex::encode(market_id.as_bytes());
 
     // First publish the announcement
-    let ann_event = build_announcement_event(&keys, &announcement, NETWORK_TAG).unwrap();
+    let ann_event = build_announcement_event(&announcement, NETWORK_TAG)
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
     let ann_event_id = ann_event.id.to_hex();
 
     let client = Client::new(keys.clone());
@@ -250,7 +256,6 @@ async fn oracle_attestation_roundtrip() {
 
     // Build and publish attestation event
     let att_event = build_attestation_event(
-        &keys,
         &market_id_hex,
         &ann_event_id,
         true,
@@ -258,6 +263,8 @@ async fn oracle_attestation_roundtrip() {
         &msg_hex,
         NETWORK_TAG,
     )
+    .unwrap()
+    .sign_with_keys(&keys)
     .unwrap();
 
     client.send_event(att_event).await.unwrap();

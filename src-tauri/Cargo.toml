@@ -31,6 +31,10 @@ thiserror = "2"
 chrono = { version = "0.4", features = ["clock"] }
 hex = "0.4"
 log = "0.4"
+tracing = "0.1"
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
 tokio = { version = "1", features = ["rt", "sync"] }
 
 # Liquid wallet
@@ -53,6 +57,7 @@ zeroize = "1"
 deadcat-sdk = { path = "crates/deadcat-sdk" }
 deadcat-store = { path = "crates/deadcat-sdk/deadcat-store" }
 nostr-sdk = { version = "0.38", features = ["nip44"] }
+nostr-connect = "0.38"
 nostr-relay-builder = "0.38"
 
 # Misc

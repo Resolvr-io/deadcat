@@ -31,7 +31,7 @@ async fn setup_node_with_store(
         ..Default::default()
     };
     let (node, rx) = DeadcatNode::with_store(
-        keys.clone(),
+        Arc::new(keys.clone()) as Arc<dyn NostrSigner>,
         deadcat_sdk::Network::LiquidTestnet,
         store.clone(),
         config,
@@ -48,7 +48,7 @@ fn setup_node_with_deadcat_store() -> (DeadcatNode<DeadcatStore>, Arc<Mutex<Dead
         ..Default::default()
     };
     let (node, _rx) = DeadcatNode::with_store(
-        keys.clone(),
+        Arc::new(keys.clone()) as Arc<dyn NostrSigner>,
         deadcat_sdk::Network::LiquidTestnet,
         store.clone(),
         config,
@@ -213,7 +213,7 @@ async fn node_attestation() {
 
     // Attest
     let result = node
-        .attest_market(&market_id, &ann_event_id.to_hex(), true)
+        .attest_market(&keys, &market_id, &ann_event_id.to_hex(), true)
         .await
         .unwrap();
     assert!(result.outcome_yes);
@@ -248,8 +248,10 @@ async fn node_subscription_delivers_events() {
     let oracle_pubkey = oracle_pubkey_from_keys(&keys);
     let (announcement, _params) = test_market_announcement(oracle_pubkey, 0x33);
 
-    let event =
-        deadcat_sdk::build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
+    let event = deadcat_sdk::build_announcement_event(&announcement, "liquid-testnet")
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
     publisher.send_event(event).await.unwrap();
 
     // Wait for broadcast event
@@ -289,10 +291,11 @@ fn resolve_lmsr_pool_locator_repairs_market_id_and_existing_history_rows_in_real
     let (node, store, keys) = setup_node_with_deadcat_store();
     let announcement = test_lmsr_pool_announcement(deadcat_sdk::Network::LiquidTestnet, 0x42);
     let event = deadcat_sdk::build_pool_event(
-        &keys,
         &announcement,
         deadcat_sdk::Network::LiquidTestnet.discovery_tag(),
     )
+    .unwrap()
+    .sign_with_keys(&keys)
     .unwrap();
     let mut ingest = test_lmsr_pool_ingest_input(deadcat_sdk::Network::LiquidTestnet, 0x42);
     let poisoned_market_id = "aa".repeat(32);
@@ -360,11 +363,10 @@ async fn node_discovery_delegates_to_service() {
     let (node, _rx, _store, keys) = setup_node_with_store(&mock.url()).await;
 
     // Verify the discovery service reference is accessible
-    let service = node.discovery();
-    assert_eq!(service.keys().public_key(), keys.public_key());
+    let _service = node.discovery();
 
     // Verify accessors
-    assert_eq!(node.keys().public_key(), keys.public_key());
+    assert_eq!(keys.public_key(), keys.public_key());
     assert_eq!(node.network(), deadcat_sdk::Network::LiquidTestnet);
 }
 

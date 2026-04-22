@@ -14,6 +14,7 @@ use deadcat_sdk::{
 use lwk_test_util::{TEST_MNEMONIC, TestEnv, TestEnvBuilder, regtest_policy_asset};
 use nostr_relay_builder::prelude::MockRelay;
 use nostr_sdk::Keys;
+use nostr_sdk::prelude::NostrSigner;
 use tempfile::TempDir;
 
 fn asset_bytes(asset: AssetId) -> [u8; 32] {
@@ -94,8 +95,12 @@ impl Fixture {
             network_tag: "liquid-regtest".to_string(),
             ..Default::default()
         };
-        let (node, _rx) =
-            DeadcatNode::with_store(keys, Network::LiquidRegtest, store.clone(), config);
+        let (node, _rx) = DeadcatNode::with_store(
+            Arc::new(keys) as Arc<dyn NostrSigner>,
+            Network::LiquidRegtest,
+            store.clone(),
+            config,
+        );
         let wallet_dir = tempfile::tempdir().expect("wallet tempdir");
         node.unlock_wallet(TEST_MNEMONIC, &env.electrum_url(), wallet_dir.path())
             .expect("unlock wallet");

@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile, readTextFile } from "@tauri-apps/plugin-fs";
+import QRCode from "qrcode";
 import {
   type ReactNode,
   useCallback,
@@ -9,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { setWalletNeedsBackup } from "../../hooks/useWalletNeedsBackup";
 import { useStore } from "../../store";
 import type {
   IdentityResponse,
@@ -59,6 +62,10 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   // Guard against rapid clicks of the identity-randomize button spawning
   // concurrent preview_nostr_identity calls.
   const randomizingRef = useRef(false);
+  const [connectQr, setConnectQr] = useState("");
+  const [connectUri, setConnectUri] = useState("");
+  const connectGenerated = useRef(false);
+  const [bunkerTab, setBunkerTab] = useState<"scan" | "paste">("scan");
 
   // Focus the mnemonic textarea only when first expanded, not on every re-render
   useEffect(() => {
@@ -93,6 +100,87 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const restorePassword = useStore((s) => s.onboardingRestorePassword);
   const restoreMnemonic = useStore((s) => s.onboardingRestoreMnemonic);
   const restoreNsec = useStore((s) => s.onboardingRestoreNsec);
+  const bunkerUri = useStore((s) => s.onboardingBunkerUri);
+
+  // Initiate the app-initiated NIP-46 flow when bunker mode is entered.
+  // The backend returns the URI immediately (for QR display) and spawns a
+  // listener that completes the handshake and emits `nostrconnect:connected`
+  // when the remote signer responds — at which point we mark onboarding done.
+  useEffect(() => {
+    if (nostrMode !== "bunker" || connectGenerated.current) return;
+    connectGenerated.current = true;
+    let unlistenConnected: UnlistenFn | undefined;
+    let unlistenError: UnlistenFn | undefined;
+    let cancelled = false;
+    void (async () => {
+      unlistenConnected = await listen<IdentityResponse>(
+        "nostrconnect:connected",
+        (e) => {
+          if (cancelled) return;
+          // Land on the "Confirm your identity" screen (same as the
+          // bunker-paste flow) — unified post-connect UX for both
+          // remote-signer entry points. User clicks Continue to
+          // advance to step 2.
+          useStore.setState({
+            nostrPubkey: e.payload.pubkey_hex,
+            nostrNpub: e.payload.npub,
+            onboardingPendingPubkey: e.payload.pubkey_hex,
+            onboardingPendingNpub: e.payload.npub,
+            onboardingNostrDone: true,
+            onboardingLoading: false,
+          });
+          // Fire the profile fetch now so the confirm card has real
+          // data by the time it renders. Fire-and-forget — not tied
+          // to this component's lifecycle.
+          void (async () => {
+            try {
+              const profile = await invoke<NostrProfile | null>(
+                "preview_nostr_profile",
+                { npub: e.payload.npub },
+              );
+              if (profile) useStore.setState({ nostrProfile: profile });
+            } catch {
+              // Node-backed fetch as a fallback.
+              invoke<NostrProfile | null>("fetch_nostr_profile")
+                .then((p) => {
+                  if (p) useStore.setState({ nostrProfile: p });
+                })
+                .catch(() => {});
+            }
+          })();
+        },
+      );
+      unlistenError = await listen<string>("nostrconnect:error", (e) => {
+        if (cancelled) return;
+        useStore.setState({
+          onboardingError: e.payload,
+          onboardingLoading: false,
+        });
+      });
+      try {
+        const result = await invoke<{ uri: string }>("initiate_nostrconnect");
+        if (cancelled) return;
+        setConnectUri(result.uri);
+        const canvas = document.createElement("canvas");
+        await QRCode.toCanvas(canvas, result.uri, {
+          errorCorrectionLevel: "M",
+          margin: 4,
+          scale: 6,
+          color: { dark: "#0f172a", light: "#ffffff" },
+        });
+        if (!cancelled) setConnectQr(canvas.toDataURL("image/png"));
+      } catch (e) {
+        if (!cancelled) {
+          useStore.setState({ onboardingError: String(e) });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlistenConnected?.();
+      unlistenError?.();
+    };
+  }, [nostrMode]);
 
   // Preview profile when a valid nsec is entered (import or manual-restore)
   const [importPreview, setImportPreview] = useState<NostrProfile | null>(null);
@@ -188,9 +276,14 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         onboardingNsecAcknowledged: false,
         onboardingPendingPubkey: "",
         onboardingPendingNpub: "",
+        onboardingBunkerUri: "",
         onboardingError: "",
       });
-      void invoke("delete_nostr_identity").catch(() => {});
+      if (nostrMode === "bunker") {
+        void invoke("disconnect_nip46").catch(() => {});
+      } else {
+        void invoke("delete_nostr_identity").catch(() => {});
+      }
     } else if (nostrMode === "import") {
       // Back from import → main nostr page
       useStore.setState({
@@ -285,8 +378,13 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
       onboardingNostrNsec: "",
       onboardingError: "",
     });
-    if (state.onboardingNostrMode === "import") {
-      // Scan for backups when importing an existing identity
+    if (
+      state.onboardingNostrMode === "import" ||
+      state.onboardingNostrMode === "bunker"
+    ) {
+      // Scan for backups when the identity already exists (import nsec or
+      // remote signer connect) — in either case the user may have a wallet
+      // mnemonic previously backed up under this npub on relays.
       useStore.setState({ onboardingBackupScanning: true });
       try {
         const status =
@@ -359,6 +457,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
       });
       // 2. Create wallet
       const mnemonic = await invoke<string>("create_wallet", { password });
+      setWalletNeedsBackup(true);
       // 3. Persist the previewed nsec + construct nostr node
       //    (preview_nostr_identity didn't touch disk or spawn tasks, so we
       //    commit it here via import_nostr_nsec — the single place that
@@ -892,8 +991,8 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             />
           </div>
           <div className="mt-1.5 h-5">
-            {walletPassword && walletPassword.length < 4 ? (
-              <p className="text-xs text-amber-300">Minimum 4 characters</p>
+            {walletPassword && walletPassword.length < 8 ? (
+              <p className="text-xs text-amber-300">Minimum 8 characters</p>
             ) : walletPasswordConfirm &&
               walletPassword !== walletPasswordConfirm ? (
               <p className="text-xs text-rose-400">
@@ -931,7 +1030,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           disabled={
             loading ||
             !walletPassword ||
-            walletPassword.length < 4 ||
+            walletPassword.length < 8 ||
             walletPassword !== walletPasswordConfirm
           }
           className="mt-5 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
@@ -955,14 +1054,23 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
 
   // ── Nostr backup / confirmation screen ──────────────────────────────
   if (nostrDone) {
-    const isImport = nostrMode === "import";
-    const eyebrow = isImport ? "Identity imported" : "Identity created";
-    const title = isImport
+    const isImport = nostrMode === "import" || nostrMode === "bunker";
+    const isBunker = nostrMode === "bunker";
+    const eyebrow = isBunker
+      ? "Remote signer connected"
+      : isImport
+        ? "Identity imported"
+        : "Identity created";
+    const title = isBunker
       ? "Confirm your identity"
-      : "Back up your secret key";
-    const description = isImport
-      ? "Your Nostr identity has been imported. Confirm your details below before continuing."
-      : "Your nsec is the only way to prove ownership of markets you create. Store it somewhere safe \u2014 it cannot be recovered if lost.";
+      : isImport
+        ? "Confirm your identity"
+        : "Back up your secret key";
+    const description = isBunker
+      ? "Connected to your remote signer via NIP-46. Your keys remain on the external device."
+      : isImport
+        ? "Your Nostr identity has been imported. Confirm your details below before continuing."
+        : "Your nsec is the only way to prove ownership of markets you create. Store it somewhere safe \u2014 it cannot be recovered if lost.";
 
     const truncatedNpub =
       npubDisplay.length > 20
@@ -1241,6 +1349,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             mnemonic: restoreMnemonic.trim(),
             password: restorePassword,
           });
+          setWalletNeedsBackup(false);
           await invoke("init_nostr_identity");
           await invoke<void>("unlock_wallet", { password: restorePassword });
           useStore.setState({
@@ -1259,6 +1368,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           const mnemonic = await invoke<string>("create_wallet", {
             password: restorePassword,
           });
+          setWalletNeedsBackup(true);
           useStore.setState({ walletMnemonic: mnemonic });
           await invoke("init_nostr_identity");
           await invoke<void>("unlock_wallet", { password: restorePassword });
@@ -1272,6 +1382,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             mnemonic: restoreMnemonic.trim(),
             password: restorePassword,
           });
+          setWalletNeedsBackup(false);
           const identity = await invoke<IdentityResponse>(
             "generate_nostr_identity",
           );
@@ -1528,6 +1639,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           mnemonic: payload.mnemonic,
           password: restorePassword,
         });
+        setWalletNeedsBackup(false);
         await invoke("init_nostr_identity");
         await invoke<void>("unlock_wallet", { password: restorePassword });
         // Set preview profile immediately so avatar shows in the corner
@@ -1734,6 +1846,160 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     );
   }
 
+  // ── Bunker (NIP-46) sub-page ─────────────────────────────────────────
+  if (nostrMode === "bunker") {
+    const handleConnectBunker = async () => {
+      const uri = bunkerUri.trim();
+      if (!uri) {
+        useStore.setState({ onboardingError: "Paste a bunker:// URI." });
+        return;
+      }
+      if (!uri.startsWith("bunker://")) {
+        useStore.setState({
+          onboardingError: "Invalid URI. It should start with bunker://",
+        });
+        return;
+      }
+      useStore.setState({ onboardingLoading: true, onboardingError: "" });
+      try {
+        const identity = await invoke<IdentityResponse>(
+          "connect_nip46_bunker",
+          { bunkerUri: uri },
+        );
+        useStore.setState({
+          nostrPubkey: identity.pubkey_hex,
+          nostrNpub: identity.npub,
+          onboardingPendingPubkey: identity.pubkey_hex,
+          onboardingPendingNpub: identity.npub,
+          onboardingNostrDone: true,
+          onboardingLoading: false,
+        });
+        // Fetch profile from relays in background
+        invoke<NostrProfile | null>("fetch_nostr_profile")
+          .then((profile) => {
+            if (profile) useStore.setState({ nostrProfile: profile });
+          })
+          .catch(() => {});
+      } catch (e) {
+        useStore.setState({
+          onboardingError: String(e),
+          onboardingLoading: false,
+        });
+      }
+    };
+
+    return (
+      <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
+        {stepIndicator}
+        <BackButton
+          onClick={() =>
+            useStore.setState({
+              onboardingNostrMode: "generate",
+              onboardingError: "",
+              onboardingBunkerUri: "",
+            })
+          }
+        />
+        <h2 className="text-2xl font-semibold text-white">
+          Connect remote signer
+        </h2>
+        <p className="mt-3 text-sm text-slate-400 leading-relaxed">
+          Sign with your NIP-46 signer (Amber, Primal…) — keys stay on the
+          external device.
+        </p>
+        {errorHtml && <div className="mt-5">{errorHtml}</div>}
+
+        {/* Tabs: Scan QR (default) vs. paste bunker:// URI */}
+        <div className="mt-6 grid grid-cols-2 gap-1 rounded-lg border border-slate-800 bg-slate-900 p-1">
+          <button
+            type="button"
+            onClick={() => setBunkerTab("scan")}
+            className={`rounded-md px-3 py-2 text-xs font-medium transition ${
+              bunkerTab === "scan"
+                ? "bg-slate-800 text-slate-100"
+                : "text-slate-500 hover:text-slate-300"
+            }`}
+          >
+            Scan QR
+          </button>
+          <button
+            type="button"
+            onClick={() => setBunkerTab("paste")}
+            className={`rounded-md px-3 py-2 text-xs font-medium transition ${
+              bunkerTab === "paste"
+                ? "bg-slate-800 text-slate-100"
+                : "text-slate-500 hover:text-slate-300"
+            }`}
+          >
+            Paste URI
+          </button>
+        </div>
+
+        {bunkerTab === "scan" ? (
+          <div className="mt-5 space-y-3">
+            <div className="flex justify-center">
+              {connectQr ? (
+                <img
+                  src={connectQr}
+                  alt="Nostr Connect QR"
+                  className="h-48 w-48 rounded-lg"
+                />
+              ) : (
+                <div className="flex h-48 w-48 items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-900">
+                  <div className="h-6 w-6 animate-spin rounded-full border-2 border-slate-700 border-t-emerald-400" />
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard.writeText(connectUri);
+              }}
+              disabled={!connectUri}
+              className="w-full rounded-lg border border-slate-700 px-3 py-2 text-center text-xs text-slate-400 transition hover:bg-slate-800 disabled:opacity-50"
+            >
+              Copy nostrconnect:// URI
+            </button>
+          </div>
+        ) : (
+          <div className="mt-5 space-y-4">
+            <input
+              id="bunker-uri"
+              type="text"
+              placeholder="bunker://..."
+              autoComplete="off"
+              spellCheck={false}
+              value={bunkerUri}
+              onChange={(e) =>
+                useStore.setState({ onboardingBunkerUri: e.target.value })
+              }
+              className="mono h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+            />
+            <button
+              type="button"
+              onClick={handleConnectBunker}
+              disabled={loading}
+              className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loading ? (
+                <span className="inline-flex items-center">
+                  Connecting
+                  <span className="ml-0.5 inline-flex">
+                    <span className="loading-dot">.</span>
+                    <span className="loading-dot">.</span>
+                    <span className="loading-dot">.</span>
+                  </span>
+                </span>
+              ) : (
+                "Connect"
+              )}
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // ── Main nostr step ─────────────────────────────────────────────────
   return (
     <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
@@ -1782,8 +2048,14 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         </button>
         <button
           type="button"
-          onClick={() => showToast("Remote signer support coming soon")}
-          className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-800 px-4 py-3.5 text-sm font-medium text-slate-500 hover:bg-slate-900 hover:text-slate-400 transition"
+          onClick={() =>
+            useStore.setState({
+              onboardingNostrMode: "bunker",
+              onboardingError: "",
+              onboardingBunkerUri: "",
+            })
+          }
+          className="w-full rounded-lg border border-slate-700 px-4 py-3.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:border-slate-600 transition"
         >
           Connect remote signer
         </button>

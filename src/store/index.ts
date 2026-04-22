@@ -183,7 +183,13 @@ export interface OnboardingSlice {
   setupModalOpen: boolean;
   setupRequires: "wallet" | "identity+wallet" | null;
   onboardingStep: "nostr" | "wallet" | null;
-  onboardingNostrMode: "generate" | "import" | "restore" | "manual-restore";
+  onboardingNostrMode:
+    | "generate"
+    | "import"
+    | "restore"
+    | "manual-restore"
+    | "bunker";
+  onboardingBunkerUri: string;
   onboardingNostrNsec: string;
   onboardingNostrGeneratedNsec: string;
   onboardingNsecRevealed: boolean;
@@ -207,9 +213,6 @@ export interface OnboardingSlice {
   onboardingWalletPassword: string;
   onboardingWalletPasswordConfirm: string;
   onboardingWalletMnemonic: string;
-  onboardingMnemonicVerifyStep: boolean;
-  onboardingMnemonicVerifyIndices: number[];
-  onboardingMnemonicVerifyInputs: string[];
   onboardingError: string;
   onboardingLoading: boolean;
   onboardingBackupFound: boolean;
@@ -430,6 +433,7 @@ export const useStore = create<StoreState>()(() => ({
   setupRequires: null,
   onboardingStep: null,
   onboardingNostrMode: "generate",
+  onboardingBunkerUri: "",
   onboardingNostrNsec: "",
   onboardingNostrGeneratedNsec: "",
   onboardingNsecRevealed: false,
@@ -453,9 +457,6 @@ export const useStore = create<StoreState>()(() => ({
   onboardingWalletPassword: "",
   onboardingWalletPasswordConfirm: "",
   onboardingWalletMnemonic: "",
-  onboardingMnemonicVerifyStep: false,
-  onboardingMnemonicVerifyIndices: [],
-  onboardingMnemonicVerifyInputs: [],
   onboardingError: "",
   onboardingLoading: false,
   onboardingBackupFound: false,

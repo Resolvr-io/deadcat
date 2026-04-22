@@ -82,10 +82,9 @@ fn validate_market_announcement(
 
 /// Build a Nostr event for a contract announcement.
 pub fn build_announcement_event(
-    keys: &Keys,
     announcement: &ContractAnnouncement,
     network_tag: &str,
-) -> Result<Event, String> {
+) -> Result<EventBuilder, String> {
     let (anchor, raw_tx) = validate_market_announcement(announcement)?;
     network_tag
         .parse::<Network>()
@@ -108,12 +107,7 @@ pub fn build_announcement_event(
         Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
     ];
 
-    let event = EventBuilder::new(APP_EVENT_KIND, &content)
-        .tags(tags)
-        .sign_with_keys(keys)
-        .map_err(|e| format!("failed to build event: {e}"))?;
-
-    Ok(event)
+    Ok(EventBuilder::new(APP_EVENT_KIND, &content).tags(tags))
 }
 
 fn event_network_tag(event: &Event) -> Option<String> {
@@ -285,7 +279,8 @@ mod tests {
         let keys = Keys::generate();
         let (announcement, _params) = test_market_announcement([0xaa; 32], 0x12);
 
-        let event = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
+        let builder = build_announcement_event(&announcement, "liquid-testnet").unwrap();
+        let event = builder.sign_with_keys(&keys).unwrap();
         let market = parse_announcement_event(&event, "liquid-testnet").unwrap();
 
         assert_eq!(market.question, "Will BTC close above $120k by Dec 2026?");
@@ -303,7 +298,8 @@ mod tests {
         let keys = Keys::generate();
         let (announcement, _params) = test_market_announcement([0xaa; 32], 0x13);
 
-        let event = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap();
+        let builder = build_announcement_event(&announcement, "liquid-testnet").unwrap();
+        let event = builder.sign_with_keys(&keys).unwrap();
         let err = parse_announcement_event(&event, "liquid-regtest").unwrap_err();
         assert!(
             err.contains("unsupported network tag for contract announcement event"),
@@ -313,33 +309,30 @@ mod tests {
 
     #[test]
     fn build_announcement_event_rejects_invalid_anchor() {
-        let keys = Keys::generate();
         let (mut announcement, _params) = test_market_announcement([0xaa; 32], 0x14);
         announcement.anchor.creation_txid = "not-a-txid".to_string();
 
-        let err = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        let err = build_announcement_event(&announcement, "liquid-testnet").unwrap_err();
         assert!(err.contains("invalid creation_txid"));
     }
 
     #[test]
     fn build_announcement_event_rejects_invalid_yes_opening() {
-        let keys = Keys::generate();
         let (mut announcement, _params) = test_market_announcement([0xaa; 32], 0x16);
         announcement
             .anchor
             .yes_dormant_opening
             .asset_blinding_factor = "not-hex".to_string();
 
-        let err = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        let err = build_announcement_event(&announcement, "liquid-testnet").unwrap_err();
         assert!(err.contains("yes_dormant_opening.asset_blinding_factor"));
     }
 
     #[test]
     fn build_announcement_event_rejects_explicit_dormant_outputs() {
-        let keys = Keys::generate();
         let announcement = explicit_bootstrap_announcement(0x18);
 
-        let err = build_announcement_event(&keys, &announcement, "liquid-testnet").unwrap_err();
+        let err = build_announcement_event(&announcement, "liquid-testnet").unwrap_err();
         assert!(err.contains("canonical prediction-market creation bootstrap"));
     }
 
