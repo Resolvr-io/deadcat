@@ -20,7 +20,7 @@ import {
 import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
 import MarketChart from "../chart/MarketChart";
 import { showToast } from "../shared/Toast";
-import MarketHeader from "./MarketHeader";
+import { MarketHeaderBottom, MarketHeaderTop } from "./MarketHeader";
 import TradingPanel from "./TradingPanel";
 
 export default function DetailPage() {
@@ -127,13 +127,17 @@ export default function DetailPage() {
         {/* Left column */}
         <section className="space-y-[21px]">
           <div className="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
-            <MarketHeader market={market} />
+            <MarketHeaderTop market={market} />
 
             <MarketChart
               market={market}
               priceHistory={priceHistory}
               mode="detail"
             />
+
+            <div className="mt-5">
+              <MarketHeaderBottom market={market} />
+            </div>
           </div>
 
           {/* Redemption banner */}

@@ -36,12 +36,9 @@ function stateBadge(state: number) {
   );
 }
 
-export default function MarketHeader({ market }: { market: Market }) {
-  const walletData = useStore((s) => s.walletData);
+/** Above the chart: nav, title, probability, stats strip. */
+export function MarketHeaderTop({ market }: { market: Market }) {
   const walletNetwork = useStore((s) => s.walletNetwork);
-
-  const estimatedSettlementDate = getEstimatedSettlementDate(market);
-  const positions = getPositionContracts(market, walletData);
 
   const blocksLeft = market.expiryHeight - market.currentHeight;
   const closesColor =
@@ -169,7 +166,19 @@ export default function MarketHeader({ market }: { market: Market }) {
           <span className={closesColor}>{formatTimeRemaining(blocksLeft)}</span>
         </span>
       </div>
+    </>
+  );
+}
 
+/** Below the chart: description, resolution metadata, position display. */
+export function MarketHeaderBottom({ market }: { market: Market }) {
+  const walletData = useStore((s) => s.walletData);
+
+  const estimatedSettlementDate = getEstimatedSettlementDate(market);
+  const positions = getPositionContracts(market, walletData);
+
+  return (
+    <>
       {/* Description */}
       <p className="mb-4 text-sm text-slate-400">{market.description}</p>
 
@@ -206,6 +215,16 @@ export default function MarketHeader({ market }: { market: Market }) {
           )}
         </div>
       )}
+    </>
+  );
+}
+
+/** @deprecated Use MarketHeaderTop + MarketHeaderBottom split around the chart. */
+export default function MarketHeader({ market }: { market: Market }) {
+  return (
+    <>
+      <MarketHeaderTop market={market} />
+      <MarketHeaderBottom market={market} />
     </>
   );
 }
