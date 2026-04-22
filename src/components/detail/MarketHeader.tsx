@@ -21,7 +21,7 @@ function stateBadge(state: number) {
   };
   const labels: Record<number, string> = {
     0: "Dormant",
-    1: "Unresolved",
+    1: "Trading",
     2: "Resolved YES",
     3: "Resolved NO",
     4: "Expired",
@@ -36,12 +36,22 @@ function stateBadge(state: number) {
   );
 }
 
-export default function MarketHeader({ market }: { market: Market }) {
-  const walletData = useStore((s) => s.walletData);
+/** Above the chart: nav, title, probability, stats strip. */
+export function MarketHeaderTop({ market }: { market: Market }) {
   const walletNetwork = useStore((s) => s.walletNetwork);
 
-  const estimatedSettlementDate = getEstimatedSettlementDate(market);
-  const positions = getPositionContracts(market, walletData);
+  const blocksLeft = market.expiryHeight - market.currentHeight;
+  const closesColor =
+    blocksLeft < 2880
+      ? "text-rose-400"
+      : blocksLeft < 10080
+        ? "text-amber-400"
+        : "text-slate-200";
+
+  const changePct =
+    market.change24h !== 0
+      ? `${market.change24h > 0 ? "+" : ""}${(market.change24h * 100).toFixed(1)}%`
+      : null;
 
   return (
     <>
@@ -105,101 +115,89 @@ export default function MarketHeader({ market }: { market: Market }) {
         </div>
       </div>
 
-      {/* Title & description */}
-      <h1 className="phi-title mb-2 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">
+      {/* Title */}
+      <h1 className="phi-title mb-3 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">
         {market.question}
       </h1>
-      <p className="mb-4 text-sm text-slate-400">{market.description}</p>
 
-      {/* Probability display */}
+      {/* Probability + 24h change */}
       {market.yesPrice != null && (
-        <p className="mb-2 text-5xl font-bold text-emerald-400">
-          {Math.round(market.yesPrice * 100)}
-          <span className="text-2xl text-slate-400">%</span>{" "}
+        <div className="mb-3 flex items-baseline gap-3">
+          <p className="text-5xl font-bold text-emerald-400">
+            {Math.round(market.yesPrice * 100)}
+            <span className="text-2xl text-slate-400">%</span>
+          </p>
           <span className="text-lg font-normal text-slate-500">chance</span>
-        </p>
+          {changePct && (
+            <span
+              className={`text-sm font-medium ${market.change24h > 0 ? "text-emerald-400" : "text-rose-400"}`}
+            >
+              {changePct} today
+            </span>
+          )}
+        </div>
       )}
 
-      {/* Market stats */}
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2.5">
-          <p className="text-xs uppercase tracking-wider text-slate-500">
-            Volume
-          </p>
-          <p className="text-base font-semibold text-slate-200">
+      {/* Stats strip */}
+      <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
+        <span className="text-slate-500">
+          Vol{" "}
+          <span className="text-slate-200">
             {formatVolumeBtc(market.volumeBtc)}
-          </p>
-        </div>
-        <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2.5">
-          <p className="text-xs uppercase tracking-wider text-slate-500">
-            Traders
-          </p>
-          <p className="text-base font-semibold text-slate-200">
-            {market.traderCount > 0
-              ? market.traderCount.toLocaleString()
-              : "\u2014"}
-          </p>
-        </div>
-        <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2.5">
-          <p className="text-xs uppercase tracking-wider text-slate-500">
-            Liquidity
-          </p>
-          <p className="text-base font-semibold text-slate-200">
+          </span>
+        </span>
+        <span className="text-slate-700">·</span>
+        <span className="text-slate-500">
+          Traders{" "}
+          <span className="text-slate-200">
+            {market.traderCount > 0 ? market.traderCount.toLocaleString() : "—"}
+          </span>
+        </span>
+        <span className="text-slate-700">·</span>
+        <span className="text-slate-500">
+          Liquidity{" "}
+          <span className="text-slate-200">
             {formatVolumeBtc(market.liquidityBtc)}
-          </p>
-        </div>
-        <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2.5">
-          <p className="text-xs uppercase tracking-wider text-slate-500">
-            Ends
-          </p>
-          <p className="text-base font-semibold text-slate-200">
-            {formatTimeRemaining(market.expiryHeight - market.currentHeight)}
-          </p>
-        </div>
+          </span>
+        </span>
+        <span className="text-slate-700">·</span>
+        <span className="text-slate-500">
+          Closes{" "}
+          <span className={closesColor}>{formatTimeRemaining(blocksLeft)}</span>
+        </span>
       </div>
+    </>
+  );
+}
 
-      {/* Resolution rules */}
-      <div className="mb-4 rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
-        <div className="mb-2 flex items-center gap-2">
-          <svg
-            aria-hidden="true"
-            className="h-4 w-4 text-slate-400"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <polyline points="14 2 14 8 20 8" />
-            <line x1="16" y1="13" x2="8" y2="13" />
-            <line x1="16" y1="17" x2="8" y2="17" />
-          </svg>
-          <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-            Resolution Rules
-          </span>
-        </div>
-        <p className="mb-2 text-sm text-slate-300">{market.description}</p>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
-          <span>
-            Source:{" "}
-            <span className="text-slate-300">{market.resolutionSource}</span>
-          </span>
-          <span>
-            Deadline:{" "}
-            <span className="text-slate-300">
-              Est. {formatSettlementDateTime(estimatedSettlementDate)}
-            </span>
-          </span>
-          <span>
-            Block:{" "}
-            <span className="text-slate-300">
-              {market.expiryHeight.toLocaleString()}
-            </span>
-          </span>
-        </div>
-      </div>
+/** Below the chart: description, resolution metadata, position display. */
+export function MarketHeaderBottom({ market }: { market: Market }) {
+  const walletData = useStore((s) => s.walletData);
+
+  const estimatedSettlementDate = getEstimatedSettlementDate(market);
+  const positions = getPositionContracts(market, walletData);
+
+  return (
+    <>
+      {/* Description */}
+      <p className="mb-4 text-sm text-slate-400">{market.description}</p>
+
+      {/* Resolution metadata — compact single line */}
+      <p className="mb-4 text-xs text-slate-500">
+        <span className="font-semibold uppercase tracking-wider text-slate-400">
+          Resolution
+        </span>
+        {" · "}Source:{" "}
+        <span className="text-slate-300">{market.resolutionSource}</span>
+        {" · "}Deadline:{" "}
+        <span className="text-slate-300">
+          Est. {formatSettlementDateTime(estimatedSettlementDate)}
+        </span>
+        {" · "}Block:{" "}
+        <span className="text-slate-300">
+          {market.expiryHeight.toLocaleString()}
+        </span>
+      </p>
 
       {/* Position display */}
       {(positions.yes > 0 || positions.no > 0) && (
@@ -217,6 +215,16 @@ export default function MarketHeader({ market }: { market: Market }) {
           )}
         </div>
       )}
+    </>
+  );
+}
+
+/** @deprecated Use MarketHeaderTop + MarketHeaderBottom split around the chart. */
+export default function MarketHeader({ market }: { market: Market }) {
+  return (
+    <>
+      <MarketHeaderTop market={market} />
+      <MarketHeaderBottom market={market} />
     </>
   );
 }

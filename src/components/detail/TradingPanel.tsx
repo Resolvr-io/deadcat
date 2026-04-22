@@ -46,7 +46,7 @@ export default function TradingPanel({ market }: { market: Market }) {
   const tradeExecuteLoading = useStore((s) => s.tradeExecuteLoading);
   const tradeQuoteSnapshot = useStore((s) => s.tradeQuoteSnapshot);
   const tradeError = useStore((s) => s.tradeError);
-  const showFeeDetails = useStore((s) => s.showFeeDetails);
+  const showOrderbook = useStore((s) => s.showOrderbook);
   const walletStatus = useStore((s) => s.walletStatus);
   const walletData = useStore((s) => s.walletData);
   const marketMakerMode = useStore((s) => s.marketMakerMode);
@@ -118,16 +118,21 @@ export default function TradingPanel({ market }: { market: Market }) {
     tradeIntent === "open" &&
     policyBalance < tradeSizeSats;
 
+  const ctaBg =
+    insufficientFunds || tradeBusy
+      ? "bg-slate-700 text-slate-400"
+      : selectedSide === "yes"
+        ? "bg-emerald-300 text-slate-950 hover:bg-emerald-200"
+        : "bg-rose-400 text-slate-950 hover:bg-rose-300";
+
   const yesPrice = market.yesPrice;
   const yesDisplaySats =
     yesPrice != null
       ? clampContractPriceSats(Math.round(yesPrice * fc), fc)
       : null;
   const noDisplaySats = yesDisplaySats != null ? fc - yesDisplaySats : null;
-  const yesLabel =
-    yesDisplaySats != null ? `Yes ${yesDisplaySats} sats` : "Yes \u2014";
-  const noLabel =
-    noDisplaySats != null ? `No ${noDisplaySats} sats` : "No \u2014";
+  const yesPct = yesPrice != null ? Math.round(yesPrice * 100) : null;
+  const noPct = yesPct != null ? 100 - yesPct : null;
 
   const estimatedGrossPayoutSats = Math.floor(preview.requestedContracts * fc);
 
@@ -404,28 +409,42 @@ export default function TradingPanel({ market }: { market: Market }) {
         <button
           type="button"
           onClick={() => useStore.setState({ selectedSide: "yes" })}
-          className={`rounded-xl border px-3 py-3 text-lg font-semibold ${
+          className={`rounded-xl border px-3 py-3 ${
             selectedSide === "yes"
               ? tradeIntent === "open"
-                ? "border-emerald-400 bg-emerald-400/20 text-emerald-200"
-                : "border-slate-400 bg-slate-400/15 text-slate-200"
-              : "border-slate-700 text-slate-300"
+                ? "border-emerald-500 bg-emerald-500 text-slate-950"
+                : "border-slate-500 bg-slate-600 text-slate-100"
+              : "border-slate-700 text-slate-300 hover:border-slate-500"
           }`}
         >
-          {yesLabel}
+          <span className="block text-lg font-semibold">
+            Yes{yesPct != null ? ` ${yesPct}%` : ""}
+          </span>
+          {yesDisplaySats != null && (
+            <span className="block text-xs opacity-60">
+              {yesDisplaySats} sats/contract
+            </span>
+          )}
         </button>
         <button
           type="button"
           onClick={() => useStore.setState({ selectedSide: "no" })}
-          className={`rounded-xl border px-3 py-3 text-lg font-semibold ${
+          className={`rounded-xl border px-3 py-3 ${
             selectedSide === "no"
               ? tradeIntent === "open"
-                ? "border-rose-400 bg-rose-400/20 text-rose-200"
-                : "border-slate-400 bg-slate-400/15 text-slate-200"
-              : "border-slate-700 text-slate-300"
+                ? "border-rose-500 bg-rose-500 text-slate-950"
+                : "border-slate-500 bg-slate-600 text-slate-100"
+              : "border-slate-700 text-slate-300 hover:border-slate-500"
           }`}
         >
-          {noLabel}
+          <span className="block text-lg font-semibold">
+            No{noPct != null ? ` ${noPct}%` : ""}
+          </span>
+          {noDisplaySats != null && (
+            <span className="block text-xs opacity-60">
+              {noDisplaySats} sats/contract
+            </span>
+          )}
         </button>
       </div>
 
@@ -502,19 +521,43 @@ export default function TradingPanel({ market }: { market: Market }) {
 
       {/* Size input */}
       {tradeIntent === "open" ? (
-        <input
-          type="text"
-          inputMode="numeric"
-          value={tradeSizeSatsDraft}
-          onChange={(e) =>
-            useStore.setState({ tradeSizeSatsDraft: e.target.value })
-          }
-          onBlur={() => {
-            const result = commitTradeSizeSatsDraft(tradeSizeSatsDraft);
-            useStore.setState(result);
-          }}
-          className="mb-2 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm"
-        />
+        <>
+          <div className="relative mb-2">
+            <input
+              type="text"
+              inputMode="numeric"
+              value={tradeSizeSatsDraft}
+              onChange={(e) =>
+                useStore.setState({ tradeSizeSatsDraft: e.target.value })
+              }
+              onBlur={() => {
+                const result = commitTradeSizeSatsDraft(tradeSizeSatsDraft);
+                useStore.setState(result);
+              }}
+              className="h-12 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 pr-14 text-sm"
+            />
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500">
+              sats
+            </span>
+          </div>
+          {tradeSizeSats > 0 && (
+            <div className="mb-3 flex items-center justify-between rounded-lg bg-slate-900/60 px-3 py-2 text-sm">
+              <span className="text-slate-400">Potential payout</span>
+              <span className="font-semibold text-emerald-300">
+                {formatSats(estimatedGrossPayoutSats)}
+                {preview.notionalSats > 0 &&
+                  estimatedGrossPayoutSats > preview.notionalSats && (
+                    <span className="ml-1.5 text-xs text-slate-500">
+                      {(
+                        estimatedGrossPayoutSats / preview.notionalSats
+                      ).toFixed(2)}
+                      x
+                    </span>
+                  )}
+              </span>
+            </div>
+          )}
+        </>
       ) : (
         <>
           <div className="mb-3 grid grid-cols-[42px_1fr_42px] gap-2">
@@ -614,11 +657,16 @@ export default function TradingPanel({ market }: { market: Market }) {
               {friendlyError(tradeError)}
             </p>
           )}
+          {market.traderCount > 0 && (
+            <p className="mt-4 text-center text-xs text-slate-500">
+              {market.traderCount.toLocaleString()} traders in this market
+            </p>
+          )}
           <button
             type="button"
             onClick={handleSubmitTrade}
             disabled={tradeBusy || insufficientFunds}
-            className={`mt-4 w-full rounded-lg ${tradeBusy || insufficientFunds ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 font-semibold`}
+            className={`mt-3 w-full rounded-lg ${ctaBg} px-4 py-2 font-semibold transition`}
           >
             {tradeExecuteLoading
               ? "Placing..."
@@ -629,30 +677,32 @@ export default function TradingPanel({ market }: { market: Market }) {
         </>
       ) : (
         <>
-          <p className="mb-3 text-xs text-slate-500">
-            Estimated avg fill: {preview.fill.avgPriceSats.toFixed(1)} sats
-            (range {preview.fill.bestPriceSats}-{preview.fill.worstPriceSats}).
-          </p>
+          {preview.fill.filledContracts > 0 && (
+            <p className="mb-3 text-xs text-slate-500">
+              Avg fill: {preview.fill.avgPriceSats.toFixed(1)} sats (range{" "}
+              {preview.fill.bestPriceSats}–{preview.fill.worstPriceSats})
+            </p>
+          )}
           <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
             {tradeIntent === "open" ? (
               <>
                 <div className="flex items-center justify-between py-1">
-                  <span>You pay</span>
+                  <span>Amount</span>
                   <span>{formatSats(preview.notionalSats)}</span>
                 </div>
                 <div className="flex items-center justify-between py-1">
-                  <span>If filled &amp; correct</span>
+                  <span>Max payout</span>
                   <span>{formatSats(estimatedGrossPayoutSats)}</span>
                 </div>
               </>
             ) : (
               <>
                 <div className="flex items-center justify-between py-1">
-                  <span>You receive (if filled)</span>
+                  <span>You receive</span>
                   <span>{formatSats(preview.notionalSats)}</span>
                 </div>
                 <div className="flex items-center justify-between py-1">
-                  <span>Position remaining (if filled)</span>
+                  <span>Position after</span>
                   <span>
                     {Math.max(
                       0,
@@ -664,7 +714,7 @@ export default function TradingPanel({ market }: { market: Market }) {
               </>
             )}
             <div className="mt-1 flex items-center justify-between py-1 text-xs text-slate-500">
-              <span>Price</span>
+              <span>Avg price</span>
               <span>
                 {executionPriceSats} sats · Yes + No = {fc}
               </span>
@@ -735,8 +785,15 @@ export default function TradingPanel({ market }: { market: Market }) {
             </p>
           )}
 
+          {market.traderCount > 0 && (
+            <p className="mb-2 mt-4 text-center text-xs text-slate-500">
+              {market.traderCount.toLocaleString()} traders in this market
+            </p>
+          )}
           {walletStatus === "not_created" ? (
-            <div className="mt-4 rounded-lg border border-slate-700 bg-slate-900/60 p-4 text-center">
+            <div
+              className={`${market.traderCount > 0 ? "" : "mt-4"} rounded-lg border border-slate-700 bg-slate-900/60 p-4 text-center`}
+            >
               <p className="text-sm font-medium text-slate-300">
                 Create an account to trade
               </p>
@@ -760,11 +817,11 @@ export default function TradingPanel({ market }: { market: Market }) {
             <button
               type="button"
               onClick={() => useStore.setState({ walletOpen: true })}
-              className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-slate-700 px-4 py-2 font-semibold text-slate-300 transition hover:bg-slate-600"
+              className={`${market.traderCount > 0 ? "" : "mt-4"} flex w-full items-center justify-center gap-2 rounded-lg bg-slate-700 px-4 py-2 font-semibold text-slate-300 transition hover:bg-slate-600`}
             >
               <svg
                 aria-hidden="true"
-                className="h-4 w-4 shrink-0 -mt-px"
+                className="-mt-px h-4 w-4 shrink-0"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -782,7 +839,7 @@ export default function TradingPanel({ market }: { market: Market }) {
               type="button"
               onClick={handleSubmitTrade}
               disabled={tradeBusy || insufficientFunds}
-              className={`mt-4 w-full rounded-lg ${tradeBusy || insufficientFunds ? "bg-slate-700 text-slate-400" : "bg-emerald-300 text-slate-950"} px-4 py-2 font-semibold`}
+              className={`${market.traderCount > 0 ? "" : "mt-4"} w-full rounded-lg ${ctaBg} px-4 py-2 font-semibold transition`}
             >
               {tradeExecuteLoading
                 ? "Executing..."
@@ -822,29 +879,34 @@ export default function TradingPanel({ market }: { market: Market }) {
           </p>
         )}
 
-      {/* Fee details toggle */}
-      <div className="mt-3 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => useStore.setState({ showFeeDetails: !showFeeDetails })}
-          className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300"
-        >
-          {showFeeDetails ? "Hide fee details" : "Fee details"}
-        </button>
-      </div>
-
-      {/* Inline order book */}
-      <OrderbookPanel market={market} />
-
-      {showFeeDetails && (
-        <div className="mt-3 rounded border border-slate-800 bg-slate-900/40 p-2 text-xs text-slate-400">
+      {/* Fee details */}
+      <details className="mt-3 text-xs text-slate-500">
+        <summary className="cursor-pointer select-none hover:text-slate-300">
+          Fee details
+        </summary>
+        <div className="mt-2 space-y-1 rounded border border-slate-800 bg-slate-900/40 p-2">
           <p>Execution fee: 1% of matched notional.</p>
           <p>
             Winning PnL fee: 2% of positive payout minus entry cost (buy only).
           </p>
           <p>Final fee depends on actual matched fills.</p>
         </div>
-      )}
+      </details>
+
+      {/* Collapsible order book */}
+      <div className="mt-4 border-t border-slate-800 pt-3">
+        <button
+          type="button"
+          onClick={() => useStore.setState({ showOrderbook: !showOrderbook })}
+          className="flex w-full items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400 transition hover:text-slate-200"
+        >
+          <span>Order Book</span>
+          <span className="font-normal normal-case">
+            {showOrderbook ? "Hide" : "Show"}
+          </span>
+        </button>
+        {showOrderbook && <OrderbookPanel market={market} />}
+      </div>
 
       {/* Market maker pool & advanced actions sections */}
       {marketMakerMode && <PoolSection market={market} />}
