@@ -14,6 +14,7 @@ import {
   setLimitPriceSats,
 } from "../../utils-react/market";
 import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
+import { categoryIcon } from "../layout/TopShell";
 
 // ── Inline SVG icons ─────────────────────────────────────────────────
 function TrendUpIcon() {
@@ -219,7 +220,8 @@ export default function MarketCard({
       style={{ animationDelay: `${index * 50}ms` }}
     >
       <div className="mb-2 flex items-center justify-between text-xs">
-        <span className="text-slate-500">
+        <span className="flex items-center gap-1.5 text-slate-500">
+          {categoryIcon(market.category, "h-3 w-3")}
           {market.category}
           {market.isLive && <span className="text-emerald-400"> · LIVE</span>}
         </span>

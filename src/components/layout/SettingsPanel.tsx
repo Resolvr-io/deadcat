@@ -96,7 +96,6 @@ function NostrSection() {
   const [nsecPasswordPrompt, setNsecPasswordPrompt] = useState(false);
   const [nsecPasswordError, setNsecPasswordError] = useState("");
   const [nip46Status, setNip46Status] = useState<Nip46Status | null>(null);
-  const [disconnecting, setDisconnecting] = useState(false);
 
   // Auto-hide nsec when wallet locks
   useEffect(() => {
@@ -172,23 +171,6 @@ function NostrSection() {
       setNsecPasswordError("Incorrect password");
     }
   }, [nsecPasswordInput]);
-
-  const handleDisconnectBunker = useCallback(async () => {
-    setDisconnecting(true);
-    try {
-      await invoke("disconnect_nip46");
-      useStore.setState({
-        nostrPubkey: null,
-        nostrNpub: null,
-        nostrProfile: null,
-      });
-      setNip46Status(null);
-      showToast("Remote signer disconnected");
-    } catch (e) {
-      showToast(`Disconnect failed: ${e}`);
-    }
-    setDisconnecting(false);
-  }, []);
 
   return (
     <div className="space-y-4">
@@ -359,16 +341,7 @@ function NostrSection() {
         >
           Set up identity
         </button>
-      ) : isRemoteSigner ? (
-        <button
-          type="button"
-          onClick={handleDisconnectBunker}
-          disabled={disconnecting}
-          className="text-xs text-rose-400 hover:text-rose-300 transition disabled:opacity-50"
-        >
-          {disconnecting ? "Disconnecting..." : "Disconnect Remote Signer"}
-        </button>
-      ) : (
+      ) : isRemoteSigner ? null : (
         <button
           type="button"
           onClick={() => useStore.setState({ nostrReplacePanel: true })}

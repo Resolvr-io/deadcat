@@ -419,7 +419,7 @@ pub async fn init_nostr_identity(
     // 2. Check for a persisted NIP-46 connection
     if let Some(conn) = crate::nip46::load_connection(&app_data_dir) {
         log::info!("restoring NIP-46 remote signer connection");
-        let signer = crate::nip46::restore_from_connection(&conn)?;
+        let signer = crate::nip46::restore_from_connection(&conn).await?;
         let arc_signer = crate::nip46::into_arc_signer(signer);
 
         // Use the cached user pubkey if available, otherwise query the signer
@@ -624,21 +624,132 @@ pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> 
 // NIP-46 remote signing (Nostr Connect) commands
 // =========================================================================
 
-/// Generate a `nostrconnect://` URI for the app-initiated NIP-46 flow.
-/// Returns `{ uri, appSecretKeyHex }` for display as a QR code.
+/// Initiate the app-initiated (`nostrconnect://`) NIP-46 flow.
+///
+/// Returns the URI immediately so the frontend can render a QR code.
+/// Spawns a background task that waits for the remote signer to complete
+/// the NIP-46 handshake on relays, persists the connection, constructs the
+/// node, and emits Tauri events:
+///
+/// - `nostrconnect:connected` (payload: `IdentityResponse`) on success
+/// - `nostrconnect:error` (payload: error string) on failure/timeout
 #[tauri::command]
-pub async fn generate_nostrconnect_uri(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let nostr_state = app.state::<NostrAppState>();
-    let relay_list = nostr_state
-        .relay_list
-        .read()
-        .map_err(|_| "relay list lock")?
-        .clone();
-    let (uri, app_secret_hex) = crate::nip46::generate_nostrconnect_uri(&relay_list)?;
-    Ok(serde_json::json!({
-        "uri": uri,
-        "appSecretKeyHex": app_secret_hex,
-    }))
+pub async fn initiate_nostrconnect(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+
+    // Reject if a local nsec identity already exists
+    if discovery::load_keys(&app_data_dir)?.is_some() {
+        return Err(
+            "A local Nostr identity already exists. Delete it first to use a remote signer."
+                .to_string(),
+        );
+    }
+
+    let relay_list = {
+        let state = app.state::<NostrAppState>();
+        let list = state
+            .relay_list
+            .read()
+            .map_err(|_| "relay list lock".to_string())?
+            .clone();
+        list
+    };
+
+    let pending = crate::nip46::prepare_nostrconnect(&relay_list)?;
+    log::info!(
+        "[nostrconnect] generated URI for app pubkey {}; relays={:?}",
+        pending.app_keys.public_key().to_hex(),
+        &pending.relays
+    );
+    let uri_for_frontend = pending.uri.clone();
+    let app_handle = app.clone();
+
+    tokio::spawn(async move {
+        // Phase 1: manual handshake — subscribe on relays, catch Primal's
+        // `connect` response (echoed-secret flow), extract signer pubkey.
+        // The rust `nostr-connect` crate can't do this phase itself: its
+        // ResponseResult parser only accepts "ack" for Connect and drops
+        // the echoed-secret response.
+        log::info!("[nostrconnect] awaiting handshake response from remote signer...");
+        let signer_pubkey = match crate::nip46::await_nostrconnect_handshake(&pending).await {
+            Ok(pk) => pk,
+            Err(e) => {
+                log::warn!("[nostrconnect] handshake failed: {e}");
+                let _ = app_handle.emit(
+                    "nostrconnect:error",
+                    format!("remote signer did not respond: {e}"),
+                );
+                return;
+            }
+        };
+
+        // Phase 2: hand off to the rust crate via a bunker URI. The crate's
+        // bunker-URI bootstrap (connect → ack → get_public_key) works
+        // correctly with Primal and other compliant signers.
+        let (signer, mut conn) =
+            match crate::nip46::signer_from_handshake(&pending, signer_pubkey).await {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = app_handle.emit(
+                        "nostrconnect:error",
+                        format!("failed to build bunker signer: {e}"),
+                    );
+                    return;
+                }
+            };
+        let arc_signer: std::sync::Arc<dyn NostrSigner> = signer;
+        let user_pubkey = match arc_signer.get_public_key().await {
+            Ok(pk) => pk,
+            Err(e) => {
+                log::warn!("[nostrconnect] get_public_key failed: {e:?}");
+                let _ =
+                    app_handle.emit("nostrconnect:error", format!("get_public_key failed: {e}"));
+                return;
+            }
+        };
+        conn.user_pubkey_hex = Some(user_pubkey.to_hex());
+        log::info!(
+            "[nostrconnect] handshake complete; user pubkey={}",
+            user_pubkey.to_hex()
+        );
+
+        let data_dir = match app_handle.path().app_data_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                let _ = app_handle.emit("nostrconnect:error", format!("app data dir error: {e}"));
+                return;
+            }
+        };
+        if let Err(e) = crate::nip46::save_connection(&data_dir, &conn) {
+            let _ = app_handle.emit(
+                "nostrconnect:error",
+                format!("failed to persist connection: {e}"),
+            );
+            return;
+        }
+
+        if let Err(e) = construct_and_store_node_with_signer(&app_handle, arc_signer).await {
+            log::warn!("[nostrconnect] node construction failed: {e}");
+            let _ = app_handle.emit(
+                "nostrconnect:error",
+                format!("failed to construct node: {e}"),
+            );
+            return;
+        }
+
+        let npub = user_pubkey.to_bech32().unwrap_or_default();
+        log::info!("[nostrconnect] connected, emitting nostrconnect:connected event");
+        let response = IdentityResponse {
+            pubkey_hex: user_pubkey.to_hex(),
+            npub,
+        };
+        let _ = app_handle.emit("nostrconnect:connected", &response);
+    });
+
+    Ok(serde_json::json!({ "uri": uri_for_frontend }))
 }
 
 /// Connect to a remote signer via a `bunker://` URI.
@@ -664,7 +775,7 @@ pub async fn connect_nip46_bunker(
     }
 
     // Create the NostrConnect signer and connection state
-    let (signer, mut conn) = crate::nip46::connect_from_bunker_uri(&bunker_uri)?;
+    let (signer, mut conn) = crate::nip46::connect_from_bunker_uri(&bunker_uri).await?;
 
     // Wrap as Arc<dyn NostrSigner> and get the user's public key.
     // This triggers the NIP-46 handshake (connect + get_public_key).
@@ -1158,8 +1269,15 @@ pub async fn remove_relay(url: String, app: tauri::AppHandle) -> Result<Vec<Stri
 pub async fn fetch_nostr_profile(
     app: tauri::AppHandle,
 ) -> Result<Option<discovery::NostrProfile>, String> {
-    let (keys, client) = get_keys_and_client(&app).await?;
-    discovery::fetch_profile(&client, &keys.public_key()).await
+    // Only needs the pubkey + a connected client; avoid get_keys_and_client
+    // because it errors on remote signers even though the secret key isn't
+    // required for a public kind:0 lookup.
+    let (signer, client) = get_signer_and_client(&app).await?;
+    let pubkey = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("signer get_public_key: {e}"))?;
+    discovery::fetch_profile(&client, &pubkey).await
 }
 
 /// Fetch a kind 0 profile for an arbitrary npub without requiring a node.
@@ -1171,19 +1289,27 @@ pub async fn preview_nostr_profile(
 ) -> Result<Option<discovery::NostrProfile>, String> {
     let pubkey =
         nostr_sdk::PublicKey::from_bech32(&npub).map_err(|e| format!("invalid npub: {e}"))?;
+    log::info!("[preview_profile] fetching kind:0 for {}", pubkey.to_hex());
     let client = nostr_sdk::Client::default();
     for url in discovery::DEFAULT_RELAYS {
         let _ = client.add_relay(*url).await;
     }
-    client.connect_with_timeout(Duration::from_secs(2)).await;
+    // Relays can be slow to open a websocket — give them real time instead
+    // of the aggressive 2s + 3s we had. Worst-case bound is 12s now.
+    client.connect_with_timeout(Duration::from_secs(5)).await;
     let filter = nostr_sdk::Filter::new()
         .kind(nostr_sdk::Kind::Metadata)
         .author(pubkey)
         .limit(1);
     let events = client
-        .fetch_events(vec![filter], Duration::from_secs(3))
+        .fetch_events(vec![filter], Duration::from_secs(7))
         .await
         .map_err(|e| format!("failed to fetch profile: {e}"))?;
+    log::info!(
+        "[preview_profile] {} event(s) returned for {}",
+        events.len(),
+        pubkey.to_hex()
+    );
     let result = events.iter().next().map(|event| {
         let parsed: serde_json::Value = serde_json::from_str(&event.content).unwrap_or_default();
         let f = |key: &str| parsed.get(key).and_then(|v| v.as_str()).map(String::from);

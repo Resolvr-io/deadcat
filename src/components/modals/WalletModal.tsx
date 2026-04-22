@@ -65,7 +65,7 @@ export function WalletModal() {
       : 0;
   const subtitle =
     walletModal === "receive"
-      ? "Choose a method to receive funds into your Liquid wallet."
+      ? "Choose a method to receive Bitcoin into your wallet."
       : "Send funds from your wallet via Lightning, Liquid, or Bitcoin.";
 
   const tabs: Array<"lightning" | "liquid" | "bitcoin"> = [

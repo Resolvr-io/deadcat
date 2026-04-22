@@ -538,10 +538,7 @@ export default function MarketChart({
                   : "border-slate-700 text-slate-500 hover:text-slate-300"
               }`}
             >
-              <LegendIcon
-                fill={showNoLine ? "#f87171" : "#64748b"}
-                flip={showNoLine}
-              />
+              <LegendIcon fill={showNoLine ? "#f87171" : "#64748b"} flip />
               No
             </button>
           </div>

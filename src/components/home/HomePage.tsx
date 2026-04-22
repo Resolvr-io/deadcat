@@ -449,7 +449,11 @@ function PortfolioView({ markets }: { markets: Market[] }) {
                   className="block w-full rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600"
                 >
                   <div className="mb-2 flex items-center justify-between">
-                    <span className="text-xs text-slate-500">
+                    <span className="flex items-center gap-1.5 text-xs text-slate-500">
+                      <CategoryIcon
+                        category={p.market.category}
+                        className="h-3 w-3"
+                      />
                       {p.market.category} · {timeLeft}
                     </span>
                   </div>
@@ -609,7 +613,10 @@ function MyMarketsView({ markets }: { markets: Market[] }) {
         className="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600"
       >
         <div className="mb-2 flex items-center justify-between text-sm">
-          <span className="text-xs text-slate-500">{market.category}</span>
+          <span className="flex items-center gap-1.5 text-xs text-slate-500">
+            <CategoryIcon category={market.category} className="h-3 w-3" />
+            {market.category}
+          </span>
           <span
             className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${stateColors}`}
           >

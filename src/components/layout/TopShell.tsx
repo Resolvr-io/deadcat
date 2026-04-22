@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { categories } from "../../constants";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
+import { setWalletNeedsBackup } from "../../hooks/useWalletNeedsBackup";
 import { useStore } from "../../store";
 import type { NavCategory } from "../../types";
 import { formatCompactSats } from "../../utils-react/wallet";
@@ -149,6 +150,9 @@ function LogoutModal() {
   const logoutBackupDownloaded = useStore((s) => s.logoutBackupDownloaded);
   const needsPassword = walletStatus === "locked" || !walletSessionPassword;
   const [isRemoteSigner, setIsRemoteSigner] = useState(false);
+  // Used for the NIP-46 backup path where we reveal the wallet mnemonic
+  // inline (no local nsec to bundle into a .dcid file).
+  const [revealedMnemonic, setRevealedMnemonic] = useState<string>("");
 
   useEffect(() => {
     if (logoutOpen) {
@@ -166,32 +170,15 @@ function LogoutModal() {
       logoutBackupError: "",
       logoutPasswordInput: "",
     });
+    setRevealedMnemonic("");
   }, []);
 
   useEscapeKey(logoutOpen, closeLogout);
 
   const confirmLogout = useCallback(async () => {
-    if (isRemoteSigner) {
-      // NIP-46: disconnect signer but keep wallet
-      try {
-        await invoke("disconnect_nip46");
-      } catch (e) {
-        console.warn("disconnect_nip46:", e);
-      }
-      useStore.setState({
-        nostrPubkey: null,
-        nostrNpub: null,
-        nostrProfile: null,
-        nostrNsecRevealed: null,
-        logoutOpen: false,
-        logoutBackedUp: false,
-        profilePicError: false,
-      });
-      window.location.reload();
-      return;
-    }
-
-    // Local keys: full logout — lock, delete wallet, delete identity
+    // Unified logout for all account types (local nsec or NIP-46). Wipes
+    // wallet + identity from disk. Without this, a re-login could
+    // accidentally orphan/overwrite the existing encrypted wallet file.
     try {
       await invoke("lock_wallet");
     } catch (e) {
@@ -199,6 +186,7 @@ function LogoutModal() {
     }
     try {
       await invoke("delete_wallet");
+      setWalletNeedsBackup(false);
     } catch (e) {
       console.warn("delete_wallet:", e);
     }
@@ -239,28 +227,25 @@ function LogoutModal() {
     });
     localStorage.removeItem("deadcat_tx_labels");
     window.location.reload();
-  }, [isRemoteSigner]);
+  }, []);
 
   if (!logoutOpen) return null;
 
   const hasWallet = walletStatus !== "not_created";
 
-  // Simple logout for identity-only (no wallet) or remote signer
-  if (!hasWallet || isRemoteSigner) {
+  // Simple logout for identity-only (no wallet exists yet)
+  if (!hasWallet) {
     return (
       <div className="macos-overlay-safe-top fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
         <div className="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-950 p-8">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-medium text-slate-100">
-              {isRemoteSigner ? "Disconnect Signer" : "Log Out"}
-            </h2>
+            <h2 className="text-lg font-medium text-slate-100">Log Out</h2>
             <CloseButton onClick={closeLogout} />
           </div>
           <div className="mt-5 space-y-4">
             <p className="text-sm text-slate-400 leading-relaxed">
-              {isRemoteSigner
-                ? "This will disconnect the remote signer. Your wallet and funds will remain on this device. You can reconnect anytime."
-                : "This will remove your Nostr identity from this device. Make sure you have your nsec saved if you want to log back in."}
+              This will remove your Nostr identity from this device. Make sure
+              you have a backup if you want to log back in.
             </p>
             <div className="flex gap-3">
               <button
@@ -275,7 +260,7 @@ function LogoutModal() {
                 onClick={confirmLogout}
                 className="flex-1 rounded-xl bg-rose-500 py-2.5 text-sm font-medium text-white transition hover:bg-rose-400"
               >
-                {isRemoteSigner ? "Disconnect" : "Log Out"}
+                Log Out
               </button>
             </div>
           </div>
@@ -284,7 +269,8 @@ function LogoutModal() {
     );
   }
 
-  // Full logout with backup flow when wallet exists
+  // Full logout with backup flow when a wallet exists — same for local
+  // nsec users and NIP-46 remote-signer users.
   return (
     <div className="macos-overlay-safe-top fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
       <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 p-8">
@@ -297,13 +283,111 @@ function LogoutModal() {
             <p className="text-sm text-slate-300 leading-relaxed">
               Logging out will{" "}
               <strong className="text-slate-100">
-                permanently remove your Nostr keys and wallet
+                permanently erase this wallet
+                {isRemoteSigner ? "" : " and your Nostr keys"}
               </strong>{" "}
-              from this device. Download your backup file before logging out so
-              you can restore your account later.
+              from this device.{" "}
+              {isRemoteSigner
+                ? "Save your wallet recovery phrase before logging out — without it your funds cannot be recovered."
+                : "Download your backup file before logging out so you can restore your account later."}
             </p>
           </div>
-          {logoutBackupDownloaded ? (
+          {isRemoteSigner ? (
+            revealedMnemonic ? (
+              <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-5 space-y-3">
+                <p className="text-xs font-semibold uppercase tracking-widest text-amber-300">
+                  Wallet recovery phrase
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  {revealedMnemonic
+                    .split(/\s+/)
+                    .filter(Boolean)
+                    .map((word, idx) => (
+                      <div
+                        key={`logout-mnemonic-${idx + 1}-${word}`}
+                        className="flex min-w-0 items-baseline gap-1.5"
+                      >
+                        <span className="shrink-0 text-xs text-slate-500">
+                          {idx + 1}.
+                        </span>
+                        <span className="mono text-sm text-slate-100">
+                          {word}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(revealedMnemonic);
+                  }}
+                  className="w-full rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 transition hover:bg-slate-800"
+                >
+                  Copy to clipboard
+                </button>
+              </div>
+            ) : (
+              <>
+                {needsPassword && (
+                  <input
+                    type="password"
+                    value={logoutPasswordInput}
+                    onChange={(e) =>
+                      useStore.setState({
+                        logoutPasswordInput: e.target.value,
+                      })
+                    }
+                    placeholder="Enter your wallet password"
+                    className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+                  />
+                )}
+                {logoutBackupError && (
+                  <div className="rounded-lg border border-amber-700/30 bg-amber-950/20 px-3 py-2">
+                    <p className="text-xs text-amber-300/80">
+                      {logoutBackupError}
+                    </p>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const pw = needsPassword
+                      ? useStore.getState().logoutPasswordInput
+                      : useStore.getState().walletSessionPassword;
+                    if (!pw) {
+                      useStore.setState({
+                        logoutBackupError:
+                          "Enter your wallet password to reveal the recovery phrase.",
+                      });
+                      return;
+                    }
+                    try {
+                      let m: string;
+                      try {
+                        m = await invoke<string>("get_cached_mnemonic");
+                      } catch {
+                        m = await invoke<string>("get_wallet_mnemonic", {
+                          password: pw,
+                        });
+                      }
+                      useStore.setState({
+                        logoutBackupError: "",
+                        logoutPasswordInput: "",
+                      });
+                      setRevealedMnemonic(m);
+                    } catch (e) {
+                      useStore.setState({
+                        logoutBackupError: `Could not reveal recovery phrase: ${String(e)}`,
+                      });
+                    }
+                  }}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm font-medium text-amber-300 transition hover:bg-amber-500/20"
+                >
+                  Reveal wallet recovery phrase
+                </button>
+              </>
+            )
+          ) : logoutBackupDownloaded ? (
             <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-300">
               <svg
                 aria-hidden="true"
@@ -430,14 +514,19 @@ function LogoutModal() {
               }
               className="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-950 text-rose-400 focus:ring-rose-400"
             />
-            <span>I have downloaded my backup or already have one saved.</span>
+            <span>
+              {isRemoteSigner
+                ? "I have saved my wallet recovery phrase somewhere safe."
+                : "I have downloaded my backup or already have one saved."}
+            </span>
           </label>
           <p className="text-xs text-slate-500">
             <strong className="text-slate-300">
-              Deadcat Live does not hold user funds.
+              Deadcat does not hold your funds.
             </strong>{" "}
-            If you lose your backup file and password, your funds cannot be
-            recovered.
+            {isRemoteSigner
+              ? "Without your wallet recovery phrase, funds in this wallet cannot be recovered."
+              : "If you lose your backup file and password, your funds cannot be recovered."}
           </p>
           <div className="flex gap-3">
             <button
