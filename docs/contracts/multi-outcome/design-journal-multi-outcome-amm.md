@@ -47,7 +47,7 @@ The multi-outcome market contract's cross-outcome primitives (split-YES, merge-Y
 
 ### Liquidity model: admin-operated pools, permissionless creation
 
-Each pool has a single operator who commits subsidy, earns fees, bears impermanent loss, and can adjust b / close via admin-signed spend paths. **Pool creation itself is permissionless** — anyone can deploy a pool on any market with any parameters, and multiple competing pools per market are expected.
+Each pool has a single operator who commits subsidy, earns fees, bears impermanent loss, and can adjust reserves / close via admin-signed spend paths. **Pool creation itself is permissionless** — anyone can deploy a pool on any market with any parameters, and multiple competing pools per market are expected.
 
 LP-tokenized pools (shared ownership, deposit/withdraw mechanics, pro-rata fees) were considered in depth and deferred to v2.
 

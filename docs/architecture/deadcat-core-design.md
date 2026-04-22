@@ -105,6 +105,8 @@ Policies that shape the `deadcat-core` public API. Invariants (above) are correc
 
 `deadcat-core` provides operations that are **covenant-valid, possible, and not strictly dominated for the caller's role in that invocation**. An operation is "strictly dominated" when there is always a better way to achieve the same goal — the engine's router, for example, picks the best-price path rather than offering suboptimal alternatives.
 
+When a helper exists only to choose a default among multiple covenant-valid ways to reach substantially the same outcome, core may return a canonical recommendation. But it does **not** collapse distinct target states into one "approved" path. For LMSR pools, for example, `estimate_bootstrap` can recommend a lean default reserve vector while `build_lmsr_bootstrap_pset` still accepts explicit caller-chosen reserves.
+
 Operations may be unfavorable for counterparties. An informed trader dumping post-resolution tokens harms the pool operator; a taker filling a maker's order may not be what the maker wants post-resolution. That's inherent to adversarial markets. The engine's job is to serve each caller's role in their invocation cleanly; counterparties protect themselves through their own actions (pool operators close pools after resolution; makers cancel stale orders) or through covenant-level invariants.
 
 `CoreError` variants reflect this boundary:
@@ -216,7 +218,8 @@ impl<S: ContractStore> ContractEngine<S> {
     pub fn build_lmsr_bootstrap_pset(
         &self,
         params: &LmsrPoolParams,
-        starting_price_bps: u16,
+        initial_s_index: u16,
+        initial_reserves: PoolReserves,
         masked_index: u16,
         funding: &WalletFunding,
     ) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
@@ -260,7 +263,11 @@ pub fn compute_market_id(params: &MarketParams) -> MarketId;
 /// Usable by oracle services without a ContractEngine.
 pub fn oracle_attestation_message(market_id: MarketId, resolution: MarketResolution) -> [u8; 32];
 
-pub fn estimate_bootstrap(max_loss_sats: u64, half_payout_sats: u64, starting_price_bps: u16) -> BootstrapEstimate;
+pub fn estimate_bootstrap(
+    max_loss_sats: u64,
+    half_payout_sats: u64,
+    starting_price_bps: u16,
+) -> Result<BootstrapEstimate, BootstrapError>;
 
 pub fn derive_pool_params(
     deadcat_xprv: &Xpriv,
@@ -294,7 +301,7 @@ Write methods take `&mut self`. Read methods take `&self`. Rust's borrow rules e
 - `Pool<'a, S>` exposes adjust and close builders plus parent-market navigation.
 - `Order<'a, S>` exposes cancel builder plus parent-market navigation.
 
-**Creation builders stay on the engine** because the contract doesn't exist yet — there's no view to operate on. They take concrete param types and, for markets, return the derived full-params alongside the PSET (the 4 / 4N token and RT asset IDs are derived from selected defining inputs). `build_lmsr_bootstrap_pset` takes `LmsrPoolParams` fully formed (params aren't derived from transaction entropy — they're committed directly as operator subsidy parameters). `build_create_order_pset` takes `MakerOrderParams` similarly.
+**Creation builders stay on the engine** because the contract doesn't exist yet — there's no view to operate on. They take concrete param types and, for markets, return the derived full-params alongside the PSET (the 4 / 4N token and RT asset IDs are derived from selected defining inputs). `build_lmsr_bootstrap_pset` takes `LmsrPoolParams` fully formed plus an explicit starting state (`initial_s_index`) and explicit starting reserves (`initial_reserves`). `estimate_bootstrap` is just the canonical default-policy helper for choosing those reserves; it is not the only valid bootstrap shape. `build_create_order_pset` takes `MakerOrderParams` similarly.
 
 **Trade routing stays on the engine** because quoting inspects *multiple* contracts at once (the pool(s) and resting maker orders for a given market outcome). Putting `quote_trade` on the `Market` view would require the view to see other tracked contracts too, defeating the encapsulation — simpler to keep routing at the engine level where access to all tracked contracts is natural. `build_trade_pset` stays on the engine for the same reason.
 
@@ -395,7 +402,7 @@ pub enum PoolSnapshot {
 }
 ```
 
-With `PoolSnapshot::Creation`, the engine processes the creation transaction to derive initial state — same as market ingestion. The engine also verifies the pool's curve is well-formed: it derives `b` from `params.max_loss_sats`, recomputes `q_step_lots`, regenerates the full F-value table, and checks the Merkle root matches `params.lmsr_table_root`. A mismatch indicates the pool was created with a non-canonical table generation algorithm — the engine returns `CoreError::InvalidParams`. This verification costs ~80ms (table generation) and runs once at ingestion. With `PoolSnapshot::Current`, the engine starts tracking from the provided state without verifying history back to creation. The trade-off: `Current` = fast start (no history replay needed), but no prior transition history is recoverable. `Creation` = full history available via forward-sync from creation. Note: `Current` also sidesteps s_index derivation entirely (the caller provides `s_index` directly), making it useful for ingesting untrusted pools from unknown operators where the creation transaction's OP_RETURN may not be available or trustworthy.
+With `PoolSnapshot::Creation`, the engine processes the creation transaction to derive initial state — same as market ingestion. The engine also verifies the pool's curve is well-formed: it derives `b` from `params.max_loss_sats`, recomputes `q_step_lots`, regenerates the full F-value table, and checks the Merkle root matches `params.lmsr_table_root`. A mismatch indicates the pool was created with a non-canonical table generation algorithm — the engine returns `CoreError::InvalidParams`. This verification is a cold-cache table-generation step: the first use of a given `(max_loss_sats, half_payout_sats)` combo incurs the full bignum table cost (~5-10s), while later ingestions reuse the in-memory cache. With `PoolSnapshot::Current`, the engine starts tracking from the provided state without verifying history back to creation. The trade-off: `Current` = fast start (no history replay needed), but no prior transition history is recoverable. `Creation` = full history available via forward-sync from creation. Note: `Current` also sidesteps s_index derivation entirely (the caller provides `s_index` directly), making it useful for ingesting untrusted pools from unknown operators where the creation transaction's OP_RETURN may not be available or trustworthy.
 
 #### ingest_persistent_order and ingest_ephemeral_order
 
@@ -675,7 +682,7 @@ The primary denomination field is `base_payout` — the per-outcome YES-expiry p
 
 The binary creation builder selects 2 defining inputs, derives the 2 token and 2 reissuance-token asset IDs, compiles the covenant, builds the PSET, and returns the full `BinaryMarketParams`. The multi-outcome creation builder selects 2N defining inputs in canonical leg order `YES_0, NO_0, YES_1, NO_1, ..., YES_{N-1}, NO_{N-1}`, derives the 2N token and 2N reissuance-token asset IDs, compiles the N-specific `.simf` covenant, and returns the full `MultiOutcomeMarketParams`. In both cases the caller uses the returned params for subsequent `ingest_market` after the transaction confirms.
 
-`BinaryMarketParams` and `MultiOutcomeMarketParams` define each market's covenant parameters (oracle key, expiry, asset IDs, etc.). `LmsrPoolParams` defines the pool's parameters (token asset IDs referencing the parent market, liquidity parameters, and `max_loss_sats` for off-chain LMSR math). `MakerOrderParams` defines the order's parameters (base/quote asset IDs, price, direction). These types map 1:1 to Simplicity covenant parameters, with one exception: `LmsrPoolParams.max_loss_sats` is not a covenant parameter but is included because all off-chain LMSR computation (point evaluation, table generation, spot price) requires the liquidity parameter `b = max_loss_sats / ln(2)`, and `b` is not recoverable from the covenant params alone (the `max_loss_sats → q_step_lots` derivation uses `ceil()`, which is lossy). The derivable fields `q_step_lots` and `lmsr_table_root` are retained alongside `max_loss_sats` as compilation caches — recomputing `lmsr_table_root` requires ~80ms of table generation. See [contract-specification.md](../contracts/contract-specification.md) for the planned field definitions per contract type, covenant structure, spend paths, and witness data.
+`BinaryMarketParams` and `MultiOutcomeMarketParams` define each market's covenant parameters (oracle key, expiry, asset IDs, etc.). `LmsrPoolParams` defines the pool's parameters (token asset IDs referencing the parent market, liquidity parameters, and `max_loss_sats` for off-chain LMSR math). `MakerOrderParams` defines the order's parameters (base/quote asset IDs, price, direction). These types map 1:1 to Simplicity covenant parameters, with one exception: `LmsrPoolParams.max_loss_sats` is not a covenant parameter but is included because all off-chain LMSR computation (cached-table quoting, table generation, spot price) requires the liquidity parameter `b = max_loss_sats / ln(2)`, and `b` is not recoverable from the covenant params alone (the `max_loss_sats → q_step_lots` derivation uses `ceil()`, which is lossy). The derivable fields `q_step_lots` and `lmsr_table_root` are retained alongside `max_loss_sats` as compilation caches — re-deriving `lmsr_table_root` is the cold-cache table-generation path. See [contract-specification.md](../contracts/contract-specification.md) for the planned field definitions per contract type, covenant structure, spend paths, and witness data.
 
 **Pool layer composition**: a single `LmsrPoolParams` always refers to one outcome's YES/NO pair. For binary markets, the pool's YES/NO tokens come directly from the binary market's `yes_token_asset_id` / `no_token_asset_id`. For multi-outcome markets, the pool's YES/NO tokens are `yes_token_asset_ids[k]` / `no_token_asset_ids[k]` for a specific outcome k — multi-outcome markets compose their AMM liquidity from N independent binary LMSR pools (Option C composition). The pool contract doesn't know or care which market contract type underlies its tokens. See [amm-scoring-rule-tradeoffs.md](../contracts/multi-outcome/amm-scoring-rule-tradeoffs.md) for the pool design decision.
 
@@ -1316,20 +1323,33 @@ The `pub(crate)` field `route` makes `TradeQuote` non-constructable by external 
 
 ### BootstrapEstimate
 
-Result of `estimate_bootstrap` — tells the operator how much capital they need before creating a pool:
+Result of `estimate_bootstrap` — the canonical default bootstrap plan for a pool creation flow:
 
 ```rust
 pub struct BootstrapEstimate {
     pub initial_yes_reserve: u64,
     pub initial_no_reserve: u64,
     pub initial_collateral_reserve: u64,
-    pub initial_s_index: u64,
+    pub initial_s_index: u16,
+}
+
+pub enum BootstrapError {
+    InvalidStartingPriceBps { starting_price_bps: u16 },
+    ArithmeticOverflow,
 }
 ```
 
 The three reserves are in different assets (YES tokens, NO tokens, collateral). The operator uses these to plan capital acquisition — e.g., issuing `max(yes, no)` token pairs (which costs `max * collateral_per_pair` collateral from the parent market) plus providing `initial_collateral_reserve` directly. Total capital outlay depends on the market's `collateral_per_pair` and what the operator does with leftover tokens, which are wallet-layer concerns outside this function's scope.
 
-`starting_price_bps` must be in the range (0, 10000) exclusive — 0 and 10000 are rejected (`CoreError::InvalidParams`) because they represent 0% and 100% probabilities with infinite reserve ratios. Values that cause integer overflow in the LMSR computation are also rejected. No further range restriction — the purpose of `estimate_bootstrap` is to let the caller evaluate capital requirements and decide for themselves whether the reserves are practical.
+`estimate_bootstrap` returns the **canonical default** reserve vector for a given curve and starting price; it does **not** define the only valid reserve vector for the pool. The helper:
+
+1. Snaps `starting_price_bps` to the nearest valid `initial_s_index`.
+2. Computes the inward-snapped "useful band" bounds: the lowest and highest table indices whose fee-free YES spot prices remain within `[10, 9990]` bps (0.1%-99.9%).
+3. Returns the smallest reserve vector that lets the pool move from `initial_s_index` to those useful-band bounds while preserving `MIN_POOL_RESERVE` on all three reserves.
+
+This inward snap matters because `q_step_lots` is ceil-rounded: the literal table edges can lie outside the useful 0.1%-99.9% band, so funding the full table by default would pre-load dead tail liquidity. The recommended flow is `estimate_bootstrap` → let the operator accept or override the reserves → pass the chosen reserves into `build_lmsr_bootstrap_pset`. Explicit over-funded or under-funded starting inventories remain covenant-valid as long as they satisfy the covenant minimums and the transaction is fundable.
+
+`estimate_bootstrap` is a standalone pure helper, so it returns `BootstrapError`, not `CoreError`. `starting_price_bps` must be in the range `(0, 10000)` exclusive — 0 and 10000 return `BootstrapError::InvalidStartingPriceBps` because they represent 0% and 100% probabilities with infinite reserve ratios. Values that overflow the reserve computation return `BootstrapError::ArithmeticOverflow`.
 
 ### ContractMatch
 
@@ -2878,7 +2898,7 @@ Canonical builder signatures are in [View Types § Pool](#pool). The bootstrap b
 
 - **`build_adjust_pset(pair_delta, collateral_delta, funding)`**: `pair_delta` is applied equally to both YES and NO reserves (signed: positive = injection, negative = withdrawal). `collateral_delta` is applied to the collateral reserve independently. The API shape makes the covenant's paired-delta constraint (YES and NO must move equally on the admin path) unrepresentable as an error — the caller cannot express asymmetric deltas. The engine validates that the resulting reserves meet the covenant's minimum reserve floor (`MIN_POOL_RESERVE` — a protocol constant, 1,000 sats per reserve, hardcoded in the covenant) and returns `CoreError::InvalidParams` if violated. If both deltas are zero, the engine returns `CoreError::InvalidParams` — a no-op adjustment would waste fees. The wallet can present an absolute-target UI ("set pool to 1000 YES/NO") by computing the delta from current reserves on their side. See [lmsr-pool-design.md](../contracts/lmsr-pool/lmsr-pool-design.md) for the full pool parameter design.
 - **`build_close_pset(funding)`**: atomically consumes all three reserve UTXOs via the dedicated Simplicity close script path (NUMS internal key makes key-spend unspendable). All reserve funds are returned to `funding.return_script`. See [lmsr-pool-close-path.md](../contracts/lmsr-pool/lmsr-pool-close-path.md).
-- **`build_lmsr_bootstrap_pset`**: includes a **40-byte** zero-value OP_RETURN recovery hint containing: market creation txid, `max_loss_sats` and `half_payout_sats` (4-bit 1-2-5 table indices each, shared with the market `base_payout` encoding), `fee_bps` (u12, 0.01% granularity), `initial_s_index` (u16, the starting table index for script verification during recovery), and XOR-masked pool operator derivation index. All other covenant params are derived via deterministic table generation. See [Wallet Recovery](#wallet-recovery), [chain-only-recovery.md](../protocol/chain-only-recovery.md), and [lmsr-pool-design.md](../contracts/lmsr-pool/lmsr-pool-design.md).
+- **`build_lmsr_bootstrap_pset(params, initial_s_index, initial_reserves, masked_index, funding)`**: creates the pool at the chosen starting state with the caller-specified starting reserves. The recommended UX flow is to seed `initial_reserves` from `estimate_bootstrap`, but the builder does not silently re-derive or canonicalize reserves internally — explicit reserve vectors are part of the caller's chosen end state. The creation transaction includes a **40-byte** zero-value OP_RETURN recovery hint containing: market creation txid, `max_loss_sats` and `half_payout_sats` (4-bit 1-2-5 table indices each, shared with the market `base_payout` encoding), `fee_bps` (u12, 0.01% granularity), `initial_s_index` (u16, the starting table index for script verification during recovery), and XOR-masked pool operator derivation index. The hint does not encode reserves; recovery learns the actual starting reserves from the creation transaction outputs themselves. All other covenant params are derived via deterministic table generation. See [Wallet Recovery](#wallet-recovery), [chain-only-recovery.md](../protocol/chain-only-recovery.md), and [lmsr-pool-design.md](../contracts/lmsr-pool/lmsr-pool-design.md).
 
 **Multi-outcome pool composition**: a pool always serves one outcome's YES/NO pair. For binary markets that's the single event's YES/NO. For multi-outcome markets under Option C composition, each outcome has its own independent binary LMSR pool (created via `derive_pool_params` with an `outcome: OutcomeIndex` parameter, then bootstrapped via `build_lmsr_bootstrap_pset`). The pool contract doesn't know or care which market kind underlies its YES/NO tokens.
 
@@ -3339,11 +3359,9 @@ Types: `LmsrTradeKind` (BuyYes, SellYes, BuyNo, SellNo), `LmsrQuote` (full trade
 
 These have zero dependencies beyond basic math — no wallet, chain, or state. All functions that require `b` derive it internally from `LmsrPoolParams.max_loss_sats` — callers never provide `b` directly.
 
-**Point evaluation vs full table**: The quoting hot path (`quote_trade`) does NOT need the full 65K-entry F-value table. It evaluates the cost function at specific points (~1us per evaluation, ~16us for a binary search over the table index range). The full table is only needed for Merkle proof generation (`build_trade_pset`, `build_lmsr_bootstrap_pset`) and pool ingestion verification — infrequent, user-initiated operations where ~80ms generation time is acceptable. This means `quote_trade` evaluating 5 candidate pools costs ~80us total, not ~400ms. No table caching is needed for the quoting path.
+**Runtime model: cached full tables**: `quote_trade` and the build/ingest paths all consume the same deterministic table output. `deadcat-core` maintains an in-memory cache of full F-value tables keyed by `(max_loss_sats, half_payout_sats)`. The first use of a combo incurs the bignum cold-start cost (~5-10s); subsequent operations — quoting, Merkle proof generation, and ingestion verification — are O(1) lookups against the cached table. The router combines those cached curve lookups with live pool state: `s_index` determines where the pool sits on the curve, while current reserves determine how much volume is still fillable before a reserve floor is hit.
 
-**Note for implementors**: After the move to `deadcat-core`, this section should be updated with the final type definitions and full function signatures. The `generate_lmsr_table` function uses the deterministic arbitrary-precision bignum algorithm specified in [lmsr-deterministic-table-spec.md](../contracts/lmsr-pool/lmsr-deterministic-table-spec.md) to ensure bit-identical F-values across all platforms. The SDK path above will no longer be valid post-migration. The liquidity parameter `b` is derived from `LmsrPoolParams.max_loss_sats` via `b = max_loss_sats / ln(2)` (at bignum precision). All LMSR functions that need `b` derive it from the stored `max_loss_sats` — it is never stored or passed separately.
-
-**Deterministic table specification required**: The derivation chain `max_loss_sats → b → q_step_lots → F-values → Merkle root` involves transcendental constants (`1/ln(2)`, `ln(999)`) and a cost function (`b × ln(exp(s/b) + exp(-s/b))`) that must be evaluated using integer-only arithmetic. Cross-implementation determinism requires a formal specification defining: exact rational approximations for all transcendental constants, the fixed-point algorithm for F-value computation (precision, series terms, rounding mode), the Merkle tree construction algorithm (hash function, leaf encoding, extracted from the `.simf` verification code), and test vectors. This will be a separate satellite document — see [lmsr-pool-design.md](../contracts/lmsr-pool/lmsr-pool-design.md) for background.
+The authoritative deterministic algorithm and Merkle format are specified in [lmsr-deterministic-table-spec.md](../contracts/lmsr-pool/lmsr-deterministic-table-spec.md). The liquidity parameter `b` is derived from `LmsrPoolParams.max_loss_sats` via `b = max_loss_sats / ln(2)` at bignum precision. All LMSR functions that need `b` derive it from the stored `max_loss_sats` — it is never stored or passed separately.
 
 ## Key Derivation Convenience Functions
 
@@ -3640,9 +3658,9 @@ aqua_chain.broadcast(signed)?;
 
 ### Tier 1: Pure Function Tests
 
-**What**: Every standalone function and deterministic computation — LMSR math (point evaluation, table generation, quoting), key derivation (`derive_order_params`, `derive_pool_params`), oracle attestation messages, OP_RETURN encoding/decoding (byte layout round-trips), expiry time snapping (block height → u24 → block height), XOR index masking/unmasking, CBF derivation chain, `BootstrapEstimate` computation, `FeeRate` conversions, pagination cursor encoding.
+**What**: Every standalone function and deterministic computation — LMSR math (table generation, cached-table quoting, spot-price helpers), key derivation (`derive_order_params`, `derive_pool_params`), oracle attestation messages, OP_RETURN encoding/decoding (byte layout round-trips), expiry time snapping (block height → u24 → block height), XOR index masking/unmasking, CBF derivation chain, `BootstrapEstimate` computation, `FeeRate` conversions, pagination cursor encoding.
 
-**How**: Standard `#[test]` functions, zero dependencies beyond core itself. Property-based tests (e.g., `proptest`) for encoding invariants — "for any valid params, `decode(encode(params)) == params`" generates thousands of random inputs and provides much stronger guarantees than hand-picked examples. Particularly valuable for OP_RETURN round-trips, LMSR point evaluation vs full table consistency, and XOR masking/unmasking.
+**How**: Standard `#[test]` functions, zero dependencies beyond core itself. Property-based tests (e.g., `proptest`) for encoding invariants — "for any valid params, `decode(encode(params)) == params`" generates thousands of random inputs and provides much stronger guarantees than hand-picked examples. Particularly valuable for OP_RETURN round-trips, LMSR quote/proof consistency against the cached tables, and XOR masking/unmasking.
 
 **Speed**: Instant (<1ms per test, hundreds of tests).
 
@@ -4492,7 +4510,7 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 ### Pool OP_RETURN Includes initial_s_index
 
 **Chosen**: The pool OP_RETURN hint includes `initial_s_index` as u16 (2 bytes; pool hint is 40 bytes total, would be 38 without this field).
-**Rejected**: (a) Derive s_index from reserve values via reverse LMSR lookup (fragile, requires specifying the bootstrap allocation formula, vulnerable to adversarial reserve values). (b) Brute-force script matching over all 65K s_index candidates (requires EC scalar multiplication per candidate, ~3-7 seconds worst case).
+**Rejected**: (a) Derive s_index from reserve values via reverse LMSR lookup (fragile: bootstrap reserves are explicit caller-chosen inputs rather than uniquely determined by starting price, and adversarial reserve values make reverse inference unreliable). (b) Brute-force script matching over all 65K s_index candidates (requires EC scalar multiplication per candidate, ~3-7 seconds worst case).
 **Why**: The pool's taproot tree structure means each s_index candidate requires a full taproot tweak (EC scalar multiplication) to verify — hashing alone is insufficient. Including `initial_s_index` directly in the hint eliminates all reverse-derivation complexity: compile for one s_index, verify script matches, done. The 2-byte cost is negligible relative to the hint's total size and is amortized over the pool's entire lifetime.
 
 ### HD Path Constants: BIP-86 Purpose + ASCII "DCAT" Coin Type
@@ -4517,13 +4535,13 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 
 **Chosen**: `LmsrPoolParams` includes `max_loss_sats: u64` alongside the covenant parameters, even though it is not itself a covenant parameter.
 **Rejected**: (a) Store `max_loss_sats` in a separate `PoolConfig` wrapper (cleaner separation but ripples through the entire API — store trait, `Contract` enum, ingestion methods, discovery types). (b) Pass `max_loss_sats` as a separate parameter on `ingest_pool` (ad-hoc, no natural place to store it). (c) Recover `b` from `q_step_lots + half_payout_sats` (impossible — the `ceil()` in the derivation is lossy).
-**Why**: All off-chain LMSR computation — point evaluation for quoting, full table generation for Merkle proofs, spot price calculation — requires the liquidity parameter `b = max_loss_sats / ln(2)`. Without `max_loss_sats`, the engine literally cannot evaluate the LMSR cost function after ingestion. The struct already contains two derived fields (`q_step_lots`, `lmsr_table_root`) as compilation caches, so adding a third non-covenant field is consistent. Including `max_loss_sats` also enables automatic curve well-formedness verification at `Creation` ingestion: the engine derives `b`, recomputes the table, and verifies the Merkle root matches — catching misconfigured or adversarially-constructed pools.
+**Why**: All off-chain LMSR computation — cached-table quoting, full table generation for Merkle proofs, spot price calculation — requires the liquidity parameter `b = max_loss_sats / ln(2)`. Without `max_loss_sats`, the engine literally cannot evaluate the LMSR cost function after ingestion. The struct already contains two derived fields (`q_step_lots`, `lmsr_table_root`) as compilation caches, so adding a third non-covenant field is consistent. Including `max_loss_sats` also enables automatic curve well-formedness verification at `Creation` ingestion: the engine derives `b`, recomputes the table, and verifies the Merkle root matches — catching misconfigured or adversarially-constructed pools.
 
 ### `estimate_bootstrap` Does Not Take `fee_bps`
 
 **Chosen**: `estimate_bootstrap` takes `max_loss_sats`, `half_payout_sats`, and `starting_price_bps` — no `fee_bps`.
 **Rejected**: Including `fee_bps` for API symmetry with `derive_pool_params`.
-**Why**: The bootstrap reserves depend on the LMSR cost function shape (`b`, `q_step_lots`, `half_payout_sats`) and starting position (`starting_price_bps`). The fee has no effect on the cost function, initial reserves, or s_index mapping — it's a per-swap spread applied by the covenant, not a curve parameter. Accepting an unused parameter misleads callers into thinking fees affect capital requirements.
+**Why**: `estimate_bootstrap` computes only the snapped starting state and the canonical default reserve vector for that curve. The fee has no effect on the cost function, the useful-band bounds, the default reserve calculation, or the `starting_price_bps → initial_s_index` mapping — it's a per-swap spread applied by the covenant, not a curve-shape parameter. Accepting an unused parameter misleads callers into thinking fees affect bootstrap capital planning.
 
 ### Labeled Outpoints at the Engine↔Store Boundary
 

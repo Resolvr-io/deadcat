@@ -190,7 +190,7 @@ Each supported N has its own `.simf` file generated from a template by `deadcat-
 
 **The single AMM pool contract in deadcat.** One binary LMSR pool serves both single-event binary markets and per-outcome YES/NO pairs within multi-outcome markets (via Option C composition — N pools per multi-outcome market, one per outcome). The pool contract doesn't know or care which market contract type underlies its YES/NO tokens. See [multi-outcome/amm-scoring-rule-tradeoffs.md](multi-outcome/amm-scoring-rule-tradeoffs.md) for the pool design decision.
 
-**Liquidity model**: admin-operated, permissionless creation. Each pool has a single operator who chooses parameters, provides subsidy, can adjust b and close via admin-signed spend paths, earns fees, and bears impermanent loss. Anyone can deploy a pool on any market with any parameters; multiple competing pools per market are expected. LP-tokenized pools are deferred to v2.
+**Liquidity model**: admin-operated, permissionless creation. Each pool has a single operator who chooses parameters, provides subsidy, can adjust reserves and close via admin-signed spend paths, earns fees, and bears impermanent loss. Anyone can deploy a pool on any market with any parameters; multiple competing pools per market are expected. LP-tokenized pools are deferred to v2.
 
 ### Parameters
 
@@ -202,9 +202,9 @@ pub struct LmsrPoolParams {
     pub lmsr_table_root: [u8; 32],          // derived: Merkle root of F-value table
     pub q_step_lots: u64,                   // derived from b and half_payout_sats
     pub half_payout_sats: u64,              // creator-specified (convention: 16-value 1-2-5 table, shared with market base_payout encoding)
-    pub fee_bps: u64,                       // creator-specified (u64 for Simplicity; validated < 10,000; convention: <= 4,095)
+    pub fee_bps: u16,                       // creator-specified public API type (convention: <= 4,095; widened internally for Simplicity arithmetic)
     pub admin_pubkey: XOnlyPublicKey,       // from mnemonic at pool_index
-    pub max_loss_sats: u64,                 // NOT a covenant param — needed for off-chain LMSR math (b derivation, point evaluation, table generation)
+    pub max_loss_sats: u64,                 // NOT a covenant param — needed for off-chain LMSR math (b derivation, cached-table quoting, table generation)
 }
 ```
 
@@ -243,9 +243,9 @@ All pool transitions use **witness-based detection** via `RedeemNode::decode`:
 - **Close**: Spend path confirmed as close by the witness. No covenant outputs.
 - **s_index extraction**: The witness contains the authoritative `old_s_index` and `new_s_index`. This is ground truth — reserve-based reverse lookup is fragile after admin adjustments.
 
-### LMSR Math: Point Evaluation
+### LMSR Math: Cached Tables
 
-The quoting hot path (`quote_trade`) does NOT need the full 65K-entry F-value table. It uses direct cost function evaluation at specific points (~1us per evaluation, ~16us for a binary search). The full table is only needed for Merkle proof generation (`build_trade_pset`, `build_lmsr_bootstrap_pset`) and pool ingestion verification (~80ms, infrequent operations). See [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md).
+The v1 implementation uses the deterministic full-table output everywhere — quoting, proof generation, and ingestion verification. `deadcat-core` caches full F-value tables keyed by `(max_loss_sats, half_payout_sats)`: the first use of a combo incurs the bignum cold-start cost, and subsequent operations are O(1) lookups against the cached table. Routing still remains reserve-aware: the cached table determines curve pricing, while live reserves determine currently fillable volume. See [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md).
 
 ## Maker Order
 

@@ -216,6 +216,6 @@ A CLI subcommand in `deadcat-codegen` (`just calibrate-precision`) runs the cali
 - `src-tauri/crates/deadcat-sdk/src/lmsr_pool/table.rs` — Rust-side Merkle tree (leaf hash, node hash, root, proof generation/verification — matches `.simf` byte-for-byte)
 - `src-tauri/crates/deadcat-sdk/src/lmsr_pool/math.rs` — quoting logic (`quote_from_table`, `quote_exact_input_from_manifest`, `fee_free_yes_spot_price_bps`)
 - `crates/deadcat-codegen/` (planned, shared with the multi-outcome `.simf` generator) — bignum reference implementation and committed fixture file with per-combo Merkle roots and anchor F-values
-- `crates/deadcat-core/` — runtime F-value computation (bignum-based), per-pool-combo in-memory/disk cache
+- `crates/deadcat-core/` — runtime F-value computation (bignum-based), per-pool-combo in-memory cache
 - `docs/contracts/lmsr-pool/lmsr-pool-design.md` — pool parameter design, derivation formulas, deterministic generation rationale
-- `docs/architecture/deadcat-core-design.md` — LMSR Math section, point evaluation vs full table distinction
+- `docs/architecture/deadcat-core-design.md` — LMSR Math section, cached-table runtime model and reserve-aware routing notes

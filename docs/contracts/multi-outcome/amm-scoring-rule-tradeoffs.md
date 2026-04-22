@@ -778,13 +778,13 @@ Acknowledged costs:
 ### Liquidity model: admin-operated, permissionless creation
 
 Each pool has a single operator who:
-- Chooses parameters at creation (b, fee_bps, collateral asset, oracle pubkey inherited from market)
+- Chooses parameters at creation (`max_loss_sats`, `half_payout_sats`, `fee_bps`, starting state/reserves; collateral asset and oracle pubkey inherited from market)
 - Provides the subsidy capital
-- Can adjust b via an admin spend path (permissioned bumps)
+- Can adjust reserves via an admin spend path (permissioned liquidity changes)
 - Can close the pool via an admin spend path
 - Earns all fees, bears all impermanent loss
 
-Pool creation is **permissionless**: anyone can deploy a pool on any market with any parameters. Multiple competing pools per market are expected and welcomed. LPs with different opinions on fair b and fee rates compete.
+Pool creation is **permissionless**: anyone can deploy a pool on any market with any parameters. Multiple competing pools per market are expected and welcomed. LPs with different opinions on fair depth (`max_loss_sats`), reserve sizing, and fee rates compete.
 
 LP-tokenized pools (shared ownership, deposit/withdraw mechanics, pro-rata fee distribution) were considered extensively but deferred to v2. Under admin-operation, the covenant stays simpler, the trust model is crisp, and operators have clear incentive alignment. LP-tokenization becomes an upgrade path if passive-capital demand materializes.
 

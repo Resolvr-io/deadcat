@@ -14,7 +14,7 @@ The external interface is simple: `TradeSpec { outcome, side, direction, amount 
 
 The router uses **pool-subset enumeration × fee-aware greedy order selection**, scoped to the trade's target outcome:
 
-1. **Pre-select candidate pools**: Rank all active pools for the target outcome by estimated average fill price for the requested amount (one LMSR computation per pool). Take the top N (N = 5).
+1. **Pre-select candidate pools**: Rank all active pools for the target outcome by estimated average fill price for the currently fillable portion of the request, using both the pool's current `s_index` and its live reserves. Take the top N (N = 5).
 2. **Enumerate pool subsets**: For each subset of the N candidate pools (including the empty set — no pools), run the fee-aware greedy order selection.
 3. **Pick the best result**: The subset that produces the lowest total cost (fill cost + transaction fee) wins.
 
@@ -53,11 +53,11 @@ A partial fill (filled_amount < requested_amount) is returned to the caller via 
 
 With P active pools for the trade's target outcome, full subset enumeration costs 2^P. To bound this:
 
-1. For each pool serving the target outcome, compute the **estimated average fill price** for the full requested amount via cached F-value lookups. This is O(1) per pool assuming the combo's table is cached (see [Integer Precision and Caching](#integer-precision-and-caching) for the bignum caching strategy; first-use per combo incurs a ~5-10s table generation cost).
+1. For each pool serving the target outcome, compute the pool's **currently fillable amount** and **estimated average fill price** for `min(requested_amount, pool_fillable_now)` via cached F-value lookups plus the pool's live reserves. Pools that cannot fill any positive amount are discarded up front. This is O(1) per pool assuming the combo's table is cached (see [Integer Precision and Caching](#integer-precision-and-caching) for the bignum caching strategy; first-use per combo incurs a ~5-10s table generation cost).
 2. Rank pools by this estimate (lower = better).
 3. Take the top N pools (N = 5 constant). Discard the rest.
 
-Ranking by average fill price (not spot price) ensures deep pools with slightly worse spot prices are preferred over shallow pools with great spot prices for large trades. A shallow pool at 50.00 that slips to 55.00 over 1000 tokens ranks below a deep pool at 50.50 that barely moves.
+Ranking by average fill price (not spot price) ensures deep pools with slightly worse spot prices are preferred over shallow pools with great spot prices for large trades. A shallow pool at 50.00 that slips to 55.00 over 1000 tokens ranks below a deep pool at 50.50 that barely moves. Current reserves matter just as much as the curve here: two pools with identical `(max_loss_sats, half_payout_sats, fee_bps, s_index)` can have different current fillability because admin adjustments or custom bootstrap reserves changed their inventories. The router follows the actual reserves, not a hard-coded "useful band" cap.
 
 **Pool flooding defense**: An attacker creating 100 pools for a single outcome to slow routing only causes 100 LMSR lookups in the pre-selection step (microseconds). The top-5 filter bounds the enumeration at 2^5 = 32 regardless of total pool count. For multi-outcome markets, the attacker can't flood "all outcomes at once" to amplify the attack — routing scopes to one outcome's pool set, so flooding other outcomes' pool sets has no effect on this trade's routing cost.
 
@@ -142,6 +142,14 @@ All fill amounts and costs computed by the router must use the **exact same dete
 
 A fixed-point Taylor runtime (deferred to v2 — see [implementation plan § deferred items](deadcat-core-implementation-plan.md#deferred--out-of-scope-items)) would restore microsecond-scale point evaluation and enable truly uncached quoting. Committed Merkle roots are the cross-implementation conformance set, so that switch is non-breaking.
 
+**Reserve-aware fillability**: Cached tables answer "what would the curve charge for this `s_index` movement?" They do **not** by themselves answer "is that movement currently possible?" The router must combine the cached table with the pool's live reserves. A pool fill stops at the first of:
+- requested amount satisfied
+- crossover against the next-best alternative
+- reserve floor would be violated on the next step
+- table boundary reached
+
+For pools bootstrapped with the canonical default reserves, the reserve-floor stop will usually occur near the inward-snapped useful-band bounds. Explicit over-funding can push the fillable region further out; the routing algorithm automatically honors that because it follows actual reserves rather than a builder-policy default.
+
 Caching applies to:
 - **Pool fill computation**: tokens received for a given input amount (lookup of `F(new_s) - F(old_s)` from cached table)
 - **Crossover binary search**: finding the s_index where a pool's marginal price exceeds the next alternative (binary search over s_index range using cached lookups at each candidate)
@@ -163,10 +171,15 @@ function quote_trade(market_id, spec, fee_rate):
     // orders are filtered by (outcome, side, direction), sorted by (price, creation_position)
     // — FIFO within same price
 
-    // 2. Pre-select top-N pools by average fill price (cached F-value lookup)
+    // 2. Pre-select top-N pools by reserve-aware average fill price
+    viable_pools = []
     for each pool in all_pools:
-        pool.estimated_cost = lmsr_cached_lookup_exact_input(pool, requested_amount)
-    candidate_pools = top_n_by_estimated_cost(all_pools, N=5)
+        (pool.fillable_amount, pool.estimated_cost) =
+            lmsr_cached_fill_exact_input(pool, requested_amount)
+        if pool.fillable_amount == 0:
+            continue
+        viable_pools.push(pool)
+    candidate_pools = top_n_by_avg_price_then_depth(viable_pools, N=5)
 
     // 3. Enumerate pool subsets × fee-aware greedy
     best_result = None
@@ -198,9 +211,9 @@ function fee_aware_greedy(pools, orders, requested_amount, fee_rate):
             marginal_w = if pool already in legs { 0 } else { POOL_WEIGHT }
             if weight + marginal_w > MAX_TX_WEIGHT: continue
 
-            // Use cached LMSR F-value lookups: fill pool up to crossover point
-            // Crossover = s_index where pool marginal price exceeds next best alternative
-            // Binary search over s_index range using cached lookups at each candidate
+            // Use cached LMSR F-value lookups plus live reserves: fill pool up to
+            // crossover point, reserve-floor exhaustion, or table boundary.
+            // Crossover = s_index where pool marginal price exceeds next best alternative.
             next_best_price = best_alternative_price(orders, order_cursor, fee_rate)
             (fill_amt, fill_cost) = lmsr_cached_fill_to_crossover(pool, remaining, next_best_price)
             if fill_amt == 0: continue
@@ -225,7 +238,7 @@ function fee_aware_greedy(pools, orders, requested_amount, fee_rate):
                 best = (order, actual_fill, fill_cost, ORDER_WEIGHT)
             break  // only evaluate the top unconsumed order
 
-        if best is None: break  // no viable sources
+        if best is None: break  // no viable sources or all remaining sources are exhausted
 
         // Execute best fill
         legs.append(best)
@@ -246,7 +259,7 @@ function fee_aware_greedy(pools, orders, requested_amount, fee_rate):
 - N = candidate pool cap (5) → 2^N = 32 subset iterations
 - K = candidate order limit (50) → greedy loop iterations
 - P = pools in subset (≤5) → per-iteration pool evaluations
-- log S = LMSR point evaluation binary search depth (~16 for 16-bit s_index range)
+- log S = binary-search depth over the 16-bit s_index range (~16)
 
 For typical values with warm caches: 32 × 50 × (5 + 16) ≈ 33,600 cache lookups ≈ sub-millisecond worst case, typically much faster (most greedy iterations terminate early). Cold-start (first use of a given `(max_loss_sats, half_payout_sats)` combo) incurs a ~5-10s full-table generation; this is a one-time cost per combo amortized across all subsequent quotes.
 

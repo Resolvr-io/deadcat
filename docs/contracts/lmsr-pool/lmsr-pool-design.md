@@ -33,7 +33,7 @@ The pool holds three reserves:
 
 When a trader buys YES tokens, they pay collateral and receive YES tokens from the pool. The cost is `C(s2) - C(s1)` (plus fees), where s1 → s2 is the state movement. The pool's YES reserve decreases and collateral increases. The reverse for sells.
 
-The reserves determine the pool's **capacity** — how many trades it can absorb before hitting minimum reserve limits. The cost function determines the **pricing** — how much each trade costs. These are independent: a pool can have deep pricing (high `b`) with limited capacity (low reserves), or vice versa.
+The reserves determine the pool's **capacity** — how many trades it can absorb before hitting minimum reserve limits. The cost function determines the **pricing** — how much each trade costs. These axes are orthogonal at the covenant level but coupled in practice: the curve (`b`, `q_step_lots`, `s_index`) determines marginal pricing, while the live reserves determine how far the pool can currently travel along that curve before a reserve floor is hit. A pool can therefore have deep pricing (high `b`) with limited current capacity (lean reserves), or vice versa.
 
 ### Discretization and the Merkle-Committed Curve
 
@@ -59,9 +59,9 @@ A pool creator specifies exactly four values:
 | Parameter | Type | Description |
 |---|---|---|
 | `max_loss_sats` | `u64` | Maximum possible loss for the pool (worst case). Determines market depth. |
-| `fee_bps` | `u16` | Swap fee in basis points (0-9999). Pool operator's revenue per trade. |
+| `fee_bps` | `u16` | Swap fee in basis points (public type `u16`; v1 convention-valid range `0..=4095`). Pool operator's revenue per trade. |
 | `half_payout_sats` | `u64` | Denomination — sats per "lot" of outcome tokens. Determines the monetary scale. |
-| `starting_price_bps` | `u16` | Starting YES price in basis points (0-10000). Where the pool begins on the curve. |
+| `starting_price_bps` | `u16` | Starting YES price in basis points (`0 < price < 10000`). Where the pool begins on the curve. |
 
 Everything else is either derived or a protocol constant.
 
@@ -73,7 +73,7 @@ Everything else is either derived or a protocol constant.
 | `q_step_lots` | `b`, `half_payout_sats` | Derived to ensure the 0.1%-99.9% price range fits within the table. For most pools, `q_step_lots = 1`. See [lmsr-deterministic-table-spec.md](lmsr-deterministic-table-spec.md) for the canonical formula. |
 | `s_index` (initial) | `starting_price_bps` | Nearest valid s_index for the requested price. Computed inside `estimate_bootstrap` and returned as `initial_s_index`; downstream (`derive_pool_params`, `build_lmsr_bootstrap_pset`, the OP_RETURN hint) consumes the snapped value directly — no inverse conversion lives anywhere. |
 | `lmsr_table_root` | `b`, `half_payout_sats`, `q_step_lots` | Merkle root of the deterministically generated F-value table |
-| Initial reserves | `b`, `starting_price_bps`, `half_payout_sats` | Balanced allocation — equal trading depth in both directions from starting price |
+| Initial reserves | `b`, `starting_price_bps`, `half_payout_sats`, `MIN_POOL_RESERVE` | `estimate_bootstrap` returns the canonical default bootstrap: the smallest reserve vector that lets the pool move from the snapped starting state to the inward-snapped useful 0.1%-99.9% band while preserving minimum reserves. Callers may still choose different explicit reserves at creation time. |
 
 ### Protocol Constants
 
@@ -90,15 +90,17 @@ Everything else is either derived or a protocol constant.
 
 The table depth determines the number of discrete price points (2^depth) and affects Merkle proof size:
 
-| Depth | Price points | Proof size (2 per swap) | Table in memory | Generation time |
+| Depth | Price points | Proof size (2 per swap) | Table in memory | Relative bignum cold-cache cost |
 |---|---|---|---|---|
-| 12 | 4,096 | ~784 B | 32 KB | ~5ms |
-| 14 | 16,384 | ~912 B | 128 KB | ~20ms |
-| **16** | **65,536** | **~1,040 B** | **512 KB** | **~80ms** |
-| 18 | 262,144 | ~1,168 B | 2 MB | ~300ms |
-| 20 | 1,048,576 | ~1,296 B | 8 MB | ~1s |
+| 12 | 4,096 | ~784 B | 32 KB | Lower |
+| 14 | 16,384 | ~912 B | 128 KB | Low |
+| **16** | **65,536** | **~1,040 B** | **512 KB** | **Moderate** |
+| 18 | 262,144 | ~1,168 B | 2 MB | High |
+| 20 | 1,048,576 | ~1,296 B | 8 MB | Very high |
 
 Depth 16 ensures `q_step_lots = 1` for pools up to ~33M sats max loss, at a negligible cost of ~26 extra sats per swap compared to depth 12. The pricing granularity near 50% is determined by `max_loss_sats`, not the table depth — when `q_step_lots = 1`, all depths produce identical pricing. The depth only matters for how large a pool can be before `q_step_lots` bumps above 1 (coarsening the minimum trade size). The 512 KB table is trivial to hold in memory.
+
+With the v1 bignum runtime, exact wall-clock generation times depend on the implementation and hardware. What matters architecturally is that the cold-cache cost grows with table size and is amortized by per-combo caching; depth 16 remains the best trade-off between proof size, memory footprint, and headroom before `q_step_lots` coarsens.
 
 A fixed depth means:
 - Single `.simf` file with no metaprogramming or template-based code generation
@@ -181,17 +183,17 @@ A fixed-point Taylor runtime (deferred to v2 per the [implementation plan](../..
 The pool creator:
 
 1. Specifies `max_loss_sats`, `half_payout_sats`, `fee_bps`, `starting_price_bps`
-2. Calls `estimate_bootstrap(max_loss_sats, half_payout_sats, starting_price_bps)` to see the required reserves (YES tokens, NO tokens, collateral) and the resulting `initial_s_index` — lightweight, called on every slider change (note: `fee_bps` does not affect reserves). The snap function (`starting_price_bps → initial_s_index`) lives here; every downstream consumer reads `initial_s_index` from this result.
-3. Obtains the required YES and NO tokens by issuing pairs on the parent prediction market
+2. Calls `estimate_bootstrap(max_loss_sats, half_payout_sats, starting_price_bps)` to see the **canonical default** reserves (YES tokens, NO tokens, collateral) and the resulting `initial_s_index` — lightweight, called on every slider change (note: `fee_bps` does not affect the estimate). The snap function (`starting_price_bps → initial_s_index`) lives here; every downstream consumer reads `initial_s_index` from this result.
+3. Accepts those default reserves or overrides them with an explicit reserve vector, then obtains the needed YES and NO tokens by issuing pairs on the parent prediction market
 4. Calls `derive_pool_params(deadcat_xprv, market_params, outcome, pool_index, max_loss_sats, half_payout_sats, fee_bps, initial_s_index)` to construct the full `LmsrPoolParams` with all derived fields (admin pubkey, table root, q_step_lots, asset IDs) and the XOR-masked pool index — heavier, called once when the user commits to creating
-5. Calls `build_lmsr_bootstrap_pset(&params, initial_s_index, masked_index, &funding)` to build the transaction
+5. Calls `build_lmsr_bootstrap_pset(&params, initial_s_index, initial_reserves, masked_index, &funding)` to build the transaction
 6. Signs and broadcasts
 
-`derive_pool_params` is a standalone pure function that takes the parent market's `MarketParams` umbrella (binary or multi-outcome), an `OutcomeIndex` selecting which outcome's YES/NO pair the pool serves (pass `OutcomeIndex::BINARY` for binary markets), the creator's four params plus `initial_s_index`, and derives the admin pubkey internally from the mnemonic. It derives `b`, `q_step_lots`, generates the F-value table deterministically, computes the Merkle root, and returns a fully-formed `LmsrPoolParams`. The builder then compiles the Simplicity covenant from these params and constructs the creation transaction with three reserve outputs (YES, NO, Collateral) and an OP_RETURN recovery hint.
+`derive_pool_params` is a standalone pure function that takes the parent market's `MarketParams` umbrella (binary or multi-outcome), an `OutcomeIndex` selecting which outcome's YES/NO pair the pool serves (pass `OutcomeIndex::BINARY` for binary markets), the creator's four params plus `initial_s_index`, and derives the admin pubkey internally from the mnemonic. It derives `b`, `q_step_lots`, generates the F-value table deterministically, computes the Merkle root, and returns a fully-formed `LmsrPoolParams`. The builder then compiles the Simplicity covenant from these params and constructs the creation transaction with three reserve outputs (YES, NO, Collateral) and an OP_RETURN recovery hint, using the caller-specified `initial_reserves`.
 
 Note: an integrator COULD construct `LmsrPoolParams` manually (it's a plain data struct with public fields), but `derive_pool_params` is strongly recommended because it guarantees the canonical deterministic table generation algorithm is used. A different implementation would produce a different Merkle root, and the covenant would reject all swaps.
 
-`initial_s_index` represents the nearest valid discrete s_index for the requested starting price. It is computed by `estimate_bootstrap` (the UI uses the returned value for live feedback), passed through `derive_pool_params` and `build_lmsr_bootstrap_pset` unchanged, and stored directly in the pool OP_RETURN for recovery. The initial reserves are computed as a balanced allocation: equal trading depth in both directions from the starting price.
+`initial_s_index` represents the nearest valid discrete s_index for the requested starting price. It is computed by `estimate_bootstrap` (the UI uses the returned value for live feedback), passed through `derive_pool_params` and `build_lmsr_bootstrap_pset` unchanged, and stored directly in the pool OP_RETURN for recovery. The default reserves returned by `estimate_bootstrap` are a policy recommendation, not a hidden covenant requirement: the creation transaction's actual reserve outputs are authoritative.
 
 ### Estimation
 
@@ -200,19 +202,26 @@ pub fn estimate_bootstrap(
     max_loss_sats: u64,
     half_payout_sats: u64,
     starting_price_bps: u16,
-) -> BootstrapEstimate;
+) -> Result<BootstrapEstimate, BootstrapError>;
 
 pub struct BootstrapEstimate {
     pub initial_yes_reserve: u64,
     pub initial_no_reserve: u64,
     pub initial_collateral_reserve: u64,
-    pub initial_s_index: u64,
+    pub initial_s_index: u16,
+}
+
+pub enum BootstrapError {
+    InvalidStartingPriceBps { starting_price_bps: u16 },
+    ArithmeticOverflow,
 }
 ```
 
-A standalone pure function (no engine needed). The UI calls this on every slider change for live feedback — sub-millisecond, just LMSR math. The three reserves tell the operator exactly how many tokens and how much collateral to provide. `initial_s_index` corresponds to the nearest valid LMSR curve point for the requested starting price (may differ slightly due to discretization). `starting_price_bps` must be in (0, 10000) exclusive — 0% and 100% are rejected (infinite reserve ratios).
+A standalone pure function (no engine needed). The UI calls this on every slider change for live feedback. It returns the **canonical default** bootstrap plan, not the only valid one. `initial_s_index` corresponds to the nearest valid LMSR curve point for the requested starting price (may differ slightly due to discretization). `starting_price_bps` must be in `(0, 10000)` exclusive — 0% and 100% return `BootstrapError::InvalidStartingPriceBps` (infinite reserve ratios). Values that overflow the reserve computation return `BootstrapError::ArithmeticOverflow`.
 
-The `initial_yes_reserve` and `initial_no_reserve` are determined by the pool's capacity in each direction from the starting price. At 50/50, they're roughly equal. At 70/30, more NO tokens are needed (more room to move toward 0%) and fewer YES tokens (less room toward 100%). The balanced allocation ensures equal trading depth in both directions.
+The helper computes the inward-snapped "useful band" bounds first: the lowest and highest table indices whose fee-free YES spot prices remain within `[10, 9990]` bps (0.1%-99.9%). It then returns the smallest reserve vector that lets the pool move from `initial_s_index` to those bounds while preserving `MIN_POOL_RESERVE` on all three reserves. The literal table edges are intentionally **not** used for the default, because `q_step_lots` is ceil-rounded and the table edges can overshoot the useful band, which would force the operator to pre-fund dead tail liquidity.
+
+At 50/50, the default YES and NO reserves are roughly equal. At 70/30, more NO tokens are needed (more room to move toward 0%) and fewer YES tokens (less room toward 100%). Callers remain free to over-fund or under-fund relative to this default by passing different `initial_reserves` into `build_lmsr_bootstrap_pset`.
 
 ### Param Derivation
 
@@ -229,11 +238,11 @@ pub fn derive_pool_params(
 ) -> Result<(LmsrPoolParams, u16 /* masked_index */), ConventionError>;
 ```
 
-A standalone pure function that constructs the full `LmsrPoolParams` with all derived fields. Returns `ConventionError` if inputs violate OP_RETURN encoding conventions (`max_loss_sats` and `half_payout_sats` not in the 16-value 1-2-5 table, `fee_bps > 4095`, `initial_s_index` corresponding to an implied YES price outside `(0, 10000)` bps exclusive). Called once when the user commits to creating a pool — heavier than `estimate_bootstrap` because it generates the full 65K-entry F-value table and computes the Merkle root (~80ms). `initial_s_index` is sourced from `estimate_bootstrap` at creation time and directly from the pool OP_RETURN hint at recovery time — no inverse conversion from `starting_price_bps` is required. The resulting `LmsrPoolParams` is passed directly to `build_lmsr_bootstrap_pset`.
+A standalone pure function that constructs the full `LmsrPoolParams` with all derived fields. Returns `ConventionError` if inputs violate OP_RETURN encoding conventions (`max_loss_sats` and `half_payout_sats` not in the 16-value 1-2-5 table, `fee_bps > 4095`, `initial_s_index` corresponding to an implied YES price outside `(0, 10000)` bps exclusive). Called once when the user commits to creating a pool — heavier than `estimate_bootstrap` because it generates the full 65K-entry F-value table and computes the Merkle root (cold-cache bignum path on first use of a combo, cached thereafter). `initial_s_index` is sourced from `estimate_bootstrap` at creation time and directly from the pool OP_RETURN hint at recovery time — no inverse conversion from `starting_price_bps` is required. The resulting `LmsrPoolParams` is passed directly to `build_lmsr_bootstrap_pset`.
 
 ### Trading (Swaps)
 
-Swaps are not built directly — they're part of trade transactions routed by the engine. See [trade-routing-algorithm.md](../../architecture/trade-routing-algorithm.md). The trade router evaluates pools alongside limit orders for best execution, factoring in both the pool's swap fee (`fee_bps`) and the transaction weight overhead.
+Swaps are not built directly — they're part of trade transactions routed by the engine. See [trade-routing-algorithm.md](../../architecture/trade-routing-algorithm.md). The trade router evaluates pools alongside limit orders for best execution, factoring in both the pool's swap fee (`fee_bps`) and the transaction weight overhead. Pool quoting is reserve-aware: the cached LMSR table determines price movement, while the live reserves cap how much volume is currently fillable before a reserve floor would be violated.
 
 The covenant's swap path enforces:
 - `old_s_index != new_s_index` (state must change)
@@ -309,13 +318,13 @@ The pool earns fee revenue on every swap. The fee (`fee_bps`) is the spread betw
 
 ### Risk
 
-The pool's maximum loss is `max_loss_sats` (= `b × ln(2)`). This worst case occurs when the market moves maximally in one direction from the pool's starting price. In practice, if the market moves and then returns, the pool profits from the round-trip fees.
+The pool's full-curve loss parameter is `max_loss_sats` (= `b × ln(2)`). That is the theoretical worst-case LMSR loss if the pool is funded deeply enough to traverse the entire curve. A particular reserve vector may expose only a subset of that tail; the v1 canonical default bootstrap intentionally funds only the useful 0.1%-99.9% band unless the operator chooses to add more inventory. In practice, if the market moves and then returns, the pool profits from the round-trip fees.
 
 The pool's net P&L = cumulative fee revenue - trading losses from directional movement. A pool in an active, balanced market (prices moving around rather than trending in one direction) typically profits from fees exceeding losses.
 
 ### Capital Efficiency
 
-The total capital needed (sum of `initial_yes_reserve` + `initial_no_reserve` + `initial_collateral_reserve` from `BootstrapEstimate`, converted to collateral terms via the market's `collateral_per_pair`) is larger than `max_loss_sats` because the pool must hold token inventory, not just collateral to cover losses.
+The total capital needed for the canonical default bootstrap (sum of `initial_yes_reserve` + `initial_no_reserve` + `initial_collateral_reserve` from `BootstrapEstimate`, converted to collateral terms via the market's `collateral_per_pair`) is larger than `max_loss_sats` because the pool must hold token inventory, not just collateral to cover losses. Operators who explicitly over-fund the pool need correspondingly more capital; operators who under-fund accept a narrower immediately tradable band.
 
 ## On-Chain Covenant Parameters
 
@@ -329,11 +338,11 @@ With the simplifications above, `LmsrPoolParams` contains:
 | `lmsr_table_root` | 32 bytes | Derived (Merkle root of F-values) |
 | `q_step_lots` | u64 | Derived from `b` and `half_payout_sats` |
 | `half_payout_sats` | u64 | Creator-specified |
-| `fee_bps` | u64 | Creator-specified (u64 for Simplicity arithmetic jets; validated < 10,000) |
+| `fee_bps` | u16 | Creator-specified (public API type; convention-valid range `<= 4095`, widened internally for Simplicity arithmetic) |
 | `admin_pubkey` | 32 bytes | From mnemonic |
 | `max_loss_sats` | u64 | Creator-specified — NOT a covenant param (see below) |
 
-The first 8 fields are covenant parameters (compiled into the Simplicity program). `max_loss_sats` is not a covenant parameter — the covenant only verifies Merkle proofs, never evaluates the cost function. It is included in the struct because all off-chain LMSR computation (point evaluation for quoting, table generation for Merkle proofs, spot price calculation) requires the liquidity parameter `b = max_loss_sats / ln(2)`, and `b` is not recoverable from the covenant params alone (the `ceil()` in the `max_loss_sats → q_step_lots` derivation is lossy). `q_step_lots` and `lmsr_table_root` are retained alongside `max_loss_sats` as compilation caches — recomputing `lmsr_table_root` requires ~80ms of table generation.
+The first 8 fields are covenant parameters (compiled into the Simplicity program). `max_loss_sats` is not a covenant parameter — the covenant only verifies Merkle proofs, never evaluates the cost function. It is included in the struct because all off-chain LMSR computation (cached-table quoting, table generation for Merkle proofs, spot price calculation) requires the liquidity parameter `b = max_loss_sats / ln(2)`, and `b` is not recoverable from the covenant params alone (the `ceil()` in the `max_loss_sats → q_step_lots` derivation is lossy). `q_step_lots` and `lmsr_table_root` are retained alongside `max_loss_sats` as compilation caches — recomputing `lmsr_table_root` is the cold-cache table-generation path for that combo.
 
 **Removed from params** (now constants in the `.simf`): `table_depth`, `s_bias`, `s_max_index`, `min_r_yes`, `min_r_no`, `min_r_collateral`.
 
