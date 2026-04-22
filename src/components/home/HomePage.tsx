@@ -210,14 +210,14 @@ function SidebarMarketItem({
               onClick={() =>
                 openMarket(market, { side: "yes", intent: "open" })
               }
-              className="rounded-full bg-emerald-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-emerald-400"
+              className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-xs font-medium text-emerald-400 transition hover:bg-emerald-500/25"
             >
               {yesPct != null ? `Yes ${yesPct}%` : "Buy Yes"}
             </button>
             <button
               type="button"
               onClick={() => openMarket(market, { side: "no", intent: "open" })}
-              className="rounded-full bg-rose-500 px-2.5 py-0.5 text-xs font-medium text-white transition hover:bg-rose-400"
+              className="rounded-full bg-rose-500/15 px-2.5 py-0.5 text-xs font-medium text-rose-400 transition hover:bg-rose-500/25"
             >
               {noPct != null ? `No ${noPct}%` : "Buy No"}
             </button>

@@ -3,6 +3,7 @@ import { useCancelLimitOrder } from "../../queries/mutations/useTrading";
 import { useStore } from "../../store";
 import type { Market } from "../../types";
 import { getFullOrderbook } from "../../utils-react/market";
+import { generateMockOrderbook } from "../../utils-react/mock-orderbook";
 
 export default function OrderbookPanel({ market }: { market: Market }) {
   const selectedSide = useStore((s) => s.selectedSide);
@@ -11,18 +12,44 @@ export default function OrderbookPanel({ market }: { market: Market }) {
 
   const cancelLimitOrderMutation = useCancelLimitOrder();
 
-  const book = useMemo(
+  const realBook = useMemo(
     () => getFullOrderbook(market, selectedSide),
     [market, selectedSide],
   );
+  const book = useMemo(() => {
+    const hasOrders = realBook.asks.length > 0 || realBook.bids.length > 0;
+    return hasOrders ? realBook : generateMockOrderbook(market);
+  }, [realBook, market]);
 
-  const maxContracts = Math.max(
-    ...book.asks.map((l) => l.contracts),
-    ...book.bids.map((l) => l.contracts),
+  // Cumulative sums — asks accumulate away from spread (top of book outward),
+  // bids accumulate away from spread (top of book outward). Both grow outward
+  // from the spread, producing a V-curve depth shape.
+  const cumAsks = useMemo(() => {
+    // asks are sorted ascending; cumulate from best (lowest) upward
+    let running = 0;
+    return book.asks.map((l) => {
+      running += l.contracts;
+      return { ...l, cumulative: running };
+    });
+  }, [book.asks]);
+
+  const cumBids = useMemo(() => {
+    // bids are sorted descending; cumulate from best (highest) downward
+    let running = 0;
+    return book.bids.map((l) => {
+      running += l.contracts;
+      return { ...l, cumulative: running };
+    });
+  }, [book.bids]);
+
+  const maxCumulative = Math.max(
+    cumAsks.length > 0 ? cumAsks[cumAsks.length - 1].cumulative : 0,
+    cumBids.length > 0 ? cumBids[cumBids.length - 1].cumulative : 0,
     1,
   );
 
-  const askRows = useMemo(() => [...book.asks].reverse(), [book.asks]);
+  // Asks displayed highest price at top → reverse so highest ask is first row
+  const askRows = useMemo(() => [...cumAsks].reverse(), [cumAsks]);
 
   const myOrders = useMemo(
     () =>
@@ -65,9 +92,9 @@ export default function OrderbookPanel({ market }: { market: Market }) {
           <span>Contracts</span>
         </div>
 
-        {/* Asks (reversed — highest at top) */}
+        {/* Asks (reversed — highest at top, widest bar at top) */}
         {askRows.map((level) => {
-          const pct = (level.contracts / maxContracts) * 100;
+          const pct = (level.cumulative / maxCumulative) * 100;
           return (
             <div
               key={`ask-${level.priceSats}`}
@@ -79,7 +106,7 @@ export default function OrderbookPanel({ market }: { market: Market }) {
               />
               <span className="relative text-rose-400">{level.priceSats}</span>
               <span className="relative text-slate-300">
-                {level.contracts.toFixed(0)}
+                {level.cumulative.toFixed(0)}
               </span>
             </div>
           );
@@ -101,8 +128,9 @@ export default function OrderbookPanel({ market }: { market: Market }) {
             No bids
           </div>
         )}
-        {book.bids.map((level) => {
-          const pct = (level.contracts / maxContracts) * 100;
+        {/* Bids (best bid at top, widest bar at bottom) */}
+        {cumBids.map((level) => {
+          const pct = (level.cumulative / maxCumulative) * 100;
           return (
             <div
               key={`bid-${level.priceSats}`}
@@ -116,7 +144,7 @@ export default function OrderbookPanel({ market }: { market: Market }) {
                 {level.priceSats}
               </span>
               <span className="relative text-slate-300">
-                {level.contracts.toFixed(0)}
+                {level.cumulative.toFixed(0)}
               </span>
             </div>
           );
