@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useWalletNeedsBackup } from "../../hooks/useWalletNeedsBackup";
 import {
   useLockWallet,
   useSyncWallet,
@@ -15,6 +16,7 @@ import { WalletModal } from "../modals/WalletModal";
 import { HiddenBalance, PawIcon } from "../shared/PawIcon";
 import { ActivityList } from "./ActivityList";
 import { UtxoList } from "./UtxoList";
+import { WalletBackupDialog } from "./WalletBackupDialog";
 
 const PAGE_SIZE = 10;
 
@@ -45,6 +47,8 @@ export function WalletUnlocked({
   const walletModal = useStore((s) => s.walletModal);
 
   const { data: markets = [] } = useMarkets();
+  const needsBackup = useWalletNeedsBackup();
+  const [backupDialogOpen, setBackupDialogOpen] = useState(false);
 
   const syncWallet = useSyncWallet();
   const lockWallet = useLockWallet();
@@ -248,6 +252,46 @@ export function WalletUnlocked({
     <div className="px-6 py-6">
       <div className="space-y-6">
         {errorHtml}
+
+        {/* Backup reminder — not dismissible, clears when user confirms
+            they've saved the mnemonic in WalletBackupDialog. */}
+        {needsBackup && (
+          <button
+            type="button"
+            onClick={() => setBackupDialogOpen(true)}
+            className="flex w-full items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-left transition hover:bg-amber-500/15"
+          >
+            <svg
+              aria-hidden="true"
+              className="mt-0.5 h-5 w-5 shrink-0 text-amber-300"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
+              />
+            </svg>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-amber-200">
+                Back up your recovery phrase
+              </p>
+              <p className="mt-0.5 text-xs text-amber-200/70">
+                Save your 12 words somewhere safe. Without them you can't
+                recover this wallet if you lose your device. Click to view and
+                confirm.
+              </p>
+            </div>
+          </button>
+        )}
+
+        <WalletBackupDialog
+          open={backupDialogOpen}
+          onClose={() => setBackupDialogOpen(false)}
+        />
 
         {/* Balance */}
         <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-6 text-center relative">

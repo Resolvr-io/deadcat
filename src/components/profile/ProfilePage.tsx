@@ -221,10 +221,14 @@ function ProfilePageContent() {
             </button>
           </div>
 
-          {/* Avatar overlapping banner */}
-          <div className="px-6 pt-2">
-            <div className="relative -mt-8 mb-8 flex items-end gap-4">
-              <div className="relative">
+          {/* Avatar overlaps banner; name/NIP-05/npub sit to its right,
+              starting below the banner edge so nothing overlaps the image.
+              items-start prevents the flex from stretching the avatar
+              container (which would push its absolute-positioned camera
+              button away from the avatar itself). */}
+          <div className="px-6">
+            <div className="-mt-8 mb-8 flex items-start gap-5">
+              <div className="relative shrink-0">
                 <img
                   src={avatarSrc}
                   alt="Avatar"
@@ -267,7 +271,9 @@ function ProfilePageContent() {
                   </svg>
                 </button>
               </div>
-              <div className="min-w-0 flex-1 pb-1">
+              {/* mt-8 cancels the row's -mt-8 (back to banner edge), plus
+                  an extra pt-3 for breathing room between banner and name. */}
+              <div className="mt-8 min-w-0 flex-1 pt-3">
                 <p className="text-lg font-medium text-slate-100 truncate">
                   {displayName || name || "Unnamed"}
                 </p>

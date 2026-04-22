@@ -1,7 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { type ReactNode, useCallback } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { setWalletNeedsBackup } from "../../hooks/useWalletNeedsBackup";
 import { useStore } from "../../store";
+import type { NostrProfile } from "../../types";
+import { generateAvatarDataUri } from "../../utils-react/avatar";
 import { showToast } from "../shared/Toast";
 
 function BackButton({ onClick }: { onClick: () => void }) {
@@ -30,40 +33,13 @@ function BackButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-// ── Mnemonic grid (React version) ───────────────────────────────────
-function MnemonicGrid({ mnemonic }: { mnemonic: string }) {
-  const words = mnemonic.split(" ");
-  const rows: string[][] = [];
-  for (let i = 0; i < words.length; i += 3) {
-    rows.push(words.slice(i, i + 3));
-  }
-  return (
-    <div className="space-y-2">
-      {rows.map((row, rowIdx) => (
-        <div key={`row-${rowIdx}`} className="grid grid-cols-3 gap-2">
-          {row.map((word, colIdx) => (
-            <div
-              key={`word-${rowIdx * 3 + colIdx + 1}-${word}`}
-              className="flex items-baseline gap-1.5 min-w-0"
-            >
-              <span className="text-xs text-slate-500 shrink-0">
-                {rowIdx * 3 + colIdx + 1}.
-              </span>
-              <span className="mono text-sm text-slate-100">{word}</span>
-            </div>
-          ))}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ── Password fields ─────────────────────────────────────────────────
 export function PasswordFields({
   password,
   confirm,
   revealed,
   disabled,
+  label = "Password",
   onPasswordChange,
   onConfirmChange,
   onToggleReveal,
@@ -72,6 +48,7 @@ export function PasswordFields({
   confirm: string;
   revealed: boolean;
   disabled: boolean;
+  label?: string;
   onPasswordChange: (val: string) => void;
   onConfirmChange: (val: string) => void;
   onToggleReveal: () => void;
@@ -85,7 +62,7 @@ export function PasswordFields({
           htmlFor="wallet-password"
           className="text-xs font-medium text-slate-400 uppercase tracking-wide"
         >
-          Password
+          {label}
         </label>
         <div className="relative">
           <input
@@ -206,6 +183,7 @@ async function finishOnboarding(
 }
 
 // ── Main component ──────────────────────────────────────────────────
+
 interface WalletSetupStepProps {
   stepIndicator: ReactNode;
 }
@@ -222,15 +200,74 @@ export default function WalletSetupStep({
   const password = useStore((s) => s.onboardingWalletPassword);
   const passwordConfirm = useStore((s) => s.onboardingWalletPasswordConfirm);
   const passwordRevealed = useStore((s) => s.onboardingPasswordRevealed);
-  const verifyStep = useStore((s) => s.onboardingMnemonicVerifyStep);
-  const verifyIndices = useStore((s) => s.onboardingMnemonicVerifyIndices);
-  const verifyInputs = useStore((s) => s.onboardingMnemonicVerifyInputs);
   const backupScanning = useStore((s) => s.onboardingBackupScanning);
   const backupFound = useStore((s) => s.onboardingBackupFound);
   const backupStatus = useStore((s) => s.nostrBackupStatus);
   const selectedDTag = useStore((s) => s.onboardingSelectedWalletDTag);
   const relays = useStore((s) => s.relays);
+  const nostrMode = useStore((s) => s.onboardingNostrMode);
+  const nostrProfile = useStore((s) => s.nostrProfile);
+  const nostrNpub = useStore((s) => s.nostrNpub);
   const queryClient = useQueryClient();
+
+  // Whether the optional "Add wallet recovery phrase" panel is expanded
+  // on the combined bunker setup screen. Local state, reset on unmount.
+  const [showRecoveryInput, setShowRecoveryInput] = useState(false);
+  // Tracks whether the profile fetch has settled at least once (success
+  // or failure). Used to stop showing "Loading profile…" indefinitely.
+  const [profileAttempted, setProfileAttempted] = useState(false);
+
+  // Fetch the user's kind:0 profile for the bunker identity card.
+  // Uses `preview_nostr_profile` (2s connect + 3s fetch, standalone
+  // client) rather than the node-backed `fetch_nostr_profile` which
+  // has a 10s timeout and depends on the node's relay pool being
+  // fully connected.
+  useEffect(() => {
+    if (nostrMode !== "bunker") return;
+    if (!nostrNpub) return;
+    if (nostrProfile) {
+      setProfileAttempted(true);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      // Try the fast standalone client first. If relays were slow or the
+      // kind:0 wasn't on our defaults, retry a couple of times, then fall
+      // back to the node-backed fetch (its relay pool is already warm
+      // from the NIP-46 subscription).
+      const attempts: Array<() => Promise<NostrProfile | null>> = [
+        () =>
+          invoke<NostrProfile | null>("preview_nostr_profile", {
+            npub: nostrNpub,
+          }),
+        () =>
+          invoke<NostrProfile | null>("preview_nostr_profile", {
+            npub: nostrNpub,
+          }),
+        () => invoke<NostrProfile | null>("fetch_nostr_profile"),
+      ];
+      for (const attempt of attempts) {
+        if (cancelled) return;
+        try {
+          const profile = await attempt();
+          if (cancelled) return;
+          if (profile) {
+            useStore.setState({ nostrProfile: profile });
+            setProfileAttempted(true);
+            return;
+          }
+        } catch {
+          // Try the next strategy
+        }
+        // Small gap between attempts so relays have a moment to settle
+        await new Promise((r) => setTimeout(r, 800));
+      }
+      if (!cancelled) setProfileAttempted(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [nostrMode, nostrNpub, nostrProfile]);
 
   const errorHtml = error ? (
     <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3">
@@ -242,20 +279,13 @@ export default function WalletSetupStep({
   const handleBack = useCallback(() => {
     useStore.setState({ onboardingPasswordRevealed: false });
 
-    if (passwordStep && walletMode === "create") {
-      // Back from password page (create) -> verify step
-      useStore.setState({
-        onboardingWalletPasswordStep: false,
-        onboardingWalletPassword: "",
-        onboardingWalletPasswordConfirm: "",
-        onboardingMnemonicVerifyStep: true,
-        onboardingError: "",
-      });
-    } else if (
+    if (
       passwordStep &&
-      (walletMode === "restore" || walletMode === "nostr-restore")
+      (walletMode === "create" ||
+        walletMode === "restore" ||
+        walletMode === "nostr-restore")
     ) {
-      // Back from password page (restore/nostr-restore) -> sub-page
+      // Back from password page -> prior screen (main wallet page or restore sub-page)
       useStore.setState({
         onboardingWalletPasswordStep: false,
         onboardingWalletPassword: "",
@@ -279,8 +309,7 @@ export default function WalletSetupStep({
         });
       }
     } else {
-      const onSubPage =
-        passwordStep || verifyStep || !!mnemonic || walletMode === "restore";
+      const onSubPage = passwordStep || !!mnemonic || walletMode === "restore";
       if (onSubPage) {
         useStore.setState({
           onboardingWalletMode: "create",
@@ -288,9 +317,6 @@ export default function WalletSetupStep({
           onboardingWalletPassword: "",
           onboardingWalletPasswordConfirm: "",
           onboardingWalletPasswordStep: false,
-          onboardingMnemonicVerifyStep: false,
-          onboardingMnemonicVerifyIndices: [],
-          onboardingMnemonicVerifyInputs: [],
           onboardingBackupFound: false,
           onboardingError: "",
         });
@@ -304,7 +330,7 @@ export default function WalletSetupStep({
         });
       }
     }
-  }, [passwordStep, walletMode, walletOnly, verifyStep, mnemonic]);
+  }, [passwordStep, walletMode, walletOnly, mnemonic]);
 
   // ── Wallet continue (create / restore / nostr-restore) ────────────
   const handleWalletContinue = useCallback(async () => {
@@ -314,37 +340,10 @@ export default function WalletSetupStep({
       });
       return;
     }
-    if (walletMode === "create") {
-      // Generate mnemonic, then show backup screen
-      useStore.setState({
-        onboardingLoading: true,
-        onboardingError: "",
-      });
-      try {
-        const newMnemonic = await invoke<string>("generate_mnemonic");
-        const wordCount = newMnemonic.trim().split(/\s+/).length;
-        const pool = Array.from({ length: wordCount }, (_, i) => i);
-        for (let i = pool.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [pool[i], pool[j]] = [pool[j], pool[i]];
-        }
-        useStore.setState({
-          onboardingWalletMnemonic: newMnemonic,
-          onboardingMnemonicVerifyIndices: pool
-            .slice(0, 3)
-            .sort((a, b) => a - b),
-          onboardingMnemonicVerifyInputs: ["", "", ""],
-          onboardingLoading: false,
-        });
-      } catch (e) {
-        useStore.setState({
-          onboardingError: String(e),
-          onboardingLoading: false,
-        });
-      }
-      return;
-    }
-    // For restore/nostr-restore: go to password step (clear passwords for fresh start)
+    // All modes: go straight to password step. For "create" the mnemonic is
+    // generated atomically inside `create_wallet(password)` at commit time,
+    // so there's no separate "save your recovery phrase" / verify step.
+    // Users can always retrieve the mnemonic later from Settings.
     useStore.setState({
       onboardingWalletPasswordStep: true,
       onboardingWalletPassword: "",
@@ -373,10 +372,11 @@ export default function WalletSetupStep({
     }
     useStore.setState({ onboardingLoading: true, onboardingError: "" });
     try {
-      await invoke("restore_wallet", {
-        mnemonic,
-        password,
-      });
+      // Backend generates the mnemonic, encrypts it with the password, and
+      // persists it in one shot. User never sees the raw mnemonic during
+      // onboarding — it's retrievable later from Settings.
+      await invoke("create_wallet", { password });
+      setWalletNeedsBackup(true);
       await invoke("unlock_wallet", { password });
       showToast("Wallet created!", "success");
       useStore.setState({ onboardingLoading: false });
@@ -387,7 +387,7 @@ export default function WalletSetupStep({
         onboardingLoading: false,
       });
     }
-  }, [password, passwordConfirm, mnemonic, queryClient]);
+  }, [password, passwordConfirm, queryClient]);
 
   // ── Restore wallet from seed (after password) ─────────────────────
   const handleRestoreWallet = useCallback(async () => {
@@ -414,6 +414,7 @@ export default function WalletSetupStep({
         mnemonic: mnemonic.trim(),
         password,
       });
+      setWalletNeedsBackup(false);
       await invoke("unlock_wallet", { password });
       showToast("Wallet restored!", "success");
       await finishOnboarding(queryClient);
@@ -456,6 +457,7 @@ export default function WalletSetupStep({
         mnemonic: restoredMnemonic.trim(),
         password,
       });
+      setWalletNeedsBackup(false);
       await invoke("unlock_wallet", { password });
       showToast("Wallet restored from Nostr backup!", "success");
       await finishOnboarding(queryClient);
@@ -467,58 +469,220 @@ export default function WalletSetupStep({
     }
   }, [password, passwordConfirm, backupStatus, selectedDTag, queryClient]);
 
-  // ── Copy mnemonic ─────────────────────────────────────────────────
-  const handleCopyMnemonic = useCallback(() => {
-    if (mnemonic) {
-      void navigator.clipboard.writeText(mnemonic);
-      showToast("Copied recovery phrase to clipboard");
-    }
-  }, [mnemonic]);
-
-  // ── Mnemonic done -> verify step ──────────────────────────────────
-  const handleMnemonicDone = useCallback(() => {
-    useStore.setState({
-      onboardingMnemonicVerifyStep: true,
-      onboardingError: "",
-    });
-  }, []);
-
-  // ── Verify mnemonic ───────────────────────────────────────────────
-  const handleVerifyMnemonic = useCallback(() => {
-    const words = mnemonic.trim().split(/\s+/);
-    const allVerified =
-      verifyIndices.length === 3 &&
-      verifyIndices.every(
-        (wordIdx, i) =>
-          (verifyInputs[i] ?? "").trim().toLowerCase() === words[wordIdx],
-      );
-    if (!allVerified) {
+  // ── Combined bunker wallet commit ─────────────────────────────────
+  // Single-screen flow for NIP-46 users: validate password, then either
+  // restore a typed mnemonic or generate a fresh wallet.
+  const handleBunkerWalletSubmit = useCallback(async () => {
+    if (!password || password !== passwordConfirm) {
       useStore.setState({
-        onboardingError:
-          "One or more words are incorrect. Check your recovery phrase and try again.",
+        onboardingError: !password
+          ? "Password is required."
+          : "Passwords do not match.",
+        onboardingWalletPassword: "",
+        onboardingWalletPasswordConfirm: "",
       });
       return;
     }
-    useStore.setState({
-      onboardingWalletPasswordStep: true,
-      onboardingMnemonicVerifyStep: false,
-      onboardingWalletPassword: "",
-      onboardingWalletPasswordConfirm: "",
-      onboardingError: "",
-    });
-  }, [mnemonic, verifyIndices, verifyInputs]);
-
-  // ── Verify input change ───────────────────────────────────────────
-  const handleVerifyInputChange = useCallback(
-    (index: number, value: string) => {
-      useStore.setState((s) => {
-        const inputs = [...s.onboardingMnemonicVerifyInputs];
-        inputs[index] = value;
-        return { onboardingMnemonicVerifyInputs: inputs };
+    if (password.length < 8) {
+      useStore.setState({
+        onboardingError: "Password must be at least 8 characters.",
       });
-    },
-    [],
-  );
+      return;
+    }
+    useStore.setState({ onboardingLoading: true, onboardingError: "" });
+    try {
+      const typedMnemonic = mnemonic.trim();
+      if (typedMnemonic) {
+        await invoke("restore_wallet", {
+          mnemonic: typedMnemonic,
+          password,
+        });
+        setWalletNeedsBackup(false);
+        showToast("Wallet restored!", "success");
+      } else {
+        await invoke("create_wallet", { password });
+        setWalletNeedsBackup(true);
+        showToast("Wallet created!", "success");
+      }
+      await invoke("unlock_wallet", { password });
+      // The `app_state_updated` event listener only syncs `unlocked → locked`
+      // transitions to the store; we must explicitly flip the store's
+      // walletStatus here so WalletPage doesn't land on its legacy setup
+      // screen after onboarding finishes.
+      useStore.setState({
+        walletStatus: "unlocked",
+        walletSessionPassword: password,
+        onboardingLoading: false,
+      });
+      await finishOnboarding(queryClient);
+    } catch (e) {
+      useStore.setState({
+        onboardingError: String(e),
+        onboardingLoading: false,
+      });
+    }
+  }, [password, passwordConfirm, mnemonic, queryClient]);
+
+  // ── Combined bunker setup screen ──────────────────────────────────
+  // Single page that shows the connected Nostr identity, an optional
+  // recovery-phrase input, password fields, and a single submit button.
+  // Replaces the legacy multi-step Confirm Identity → Set up wallet flow.
+  if (nostrMode === "bunker") {
+    const displayName =
+      nostrProfile?.display_name || nostrProfile?.name || "Nostr identity";
+    const avatarSrc = nostrProfile?.picture
+      ? nostrProfile.picture
+      : nostrNpub
+        ? generateAvatarDataUri(nostrNpub)
+        : "";
+    const nip05 = nostrProfile?.nip05 ?? "";
+    const truncNpub = nostrNpub
+      ? `${nostrNpub.slice(0, 12)}...${nostrNpub.slice(-6)}`
+      : "";
+    // Show real profile once fetched; fall back to npub after the
+    // first attempt settles even if nothing was found.
+    const profileReady = profileAttempted;
+    const submitLabel = loading
+      ? "Creating..."
+      : mnemonic.trim()
+        ? "Restore wallet"
+        : "Create wallet";
+
+    return (
+      <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
+        {stepIndicator}
+        <BackButton onClick={handleBack} />
+
+        {/* Identity card — positioned above the title so the password
+            fields below are unambiguously scoped to the wallet, not the
+            signer-held Nostr identity. */}
+        <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-emerald-400">
+          Signed in as
+        </p>
+        <div className="mb-6 flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+          {avatarSrc ? (
+            <img
+              src={avatarSrc}
+              alt=""
+              className="h-10 w-10 shrink-0 rounded-full object-cover"
+            />
+          ) : (
+            <div className="h-10 w-10 shrink-0 rounded-full bg-slate-800" />
+          )}
+          <div className="min-w-0 flex-1">
+            {profileReady ? (
+              <>
+                <p className="truncate text-sm font-semibold text-slate-100">
+                  {displayName}
+                </p>
+                <p className="mono truncate text-xs text-slate-500">
+                  {nip05 || truncNpub}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="flex items-center gap-2 text-sm font-semibold text-slate-400">
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-700 border-t-emerald-400" />
+                  Loading profile…
+                </p>
+                <p className="mono mt-0.5 truncate text-xs text-slate-600">
+                  {truncNpub}
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+
+        <h2 className="text-2xl font-semibold text-white">
+          Create your wallet
+        </h2>
+        <p className="mt-3 text-sm text-slate-400 leading-relaxed">
+          Deadcat uses a self-custodial wallet on Bitcoin's Liquid Network. Your
+          password encrypts this wallet on this device, separate from your
+          remote signer.
+        </p>
+
+        {errorHtml && <div className="mt-5">{errorHtml}</div>}
+
+        {/* Password */}
+        <div className="mt-6">
+          <PasswordFields
+            password={password}
+            confirm={passwordConfirm}
+            revealed={passwordRevealed}
+            disabled={loading}
+            label="Wallet password"
+            onPasswordChange={(val) =>
+              useStore.setState({ onboardingWalletPassword: val })
+            }
+            onConfirmChange={(val) =>
+              useStore.setState({ onboardingWalletPasswordConfirm: val })
+            }
+            onToggleReveal={() =>
+              useStore.setState((s) => ({
+                onboardingPasswordRevealed: !s.onboardingPasswordRevealed,
+              }))
+            }
+          />
+        </div>
+
+        {/* Primary action — new-wallet creation is the default path */}
+        <button
+          type="button"
+          onClick={handleBunkerWalletSubmit}
+          disabled={loading}
+          className="mt-6 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {submitLabel}
+        </button>
+
+        {/* Secondary path — existing users can expand to paste a mnemonic.
+            When populated, the primary button label flips to "Restore wallet". */}
+        <div className="mt-4">
+          {showRecoveryInput ? (
+            <div className="space-y-2">
+              <label
+                htmlFor="bunker-recovery-phrase"
+                className="text-xs font-medium uppercase tracking-wide text-slate-400"
+              >
+                Wallet recovery phrase
+              </label>
+              <textarea
+                id="bunker-recovery-phrase"
+                rows={3}
+                placeholder="word1 word2 word3 ... word12"
+                value={mnemonic}
+                onChange={(e) =>
+                  useStore.setState({
+                    onboardingWalletMnemonic: e.target.value,
+                  })
+                }
+                className="mono w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRecoveryInput(false);
+                  useStore.setState({ onboardingWalletMnemonic: "" });
+                }}
+                className="text-xs text-slate-500 hover:text-slate-300 transition"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowRecoveryInput(true)}
+              className="w-full text-center text-xs text-slate-500 hover:text-slate-300 transition"
+            >
+              + Restore from an existing wallet recovery phrase
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   // ── Scanning state ────────────────────────────────────────────────
   if (backupScanning) {
@@ -595,91 +759,6 @@ export default function WalletSetupStep({
             {submitLabel}
           </button>
         </div>
-      </div>
-    );
-  }
-
-  // ── Mnemonic verify page ──────────────────────────────────────────
-  if (mnemonic && walletMode === "create" && verifyStep) {
-    return (
-      <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
-        {stepIndicator}
-        <BackButton onClick={handleBack} />
-        <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">
-          Verify backup
-        </p>
-        <h2 className="text-2xl font-semibold text-white">
-          Confirm your recovery phrase
-        </h2>
-        <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-          Enter the 3 words below to confirm you've written them down correctly.
-        </p>
-        <div className="mt-8 space-y-4">
-          {verifyIndices.map((wordIdx, i) => (
-            <div
-              key={`verify-word-${wordIdx}`}
-              className="flex items-center gap-4"
-            >
-              <span className="w-16 shrink-0 text-right text-xs font-medium text-slate-500">
-                Word {wordIdx + 1}
-              </span>
-              <input
-                type="text"
-                placeholder={`type word ${wordIdx + 1}`}
-                autoComplete="off"
-                spellCheck={false}
-                value={verifyInputs[i] ?? ""}
-                onChange={(e) => handleVerifyInputChange(i, e.target.value)}
-                className="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm outline-none ring-emerald-400 transition focus:ring-2 mono"
-              />
-            </div>
-          ))}
-        </div>
-        {errorHtml && <div className="mt-5">{errorHtml}</div>}
-        <button
-          type="button"
-          onClick={handleVerifyMnemonic}
-          className="mt-8 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
-        >
-          Confirm
-        </button>
-      </div>
-    );
-  }
-
-  // ── Mnemonic display page ─────────────────────────────────────────
-  if (mnemonic && walletMode === "create") {
-    return (
-      <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
-        {stepIndicator}
-        <BackButton onClick={handleBack} />
-        <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400 mb-2">
-          Wallet created
-        </p>
-        <h2 className="text-2xl font-semibold text-white">
-          Save your recovery phrase
-        </h2>
-        <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-          Write these 12 words down in order and store them somewhere safe. This
-          is the only way to recover your wallet.
-        </p>
-        <div className="mt-6 rounded-xl border border-slate-700 bg-slate-900/60 p-5 space-y-4">
-          <MnemonicGrid mnemonic={mnemonic} />
-          <button
-            type="button"
-            onClick={handleCopyMnemonic}
-            className="w-full rounded-lg border border-slate-700 px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 transition"
-          >
-            Copy to clipboard
-          </button>
-        </div>
-        <button
-          type="button"
-          onClick={handleMnemonicDone}
-          className="mt-8 w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 transition"
-        >
-          I've saved my recovery phrase
-        </button>
       </div>
     );
   }
@@ -916,7 +995,8 @@ export default function WalletSetupStep({
       )}
       <h2 className="text-2xl font-semibold text-white">Set up your wallet</h2>
       <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-        Create a new Liquid wallet or restore an existing one.
+        Deadcat uses a self-custodial wallet on Bitcoin's Liquid Network. Create
+        a new wallet or restore an existing one.
       </p>
       {errorHtml && <div className="mt-5">{errorHtml}</div>}
       {backupFoundCard && <div className="mt-5">{backupFoundCard}</div>}

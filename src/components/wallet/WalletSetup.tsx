@@ -232,7 +232,7 @@ export function WalletSetup({
             <p className="mt-1 text-sm text-slate-400">
               {nostrNpub
                 ? "Create a new wallet or restore from a recovery phrase."
-                : "Set up a self-custody Liquid wallet to start trading prediction markets."}
+                : "Deadcat uses a self-custodial wallet on Bitcoin's Liquid Network. Set it up to start trading prediction markets."}
             </p>
           </div>
           {errorHtml}

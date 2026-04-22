@@ -1462,6 +1462,21 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            // Bridge `tracing` events (nostr-connect / nostr-sdk internals)
+            // to the `log` crate so tauri-plugin-log captures them. Useful
+            // for diagnosing NIP-46 handshake stalls.
+            let _ = tracing_log::LogTracer::init();
+            let filter =
+                tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                    tracing_subscriber::EnvFilter::new(
+                        "nostr=debug,nostr_connect=debug,nostr_sdk=info",
+                    )
+                });
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(std::io::stderr)
+                .try_init();
+
             let app_data_dir = app
                 .path()
                 .app_data_dir()
@@ -1680,7 +1695,7 @@ pub fn run() {
             commands::delete_nostr_identity,
             commands::import_nostr_nsec,
             // NIP-46 remote signing
-            commands::generate_nostrconnect_uri,
+            commands::initiate_nostrconnect,
             commands::connect_nip46_bunker,
             commands::disconnect_nip46,
             commands::get_nip46_status,

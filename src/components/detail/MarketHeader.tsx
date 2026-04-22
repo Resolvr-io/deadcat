@@ -10,6 +10,7 @@ import {
   getEstimatedSettlementDate,
   getPositionContracts,
 } from "../../utils-react/market";
+import { categoryIcon } from "../layout/TopShell";
 
 function stateBadge(state: number) {
   const colorMap: Record<number, string> = {
@@ -79,7 +80,8 @@ export function MarketHeaderTop({ market }: { market: Market }) {
           Markets
         </button>
         <div className="flex items-center gap-2">
-          <span className="rounded-full bg-slate-800 px-2.5 py-0.5 text-xs text-slate-300">
+          <span className="flex items-center gap-1.5 rounded-full bg-slate-800 px-2.5 py-0.5 text-xs text-slate-300">
+            {categoryIcon(market.category, "h-3 w-3")}
             {market.category}
           </span>
           {stateBadge(market.state)}
