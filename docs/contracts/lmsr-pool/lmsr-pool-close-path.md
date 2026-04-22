@@ -103,7 +103,9 @@ Takes only wallet funding. The `Pool` view already identifies the contract being
 
 Maker orders intentionally use a real internal key — the maker's ability to key-spend is the sole cancellation mechanism. The Simplicity program handles fills only; cancellation is exclusively via key-spend. See [maker-order-remove-script-cancel.md](../maker-order/maker-order-remove-script-cancel.md). Markets and pools use NUMS because their lifecycle is governed by covenant logic, not a single party's key.
 
-## Key Files
+## Legacy Source Touchpoints
+
+These are the current `deadcat-sdk` files where this legacy-source delta exists today. The `deadcat-core` implementation should realize the same behavior in its new pool contract modules.
 
 - `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — add close path to primary program
 - `src-tauri/crates/deadcat-sdk/src/lmsr_pool/contract.rs` — compilation (no structural change — same leaves)

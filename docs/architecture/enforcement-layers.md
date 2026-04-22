@@ -225,9 +225,9 @@ When adding a new security property or modifying an existing one:
 
 ## Key Files
 
-- `src-tauri/crates/deadcat-sdk/contract/prediction_market.simf` — `ensure_blinded_reissuance_burn_output`, `ensure_no_issuance`, `verify_token_commitment`
-- `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — pool covenant (swap, admin, close paths)
-- `src-tauri/crates/deadcat-sdk/contract/maker_order.simf` — order covenant (fill path only)
+- `crates/deadcat-core/contracts/prediction_market.simf` — `ensure_blinded_reissuance_burn_output`, `ensure_no_issuance`, `verify_token_commitment`
+- `crates/deadcat-core/contracts/lmsr_pool.simf` — pool covenant (swap, admin, close paths)
+- `crates/deadcat-core/contracts/maker_order.simf` — order covenant (fill path only)
 - `docs/protocol/deterministic-rt-blinding.md` — RT blinding scheme and covenant enforcement
 - `docs/contracts/contract-specification.md` — spend paths and covenant constraints
 - `docs/architecture/deadcat-core-design.md` — security model section, covenant-enforced properties table

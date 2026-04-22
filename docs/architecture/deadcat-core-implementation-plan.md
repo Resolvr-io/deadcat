@@ -22,7 +22,7 @@ This document specifies the order of work for implementing `deadcat-core`, `dead
 
 ## Framing: from-scratch, not refactor
 
-The existing `deadcat-sdk` contracts are **reference implementations, not baselines to modify**. The new contracts in `deadcat-core` are written fresh, incorporating every design decision captured in the pre-implementation review. The "pending refactors" list in [contract-specification.md](../contracts/contract-specification.md#pending-refactors) is therefore better read as "features of the new contracts" than "changes to apply to old ones."
+The existing `deadcat-sdk` contracts are **reference implementations, not baselines to modify**. The new contracts in `deadcat-core` are written fresh, incorporating every design decision captured in the pre-implementation review. The [legacy source alignment checklist](../contracts/contract-specification.md#legacy-source-alignment-checklist) in `contract-specification.md` is therefore better read as "features of the new contracts" than "changes to apply to old ones."
 
 This framing shifts the risk profile: instead of "did we correctly migrate an existing property?" the question becomes "did we correctly enforce every invariant from first principles?" The [covenant self-enforcement principle](../contracts/market-contract-principles.md#covenant-self-enforcement) and [System Invariants](deadcat-core-design.md#system-invariants) are the checklist.
 
@@ -120,7 +120,7 @@ Phase numbering reflects execution order. Within each phase, items are listed in
 
 **Deliverables**:
 
-1. **Crate bootstrap** with minimal runtime deps: `simplicity_lang` (or whatever the Rust binding crate is named), `num-bigint`, `num-rational`, `elements` / `bitcoin` primitives, `sha2`, etc. Explicitly **no** `minijinja`, no `num-bigint` dev-dep-only cutoff — bignum is a runtime dep per B1.
+1. **Crate bootstrap** with minimal runtime deps: `simplicity_lang` (or whatever the Rust binding crate is named), `num-bigint`, `num-rational`, `elements` / `bitcoin` primitives, `sha2`, etc. Explicitly **no** `minijinja`, no `num-bigint` dev-dep-only cutoff — bignum is a runtime dep per the deterministic LMSR runtime decision.
 2. **Core type module** per [deadcat-core-design.md § Core Types](deadcat-core-design.md#core-types) — `ContractId`, `OutcomeIndex`, `Side`, `MarketResolution`, `MarketParams` / `MarketState` / `MarketTransition` umbrella enums, `BinaryMarketParams` / `MultiOutcomeMarketParams`, `LmsrPoolParams`, `MakerOrderParams`, etc. Pure data types with no behavior yet.
 3. **Store traits** — `ContractStore`, `ContractHistory` per [deadcat-core-design.md § ContractEngine](deadcat-core-design.md#contractengine) and [trade-routing-algorithm.md](trade-routing-algorithm.md). Abstract definitions only, no implementations.
 4. **Contract loading** — `include_bytes!` all committed `.simf` files (binary, pool, order, multi-outcome for each supported N). Compile at crate load (or lazily on first use, cached) with the `simplicity_lang` compiler.
@@ -143,7 +143,7 @@ Phase numbering reflects execution order. Within each phase, items are listed in
 3. **State-step mechanics** — `step` method, `StateUpdate` write-path type, `ProcessedTransaction` result type.
 4. **Chain-sync scaffolding** — `ChainSource` trait per [chain-only-recovery.md § ChainSource Addition](../protocol/chain-only-recovery.md#chainsource-addition), including `issuance_transaction` lookup. Abstract; concrete Esplora/Electrs backends live outside this crate.
 5. **View accessors** — `engine.market(id)`, `engine.pool(id)`, `engine.order(id)` returning the view types (empty-bodied so far; methods land in Phase 5).
-6. **Multi-contract tx pattern detection** — `InterpretedTransaction::as_trade()` / `net_effect_for()` (without `as_cross_outcome_arb` — deferred per I5).
+6. **Multi-contract tx pattern detection** — `InterpretedTransaction::as_trade()` / `net_effect_for()` (without `as_cross_outcome_arb` — cross-outcome arb classification is deferred to v2).
 
 **Quality gate**: integration test scaffolding. Create a binary market, issue pairs, cancel pairs, resolve, redeem — all through the engine's read path (ingestion + interpretation + stepping) using an in-memory test chain. Cover the multi-outcome contract with the same shape.
 
@@ -216,7 +216,7 @@ Carried forward to v2 or later (documented here so nothing falls through the cra
 - **Atomic issuance + pool bootstrap** — see [future-atomic-issuance-lmsr.md](../contracts/lmsr-pool/future-atomic-issuance-lmsr.md).
 - **LP-tokenized pools** — admin-operated pools only in v1.
 - **Audit-reproducible CMR recipe** — tooling polish for security auditors. Not blocking; can ship alongside an audit pass.
-- **Pool-lifecycle-at-market-resolution subsection** of the multi-outcome contract spec — noted as a v2 follow-up item during the B2/I5 discussions.
+- **Pool-lifecycle-at-market-resolution subsection** of the multi-outcome contract spec — noted as a v2 follow-up item during the market-resolution and cross-outcome-arb discussions.
 
 ## Known implementation risks
 

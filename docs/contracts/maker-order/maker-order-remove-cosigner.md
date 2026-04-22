@@ -90,7 +90,9 @@ This aligns with the existing "admin path" / "admin adjust" terminology used in 
 
 The pool's close path uses the same authorization model — see [lmsr-pool-close-path.md](../lmsr-pool/lmsr-pool-close-path.md).
 
-## Key Files
+## Legacy Source Touchpoints
+
+These are the current `deadcat-sdk` files where this legacy-source delta exists today. The `deadcat-core` implementation should realize the same behavior in its new order and pool contract modules.
 
 - `src-tauri/crates/deadcat-sdk/contract/maker_order.simf` — remove cosigner check, `COSIGNER_PUBKEY` param, `COSIGNER_SIGNATURE` witness
 - `src-tauri/crates/deadcat-sdk/src/maker_order/params.rs` — remove `cosigner_pubkey` field

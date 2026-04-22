@@ -240,8 +240,8 @@ During mnemonic recovery, if the user creates new contracts before completing ch
 
 ## Key Files
 
-- `src-tauri/crates/deadcat-sdk/contract/maker_order.simf` — order covenant: change remainder from `current_index() + 1` to `witness::REMAINDER_IDX`
-- `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — pool covenant: already uses witness-based `in_base`/`out_base` (no changes needed)
-- `src-tauri/crates/deadcat-sdk/contract/prediction_market.simf` — market covenant: witness-parameterized `in_base`/`out_base` for flexible transaction composition
-- `docs/contracts/contract-specification.md` — pending refactors table: add order remainder witness-parameterization
+- `crates/deadcat-core/contracts/maker_order.simf` — order covenant: change remainder from `current_index() + 1` to `witness::REMAINDER_IDX`
+- `crates/deadcat-core/contracts/lmsr_pool.simf` — pool covenant: already uses witness-based `in_base`/`out_base` (no changes needed)
+- `crates/deadcat-core/contracts/prediction_market.simf` — market covenant: witness-parameterized `in_base`/`out_base` for flexible transaction composition
+- `docs/contracts/contract-specification.md` — legacy source alignment checklist: add order remainder witness-parameterization
 - `docs/architecture/deadcat-core-design.md` — `build_trade_pset` output layout algorithm

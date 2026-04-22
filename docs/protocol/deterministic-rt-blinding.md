@@ -280,13 +280,11 @@ Same hand-rolled blinding for RT outputs, but the ABF is derived from the input 
 
 ## Key Files
 
-- `src-tauri/crates/deadcat-sdk/contract/prediction_market.simf` — `verify_token_commitment` refactor, deterministic ABF computation, CBF pass-through enforcement in issuance/cancellation paths
-- `src-tauri/crates/deadcat-sdk/src/prediction_market/pset/creation.rs` — creation PSET builder
-- `src-tauri/crates/deadcat-sdk/src/prediction_market/assembly.rs` — `compute_issuance_entropy()`, blinding
-- `src-tauri/crates/deadcat-sdk/src/prediction_market/anchor.rs` — **to be removed entirely**
-- `src-tauri/crates/deadcat-sdk/src/prediction_market_scan.rs` — market validation
-- `src-tauri/crates/deadcat-sdk/src/sdk.rs` — market creation flow, anchor recovery
-- `src-tauri/crates/deadcat-sdk/src/announcement.rs` — Nostr announcement format
+- `crates/deadcat-core/contracts/prediction_market.simf` — `verify_token_commitment` refactor, deterministic ABF computation, CBF pass-through enforcement in issuance/cancellation paths
+- `crates/deadcat-core` market PSET builders — creation / issuance / cancellation RT blinding integration
+- `crates/deadcat-core` market assembly logic — issuance entropy derivation and deterministic blinding support
+- `crates/deadcat-core` market ingestion / validation path — creation verification and RT factor recovery
+- wallet-layer announcement formats — updated to drop legacy anchor distribution entirely
 
 ## Impact on deadcat-core API
 

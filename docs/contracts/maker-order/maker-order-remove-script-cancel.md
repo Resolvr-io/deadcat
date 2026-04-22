@@ -85,7 +85,9 @@ Key-spend vs script-spend is trivially distinguishable from the witness stack st
 
 Maker orders intentionally use a real internal key — the maker's ability to key-spend is the sole cancellation mechanism. Markets and pools use NUMS because their lifecycle is governed by covenant logic, not a single party's key.
 
-## Key Files
+## Legacy Source Touchpoints
+
+These are the current `deadcat-sdk` files where this legacy-source delta exists today. The `deadcat-core` implementation should realize the same behavior in its new order contract modules.
 
 - `src-tauri/crates/deadcat-sdk/contract/maker_order.simf` — remove cancel path, `check_cancel`, related witnesses
 - `src-tauri/crates/deadcat-sdk/src/maker_order/witness.rs` — remove cancel witness satisfaction

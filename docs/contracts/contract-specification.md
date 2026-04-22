@@ -2,7 +2,7 @@
 
 This document specifies the Deadcat covenant contracts from the perspective of a `deadcat-core` implementor: planned parameter types, covenant structure, spend paths, and witness data. It consolidates information from the `.simf` source files and multiple satellite refactor docs into a single reference.
 
-**This document describes the planned end state** — after all pending refactors are applied. The current SDK source may differ. See [Pending Refactors](#pending-refactors) for the delta.
+**This document is the implementation target.** Some legacy `deadcat-sdk` covenant/source files still differ; the checklist below tracks that legacy-source alignment work. It does not indicate unresolved protocol behavior in this spec.
 
 ## Contract Types at a Glance
 
@@ -315,9 +315,9 @@ Order detection uses **taproot structural checks**, not Simplicity witness decod
 
 **NUMS key**: "Nothing Up My Sleeve" — a point on the secp256k1 curve with no known discrete logarithm, derived by hashing a fixed string to a curve point. This is the standard NUMS point used across the Bitcoin/Liquid ecosystem (same value used by BIP-341 for the unspendable internal key). Key-spend with this internal key is cryptographically infeasible, forcing all spends through the script path (Simplicity covenant). Maker orders use the maker's real public key instead — key-spend is their cancellation mechanism.
 
-## Pending Refactors
+## Legacy Source Alignment Checklist
 
-These changes are specified in satellite docs but not yet applied to the `.simf` source files:
+These items track legacy covenant/source updates needed so the older `deadcat-sdk` sources match this spec:
 
 | Refactor | Satellite doc | Status | Blocks |
 |---|---|---|---|
@@ -328,7 +328,7 @@ These changes are specified in satellite docs but not yet applied to the `.simf`
 | Remove order script-cancel path | [maker-order-remove-script-cancel.md](maker-order/maker-order-remove-script-cancel.md) | Pending | Order contract |
 | Add pool close script path | [lmsr-pool-close-path.md](lmsr-pool/lmsr-pool-close-path.md) | Pending | Pool contract |
 | Pool params → protocol constants | [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md) | Pending | Pool contract |
-| Deterministic F-value computation (bignum runtime + committed reference Merkle roots) | [lmsr-deterministic-table-spec.md](lmsr-pool/lmsr-deterministic-table-spec.md) | Specified — see B1 resolution in the design docs. Runtime implementation in `deadcat-core` uses `num-bigint` + `num-rational` at arbitrary precision; reference generator and committed fixtures live in `deadcat-codegen`. | Pool math |
+| Deterministic F-value computation (bignum runtime + committed reference Merkle roots) | [lmsr-deterministic-table-spec.md](lmsr-pool/lmsr-deterministic-table-spec.md) | Specified — see the deterministic LMSR runtime decision in the design docs. Runtime implementation in `deadcat-core` uses `num-bigint` + `num-rational` at arbitrary precision; reference generator and committed fixtures live in `deadcat-codegen`. | Pool math |
 | Pool denomination: 26-mantissa × 16-exponent → 16-value 1-2-5 table (shared with market encoding) | [chain-only-recovery.md § Pool Denomination](../protocol/chain-only-recovery.md#pool-denomination-1-2-5-table-4-bits-each) | Specified | Pool params, OP_RETURN hint (41 → 40 bytes) |
 | Covenant-enforced deterministic RT blinding | [deterministic-rt-blinding.md](../protocol/deterministic-rt-blinding.md) | Pending | Market contract (ABF enforcement, CBF pass-through, `verify_token_commitment` refactor) |
 | Dormant terminal paths (resolution + expiry from zero pairs) | [market-dormant-terminal-paths.md](prediction-market/market-dormant-terminal-paths.md) | Pending | Market contract (DormantYesRt and DormantNoRt slot programs) |
@@ -336,13 +336,11 @@ These changes are specified in satellite docs but not yet applied to the `.simf`
 | Sibling UTXO check + partial cancellation RT co-spend | [enforcement-layers.md](../architecture/enforcement-layers.md) | Pending | Market contract (add `prev_txid` match on all RT+collateral co-spend paths; partial cancellation must co-spend RTs to maintain sibling invariant) |
 | Burn script: P2WSH → OP_RETURN | [enforcement-layers.md](../architecture/enforcement-layers.md) | Pending | Market contract (`ensure_blinded_reissuance_burn_output` checks bare OP_RETURN script hash instead of P2WSH hash). Rationale: consensus-level unspendability, UTXO set pruning. Blinded OP_RETURN confirmed supported on Elements. |
 
-**Implementation order**: The `.simf` refactors should be applied before implementing `deadcat-core`. The core implementation is specified against the planned end state.
+**Implementation order**: The legacy covenant/source alignment work above should be applied before implementing `deadcat-core`. The core implementation is specified against the end state described in this document.
 
 ## Key Files
 
-- `src-tauri/crates/deadcat-sdk/contract/prediction_market.simf` — market covenant source
-- `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — pool covenant source
-- `src-tauri/crates/deadcat-sdk/contract/maker_order.simf` — order covenant source
-- `src-tauri/crates/deadcat-sdk/src/prediction_market/params.rs` — current market params (pre-refactor)
-- `src-tauri/crates/deadcat-sdk/src/lmsr_pool/params.rs` — current pool params (pre-refactor)
-- `src-tauri/crates/deadcat-sdk/src/maker_order/params.rs` — current order params (pre-refactor)
+- `crates/deadcat-core/contracts/prediction_market.simf` — binary market covenant implementation target
+- `crates/deadcat-core/contracts/lmsr_pool.simf` — pool covenant implementation target
+- `crates/deadcat-core/contracts/maker_order.simf` — order covenant implementation target
+- `crates/deadcat-core/contracts/multi_outcome/` — generated multi-outcome covenant implementation targets

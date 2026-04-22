@@ -8,7 +8,7 @@ The primary motivating use case: integrating Deadcat functionality into existing
 
 **Contract scope**: `deadcat-core` supports two market contract types (binary and multi-outcome) plus one pool contract type (binary LMSR pool, used both directly for binary markets and via Option C composition for multi-outcome markets — see [amm-scoring-rule-tradeoffs.md](../contracts/multi-outcome/amm-scoring-rule-tradeoffs.md) and [multi-outcome-market-contract.md](../contracts/multi-outcome/multi-outcome-market-contract.md)) plus the maker order contract. The unified API (see [Option E decision in Design Decisions Log](#multi-outcome-market-support-option-e-unified-api-enum-dispatched-internals)) exposes per-market operations via the `Market` view type, with multi-outcome-specific operations accessible via `Market::as_multi_outcome()` type-level specialization.
 
-**Implementation prerequisite**: This document specifies the planned end state — after several pending `.simf` covenant refactors (collateral-per-pair rename, oracle BIP-340 tagged hash, cosigner removal, script-cancel removal, pool close path addition, pool param constants) plus the as-yet-unimplemented multi-outcome market contract. These refactors and new contracts should be applied before implementing `deadcat-core`. See [contract-specification.md § Pending Refactors](../contracts/contract-specification.md#pending-refactors) for the complete list and status.
+**Implementation target**: This document is the implementation target for `deadcat-core`. Some legacy `deadcat-sdk` covenant/source files still need to be brought into line with this spec (collateral-per-pair rename, oracle BIP-340 tagged hash, cosigner removal, script-cancel removal, pool close path addition, pool param constants, plus the new multi-outcome market contract). See [contract-specification.md § Legacy Source Alignment Checklist](../contracts/contract-specification.md#legacy-source-alignment-checklist) for that migration checklist; it does not indicate unresolved protocol behavior in this document.
 
 **Scope**: this document describes the unified API for both binary and multi-outcome markets. The type system uses umbrella enums (`MarketParams`, `MarketState`, `MarketTransition`) over Binary/MultiOutcome-paired inner types, a `MarketResolution` discriminated union for oracle APIs, view types (`Market<'a, S>`, `Pool<'a, S>`, `Order<'a, S>`) that cache state and enforce freshness via lifetimes, and a transition-classification model where each on-chain transaction maps to exactly one covenant spend path. Multi-outcome markets use a single generic solvency-preservation spend path for all Unresolved-phase operations (see [`multi-outcome-market-contract.md § Operations`](../contracts/multi-outcome/multi-outcome-market-contract.md#operations)); the engine pattern-matches observed tx deltas into named `MultiOutcomeMarketTransition` variants (including `CrossOutcomeSwap` as a single-tx primitive) or falls back to `Composite` for arbitrary delta shapes.
 
@@ -3282,8 +3282,8 @@ After the creation tx confirms on-chain, the caller ingests via the correspondin
 | From state | Valid builder | To state | Additional condition |
 |---|---|---|---|
 | `Trading` | `build_issuance_pset` | `Trading` (outstanding + Δ) | — |
-| `Trading { outstanding > 0 }` | `build_partial_cancellation_pset` | `Trading` (outstanding − Δ) | Δ < outstanding |
-| `Trading { outstanding > 0 }` | `build_full_cancellation_pset` | `Trading { outstanding: 0 }` | — |
+| `Trading { outstanding > 0 }` | `build_cancellation_pset(Some(Δ))` | `Trading` (outstanding − Δ) | Δ < outstanding |
+| `Trading { outstanding > 0 }` | `build_cancellation_pset(None)` | `Trading { outstanding: 0 }` | caller supplies all outstanding YES/NO pairs for that outcome |
 | `Trading` | `build_oracle_resolve_pset` | `ResolvedYes` or `ResolvedNo` | valid oracle BIP-340 sig |
 | `Trading` | `build_expire_transition_pset` | `Expired` | chain height ≥ `expiry_block_height` |
 | `ResolvedYes \| ResolvedNo \| Expired` (outstanding > 0) | `build_redemption_pset` | same variant, outstanding decremented (terminal if 0) | outstanding > 0 |
@@ -3298,7 +3298,7 @@ All other (builder, state) pairs return `InvalidContractState { kind: WrongVaria
 | `Trading` | `build_split_yes_pset` \| `build_split_no_pset` | `Trading` (all supplies +s) | — |
 | `Trading` | `build_merge_yes_pset` | `Trading` (all yes supplies −s) | all `supplies[k].yes ≥ s` |
 | `Trading` | `build_merge_no_pset` | `Trading` (all no supplies −s) | all `supplies[k].no ≥ s` |
-| `Trading` | `build_oracle_resolve_pset(k)` | `Resolved { winning: k, ... }` | valid oracle sig |
+| `Trading` | `build_oracle_resolve_pset(k)` | `Resolved { winning_outcome: k, ... }` | valid oracle sig |
 | `Trading` | `build_expire_transition_pset` | `Expired` | chain height ≥ expiry |
 | `Resolved \| Expired` (unredeemed > 0) | `build_redemption_pset` | same variant, `collateral_unredeemed` decremented (terminal if 0) | collateral_unredeemed > 0 |
 
@@ -3327,7 +3327,7 @@ Pool operations remain valid regardless of parent market state — see [Pool and
 
 Every (builder, invalid-state) pair returns `CoreError::InvalidContractState { contract_id, kind }` where:
 - `InvalidStateKind::WrongVariant { expected, actual }` — the state variant itself is wrong for this builder (e.g., `build_issuance_pset` on `ResolvedYes`).
-- `InvalidStateKind::ConditionFailed { condition, detail }` — state variant is fine but a runtime precondition failed (e.g., `build_partial_cancellation_pset` with Δ > outstanding; `build_expire_transition_pset` before the timelock height).
+- `InvalidStateKind::ConditionFailed { condition, detail }` — state variant is fine but a runtime precondition failed (e.g., `build_cancellation_pset(Some(Δ))` with Δ > outstanding; `build_expire_transition_pset` before the timelock height).
 
 Callers can pattern-match on the kind to distinguish "fundamentally wrong call" from "temporarily unmet condition" for UX purposes.
 
@@ -3360,7 +3360,7 @@ Core does not add `Send` or `Sync` bounds on the `ContractStore` trait. If a sto
 
 Core provides pure LMSR computation functions for pricing, quoting, and table generation. See [lmsr-pool-design.md](../contracts/lmsr-pool/lmsr-pool-design.md) for the full pool design, parameter simplification rationale, and Merkle-committed curve approach.
 
-The key functions (currently in `src-tauri/crates/deadcat-sdk/src/lmsr_pool/math.rs`, will move to `deadcat-core`):
+The key functions live in the `deadcat-core` LMSR math module:
 
 - `fee_free_yes_spot_price_bps(manifest, params, s_index)` — implied probability at a given state
 - `quote_from_table(trade_kind, old_s_index, new_s_index, ...)` — deterministic quote from F-value table lookup
@@ -4331,11 +4331,11 @@ The ideal solution: embed full contract params in an OP_RETURN output in the cre
 
 Note: The recovery hints described in [Wallet Recovery](#wallet-recovery) and [chain-only-recovery.md](../protocol/chain-only-recovery.md) are distinct from the full-params discoverability discussed here. Recovery hints use compressed encodings (standard denomination conventions, well-known asset indices, hybrid time encoding) and omit derivable fields — they enable fund recovery (reconstructing params when combined with a mnemonic and chain data), not public discoverability (making params available to anyone scanning the chain). Full discoverability requires embedding complete params, which exceeds the current OP_RETURN policy limit.
 
-### Flat MarketState (Dormant/Unresolved Hidden, No Settled Variant)
+### Dormant/Unresolved Hidden in Trading
 
 **Chosen**: The public `MarketState` has 4 variants (`Trading`, `ResolvedYes`, `ResolvedNo`, `Expired`). Dormant (0 pairs) and Unresolved (>0 pairs) are both `Trading`. Terminal state = `outstanding_pairs == 0` on any non-Trading variant. No `Settled` variant.
 **Rejected**: (a) Exposing `CovenantPhase` with Dormant/Unresolved. (b) Separate `Settled { final_txid, outcome }` terminal variant with `MarketOutcome` type.
-**Why**: The Dormant/Unresolved distinction is a covenant implementation detail. The `Settled` variant was removed because it created a routing ambiguity: resolution from non-dormant markets produced intermediate `ResolvedYes/ResolvedNo` states, while resolution from dormant markets had to route directly to `Settled` — a special case an implementor could miss. Without `Settled`, resolution/expiry always produce the corresponding variant regardless of outstanding pairs, and `outstanding_pairs` naturally reaches 0 through redemption (or starts at 0 for dormant terminals). See the "Flat MarketState (No Settled Variant)" entry below for the full rationale.
+**Why**: The Dormant/Unresolved distinction is a covenant implementation detail. The `Settled` variant was removed because it created a routing ambiguity: resolution from non-dormant markets produced intermediate `ResolvedYes/ResolvedNo` states, while resolution from dormant markets had to route directly to `Settled` — a special case an implementor could miss. Without `Settled`, resolution/expiry always produce the corresponding variant regardless of outstanding pairs, and `outstanding_pairs` naturally reaches 0 through redemption (or starts at 0 for dormant terminals). See the dedicated "Flat MarketState (No Settled Variant)" entry below for the `Settled` rationale.
 
 ### Pool Closure via Simplicity Script Path
 

@@ -174,6 +174,6 @@ Looks up the market's params from the store, derives the correct `market_id`, va
 
 ## Key Files
 
-- `src-tauri/crates/deadcat-sdk/contract/prediction_market.simf` — binary market oracle verification
+- `crates/deadcat-core/contracts/prediction_market.simf` — binary market oracle verification
 - `crates/deadcat-core/contracts/multi_outcome/*.simf` — generated multi-outcome market oracle verification
-- `src-tauri/crates/deadcat-sdk/src/prediction_market/oracle.rs` — legacy binary helper to update or supersede
+- `crates/deadcat-core` market-oracle helper module — Rust-side attestation helper implementation target

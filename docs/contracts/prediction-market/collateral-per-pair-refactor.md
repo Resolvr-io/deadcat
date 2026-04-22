@@ -47,7 +47,9 @@ All formulas in the design doc use the simpler form:
 
 The `PredictionMarketParams` Rust struct field changes from `collateral_per_token` to `collateral_per_pair`.
 
-## Key Files
+## Legacy Source Touchpoints
+
+These are the current `deadcat-sdk` files where this legacy-source delta existed before the later `base_payout` unification. They remain useful as historical reference points for the superseded rename described above.
 
 - `src-tauri/crates/deadcat-sdk/contract/prediction_market.simf` — rename param, simplify `collateral_for_pairs`
 - `src-tauri/crates/deadcat-sdk/src/prediction_market/params.rs` — rename field

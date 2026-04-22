@@ -1,6 +1,6 @@
 # Multi-Outcome Prediction Market Contract
 
-**Status**: Proposal — design specification for a new core contract type. Not yet implemented. Supersedes an earlier N-token (Arrow-Debreu) variant (see [Alternatives Considered](#alternatives-considered)). The Unresolved-phase operations design was revised from an enumerated-primitives approach (6 specific spend paths) to a single generic solvency-preservation spend path — the generic path accepts any `(Δy, Δn, Δc)` that preserves the invariant, enabling atomic cross-outcome compositions like the cross-outcome swap.
+**Status**: Specified — design specification for a new core contract type. Not yet implemented. Supersedes an earlier N-token (Arrow-Debreu) variant (see [Alternatives Considered](#alternatives-considered)). The Unresolved-phase operations design was revised from an enumerated-primitives approach (6 specific spend paths) to a single generic solvency-preservation spend path — the generic path accepts any `(Δy, Δn, Δc)` that preserves the invariant, enabling atomic cross-outcome compositions like the cross-outcome swap.
 
 **Related**: this contract implements every principle in [market-contract-principles.md](../market-contract-principles.md) — permissionless operation within the solvency invariant, narrow oracle authority, terminal paths from every non-terminal state, RT destruction on resolution/expiry, sibling UTXO check, witness-parameterized indices, deterministic RT blinding, and the rest. The principles doc is the canonical specification of those shared properties; this doc focuses on what is specific to the multi-outcome contract (2N token model, generic Unresolved-phase transition check, slot layout, code generation).
 
@@ -516,7 +516,9 @@ Link N independent binary markets at the UI layer, with no new contracts. Cohere
 
 Retained as an **option for very large N** (N > the 2N-contract ceiling) and for markets whose outcome set is not provably exhaustive (e.g., the 2024 US election where Biden dropped out). Documented in the design journal as the "soft-coherency" path.
 
-## Pending Work
+## Codegen and Validation Checklist
+
+These are implementation tasks for generating, validating, and benchmarking the committed multi-outcome contract artifacts. They are not open protocol-design questions in this spec.
 
 | Item | Purpose |
 |---|---|
@@ -541,5 +543,5 @@ Retained as an **option for very large N** (N > the 2N-contract ceiling) and for
 - `docs/protocol/oracle-bip340-tagged-hash.md` — oracle attestation format extends to outcome_index
 - `docs/architecture/transaction-composability-model.md` — witness-parameterized indices enable atomic multi-contract PSETs (including cross-outcome arb via pool co-spend with market's split-YES / merge-YES)
 - `docs/contracts/prediction-market/market-dormant-terminal-paths.md` — dormant terminal paths generalize to 2N RTs
-- Future: `src-tauri/crates/deadcat-core/contract/multi_outcome_market_n{N}.simf` — generated contracts
-- Future: `src-tauri/crates/deadcat-core/codegen/multi_outcome_market_template.simf` — generator input
+- Future: `crates/deadcat-core/contracts/multi_outcome/multi_outcome_market_n{N}.simf` — generated contracts
+- Future: `crates/deadcat-codegen/src/templates/multi_outcome_market.simf.j2` — generator input

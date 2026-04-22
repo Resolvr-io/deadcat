@@ -233,9 +233,9 @@ A CLI subcommand in `deadcat-codegen` (`just calibrate-precision`) runs the cali
 
 ## Key Files
 
-- `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — `lmsr_table_leaf_hash`, `lmsr_table_node_hash`, `merkle_proof_step_fn` (the on-chain verification code — the authoritative definition of the Merkle format)
-- `src-tauri/crates/deadcat-sdk/src/lmsr_pool/table.rs` — Rust-side Merkle tree (leaf hash, node hash, root, proof generation/verification — matches `.simf` byte-for-byte)
-- `src-tauri/crates/deadcat-sdk/src/lmsr_pool/math.rs` — quoting logic (`quote_from_table`, `quote_exact_input_from_manifest`, `fee_free_yes_spot_price_bps`)
+- `crates/deadcat-core/contracts/lmsr_pool.simf` — `lmsr_table_leaf_hash`, `lmsr_table_node_hash`, `merkle_proof_step_fn` (the on-chain verification code — the authoritative definition of the Merkle format)
+- `crates/deadcat-core/src/lmsr_pool/table.rs` — Rust-side Merkle tree (leaf hash, node hash, root, proof generation/verification — matches `.simf` byte-for-byte)
+- `crates/deadcat-core/src/lmsr_pool/math.rs` — quoting logic (`quote_from_table`, `quote_exact_input_from_manifest`, `fee_free_yes_spot_price_bps`)
 - `crates/deadcat-codegen/` (planned, shared with the multi-outcome `.simf` generator) — bignum reference implementation and committed fixture file with per-combo Merkle roots and anchor F-values
 - `crates/deadcat-core/` — runtime F-value computation (bignum-based), per-pool-combo in-memory cache
 - `docs/contracts/lmsr-pool/lmsr-pool-design.md` — pool parameter design, derivation formulas, deterministic generation rationale

@@ -299,7 +299,7 @@ For typical values with warm caches: 32 × 50 × (5 + 16) ≈ 33,600 cache looku
 
 ## Key Files
 
-- `src-tauri/crates/deadcat-sdk/src/amm_pool/math.rs` — LMSR math functions (will move to `deadcat-core`); binary LMSR is the only scoring rule, used per-outcome for multi-outcome markets under Option C composition
+- `crates/deadcat-core/src/lmsr_pool/math.rs` — LMSR math functions; binary LMSR is the only scoring rule, used per-outcome for multi-outcome markets under Option C composition
 - `docs/architecture/deadcat-core-design.md` — `ContractStore` trait (outcome-scoped `pools_for_market` / `best_orders_for_market`), `quote_trade` engine API, `TradeSpec` / `TradeQuote` types
 - `docs/contracts/multi-outcome/amm-scoring-rule-tradeoffs.md` — pool design decision (binary LMSR + Option C composition for multi-outcome)
 - `docs/contracts/multi-outcome/multi-outcome-market-contract.md` — market contract providing the cross-outcome primitives (split/merge YES/NO) that basket trades and future v2 arb compose with

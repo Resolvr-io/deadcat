@@ -344,7 +344,7 @@ In priority order:
 
 3. **Draft Doc 2** (QMSR pool proposal). Now that the foundation is in place, the QMSR pool design can be concretely specified.
 
-4. **Small updates to existing docs**: forward-reference the new docs from `../contract-specification.md` and `../../architecture/deadcat-core-design.md`'s pending refactors tables.
+4. **Small updates to existing docs**: forward-reference the new docs from `../contract-specification.md` and the relevant legacy-source alignment sections of `../../architecture/deadcat-core-design.md`.
 
 5. **QMSR implementation spike**: write an actual `.simf` for the QMSR pool to validate the math works in integer arithmetic with acceptable witness sizes.
 

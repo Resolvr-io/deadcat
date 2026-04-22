@@ -93,6 +93,8 @@ Both paths require atomic consumption of BOTH RT UTXOs (co-membership enforcemen
 
 The oracle resolution from zero-pair state uses the same oracle signature as resolution from Unresolved — the oracle signs the same BIP-340 tagged hash message (`tagged_hash("deadcat/oracle_attestation", market_id || outcome_byte)`) regardless of the market's pair count. No new domain string needed. See [oracle-bip340-tagged-hash.md](../../protocol/oracle-bip340-tagged-hash.md).
 
-### Key Files
+### Legacy Source Touchpoints
+
+These are the current `deadcat-sdk` files where this legacy-source delta exists today. The `deadcat-core` implementation should realize the same behavior in its new market contract modules.
 
 - `src-tauri/crates/deadcat-sdk/contract/prediction_market.simf` — add resolution and expiry paths to Dormant RT slot programs

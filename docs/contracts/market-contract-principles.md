@@ -4,7 +4,7 @@ This document enumerates the design principles that both Deadcat market contract
 
 Usage conventions (1-2-5 mantissa for collateral amounts, 60-block expiry snapping, well-known collateral asset sets, OP_RETURN recovery hint format, `market_id` derivation formula, asset ordering) are not principles — they are builder-side rules enforceable only by `deadcat-core` itself. This document covers only the on-chain, covenant-level guarantees that hold for any client.
 
-**Framing**: this is a forward-looking specification for the `deadcat-core` rewrite. The current `prediction_market.simf` source in `deadcat-sdk` does not yet implement all of these principles (see the Pending Refactors table in [contract-specification.md](contract-specification.md) for the delta). The intent is that the rewritten contracts meet every principle here.
+**Framing**: this is the shared market-contract implementation target for `deadcat-core`. The current `prediction_market.simf` source in `deadcat-sdk` does not yet implement all of these principles; see the [legacy source alignment checklist](contract-specification.md#legacy-source-alignment-checklist) in [contract-specification.md](contract-specification.md) for that delta. The intent is that the rewritten contracts meet every principle here.
 
 ## Scope
 

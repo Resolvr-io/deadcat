@@ -393,5 +393,5 @@ See [chain-only-recovery.md](../../protocol/chain-only-recovery.md) for the exac
 - `docs/architecture/deadcat-core-design.md` — main design doc (references this satellite doc)
 - `docs/architecture/trade-routing-algorithm.md` — trade routing algorithm using LMSR pools + limit orders
 - `docs/contracts/lmsr-pool/lmsr-pool-close-path.md` — close script path covenant design
-- `src-tauri/crates/deadcat-sdk/src/lmsr_pool/math.rs` — current LMSR math (will move to `deadcat-core`)
-- `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — pool covenant source
+- `crates/deadcat-core/src/lmsr_pool/math.rs` — LMSR math implementation target
+- `crates/deadcat-core/contracts/lmsr_pool.simf` — pool covenant implementation target
