@@ -245,14 +245,14 @@ export default function MarketCard({
             <button
               type="button"
               onClick={handleBuyYes}
-              className="w-24 rounded-full border border-emerald-500 px-3 py-1 text-center text-sm font-medium text-emerald-400 transition hover:bg-emerald-500/15"
+              className="w-24 rounded-full bg-emerald-500/15 px-3 py-1 text-center text-sm font-medium text-emerald-400 transition hover:bg-emerald-500/25"
             >
               {yesPct != null ? `Yes ${yesPct}%` : "Buy Yes"}
             </button>
             <button
               type="button"
               onClick={handleBuyNo}
-              className="w-24 rounded-full border border-rose-500 px-3 py-1 text-center text-sm font-medium text-rose-400 transition hover:bg-rose-500/15"
+              className="w-24 rounded-full bg-rose-500/15 px-3 py-1 text-center text-sm font-medium text-rose-400 transition hover:bg-rose-500/25"
             >
               {noPct != null ? `No ${noPct}%` : "Buy No"}
             </button>
