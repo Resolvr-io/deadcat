@@ -1299,11 +1299,17 @@ pub struct RouteLeg {
     pub output_amount: u64,
 }
 
+pub enum MarketAssist {
+    IssuePairs { pairs: u64 },
+    CancelPairs { pairs: u64 },
+}
+
 pub enum LiquiditySource {
     LmsrPool {
         pool_id: ContractId,
         old_s_index: u64,
         new_s_index: u64,
+        market_assist: Option<MarketAssist>,
     },
     LimitOrder {
         order_id: ContractId,
@@ -1317,9 +1323,11 @@ pub enum LiquiditySource {
 
 The `pub(crate)` field `route` makes `TradeQuote` non-constructable by external consumers — they can only receive one from the engine and pass it to `build_trade_pset`. See [Trade PSET Builder](#trade-pset-builder).
 
-`TradeRoute` is a crate-internal type capturing the route plan (contract IDs, leg amounts, outpoint snapshots) needed by `build_trade_pset`. External consumers cannot inspect or construct it.
+`TradeRoute` is a crate-internal type capturing the route plan (contract IDs, leg amounts, outpoint snapshots) needed by `build_trade_pset`. External consumers cannot inspect or construct it. For an assisted pool leg, `TradeRoute` carries the full parent-market continuation and burn/issuance bookkeeping; the public `market_assist` field is intentionally just a display summary.
 
-`RouteLeg` breaks down how the trade is routed across liquidity sources. `LiquiditySource::LmsrPool` includes s-index movement for "pool moved from 50 to 55" display. `LiquiditySource::LimitOrder` includes the matched price and base fill amount.
+`RouteLeg` breaks down how the trade is routed across liquidity sources. `LiquiditySource::LmsrPool` includes s-index movement for "pool moved from 50 to 55" display and an optional `market_assist` summary. `IssuePairs` means the route co-spends the parent market's issuance path for this same `(market, outcome)` and mints `pairs` YES+NO directly into the pool's reserves. `CancelPairs` means the route co-spends the parent market's cancellation path, burns `pairs` YES+NO out of the pool reserves, and releases the corresponding market collateral. `LiquiditySource::LimitOrder` includes the matched price and base fill amount.
+
+For multi-outcome markets, the assist always refers to the same `outcome` as the pool leg — no cross-outcome behavior is implied by `TradeQuote`. In v1, at most one `LmsrPool` leg in a route may carry `market_assist: Some(_)`; if an assisted and non-assisted route tie on taker outcome, the non-assisted route wins. Degenerate fixed-`s_index` public pair rebalances remain covenant-valid but are not intentionally emitted by `quote_trade`.
 
 ### BootstrapEstimate
 
@@ -1688,7 +1696,7 @@ fn classify_multi_outcome_transition(
 
 **Multi-contract patterns in a single transaction** (e.g., trades that combine a pool swap with maker order fills) are detected at the `InterpretedTransaction` level via helper methods. Each participating contract still emits one primitive transition; the tx-level helpers recognize recurring multi-contract patterns without collapsing the per-contract transitions. See [Multi-Contract Transaction Patterns](#multi-contract-transaction-patterns) below. Cross-outcome arb (market + N pools atomic) is deferred to v2 — see [Future: Cross-Outcome Arb API (v2)](#future-cross-outcome-arb-api-v2).
 
-`PoolTransition::Swapped` corresponds to the LMSR covenant's swap path — someone traded through the pool, moving the s-index. `PoolTransition::Adjusted` corresponds to the admin path — the pool operator (with admin key signature) adjusted liquidity without changing the s-index. The covenant enforces that YES and NO token deltas are equal on the admin path; collateral can change independently. `PoolTransition::Closed` indicates the pool admin reclaimed all reserve UTXOs via the close script path. See [lmsr-pool-close-path.md](../contracts/lmsr-pool/lmsr-pool-close-path.md).
+`PoolTransition::Swapped` corresponds to the pool covenant's **public** path with `old_s_index != new_s_index` — someone traded through the pool, possibly with a paired reserve assist, moving the s-index. `PoolTransition::Adjusted` covers both the admin path and the degenerate public path with `old_s_index == new_s_index`. The public API intentionally does not preserve which authorization path produced an `Adjusted` transition; it just records the reserve change. `PoolTransition::Closed` indicates the pool admin reclaimed all reserve UTXOs via the close script path. See [lmsr-pool-close-path.md](../contracts/lmsr-pool/lmsr-pool-close-path.md).
 
 **Why nested by contract type**: When processing a market transition, the caller wants to match on market-specific variants without wading through pool and order cases. A flat enum mixing all contract types would force exhaustive matching across unrelated variants.
 
@@ -2430,27 +2438,27 @@ The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [S
 
 Different `s_index` values produce different covenant addresses (the s_index is a parameter in the script derivation). Unlike markets and orders, pools cannot use pre-stored scripts for output matching because the unbounded s_index makes full script enumeration impractical. The pool's taproot tree has constant Simplicity program leaves (same CMR regardless of `s_index`) and a variable `tapdata_leaf = TaggedHash("TapData", s_index.to_be_bytes())` — only the tapdata leaf changes when `s_index` changes, but computing the full script pubkey still requires an EC scalar multiplication per candidate (the taproot tweak), making brute-force script enumeration prohibitively slow (~3-7 seconds for all 65K values). Pool transition detection uses **witness-based path and s_index extraction** for all transitions, combined with output scanning for reserve values.
 
-**Why witness-based for all pool transitions**: The engine needs the new `s_index` on every pool transition (it's stored in `LmsrPoolState::Active`). Deriving s_index from reserve values (reverse LMSR table lookup) is fragile — admin adjustments change reserves without moving along the LMSR curve, so the reserves no longer correspond to a single point on the curve. The witness contains the exact `old_s_index` and `new_s_index` used in the covenant verification — this is ground truth, not a derived estimate. Additionally, output-only detection cannot reliably distinguish close from swap/admin (wallet outputs can mimic the covenant window pattern). Witness parsing resolves all ambiguities definitively for a negligible cost (~<1ms per `RedeemNode::decode` call, at most once per pool per block).
+**Why witness-based for all pool transitions**: The engine needs the new `s_index` on every pool transition (it's stored in `LmsrPoolState::Active`). Deriving s_index from reserve values (reverse LMSR table lookup) is fragile — admin adjustments change reserves without moving along the LMSR curve, so the reserves no longer correspond to a single point on the curve. The witness contains the exact `old_s_index` and `new_s_index` used in the covenant verification — this is ground truth, not a derived estimate. Additionally, output-only detection cannot reliably distinguish close from public/admin (wallet outputs can mimic the covenant window pattern). Witness parsing resolves all ambiguities definitively for a negligible cost (~<1ms per `RedeemNode::decode` call, at most once per pool per block).
 
 **Pool transition detection algorithm**:
 
-1. **Parse witness**: Extract the Simplicity program bytes and witness bytes from the spending transaction's witness stack for the input that spent a tracked pool outpoint. Call `RedeemNode::decode` to identify the spend path (swap, admin, or close) and extract `old_s_index` and `new_s_index`.
+1. **Parse witness**: Extract the Simplicity program bytes and witness bytes from the spending transaction's witness stack for the input that spent a tracked pool outpoint. Call `RedeemNode::decode` to identify the spend path (public, admin, or close) and extract `old_s_index` and `new_s_index`.
 2. **Switch on spend path**:
-   - **Swap or Admin**: Find the covenant output window — three consecutive explicit outputs (as enforced by the covenant) where index N has the pool's YES asset ID, N+1 has the NO asset ID, N+2 has the Collateral asset ID, and all three share the same script pubkey (co-membership). The window must exist (covenant-enforced for swap/admin paths). Read reserve values from the explicit outputs. Classify: `new_s_index != old_s_index` → `Swapped`, `new_s_index == old_s_index` → `Adjusted`.
+   - **Public or Admin**: Find the covenant output window — three consecutive explicit outputs (as enforced by the covenant) where index N has the pool's YES asset ID, N+1 has the NO asset ID, N+2 has the Collateral asset ID, and all three share the same script pubkey (co-membership). The window must exist (covenant-enforced for public/admin paths). Read reserve values from the explicit outputs. Classify: public path with `new_s_index != old_s_index` → `Swapped`; public path with `new_s_index == old_s_index` or admin path → `Adjusted`.
    - **Close**: No covenant output window expected. The pool transitions to `Closed`. `final_reserves` from the stored state at time of closure.
 
 Transition details:
 
-- **Swap**: `old_s_index` and `new_s_index` from the witness. `old_reserves` from stored state. `new_reserves` from explicit output values.
-- **Adjustment**: `old_s_index == new_s_index` confirmed by the witness (s_index frozen on admin path). `old_reserves` and `new_reserves` from stored state and output values.
+- **Swap**: public spend path with `old_s_index != new_s_index`. `old_s_index` and `new_s_index` from the witness. `old_reserves` from stored state. `new_reserves` from explicit output values.
+- **Adjustment**: either the admin path, or the degenerate public path with `old_s_index == new_s_index`. `old_reserves` and `new_reserves` from stored state and output values. The public API does not preserve the authorization source in `PoolTransition`; callers that care inspect the interpreted witness data directly.
 - **Closure**: Spend path confirmed as close by the witness. All pool outpoints consumed, no new covenant outputs. `final_reserves` from the stored state at time of closure.
 
 **Detection strategy summary:**
 
 | Transition | Detection method | Airtight? |
 |---|---|---|
-| Swap | Witness: spend path + s_index extraction. Outputs: reserve values from covenant window. | Yes — witness is ground truth |
-| Admin adjust | Witness: spend path + s_index unchanged. Outputs: reserve values from covenant window. | Yes — witness is ground truth |
+| Public path | Witness: public spend path + s_index extraction. Outputs: reserve values from covenant window. `old_s != new_s` => `Swapped`; `old_s == new_s` => `Adjusted`. | Yes — witness is ground truth |
+| Admin adjust | Witness: admin spend path. Outputs: reserve values from covenant window. | Yes — witness is ground truth |
 | Close | Witness: close spend path confirmed | Yes — witness is ground truth |
 
 #### Maker Orders
@@ -2879,7 +2887,7 @@ Canonical builder signatures are in [View Types § Market](#market) (common to b
 - **Redemption**: `build_redemption_pset(outcome, side, tokens_to_redeem, funding)` handles both post-resolution and post-expiry redemption; the view determines which from the cached state. Post-resolution: for binary markets the engine validates `side` matches the winning side; for multi-outcome it validates either `(outcome == winning_outcome, side == Yes)` (winning YES_k) or `(outcome != winning_outcome, side == No)` (winning NO_j). Post-expiry: any `(outcome, side)` combination is valid at the fractional rate.
 - **Split/merge YES (multi-outcome)**: atomically mints or burns one of each `YES_k` for the market's N outcomes, with collateral flow of `sets × collateral_per_pair`. The `destinations: &[Script]` slice on `build_split_yes_pset` has length `outcome_count`; `destinations[k]` receives `sets` units of `YES_k`.
 - **Split/merge NO (multi-outcome)**: same pattern but for NO tokens; collateral flow is `sets × (N-1) × collateral_per_pair`.
-- **Cross-outcome arb** (multi-outcome): single atomic transaction that co-spends the market contract's split-YES (or merge-YES) path with each outcome's binary LMSR pool swap path. Closes cross-outcome price coherence gaps (`Σ p_YES_k ≠ 1`) in one tx. The engine constructs the full multi-contract PSET internally.
+- **Cross-outcome arb** (multi-outcome): single atomic transaction that co-spends the market contract's split-YES (or merge-YES) path with each outcome's binary LMSR pool public path (`old_s_index != new_s_index`). Closes cross-outcome price coherence gaps (`Σ p_YES_k ≠ 1`) in one tx. The engine constructs the full multi-contract PSET internally.
 - **Creation builders**: return the full derived params (`BinaryMarketParams` / `MultiOutcomeMarketParams`) alongside the PSET so the caller can `ingest_market` after the creation transaction confirms. `build_binary_market_creation_pset` selects 2 defining inputs; `build_multi_outcome_market_creation_pset` selects 2N defining inputs and compiles the N-specific generated `.simf` covenant.
 
 **OP_RETURN recovery hints**: Both `build_binary_market_creation_pset` and `build_multi_outcome_market_creation_pset` include a **37-byte** zero-value OP_RETURN hint (69 bytes with exotic collateral). Binary and multi-outcome markets share the same layout, distinguished by the hint's type tag byte. For multi-outcome markets, `outcome_count` is **not stored** — it is derived at recovery time from the creation tx's new-issuance count (2N issuances → N outcomes), with a defensive filter on `AssetIssuance` records (both `amount` and `inflation_keys` non-null) to rule out asymmetric issuances. The covenant script is the authoritative binding between N and the tx shape; a wrong derived N produces a script mismatch at ingestion, which is a loud failure. All 4N asset IDs for multi-outcome markets are derivable from the creation transaction's issuance entropy — the hint doesn't scale with N. See [chain-only-recovery.md](../protocol/chain-only-recovery.md) and [multi-outcome-market-contract.md](../contracts/multi-outcome/multi-outcome-market-contract.md).
@@ -2939,6 +2947,8 @@ pub fn quote_trade(
 
 The engine computes the optimal route across all available pools and orders for the market, minimizing total cost to the taker including transaction fee overhead. The `fee_rate` parameter is required because the routing algorithm uses fee-adjusted effective prices — each liquidity source's activation cost (transaction weight) is weighted by the fee rate to determine whether including it improves the route. The routing algorithm uses pool-subset enumeration combined with fee-aware greedy order selection — see [trade-routing-algorithm.md](trade-routing-algorithm.md) for the full specification. Returns a `TradeQuote` representing the best available fill, including `estimated_fee` computed from the route's total transaction weight and the provided fee rate.
 
+For existing pools, the router may also choose a market-assisted pool leg when that improves fillability or taker price. Assisted legs still surface as `LiquiditySource::LmsrPool` in the quote; the exact parent-market co-spend stays internal in `TradeRoute`. In v1, assisted routing is limited to at most one pool leg per route, uses `IssuePairs` on buys and `CancelPairs` on sells, and is considered only while the parent market still supports the required issuance/cancellation path.
+
 Returns `Err(CoreError::NoLiquidity { market_id, outcome, side, direction })` only when the router cannot fill any positive amount for the target `(market, outcome, side, direction)` — all pools at minimum reserves in the trade direction, all orders dust, or no tracked sources. Any `filled_amount > 0` returns `Ok(TradeQuote)`, including heavily partial fills where the caller may want to abandon. Partial-fill decision-making is the caller's responsibility — inspect `TradeQuote.filled_amount` vs `TradeQuote.requested_amount`. See [TradeQuote](#tradequote-and-related-types) for details.
 
 Post-resolution trading is not gated — `quote_trade` succeeds regardless of the parent market's state as long as routable liquidity exists. See [Pool and Order Lifecycle at Market Resolution](#pool-and-order-lifecycle-at-market-resolution).
@@ -2955,9 +2965,9 @@ pub fn build_trade_pset(
 
 Takes the accepted quote and the caller's wallet funding. The engine validates that `funding.fee_rate` matches the fee rate used during quoting — if they differ, it returns `CoreError::InvalidParams` because the route was optimized for the quote's fee rate (a different rate could make the route suboptimal; the caller should re-quote with the current rate). The engine recompiles contracts from stored params, selects the needed UTXOs, computes the actual fee from the real transaction weight, and builds the PSET. The actual fee may differ from `TradeQuote.estimated_fee` because the quote's weight model assumes a single wallet input, while coin selection may add more — display the quote's fee as an estimate, not a guarantee.
 
-**Input and output layout**: the trade PSET arranges inputs and outputs using a specific pool-first / orders-next / wallet-last ordering to satisfy each covenant's introspection rules simultaneously (positional pool reserves, positional maker receives, witness-specified order remainders). The full layout algorithm — including output-index assignment, witness `in_base` / `out_base` / `remainder_idx` construction, and the aliasing-prevention invariants the builder must uphold — is specified in [transaction-composability-model.md § Output Layout for Multi-Covenant Transactions](transaction-composability-model.md#output-layout-for-multi-covenant-transactions). Implementers of `build_trade_pset` should consult that doc as the authoritative layout spec.
+**Input and output layout**: the trade PSET arranges inputs and outputs using a deterministic contract-window ordering to satisfy each covenant's introspection rules simultaneously: witness-parameterized pool windows, an optional witness-parameterized parent-market window for one assisted pool leg, positional maker receives, and witness-specified order remainders. The full layout algorithm — including output-index assignment, witness `in_base` / `out_base` / `remainder_idx` construction, and the aliasing-prevention invariants the builder must uphold — is specified in [transaction-composability-model.md § Output Layout for Multi-Covenant Transactions](transaction-composability-model.md#output-layout-for-multi-covenant-transactions). Implementers of `build_trade_pset` should consult that doc as the authoritative layout spec.
 
-**Freshness check algorithm**: the quote captures outpoint snapshots at quote time (one `SlotIdentity`-labeled set per leg). `build_trade_pset` verifies each leg's snapshot is still current by comparing against `store.contract_outpoints(leg.contract_id)`. If any snapshotted outpoint is no longer in the corresponding contract's current outpoint set, returns `CoreError::StaleQuote { reason }` with one of:
+**Freshness check algorithm**: the quote captures outpoint snapshots at quote time for every contract the route touches (one `SlotIdentity`-labeled set per pool/order leg, plus the parent market window for an assisted pool leg). `build_trade_pset` verifies each snapshot is still current by comparing against `store.contract_outpoints(contract_id)`. If any snapshotted outpoint is no longer in that contract's current outpoint set, returns `CoreError::StaleQuote { reason }` with one of:
 
 - `StaleQuoteReason::OutpointsChanged { contract_id }` — another `process_transaction` advanced the contract (pool swap/adjust, order fill, order cancel).
 - `StaleQuoteReason::ContractUntracked { contract_id }` — the contract was untracked between quote and build.
@@ -3295,11 +3305,11 @@ Cross-outcome swap is not a builder in v1 (it's a `CrossOutcomeSwap` transition 
 
 | From state | Valid builder | To state | Condition |
 |---|---|---|---|
-| `Active` | (swap via `engine.build_trade_pset`) | `Active` (new s_index, new reserves) | s_index within table, reserves ≥ MIN_POOL_RESERVE |
+| `Active` | (public pool path via `engine.build_trade_pset`; plain or market-assisted) | `Active` (new s_index, new reserves) | s_index within table, reserves ≥ MIN_POOL_RESERVE |
 | `Active` | `build_lmsr_adjust_pset` | `Active` (new reserves, same s_index) | admin key signature, non-zero delta |
 | `Active` | `build_lmsr_close_pset` | `Closed { final_txid }` | admin key signature |
 
-Pool operations remain valid regardless of parent market state — see [Pool and Order Lifecycle at Market Resolution](#pool-and-order-lifecycle-at-market-resolution). Closed pools admit no further transitions.
+Pool operations remain valid regardless of parent market state — see [Pool and Order Lifecycle at Market Resolution](#pool-and-order-lifecycle-at-market-resolution). Market-assisted pool legs disappear once the parent market no longer supports issuance/cancellation, but plain pool trading and admin operations remain callable. Closed pools admit no further transitions.
 
 ### Order transitions
 
@@ -4105,7 +4115,7 @@ This is the same pattern used elsewhere in the codebase: keep per-kind semantic 
 ### Advance Logic Uses Script Matching and Output Values
 
 **Chosen**: Use the detection method best suited to each contract type's structural characteristics. Markets: script pubkey matching (8 bounded, pre-storable scripts). Orders: taproot structural check (key-spend vs script-spend element count). Pools: witness-based path and s_index extraction via `RedeemNode::decode` for all transitions. Dormant market terminals: witness-based path detection for the three-way ambiguity.
-**Rejected**: (a) Pattern-match transaction structure (input/output counts). (b) Uniform witness decoding on all transitions for all contract types. (c) Output-only detection for all transitions (no witness inspection). (d) Reserve-based s_index derivation for pool swap/admin transitions.
+**Rejected**: (a) Pattern-match transaction structure (input/output counts). (b) Uniform witness decoding on all transitions for all contract types. (c) Output-only detection for all transitions (no witness inspection). (d) Reserve-based s_index derivation for pool public/admin transitions.
 **Why**: Each contract type has a naturally fitting detection method. Markets have 8 bounded phase scripts — byte comparison is O(1) and trivially airtight for all non-dormant transitions. Orders have a taproot-level key-spend/script-spend split — element count is the simplest possible check. Pools have unbounded s_index (scripts can't be pre-stored), and the engine needs the s_index value on every transition — the witness is the only reliable source, since reserve-based derivation (option d) is fragile after admin adjustments (reserves change without moving along the LMSR curve). Dormant market terminals produce no covenant outputs, creating a three-way ambiguity (resolution YES/NO vs expiry) only resolvable from the witness. Uniform witness decoding (option b) was rejected because markets and orders have simpler, equally correct methods — adding `RedeemNode::decode` overhead to script matching or element counting would be strictly worse. Pure output-based detection (option c) was rejected because pool s_index derivation from reserves is unreliable and dormant terminal ambiguities produce wrong state variants (e.g., `Expired` when the market actually resolved YES). `RedeemNode::decode` takes raw bytes from the transaction — no `CompiledProgram` or compilation needed, no storage needed. See [Detection Strategy and Robustness](#detection-strategy-and-robustness) for the full analysis.
 
 ### Output Identification via Script Pubkey Matching
@@ -4197,6 +4207,12 @@ This is the same pattern used elsewhere in the codebase: keep per-kind semantic 
 **Chosen**: Trade PSET construction uses a two-step pattern: `engine.quote_trade()` (read-only, returns `TradeQuote`) then `engine.build_trade_pset(quote, funding)`.
 **Rejected**: (a) Single engine method that takes wallet UTXOs directly without showing a quote first. (b) Standalone builder that requires the caller to manually specify the route.
 **Why**: Trade is the only operation requiring cross-contract route optimization — the engine has the pool/order state and LMSR math needed to compute optimal routes. The two-step pattern enables the standard trading UX of "show quote, user confirms, then build." `TradeQuote` uses `pub(crate)` internal fields so external consumers cannot construct one — they can only receive quotes from the engine and pass them to the builder. All other PSET builders are single-step: the caller provides operation params and gets a PSET back immediately, no quoting needed.
+
+### Assisted Pool Liquidity Stays Inside Trade API
+
+**Chosen**: Existing-pool issuance/cancellation assist is exposed only through `quote_trade` + `build_trade_pset`. Public `TradeQuote` displays it as `LiquiditySource::LmsrPool { market_assist: Option<MarketAssist> }`; the exact parent-market continuation remains internal in `TradeRoute`. v1 allows at most one assisted pool leg per route and prefers non-assisted routes on ties.
+**Rejected**: (a) Dedicated public `build_issue_into_pool_trade_pset` / `build_cancel_from_pool_trade_pset` builders. (b) Hiding assisted liquidity entirely from `TradeQuote`.
+**Why**: Assisted pool liquidity is still a taker trade — it belongs behind the same quote/confirm/build flow as every other routed trade. Separate builders would leak router internals into the public surface and create a second taker API for what is conceptually the same operation. Hiding assist entirely would make quotes misleading, because the on-chain transaction weight and the taker's net capital flows differ materially from a plain swap. The chosen shape exposes only the user-relevant summary and keeps the complicated covenant bookkeeping internal.
 
 ### Non-Idempotent Contract Ingestion
 
@@ -4357,6 +4373,12 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 **Chosen**: `build_lmsr_adjust_pset` takes `pair_delta: i64` (applied equally to YES and NO) and `collateral_delta: i64`, not `target_reserves: &PoolReserves`.
 **Rejected**: Absolute target reserves with runtime validation of the paired-delta constraint.
 **Why**: The LMSR covenant enforces that YES and NO reserve deltas are equal on the admin path. By taking a single `pair_delta` parameter, the API makes this constraint unrepresentable as an error — the caller cannot express asymmetric deltas. The only remaining validation is reserve floors (computed targets must meet minimums), which is a meaningful constraint rather than an input formatting error. Wallets can present absolute-target UIs by computing deltas from current reserves on their side.
+
+### One Permissionless Public Pool Path
+
+**Chosen**: The pool covenant's permissionless path allows both ordinary swaps and equal YES/NO paired reserve deltas, including the degenerate `old_s_index == new_s_index` case. Admin adjust and close remain separate paths.
+**Rejected**: Separate permissionless swap and permissionless pair-rebalance spend paths.
+**Why**: One public path preserves future transaction composability for both binary and multi-outcome markets without needing to change already-created markets. The paired delta is derived from the reserve vector change itself rather than supplied as an independent witness scalar, so the extra flexibility does not weaken covenant correctness. v1 `quote_trade` intentionally emits only plain swaps and swap+market-assist routes; pure public pair rebalances remain covenant-valid for future composition without forcing a second taker API today.
 
 ### Pool/Order Ingestion Requires Parent Market
 

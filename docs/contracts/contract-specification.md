@@ -224,24 +224,27 @@ pub struct LmsrPoolParams {
 
 3 reserve UTXOs (YES, NO, Collateral) sharing a script pubkey that encodes the current `s_index`. The taproot internal key is NUMS (key-spend unspendable). The taproot tree has constant Simplicity program leaves (same CMR regardless of `s_index`) and a variable `tapdata_leaf = TaggedHash("TapData", s_index.to_be_bytes())`. When `s_index` changes (swap), only the tapdata leaf changes — the Simplicity programs and their CMRs are constant for given pool params. This means computing a pool's script pubkey for a given `s_index` requires one Simplicity compilation (to get the constant program CMRs) plus lightweight hashing and an EC scalar multiplication (for the taproot tweak).
 
-Swap and admin paths produce three consecutive reserve outputs in fixed order, as enforced by the covenant: YES (index N), NO (index N+1), Collateral (index N+2), all sharing the same script pubkey encoding the current/new `s_index`.
+Public and admin-adjust paths produce three consecutive reserve outputs in fixed order, as enforced by the covenant: YES (index N), NO (index N+1), Collateral (index N+2), all sharing the same script pubkey encoding the current/new `s_index`.
 
 ### Spend Paths
 
 | Path | Authorization | s_index | Covenant enforces |
 |---|---|---|---|
-| Swap | Permissionless | Changes | Merkle proofs for F(old_s) and F(new_s), collateral conservation with fee inequality, reserve minimums, correct trade direction |
+| Public | Permissionless | Changes or Frozen | Merkle proofs for F(old_s) and F(new_s), reserve deltas decompose into one valid LMSR movement plus one equal YES/NO pair delta, collateral conservation with fee inequality for the LMSR component, reserve minimums, correct trade direction when `s_index` changes |
 | Admin adjust | Admin key signature | Frozen | YES and NO deltas must be equal, reserve minimums maintained |
 | Close | Admin key signature | N/A | All 3 reserve UTXOs consumed atomically, no new covenant outputs |
 
 See [lmsr-pool-close-path.md](lmsr-pool/lmsr-pool-close-path.md) for the close path specification.
 
+The **public** path is the covenant-level superset used for ordinary swaps, swap+market-assist composition with the parent market, and degenerate fixed-`s_index` pair rebalances. v1 `build_trade_pset` emits only ordinary swaps and swap+market-assist routes; pure pair-only public rebalances remain covenant-valid for future composition.
+
 ### Witness Data
 
 All pool transitions use **witness-based detection** via `RedeemNode::decode`:
-- **Swap vs Admin**: Distinguished by spend path in the witness. s_index change confirmed by witness (swap: old != new, admin: old == new).
+- **Public vs Admin**: Distinguished by spend path in the witness, not by whether `s_index` changed. On the public path, `old_s_index != new_s_index` is an ordinary or assisted swap-like movement; `old_s_index == new_s_index` is a degenerate paired rebalance. On the admin path, `old_s_index == new_s_index` is operator-managed reserve adjustment.
 - **Close**: Spend path confirmed as close by the witness. No covenant outputs.
 - **s_index extraction**: The witness contains the authoritative `old_s_index` and `new_s_index`. This is ground truth — reserve-based reverse lookup is fragile after admin adjustments.
+- **Paired delta derivation**: Any equal YES/NO paired reserve delta is derived from the reserve vector change itself; the witness does not supply an independent `pair_delta` scalar.
 
 ### LMSR Math: Cached Tables
 

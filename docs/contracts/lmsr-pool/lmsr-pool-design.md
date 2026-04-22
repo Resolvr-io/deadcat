@@ -240,20 +240,31 @@ pub fn derive_pool_params(
 
 A standalone pure function that constructs the full `LmsrPoolParams` with all derived fields. Returns `ConventionError` if inputs violate OP_RETURN encoding conventions (`max_loss_sats` and `half_payout_sats` not in the 16-value 1-2-5 table, `fee_bps > 4095`, `initial_s_index` corresponding to an implied YES price outside `(0, 10000)` bps exclusive). Called once when the user commits to creating a pool — heavier than `estimate_bootstrap` because it generates the full 65K-entry F-value table and computes the Merkle root (cold-cache bignum path on first use of a combo, cached thereafter). `initial_s_index` is sourced from `estimate_bootstrap` at creation time and directly from the pool OP_RETURN hint at recovery time — no inverse conversion from `starting_price_bps` is required. The resulting `LmsrPoolParams` is passed directly to `build_lmsr_bootstrap_pset`.
 
-### Trading (Swaps)
+### Permissionless Public Path
 
 Swaps are not built directly — they're part of trade transactions routed by the engine. See [trade-routing-algorithm.md](../../architecture/trade-routing-algorithm.md). The trade router evaluates pools alongside limit orders for best execution, factoring in both the pool's swap fee (`fee_bps`) and the transaction weight overhead. Pool quoting is reserve-aware: the cached LMSR table determines price movement, while the live reserves cap how much volume is currently fillable before a reserve floor would be violated.
 
-The covenant's swap path enforces:
-- `old_s_index != new_s_index` (state must change)
-- Correct trade direction (BuyYes/SellNo must increase s_index; SellYes/BuyNo must decrease)
-- Collateral conservation with fee inequality:
+The pool's permissionless spend path is a single generalized **public path**. It covers:
+
+- ordinary swaps (`old_s_index != new_s_index`, no pair assist)
+- swap + paired reserve assist (`old_s_index != new_s_index`, equal YES/NO pair delta derived from the reserve outputs)
+- degenerate pair-only rebalances (`old_s_index == new_s_index`)
+
+On this public path, the covenant enforces:
+
+- the reserve changes decompose into one valid LMSR movement plus one equal YES/NO paired delta
+- correct trade direction when `old_s_index != new_s_index` (BuyYes/SellNo must increase s_index; SellYes/BuyNo must decrease)
+- collateral conservation with fee inequality for the LMSR movement:
   - Buys: `collateral_in × (FEE_DENOM - fee_bps) >= base_cost × FEE_DENOM`
   - Sells: `collateral_out × FEE_DENOM <= base_rebate × (FEE_DENOM - fee_bps)`
-- Reserve minimums maintained after the trade
+- reserve minimums maintained after the public transition
 - Valid Merkle proofs for F(old_s_index) and F(new_s_index)
 
+The equal YES/NO paired delta is derived from the reserve vector change itself; it is not supplied as an independent witness scalar. Positive paired delta corresponds to issuing pairs into the pool. Negative paired delta corresponds to cancelling pairs out of the pool. In both cases, any collateral locked or released by the parent market stays on the market side — it does not directly change the pool's collateral reserve beyond the ordinary swap equation above.
+
 Fee rounding always favors the pool: buyers pay ceiling, sellers receive floor.
+
+At the public API layer, `quote_trade` / `build_trade_pset` use this path for ordinary swaps and for swap+market-assist routes on **existing** pools. In v1, buys may use `IssuePairs`, sells may use `CancelPairs`, and at most one assisted pool leg appears in a route. Degenerate pair-only public rebalances remain covenant-valid but are not intentionally emitted by `quote_trade`.
 
 ### Admin Adjustments
 
@@ -276,7 +287,7 @@ pub fn build_lmsr_adjust_pset(
 - **Remove liquidity / take profits**: Negative deltas. The operator extracts fee revenue accumulated as excess collateral.
 - **Rebalance**: Adjust collateral without changing token reserves.
 
-Admin adjustments change **capacity**, not **pricing**. The F-values (and thus the cost function) are fixed at creation — only the reserves change.
+Admin adjustments change **capacity**, not **pricing**. The F-values (and thus the cost function) are fixed at creation — only the reserves change. This remains the operator's reserve-management tool even though the public path can also express equal YES/NO pair changes: the admin path does not require a taker trade or a matching parent-market issuance/cancellation.
 
 ### Closure
 
@@ -294,11 +305,15 @@ All reserve funds are returned to `funding.return_script`. The pool transitions 
 
 ### Market Resolution
 
-The pool covenant is **market-state-agnostic** — it doesn't know or care whether the parent prediction market has resolved. Swaps remain technically valid after resolution. However, no rational trader would swap after resolution (the outcome is known, so the token prices are known), so the pool naturally goes idle. The operator closes the pool when convenient, then redeems any winning tokens via the parent market's redemption path.
+The pool covenant is **market-state-agnostic** — it doesn't know or care whether the parent prediction market has resolved. Plain swaps remain technically valid after resolution. However, no rational trader would swap after resolution (the outcome is known, so the token prices are known), so the pool naturally goes idle. The operator closes the pool when convenient, then redeems any winning tokens via the parent market's redemption path.
+
+Market-assisted public-path variants are narrower: they are only available while the parent market still supports issuance/cancellation. Once the market resolves or expires, those assisted variants disappear, but ordinary pool trading and admin operations remain covenant-valid.
 
 ### Why the pool covenant can't feasibly gate post-resolution trading
 
 A gated design would require the pool covenant to verify the parent market's state on every swap. Because a covenant can only introspect the current transaction, the only way for the pool to observe market state is to **co-spend the market covenant's UTXO as an input on every swap transaction** — the pool's spend path would require the market's Unresolved-phase collateral UTXO to be present in the same tx, and would reject the swap if the market wasn't in Trading state.
+
+The optional assisted public-path variants do not change this conclusion. Those routes already co-spend the market because the taker is deliberately using issuance/cancellation as part of the fill. The rejected design is requiring that overhead for **every** swap, even plain ones that do not otherwise benefit from touching the market.
 
 This is architecturally possible but prohibitively expensive:
 - **Every swap tx grows by the full market co-spend** — adding the market's collateral input plus its witness (Simplicity program + control block) to the pool's own ~1,000-vbyte swap footprint. Realistically 1.5-2× the current swap size.
