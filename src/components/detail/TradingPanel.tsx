@@ -412,9 +412,9 @@ export default function TradingPanel({ market }: { market: Market }) {
           className={`rounded-xl border px-3 py-3 ${
             selectedSide === "yes"
               ? tradeIntent === "open"
-                ? "border-emerald-400 bg-emerald-400/20 text-emerald-200"
-                : "border-slate-400 bg-slate-400/15 text-slate-200"
-              : "border-slate-700 text-slate-300"
+                ? "border-emerald-500 bg-emerald-500 text-slate-950"
+                : "border-slate-500 bg-slate-600 text-slate-100"
+              : "border-slate-700 text-slate-300 hover:border-slate-500"
           }`}
         >
           <span className="block text-lg font-semibold">
@@ -432,9 +432,9 @@ export default function TradingPanel({ market }: { market: Market }) {
           className={`rounded-xl border px-3 py-3 ${
             selectedSide === "no"
               ? tradeIntent === "open"
-                ? "border-rose-400 bg-rose-400/20 text-rose-200"
-                : "border-slate-400 bg-slate-400/15 text-slate-200"
-              : "border-slate-700 text-slate-300"
+                ? "border-rose-500 bg-rose-500 text-slate-950"
+                : "border-slate-500 bg-slate-600 text-slate-100"
+              : "border-slate-700 text-slate-300 hover:border-slate-500"
           }`}
         >
           <span className="block text-lg font-semibold">
