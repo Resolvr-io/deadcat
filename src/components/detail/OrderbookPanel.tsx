@@ -3,6 +3,7 @@ import { useCancelLimitOrder } from "../../queries/mutations/useTrading";
 import { useStore } from "../../store";
 import type { Market } from "../../types";
 import { getFullOrderbook } from "../../utils-react/market";
+import { generateMockOrderbook } from "../../utils-react/mock-orderbook";
 
 export default function OrderbookPanel({ market }: { market: Market }) {
   const selectedSide = useStore((s) => s.selectedSide);
@@ -11,10 +12,14 @@ export default function OrderbookPanel({ market }: { market: Market }) {
 
   const cancelLimitOrderMutation = useCancelLimitOrder();
 
-  const book = useMemo(
+  const realBook = useMemo(
     () => getFullOrderbook(market, selectedSide),
     [market, selectedSide],
   );
+  const book = useMemo(() => {
+    const hasOrders = realBook.asks.length > 0 || realBook.bids.length > 0;
+    return hasOrders ? realBook : generateMockOrderbook(market);
+  }, [realBook, market]);
 
   const maxContracts = Math.max(
     ...book.asks.map((l) => l.contracts),
