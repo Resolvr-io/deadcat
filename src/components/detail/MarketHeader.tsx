@@ -39,18 +39,7 @@ function stateBadge(state: number) {
 
 /** Above the chart: nav, title, probability, stats strip. */
 export function MarketHeaderTop({ market }: { market: Market }) {
-  const blocksLeft = market.expiryHeight - market.currentHeight;
-  const closesColor =
-    blocksLeft < 2880
-      ? "text-rose-400"
-      : blocksLeft < 10080
-        ? "text-amber-400"
-        : "text-slate-200";
-
-  const changePct =
-    market.change24h !== 0
-      ? `${market.change24h > 0 ? "+" : ""}${(market.change24h * 100).toFixed(1)}%`
-      : null;
+  const walletNetwork = useStore((s) => s.walletNetwork);
 
   const blocksLeft = market.expiryHeight - market.currentHeight;
   const closesColor =
