@@ -244,6 +244,25 @@ A standalone pure function that constructs the full `LmsrPoolParams` with all de
 
 Swaps are not built directly — they're part of trade transactions routed by the engine. See [trade-routing-algorithm.md](../../architecture/trade-routing-algorithm.md). The trade router evaluates pools alongside limit orders for best execution, factoring in both the pool's swap fee (`fee_bps`) and the transaction weight overhead. Pool quoting is reserve-aware: the cached LMSR table determines price movement, while the live reserves cap how much volume is currently fillable before a reserve floor would be violated.
 
+### Public-path quote definitions
+
+The LMSR public path uses these exact integer definitions:
+
+- `FEE_DENOM = 10_000`
+- `fee_c = FEE_DENOM - fee_bps`
+- `L = traded_lots × half_payout_sats`
+- `base_notional` is the signed-safe pre-fee quote computed from `L`, `f_old`, and `f_new`
+
+Signed-safe `base_notional` construction:
+
+- If `f_new >= f_old`, let `d = f_new - f_old`
+  - buy path: `base_cost = base_notional = L + d`
+  - sell path: `base_rebate = base_notional = L - d`
+- If `f_old > f_new`, let `d = f_old - f_new`
+  - buy path: `base_cost = base_notional = L - d`
+  - sell path: `base_rebate = base_notional = L + d`
+- Any subtraction underflow (`L < d`) makes the transition invalid.
+
 The pool's permissionless spend path is a single generalized **public path**. It covers:
 
 - ordinary swaps (`old_s_index != new_s_index`, no pair assist)
@@ -255,8 +274,8 @@ On this public path, the covenant enforces:
 - the reserve changes decompose into one valid LMSR movement plus one equal YES/NO paired delta
 - correct trade direction when `old_s_index != new_s_index` (BuyYes/SellNo must increase s_index; SellYes/BuyNo must decrease)
 - collateral conservation with fee inequality for the LMSR movement:
-  - Buys: `collateral_in × (FEE_DENOM - fee_bps) >= base_cost × FEE_DENOM`
-  - Sells: `collateral_out × FEE_DENOM <= base_rebate × (FEE_DENOM - fee_bps)`
+  - Buys: `collateral_in × fee_c >= base_cost × FEE_DENOM`
+  - Sells: `collateral_out × FEE_DENOM <= base_rebate × fee_c`
 - reserve minimums maintained after the public transition
 - Valid Merkle proofs for F(old_s_index) and F(new_s_index)
 

@@ -1254,7 +1254,6 @@ Note: `IssuanceKind` (Initial vs Subsequent) is an internal type used by the eng
 ```rust
 pub enum TradeDirection { Buy, Sell }
 
-// TODO: add ExactOutput(u64) variant when routing math supports it
 pub enum TradeAmount {
     /// Taker specifies the exact amount they send.
     /// Buy: exact collateral to spend. Sell: exact tokens to sell.
@@ -1270,6 +1269,8 @@ pub struct TradeSpec {
 ```
 
 `TradeSpec` is the input to `quote_trade`. The four axes are orthogonal — any combination of outcome, side, direction, and amount mode is valid. For binary markets, `outcome` is always `OutcomeIndex::BINARY` (the single outcome); `side` picks YES or NO. For multi-outcome markets, `outcome` identifies which outcome's pool the trade targets, and `side` picks YES_k or NO_k within that outcome's pool.
+
+**V1 is exact-input-only.** `TradeAmount` intentionally exposes only `ExactInput(u64)` in v1. An `ExactOutput` mode is deferred until the router's fill math, slippage semantics, and stale-quote checks are specified for exact-output routing; it is not part of the current public API.
 
 **Basket trades are NOT part of `TradeSpec`.** Cross-outcome splits/merges (`MultiOutcomeMarket::build_split_yes_pset` etc.) are exposed as dedicated builders rather than routed through the trade quote system. Each `TradeQuote` corresponds to a single-outcome trade; multi-outcome traders issuing a basket construct a composition of single-outcome trades plus market-contract-native primitives. Cross-outcome arb (single-tx composition of a market split/merge with N pool swaps) is deferred to v2; see [Future: Cross-Outcome Arb API (v2)](#future-cross-outcome-arb-api-v2).
 
@@ -1604,17 +1605,19 @@ pub enum OrderTransition {
 
 The engine classifies the tx's delta shape into a `MultiOutcomeMarketTransition` variant. Each named variant corresponds to a canonical delta shape defined by the covenant (see [`multi-outcome-market-contract.md § Operations`](../contracts/multi-outcome/multi-outcome-market-contract.md#operations) for the covenant-level coefficients). The variants' shapes are pairwise disjoint by construction, so matching order is a formality — but the engine uses a consistent order for implementation clarity.
 
-**Canonical shape table** (all entries expressed in Δ-per-outcome for YES/NO token supplies and Δ for collateral; `cp := base_payout × N`; see the contract spec for `cp_yes_basket`, `cp_no_basket`, `cp_cross_swap` exact formulas):
+**Canonical shape table** (all entries expressed in Δ-per-outcome for YES/NO token supplies and Δ for collateral; `cp := base_payout × N`, `cp_yes_basket := cp`, `cp_no_basket := (N - 1) × cp`, `cp_cross_swap := (N - 2) × cp`, matching [contract-specification.md § Spend Paths](../contracts/contract-specification.md#spend-paths-summary)):
 
 | Variant | Δy shape | Δn shape | Δc shape |
 |---|---|---|---|
 | `IssuedPair { outcome: i, pairs: p }` | Δy[i] = +p; all others 0 | Δn[i] = +p; all others 0 | +p × cp |
 | `CancelledPair { outcome: i, pairs_burned: p }` | Δy[i] = −p; all others 0 | Δn[i] = −p; all others 0 | −p × cp |
-| `SplitYes { sets: s }` | Δy[k] = +s for all k | all Δn = 0 | +s × cp_yes_basket |
-| `MergeYes { sets: s }` | Δy[k] = −s for all k | all Δn = 0 | −s × cp_yes_basket |
-| `SplitNo { sets: s }` | all Δy = 0 | Δn[k] = +s for all k | +s × cp_no_basket |
-| `MergeNo { sets: s }` | all Δy = 0 | Δn[k] = −s for all k | −s × cp_no_basket |
-| `CrossOutcomeSwap { from_outcome: i, sets: s }` | Δy[i] = −s; all others 0 | Δn[j] = +s for j ≠ i; Δn[i] = 0 | +s × cp_cross_swap |
+| `SplitYes { sets: s }` | Δy[k] = +s for all k | all Δn = 0 | +s × cp |
+| `MergeYes { sets: s }` | Δy[k] = −s for all k | all Δn = 0 | −s × cp |
+| `SplitNo { sets: s }` | all Δy = 0 | Δn[k] = +s for all k | +s × ((N - 1) × cp) |
+| `MergeNo { sets: s }` | all Δy = 0 | Δn[k] = −s for all k | −s × ((N - 1) × cp) |
+| `CrossOutcomeSwap { from_outcome: i, sets: s }` | Δy[i] = −s; all others 0 | Δn[j] = +s for j ≠ i; Δn[i] = 0 | +s × ((N - 2) × cp) |
+
+In the typed Rust surface, `params.cp_yes_basket()`, `params.cp_no_basket()`, and `params.cp_cross_swap()` are just accessors for those exact formulas; no alternate coefficient definitions exist.
 
 **Classification algorithm**:
 
@@ -3497,7 +3500,7 @@ Token recovery is automatic. YES and NO tokens are standard Elements confidentia
 
 Markets have no on-chain "owner" — the taproot internal key is NUMS. However, the market creation builders include an OP_RETURN recovery hint in the market creation transaction. This serves two purposes: (1) enabling the market creator to re-discover and re-announce their market, and (2) providing the anchor for chain-only pool and order recovery — pool and order hints point to the market creation transaction by txid. It also enables token holder recovery: `issuance_transaction(asset_id)` traces any YES/NO token back to this transaction.
 
-**37 bytes** (known collateral asset) / **69 bytes** (exotic collateral). Uses compressed encoding: 4-bit well-known collateral asset index (L-BTC=0, USDt=1, escape=15), 4-bit 1-2-5 denomination convention for `base_payout`, and absolute `expiry_time` as u24 (block height divided by 60, giving hour-level granularity with range from the Liquid genesis block to approximately the year 3931). The builder accepts any future height, rounds `expiry_time` up to the next 60-block boundary, and commits that rounded value into the covenant params — making the encoding lossless. Only 4 of 8 `BinaryMarketParams` fields need encoding — the other 4 (token and RT asset IDs) are derivable from the creation transaction's issuance entropy. See [chain-only-recovery.md](../protocol/chain-only-recovery.md) for the exact byte layout and per-field justification.
+**37 bytes** (known collateral asset) / **69 bytes** (exotic collateral). Uses compressed encoding: 4-bit well-known collateral asset index (network policy asset = `0`, Liquid-mainnet USDt = `1`, escape = `15`), 4-bit 1-2-5 denomination convention for `base_payout`, and absolute `expiry_time` as u24 (block height divided by 60, giving hour-level granularity with range from the Liquid genesis block to approximately the year 3931). The builder accepts any future height, rounds `expiry_time` up to the next 60-block boundary, and commits that rounded value into the covenant params — making the encoding lossless. Only 4 of 8 `BinaryMarketParams` fields need encoding — the other 4 (token and RT asset IDs) are derivable from the creation transaction's issuance entropy. See [chain-only-recovery.md](../protocol/chain-only-recovery.md) for the exact byte layout, network-specific asset mapping, and per-field justification.
 
 ### Maker Order Positions
 
@@ -4466,7 +4469,7 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 
 ### Standard Denomination Conventions
 
-**Chosen**: `base_payout` constrained to 16-value 1-2-5 table (4 bits); binary markets derive `cp = base_payout × 2`, while multi-outcome markets derive `cp = base_payout × outcome_count`. Pool `max_loss_sats` and `half_payout_sats` are constrained to the **same** 16-value 1-2-5 table (4 bits each), sharing the encoding with market `base_payout`. Well-known collateral asset index (4 bits: L-BTC=0, USDt=1, escape=15).
+**Chosen**: `base_payout` constrained to 16-value 1-2-5 table (4 bits); binary markets derive `cp = base_payout × 2`, while multi-outcome markets derive `cp = base_payout × outcome_count`. Pool `max_loss_sats` and `half_payout_sats` are constrained to the **same** 16-value 1-2-5 table (4 bits each), sharing the encoding with market `base_payout`. Well-known collateral asset index (4 bits: network policy asset = `0`, Liquid-mainnet USDt = `1`, escape = `15`).
 **Rejected**: (a) Uncompressed u64 values in OP_RETURN (wastes bytes). (b) Separate 26-value mantissa × 10^exponent encoding for pools (previous design — 9 bits each, wider range but adds encoding complexity and a second convention to learn). (c) Per-N denomination tables (complex decoder).
 **Why**: The conventions compress OP_RETURN hints (market: 77→37 bytes, pool: 51→40 bytes) while constraining parameters to "round numbers" that market creators naturally pick. Using a single 16-value 1-2-5 table for both market and pool denomination reduces the number of distinct encodings in the protocol, simplifies decoders, and keeps the committed LMSR Merkle-root fixture space small (16×16 = 256 combinations). The 10^7-sat range ceiling is a pragmatic v1 constraint, not a structural one — expansion to wider ranges (e.g., for pools on USDt-denominated markets with larger subsidies) is non-breaking via table extension. See [chain-only-recovery.md](../protocol/chain-only-recovery.md).
 

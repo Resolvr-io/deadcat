@@ -153,15 +153,21 @@ For outcome k winning, `YES_k` and `NO_j` (for all j ≠ k) each redeem for `cp 
 
 ### Spend Paths (summary)
 
-Formulas below use `cp := base_payout × N` as a derivation shorthand.
+Formulas below use these canonical derivation shorthands:
+
+- `cp := base_payout × N`
+- `cp_yes_basket := cp`
+- `cp_no_basket := (N - 1) × cp`
+- `cp_cross_swap := (N - 2) × cp`
 
 Per-outcome operations:
 - **Issue pair (outcome i)**: mint `sets` of YES_i and sets of NO_i, lock `sets × cp`.
 - **Cancel pair (outcome i)**: burn sets of YES_i and sets of NO_i, release `sets × cp`.
 
 Cross-outcome operations:
-- **Split YES** / **Merge YES**: mint/burn `sets` of each YES_i, for `sets × cp`.
-- **Split NO** / **Merge NO**: mint/burn `sets` of each NO_i, for `sets × (N-1) × cp`.
+- **Split YES** / **Merge YES**: mint/burn `sets` of each YES_i, for `sets × cp_yes_basket`.
+- **Split NO** / **Merge NO**: mint/burn `sets` of each NO_i, for `sets × cp_no_basket`.
+- **Cross-outcome swap** (`YES_i → {NO_j : j ≠ i}`): burn `sets` of `YES_i`, mint `sets` of each `NO_j` for `j ≠ i`, and lock `sets × cp_cross_swap`.
 
 Resolution/redemption:
 - **Resolution (outcome k)**: oracle signs u8 outcome_index; all 2N RTs burned; collateral moves to Resolved_k slot.

@@ -38,7 +38,7 @@ Correct chain-only recovery depends on the wallet integrator providing specific 
 | **Complete wallet rescan.** The caller must present every wallet-funded transaction on the target network, from the wallet's first use through the current tip. Incremental rescans must not skip block ranges. | Silent. Orders and pools whose creation txs were missed are simply absent from the recovered state. The engine has no way to know about txs it was never given. |
 | **Authoritative, tip-synced `ChainSource`.** Backends must return complete, current state — not filtered or stale results. | Latent. Stale tip produces stale state. Missing txs in `transactions_in_block` or equivalent queries produce the same silent gap as incomplete rescan. |
 | **`ChainSource::issuance_transaction(asset_id)` returns the first-issuance transaction**, not a subsequent reissuance. Esplora's `/asset/:asset_id` endpoint and Electrs's asset index both return this directly. | Loud. `ingest_market` re-derivation fails the script-pubkey match and returns `CoreError::InvalidCreationTransaction`. The error does not obviously point at the integrator's `ChainSource` implementation — integrators should treat this error as a signal to verify their issuance lookup is returning the genesis tx. |
-| **Correct `Network` at engine construction.** The well-known collateral asset index (see [Well-Known Collateral Asset Index](#well-known-collateral-asset-index-4-bits)) resolves against network-specific asset IDs — mainnet L-BTC ≠ testnet L-BTC ≠ regtest L-BTC. | Silent. Decoded collateral asset IDs resolve to the wrong chain's L-BTC / USDt; downstream operations fail with "unknown asset" rather than an explicit network-mismatch error. |
+| **Correct `Network` at engine construction.** The well-known collateral asset index (see [Well-Known Collateral Asset Index](#well-known-collateral-asset-index-4-bits)) resolves against network-specific asset IDs — mainnet L-BTC ≠ testnet L-BTC ≠ regtest L-BTC, and the v1 well-known USDt entry exists only on Liquid mainnet. | Silent. Decoded collateral asset IDs resolve to the wrong chain's policy asset or treat a mainnet-only USDt index as valid on the wrong network; downstream operations fail with "unknown asset" rather than an explicit network-mismatch error. |
 
 ### What `deadcat-core` verifies
 
@@ -246,14 +246,16 @@ This gives 16 × 16 = 256 `(max_loss_sats, half_payout_sats)` combinations, enco
 
 ### Well-Known Collateral Asset Index (4 bits)
 
-```
-0 = L-BTC (mainnet)
-1 = USDt (Liquid)
-2-14 = reserved for future well-known assets
-15 = escape: full 32-byte asset ID follows
-```
+The v1 mapping is keyed by network:
 
-The lookup table is network-specific — L-BTC has different asset IDs on mainnet, testnet, and regtest. The engine knows the network from construction time.
+| Index | Liquid mainnet | Liquid testnet | Liquid regtest |
+|---|---|---|---|
+| `0` | L-BTC policy asset `6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d` | Policy asset `144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49` | Default regtest policy asset `5ac9f65c0efcc4775e0baec4ec03abdde22473cd3cf33c0419ca290e0751b225` |
+| `1` | Liquid mainnet USDt `ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2` | **Unassigned in v1** — use escape `15` for non-policy collateral | **Unassigned in v1** — use escape `15` for non-policy collateral |
+| `2-14` | Reserved for future well-known assets | Reserved for future well-known assets | Reserved for future well-known assets |
+| `15` | Escape: full 32-byte asset ID follows | Escape: full 32-byte asset ID follows | Escape: full 32-byte asset ID follows |
+
+Index `0` always means the selected network's policy asset. Index `1` is intentionally **Liquid-mainnet-only** in v1; builders on Liquid testnet and Liquid regtest must encode every non-policy collateral asset via escape `15`, and decoders should reject index `1` on those networks.
 
 ## OP_RETURN Encoding Specification
 
@@ -261,19 +263,25 @@ All recovery hints use zero-value OP_RETURN outputs. Data must be whole bytes (p
 
 ### Type Tag
 
-The first byte of every hint. It identifies:
-1. Whether this is a deadcat hint (vs other protocols' OP_RETURNs)
-2. Which contract type and variant (binary market, multi-outcome market, pool, order)
-3. Format version
-4. For orders: side and direction flags in the low bits
+V1 uses exact class-nibble assignments:
 
-Binary markets and multi-outcome markets use distinct type tag values so that recovery can dispatch to the right parser without first consulting the creation tx. Pools and orders each have one tag value regardless of whether their parent market is binary or multi-outcome — the parent market kind is determined by the parent market's own hint.
+| Hint | `type_tag` | Meaning |
+|---|---|---|
+| Binary market | `0x10` | Market hint for the binary market contract family. Low nibble reserved, must be zero. |
+| Multi-outcome market | `0x20` | Market hint for the multi-outcome contract family. Low nibble reserved, must be zero. |
+| Pool | `0x30` | Pool hint. Low nibble reserved, must be zero. |
+| Order: YES / SellBase | `0x40` | Order hint with class nibble `0x4`, side bit `0`, direction bit `0`, reserved bits `00`. |
+| Order: YES / SellQuote | `0x44` | Order hint with class nibble `0x4`, side bit `0`, direction bit `1`, reserved bits `00`. |
+| Order: NO / SellBase | `0x48` | Order hint with class nibble `0x4`, side bit `1`, direction bit `0`, reserved bits `00`. |
+| Order: NO / SellQuote | `0x4C` | Order hint with class nibble `0x4`, side bit `1`, direction bit `1`, reserved bits `00`. |
+
+The high nibble identifies the hint family. For market and pool hints, the low nibble is reserved and must be zero in v1. For order hints, the low nibble is structured as `[side(1)][direction(1)][reserved(2)]`, where `side = 0` means YES, `side = 1` means NO, `direction = 0` means SellBase, and `direction = 1` means SellQuote. All other byte values are reserved in v1.
 
 The type tag is a **first-pass filter**, not a guarantee. Roughly 1 in 256 random OP_RETURNs match any given type tag value. Full verification (decode all fields, compile covenant, match script) is what confirms a hint is genuine.
 
 ### Market Hint
 
-Binary and multi-outcome market hints share the same **37-byte** layout (69 bytes with exotic collateral). They are distinguished by the `type_tag` byte: one tag value for binary markets, a separate value for multi-outcome markets. The rest of the layout is identical:
+Binary and multi-outcome market hints share the same **37-byte** layout (69 bytes with exotic collateral). They are distinguished by the `type_tag` byte: `0x10` for binary markets and `0x20` for multi-outcome markets. The rest of the layout is identical:
 
 ```
 Byte  0:     type_tag                                  --  8 bits
@@ -327,7 +335,7 @@ The covenant script is the authoritative binding between N and the creation tx: 
 ### Order Hint (40 bytes)
 
 ```
-Byte  0:     [format(4)][side(1)][direction(1)][reserved(2)]  --  8 bits
+Byte  0:     [class=0x4][side(1)][direction(1)][reserved(2)] --  8 bits
 Bytes 1-2:   masked_order_index (u16)                          -- 16 bits
 Bytes 3-34:  market_creation_txid                              -- 256 bits
 Bytes 35-37: price (u24, big-endian)                           -- 24 bits
@@ -362,16 +370,19 @@ Byte  39:    min_remainder_lots (u8)                           --  8 bits
 ### Pool Hint (40 bytes)
 
 ```
-Byte  0:      type_tag                                          --  8 bits
-Bytes 1-32:   market_creation_txid                              -- 256 bits
-Bits 264-267: max_loss_sats (4 bits, 1-2-5 table index)         \
-Bits 268-271: half_payout_sats (4 bits, 1-2-5 table index)       |-- 56 bits = 7 bytes
-Bits 272-283: fee_bps (u12)                                      |   (exact bit-level packing
-Bits 284-299: initial_s_index (u16)                              |    across bytes is an
-Bits 300-315: masked_pool_index (u16)                            |    implementation detail)
-Bits 316-319: reserved (must be zero)                            /
-                                                          Total: 320 bits = 40 bytes
+Byte  0:      type_tag (`0x30`)                                  --  8 bits
+Bytes 1-32:   market_creation_txid                               -- 256 bits
+Byte  33:     [max_loss_idx(4)][half_payout_idx(4)]              --  8 bits
+Byte  34:     fee_bps[11:4]                                      --  8 bits
+Byte  35:     [fee_bps[3:0]][initial_s_index[15:12]]             --  8 bits
+Byte  36:     initial_s_index[11:4]                              --  8 bits
+Byte  37:     [initial_s_index[3:0]][masked_pool_index[15:12]]   --  8 bits
+Byte  38:     masked_pool_index[11:4]                            --  8 bits
+Byte  39:     [masked_pool_index[3:0]][reserved=0]               --  8 bits
+                                                           Total: 320 bits = 40 bytes
 ```
+
+Within each bracketed byte, the first nibble is the high nibble and the second nibble is the low nibble.
 
 **Per-field justification:**
 

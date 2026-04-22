@@ -18,6 +18,27 @@ The `LMSR_TABLE_ROOT` is a compile-time parameter baked into the Simplicity prog
 
 The swap witness provides six values: `old_s_index`, `new_s_index`, `f_old`, `f_new`, `old_proof`, `new_proof`. The covenant:
 
+#### Public-path quote definitions
+
+The LMSR public path uses these exact integer definitions:
+
+- `FEE_DENOM = 10_000`
+- `fee_c = FEE_DENOM - fee_bps`
+- `L = traded_lots × half_payout_sats`
+- `base_notional` is the signed-safe pre-fee quote computed from `L`, `f_old`, and `f_new`
+
+Signed-safe `base_notional` construction:
+
+- If `f_new >= f_old`, let `d = f_new - f_old`
+  - buy path: `base_notional = L + d`
+  - sell path: `base_notional = L - d`
+- If `f_old > f_new`, let `d = f_old - f_new`
+  - buy path: `base_notional = L - d`
+  - sell path: `base_notional = L + d`
+- Any subtraction underflow (`L < d`) makes the transition invalid.
+
+`base_cost` is the buy-path interpretation of `base_notional`. `base_rebate` is the sell-path interpretation of `base_notional`.
+
 1. **Verifies two Merkle proofs** — confirms that `(old_s_index, f_old)` and `(new_s_index, f_new)` are committed leaves under `LMSR_TABLE_ROOT`:
    ```
    leaf = SHA256(0x00 || "LMSR_TBL_V1" || be64(index) || be64(value))
@@ -27,10 +48,10 @@ The swap witness provides six values: `old_s_index`, `new_s_index`, `f_old`, `f_
 
 2. **Uses f_old and f_new in the conservation equation** — the public path's LMSR movement computes `base_notional` from `f_old`, `f_new`, `traded_lots`, and `half_payout_sats`, then enforces fee-adjusted pricing via 128-bit integer inequality:
    ```
-   buy:  delta_in  × fee_c    ≥ base_notional × FEE_DENOM
-   sell: delta_out × FEE_DENOM ≤ base_notional × fee_c
+   buy:  delta_in  × fee_c    ≥ base_cost   × FEE_DENOM
+   sell: delta_out × FEE_DENOM ≤ base_rebate × fee_c
    ```
-   where `fee_c = FEE_DENOM - FEE_BPS` and all arithmetic is integer-only.
+   where `base_cost` / `base_rebate` are the buy/sell interpretations of `base_notional`, `fee_c = FEE_DENOM - fee_bps`, and all arithmetic is integer-only.
 
 3. **Verifies trade direction** — `new_s_index > old_s_index` for buys, `<` for sells.
 
