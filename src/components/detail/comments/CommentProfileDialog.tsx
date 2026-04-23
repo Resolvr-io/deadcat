@@ -1,5 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useEscapeKey } from "../../../hooks/useEscapeKey";
 import { useLockScroll } from "../../../hooks/useLockScroll";
 import { useNostrProfileByPubkey } from "../../../queries/useNostrProfileByPubkey";
@@ -8,6 +8,8 @@ import { hexToNpub } from "../../../utils/crypto";
 import { generateAvatarDataUri } from "../../../utils-react/avatar";
 import { CloseButton } from "../../shared/CloseButton";
 import { showToast } from "../../shared/Toast";
+import { ZapIcon } from "./icons";
+import { ZapDialog } from "./ZapDialog";
 
 /**
  * Read-only Nostr profile view for a comment author. Shows banner,
@@ -29,6 +31,7 @@ export function CommentProfileDialog({
 
   const sessionPubkey = useStore((s) => s.nostrPubkey);
   const isSelf = !!sessionPubkey && sessionPubkey === pubkeyHex;
+  const [zapOpen, setZapOpen] = useState(false);
 
   const { data: profile, isLoading } = useNostrProfileByPubkey(
     open ? pubkeyHex : null,
@@ -94,6 +97,19 @@ export function CommentProfileDialog({
                       since you can't follow or mute yourself. */}
                   {!isSelf && (
                     <div className="flex shrink-0 items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setZapOpen(true)}
+                        disabled={!profile?.lud16}
+                        title={
+                          profile?.lud16
+                            ? "Send a zap"
+                            : "Recipient has no Lightning address"
+                        }
+                        className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-700 bg-slate-900/60 text-amber-300 transition hover:border-amber-400/40 hover:bg-amber-400/10 disabled:cursor-default disabled:text-slate-500 disabled:opacity-60"
+                      >
+                        <ZapIcon className="h-4 w-4" />
+                      </button>
                       <button
                         type="button"
                         disabled
@@ -239,6 +255,12 @@ export function CommentProfileDialog({
           </div>
         </div>
       </div>
+
+      <ZapDialog
+        recipientPubkeyHex={pubkeyHex}
+        open={zapOpen}
+        onClose={() => setZapOpen(false)}
+      />
     </div>
   );
 }

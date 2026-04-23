@@ -134,6 +134,7 @@ pub use discovery::{
     PoolParams,
     PredictionMarketCandidateIngestInput,
     StoredOrderStatus,
+    ZapRequest,
     // Functions
     build_announcement_event,
     build_attestation_event,
@@ -143,6 +144,7 @@ pub use discovery::{
     build_comment_filter_for_market,
     build_contract_filter,
     build_pool_event,
+    build_zap_request_event,
     connect_client,
     discovered_market_to_contract_params,
     fetch_announcements,
