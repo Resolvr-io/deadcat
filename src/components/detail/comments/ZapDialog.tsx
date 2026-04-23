@@ -8,6 +8,7 @@ import { useStore } from "../../../store";
 import { friendlyError } from "../../../utils-react/friendly-error";
 import { sendZap } from "../../../utils-react/zap";
 import { CloseButton } from "../../shared/CloseButton";
+import { SigningHint } from "../../shared/SigningHint";
 import { showToast } from "../../shared/Toast";
 import { ZapIcon } from "./icons";
 
@@ -190,6 +191,8 @@ export function ZapDialog({
                   you confirm.
                 </p>
               )}
+
+              <SigningHint active={zapping} />
 
               {error && (
                 <p className="rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2 text-xs text-rose-300">

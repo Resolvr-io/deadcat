@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { baseCurrencyOptions } from "../../constants";
 import { useLockScroll } from "../../hooks/useLockScroll";
 import { queryClient } from "../../queries/queryClient";
+import { useNip46Connected } from "../../queries/useNip46Connected";
 import { useStore } from "../../store";
 import type { BaseCurrency, Nip46Status, RelayEntry } from "../../types";
 import { randomCatName } from "../../utils-react/random-name";
@@ -549,6 +550,7 @@ function InlineUnlock() {
 function WalletSection() {
   const walletStatus = useStore((s) => s.walletStatus);
   const nostrNpub = useStore((s) => s.nostrNpub);
+  const isRemoteSigner = useNip46Connected();
   const showMiniWallet = useStore((s) => s.showMiniWallet);
   const showLbtcLabel = useStore((s) => s.showLbtcLabel);
   const baseCurrency = useStore((s) => s.baseCurrency);
@@ -584,8 +586,12 @@ function WalletSection() {
 
   return (
     <div className="space-y-3">
-      {/* Download backup file */}
-      {nostrNpub && (
+      {/* Download backup file — not available to remote-signer (NIP-46)
+          users because the .dcid bundle needs the nsec, which we never
+          hold locally in that flow. Those users rely on their signer
+          app to retain the key; the wallet mnemonic still has its own
+          backup path via the mnemonic reveal below. */}
+      {nostrNpub && !isRemoteSigner && (
         <button
           type="button"
           onClick={async () => {
@@ -727,8 +733,12 @@ function WalletSection() {
 
       {/* Remove wallet */}
       <p className="text-xs text-slate-500">
-        Remove the current wallet from this device. You can restore from your
-        backup file (.dcid) or recovery phrase.
+        Remove the current wallet from this device. You can restore from your{" "}
+        {isRemoteSigner ? (
+          "recovery phrase; reconnect your remote signer to restore your Nostr identity."
+        ) : (
+          <>backup file (.dcid) or recovery phrase.</>
+        )}
       </p>
       {walletDeletePrompt ? (
         <div className="rounded-lg border border-rose-700/40 bg-rose-950/20 p-3 space-y-2">
