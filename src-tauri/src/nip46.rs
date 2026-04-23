@@ -658,9 +658,29 @@ pub async fn await_nostrconnect_handshake(
             Ok(v) => v,
             Err(_) => continue,
         };
-        if parsed.get("result").and_then(|v| v.as_str()) == Some(pending.secret.as_str()) {
+        // Ignore explicit error responses.
+        if parsed
+            .get("error")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty())
+        {
+            continue;
+        }
+        // Accept two handshake completions:
+        // - `result == <secret>` — Primal's echoed-secret pattern
+        // - `result == "ack"` — standard NIP-46 connect response (Amber etc.)
+        // Signer identity in both cases comes from the event's author,
+        // which was vouched for by the NIP-44/NIP-04 decryption above
+        // (the signer encrypted to our app pubkey).
+        let result = parsed.get("result").and_then(|v| v.as_str());
+        let matched = match result {
+            Some(r) if r == pending.secret.as_str() => Some("echoed-secret"),
+            Some("ack") => Some("ack"),
+            _ => None,
+        };
+        if let Some(style) = matched {
             log::info!(
-                "[nostrconnect] handshake: matched secret from signer {}",
+                "[nostrconnect] handshake: matched {style} response from signer {}",
                 event.pubkey.to_hex()
             );
             return Ok(event.pubkey);
