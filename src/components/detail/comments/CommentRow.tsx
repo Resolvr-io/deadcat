@@ -10,6 +10,7 @@ import { CommentProfileDialog } from "./CommentProfileDialog";
 import { CommentRowMenu } from "./CommentRowMenu";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { HeartIcon, ReplyIcon, ZapIcon } from "./icons";
+import { ZapDialog } from "./ZapDialog";
 
 function shortPubkey(hex: string): string {
   if (hex.length <= 14) return hex;
@@ -51,6 +52,8 @@ export function CommentRow({
   const { data: profile } = useNostrProfileByPubkey(comment.author_pubkey);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [zapOpen, setZapOpen] = useState(false);
+  const [zapCount, setZapCount] = useState(0);
   const deleteMutation = useDeleteMarketComment(marketId, creatorPubkey);
 
   const avatarSrc = useMemo(
@@ -112,11 +115,15 @@ export function CommentRow({
             icon={<HeartIcon className="h-[18px] w-[18px]" />}
             title="Reactions coming soon"
           />
-          <PlaceholderAction
-            icon={<ZapIcon className="h-[18px] w-[18px]" />}
-            title="Zaps coming soon"
-            trailing="0"
-          />
+          <button
+            type="button"
+            onClick={() => setZapOpen(true)}
+            title="Send a zap"
+            className="flex items-center gap-1 rounded-full px-2 py-1.5 text-slate-500 transition hover:bg-amber-400/10 hover:text-amber-300"
+          >
+            <ZapIcon className="h-[18px] w-[18px]" />
+            <span className="text-xs">{zapCount}</span>
+          </button>
           <CommentRowMenu
             commentBody={comment.content}
             authorPubkeyHex={comment.author_pubkey}
@@ -139,6 +146,13 @@ export function CommentRow({
         pubkeyHex={comment.author_pubkey}
         open={profileOpen}
         onClose={() => setProfileOpen(false)}
+      />
+      <ZapDialog
+        recipientPubkeyHex={comment.author_pubkey}
+        eventIdHex={comment.id}
+        open={zapOpen}
+        onClose={() => setZapOpen(false)}
+        onZapped={() => setZapCount((n) => n + 1)}
       />
     </div>
   );

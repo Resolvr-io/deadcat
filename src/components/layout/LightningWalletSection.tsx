@@ -1,6 +1,7 @@
 import { launchModal } from "@getalby/bitcoin-connect-react";
 import { useState } from "react";
 import { useBcConnection } from "../../queries/useBcConnection";
+import { useZapPrefs } from "../../queries/useZapPrefs";
 import { LightningWalletInfoDialog } from "./LightningWalletInfoDialog";
 
 /**
@@ -91,10 +92,79 @@ export function LightningWalletSection() {
         </button>
       )}
 
+      <ZapDefaults />
+
       <LightningWalletInfoDialog
         open={infoOpen}
         onClose={() => setInfoOpen(false)}
       />
+    </div>
+  );
+}
+
+/**
+ * Default zap amount + short zap comment, used to prefill the zap
+ * dialog on comments and profiles. Persisted via localStorage.
+ */
+function ZapDefaults() {
+  const { defaultSats, defaultComment, setDefaultSats, setDefaultComment } =
+    useZapPrefs();
+  const [satsInput, setSatsInput] = useState<string>(String(defaultSats));
+  const [commentInput, setCommentInput] = useState<string>(defaultComment);
+
+  const handleSatsBlur = () => {
+    const parsed = Number.parseInt(satsInput, 10);
+    const next =
+      Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : defaultSats;
+    setDefaultSats(next);
+    setSatsInput(String(next));
+  };
+
+  const handleCommentBlur = () => {
+    const trimmed = commentInput.trim();
+    if (trimmed !== defaultComment) {
+      setDefaultComment(trimmed);
+    }
+    setCommentInput(trimmed);
+  };
+
+  return (
+    <div className="mt-1 space-y-2 rounded-lg border border-slate-800 bg-slate-900/40 p-3">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+        Zap defaults
+      </p>
+      <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
+        <label htmlFor="zap-default-sats" className="text-xs text-slate-400">
+          Amount
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            id="zap-default-sats"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            value={satsInput}
+            onChange={(e) => setSatsInput(e.target.value)}
+            onBlur={handleSatsBlur}
+            className="h-9 w-32 rounded-md border border-slate-700 bg-slate-900 px-2 text-sm text-slate-100 focus:border-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-400/30"
+          />
+          <span className="text-xs text-slate-500">sats</span>
+        </div>
+
+        <label htmlFor="zap-default-comment" className="text-xs text-slate-400">
+          Comment
+        </label>
+        <input
+          id="zap-default-comment"
+          type="text"
+          maxLength={140}
+          placeholder="Optional default message"
+          value={commentInput}
+          onChange={(e) => setCommentInput(e.target.value)}
+          onBlur={handleCommentBlur}
+          className="h-9 rounded-md border border-slate-700 bg-slate-900 px-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-400/30"
+        />
+      </div>
     </div>
   );
 }

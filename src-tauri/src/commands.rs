@@ -1527,6 +1527,49 @@ pub async fn delete_market_comment(
     Ok(())
 }
 
+/// Build and sign a NIP-57 kind:9734 zap request. The caller (frontend)
+/// then posts the signed event to the recipient's LNURL-pay callback
+/// to fetch an invoice, which is paid via Bitcoin Connect / NWC.
+///
+/// Works for both local nsec and NIP-46 remote signers — the signing
+/// happens via the same `NostrSigner` abstraction comments use.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn sign_zap_request(
+    recipient_pubkey_hex: String,
+    amount_msats: u64,
+    relays: Vec<String>,
+    content: String,
+    lnurl: Option<String>,
+    event_id_hex: Option<String>,
+    event_coordinate: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let (signer, _client) = get_signer_and_client(&app).await?;
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+
+    let relay_refs: Vec<&str> = relays.iter().map(String::as_str).collect();
+    let req = deadcat_sdk::ZapRequest {
+        recipient_pubkey_hex: &recipient_pubkey_hex,
+        amount_msats,
+        lnurl: lnurl.as_deref(),
+        relays: &relay_refs,
+        content: &content,
+        event_id_hex: event_id_hex.as_deref(),
+        event_coordinate: event_coordinate.as_deref(),
+    };
+    let unsigned = deadcat_sdk::build_zap_request_event(author, &req)?;
+    let signed = signer
+        .sign_event(unsigned)
+        .await
+        .map_err(|e| format!("sign_event failed: {e}"))?;
+
+    serde_json::to_string(&signed).map_err(|e| format!("failed to serialize zap request: {e}"))
+}
+
 // =========================================================================
 // Contract discovery commands
 // =========================================================================
