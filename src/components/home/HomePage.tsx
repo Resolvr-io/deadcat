@@ -1030,41 +1030,29 @@ function TrendingHomeView({ markets }: { markets: Market[] }) {
           {/* Featured market carousel */}
           <FeaturedMarket market={featured} trending={trending} />
 
-          {/* Top markets grid */}
+          {/* All markets grid — binary + multi-outcome interleaved */}
           <section>
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-base font-medium text-slate-400">
-                Top Markets
+                All Markets
               </h2>
               <p className="text-sm text-slate-400">
-                {topMarkets.length} shown
+                {topMarkets.length + marketGroups.length} shown
               </p>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
+              {marketGroups.map((group, idx) => (
+                <MarketGroupCard key={group.id} group={group} index={idx} />
+              ))}
               {topMarkets.map((market, idx) => (
-                <MarketCard key={market.id} market={market} index={idx} />
+                <MarketCard
+                  key={market.id}
+                  market={market}
+                  index={marketGroups.length + idx}
+                />
               ))}
             </div>
           </section>
-
-          {/* Multi-outcome market groups */}
-          {marketGroups.length > 0 && (
-            <section>
-              <div className="mb-3 flex items-center gap-2">
-                <h2 className="text-base font-medium text-slate-400">
-                  Multi-Outcome Markets
-                </h2>
-                <span className="rounded border border-violet-700/50 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">
-                  {marketGroups.length}
-                </span>
-              </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                {marketGroups.map((group, idx) => (
-                  <MarketGroupCard key={group.id} group={group} index={idx} />
-                ))}
-              </div>
-            </section>
-          )}
         </section>
 
         {/* Right sidebar: Trending + Top Movers */}
