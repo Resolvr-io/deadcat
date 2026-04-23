@@ -5,6 +5,7 @@
 //! into a single SDK-owned module.
 
 pub(crate) mod attestation;
+pub(crate) mod comments;
 pub(crate) mod config;
 pub(crate) mod events;
 pub(crate) mod market;
@@ -73,6 +74,16 @@ pub use market::{
 pub use attestation::{
     AttestationContent, AttestationResult, build_attestation_event, build_attestation_filter,
     sign_attestation,
+};
+
+// ---------------------------------------------------------------------------
+// Re-exports: comments (NIP-22)
+// ---------------------------------------------------------------------------
+
+pub use comments::{
+    COMMENT_KIND, CommentParent, CommentRoot, MAX_COMMENT_LEN, MarketComment,
+    build_comment_deletion_event, build_comment_event, build_comment_filter_for_market,
+    fetch_comments as fetch_market_comments, parse_comment_event,
 };
 
 // ---------------------------------------------------------------------------

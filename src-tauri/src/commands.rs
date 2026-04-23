@@ -1417,6 +1417,92 @@ pub fn open_downloads_folder() -> Result<(), String> {
 }
 
 // =========================================================================
+// NIP-22 market comments
+// =========================================================================
+
+fn current_network_tag(app: &tauri::AppHandle) -> Result<String, String> {
+    let manager = app.state::<Mutex<AppStateManager>>();
+    let mgr = manager
+        .lock()
+        .map_err(|_| "state lock failed".to_string())?;
+    let network = mgr.network().ok_or("Network not initialized")?;
+    Ok(crate::state::to_sdk_network(network)
+        .discovery_tag()
+        .to_string())
+}
+
+#[tauri::command]
+pub async fn fetch_market_comments(
+    market_id_hex: String,
+    creator_pubkey_hex: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<deadcat_sdk::MarketComment>, String> {
+    let (_keys, client) = get_keys_and_client(&app).await?;
+    let network_tag = current_network_tag(&app)?;
+    deadcat_sdk::fetch_market_comments(
+        &client,
+        &creator_pubkey_hex,
+        &market_id_hex,
+        &network_tag,
+        Duration::from_secs(10),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn publish_market_comment(
+    market_id_hex: String,
+    creator_pubkey_hex: String,
+    market_event_id_hex: String,
+    parent_event_id_hex: Option<String>,
+    parent_author_pubkey_hex: Option<String>,
+    body: String,
+    app: tauri::AppHandle,
+) -> Result<deadcat_sdk::MarketComment, String> {
+    let (keys, client) = get_keys_and_client(&app).await?;
+    let network_tag = current_network_tag(&app)?;
+
+    let root = deadcat_sdk::CommentRoot {
+        market_id_hex: &market_id_hex,
+        creator_pubkey_hex: &creator_pubkey_hex,
+        market_event_id_hex: &market_event_id_hex,
+        relay_hint: None,
+    };
+
+    let parent_owned = match (parent_event_id_hex, parent_author_pubkey_hex) {
+        (Some(event_id), Some(author)) => Some((event_id, author)),
+        (Some(_), None) => {
+            return Err("parent_author_pubkey_hex is required when replying".to_string());
+        }
+        _ => None,
+    };
+    let parent = parent_owned
+        .as_ref()
+        .map(|(event_id, author)| deadcat_sdk::CommentParent {
+            event_id_hex: event_id.as_str(),
+            author_pubkey_hex: author.as_str(),
+            relay_hint: None,
+        });
+
+    let event =
+        deadcat_sdk::build_comment_event(&keys, &root, parent.as_ref(), &body, &network_tag)?;
+    let parsed = deadcat_sdk::parse_comment_event(&event, &network_tag)?;
+    deadcat_sdk::publish_event(&client, event).await?;
+    Ok(parsed)
+}
+
+#[tauri::command]
+pub async fn delete_market_comment(
+    comment_event_id_hex: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let (keys, client) = get_keys_and_client(&app).await?;
+    let event = deadcat_sdk::build_comment_deletion_event(&keys, &comment_event_id_hex)?;
+    deadcat_sdk::publish_event(&client, event).await?;
+    Ok(())
+}
+
+// =========================================================================
 // Contract discovery commands
 // =========================================================================
 
