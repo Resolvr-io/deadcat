@@ -6,7 +6,11 @@ import {
   formatTimeRemaining,
   formatVolumeBtc,
 } from "../../utils-react/format";
-import { getMockMarketGroups } from "../../utils-react/mock-groups";
+import {
+  generateMockOutcomeOrderbook,
+  getMockMarketGroups,
+} from "../../utils-react/mock-groups";
+import GroupChart, { OUTCOME_COLORS } from "./GroupChart";
 
 // ── Trend icons ──────────────────────────────────────────────────────
 function TrendUpIcon() {
@@ -55,11 +59,13 @@ function TrendDownIcon() {
 function OutcomeRow({
   outcome,
   rank,
+  color,
   isSelected,
   onSelect,
 }: {
   outcome: MarketGroupOutcome;
   rank: number;
+  color: string;
   isSelected: boolean;
   onSelect: () => void;
 }) {
@@ -73,13 +79,17 @@ function OutcomeRow({
       onClick={onSelect}
       className={`group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${
         isSelected
-          ? "border border-violet-700/50 bg-violet-500/10"
+          ? "border border-slate-600 bg-slate-800/60"
           : "border border-transparent hover:border-slate-700 hover:bg-slate-900/50"
       }`}
     >
-      {/* Rank */}
-      <span className="w-5 shrink-0 text-center text-xs text-slate-600">
-        {rank}
+      {/* Color swatch + rank */}
+      <span className="flex w-7 shrink-0 items-center gap-1.5">
+        <span
+          className="h-2 w-2 shrink-0 rounded-full"
+          style={{ backgroundColor: color }}
+        />
+        <span className="text-xs text-slate-600">{rank}</span>
       </span>
 
       {/* Name + bar */}
@@ -87,14 +97,21 @@ function OutcomeRow({
         <p className="truncate text-sm text-slate-200">{outcome.name}</p>
         <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-slate-800">
           <div
-            className="h-full rounded-full bg-emerald-500/50"
-            style={{ width: `${Math.max(2, pct)}%` }}
+            className="h-full rounded-full"
+            style={{
+              width: `${Math.max(2, pct)}%`,
+              backgroundColor: color,
+              opacity: 0.5,
+            }}
           />
         </div>
       </div>
 
       {/* Probability */}
-      <span className="w-10 shrink-0 text-right text-sm font-semibold text-emerald-400">
+      <span
+        className="w-10 shrink-0 text-right text-sm font-semibold"
+        style={{ color }}
+      >
         {pct}%
       </span>
 
@@ -128,9 +145,11 @@ function OutcomeRow({
 function OutcomeTradingPanel({
   group,
   outcome,
+  color,
 }: {
   group: MarketGroup;
   outcome: MarketGroupOutcome;
+  color: string;
 }) {
   const [side, setSide] = useState<"yes" | "no">("yes");
   const [amountSats, setAmountSats] = useState(10000);
@@ -170,7 +189,7 @@ function OutcomeTradingPanel({
 
       {/* Probability display */}
       <div className="mb-4 flex items-baseline gap-2">
-        <p className="text-4xl font-bold text-emerald-400">
+        <p className="text-4xl font-bold" style={{ color }}>
           {pct}
           <span className="text-xl text-slate-400">%</span>
         </p>
@@ -407,16 +426,17 @@ export default function GroupDetailPage() {
             </span>
           </span>
         </div>
-
-        <p className="text-sm text-slate-400">{group.description}</p>
       </div>
 
       {/* Two-column layout */}
       <div className="grid gap-5 lg:grid-cols-[1.618fr_1fr]">
-        {/* Left: outcome list */}
-        <section>
+        {/* Left: chart + outcome list + description */}
+        <section className="space-y-4">
+          {/* Chart sits in left column so right panel stays visible */}
+          <GroupChart group={group} highlightedOutcomeId={selectedOutcomeId} />
+
           {/* Search */}
-          <div className="relative mb-3">
+          <div className="relative">
             <svg
               aria-hidden="true"
               viewBox="0 0 24 24"
@@ -457,11 +477,14 @@ export default function GroupDetailPage() {
                   .slice()
                   .sort((a, b) => b.yesPrice - a.yesPrice)
                   .findIndex((o) => o.id === outcome.id) + 1;
+              const color =
+                OUTCOME_COLORS[(globalRank - 1) % OUTCOME_COLORS.length];
               return (
                 <OutcomeRow
                   key={outcome.id}
                   outcome={outcome}
                   rank={globalRank}
+                  color={color}
                   isSelected={selectedOutcomeId === outcome.id}
                   onSelect={() =>
                     useStore.setState({ selectedOutcomeId: outcome.id })
@@ -475,15 +498,121 @@ export default function GroupDetailPage() {
               </p>
             )}
           </div>
+
+          {/* Description — below outcome list */}
+          <p className="border-t border-slate-800/60 pt-4 text-sm text-slate-400">
+            {group.description}
+          </p>
         </section>
 
-        {/* Right: trading panel */}
-        <aside>
-          {selectedOutcome ? (
-            <OutcomeTradingPanel group={group} outcome={selectedOutcome} />
-          ) : (
-            <NoOutcomeSelected group={group} />
-          )}
+        {/* Right: trading panel + orderbook */}
+        <aside className="space-y-4">
+          {(() => {
+            if (!selectedOutcome) return <NoOutcomeSelected group={group} />;
+            const rank = [...group.outcomes]
+              .sort((a, b) => b.yesPrice - a.yesPrice)
+              .findIndex((o) => o.id === selectedOutcome.id);
+            const color = OUTCOME_COLORS[rank % OUTCOME_COLORS.length];
+            const book = generateMockOutcomeOrderbook(
+              selectedOutcome.id,
+              selectedOutcome.yesPrice,
+              group.cptSats,
+            );
+            // Cumulative depth
+            let askRunning = 0;
+            const cumAsks = [...book.asks]
+              .reverse()
+              .map((l) => {
+                askRunning += l.contracts;
+                return { ...l, cumulative: askRunning };
+              })
+              .reverse();
+            let bidRunning = 0;
+            const cumBids = book.bids.map((l) => {
+              bidRunning += l.contracts;
+              return { ...l, cumulative: bidRunning };
+            });
+            const maxCum = Math.max(
+              cumAsks.length > 0 ? cumAsks[0].cumulative : 0,
+              cumBids.length > 0 ? cumBids[cumBids.length - 1].cumulative : 0,
+              1,
+            );
+
+            return (
+              <>
+                <OutcomeTradingPanel
+                  group={group}
+                  outcome={selectedOutcome}
+                  color={color}
+                />
+
+                {/* Order book */}
+                <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                      Order Book
+                    </span>
+                    <span className="text-[10px] font-medium" style={{ color }}>
+                      {selectedOutcome.name}
+                    </span>
+                  </div>
+
+                  <div className="mb-1 flex justify-between text-[10px] text-slate-500">
+                    <span>Price (sats)</span>
+                    <span>Depth</span>
+                  </div>
+
+                  {/* Asks — highest first */}
+                  {cumAsks.map((level) => {
+                    const pct = (level.cumulative / maxCum) * 100;
+                    return (
+                      <div
+                        key={`ask-${level.priceSats}`}
+                        className="relative flex items-center justify-between px-2 py-0.5 text-xs"
+                      >
+                        <div
+                          className="absolute inset-y-0 right-0 bg-rose-500/15"
+                          style={{ width: `${pct.toFixed(1)}%` }}
+                        />
+                        <span className="relative text-rose-400">
+                          {level.priceSats}
+                        </span>
+                        <span className="relative text-slate-300">
+                          {level.cumulative.toFixed(0)}
+                        </span>
+                      </div>
+                    );
+                  })}
+
+                  <div className="border-y border-slate-800/50 py-1 text-center text-[10px] text-slate-500">
+                    {book.spread !== null ? `Spread: ${book.spread} sats` : "—"}
+                  </div>
+
+                  {/* Bids — best bid first */}
+                  {cumBids.map((level) => {
+                    const pct = (level.cumulative / maxCum) * 100;
+                    return (
+                      <div
+                        key={`bid-${level.priceSats}`}
+                        className="relative flex items-center justify-between px-2 py-0.5 text-xs"
+                      >
+                        <div
+                          className="absolute inset-y-0 right-0 bg-emerald-500/15"
+                          style={{ width: `${pct.toFixed(1)}%` }}
+                        />
+                        <span className="relative text-emerald-400">
+                          {level.priceSats}
+                        </span>
+                        <span className="relative text-slate-300">
+                          {level.cumulative.toFixed(0)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            );
+          })()}
         </aside>
       </div>
     </div>

@@ -1,4 +1,74 @@
-import type { MarketGroup } from "../types";
+import type { FullOrderbook, MarketGroup } from "../types";
+
+// ── Seeded RNG (same as mock-orderbook.ts) ───────────────────────────
+function hashCode(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+function seededRand(seed: number): number {
+  const x = Math.sin(seed + 1) * 10000;
+  return x - Math.floor(x);
+}
+
+/**
+ * Generate a deterministic mock orderbook for a multi-outcome outcome.
+ * Works without a full Market object — just needs the outcome id, current
+ * probability, and the collateral-per-token value.
+ */
+export function generateMockOutcomeOrderbook(
+  outcomeId: string,
+  yesPrice: number,
+  cptSats: number,
+): FullOrderbook {
+  const seed = hashCode(outcomeId);
+  const fc = cptSats * 2; // full contract sats
+  const midPriceSats = Math.round(yesPrice * fc);
+
+  const spreadFraction = 0.01 + seededRand(seed) * 0.03;
+  const halfSpread = Math.max(1, Math.round((spreadFraction * fc) / 2));
+
+  const bestAsk = Math.min(fc - 1, midPriceSats + halfSpread);
+  const bestBid = Math.max(1, midPriceSats - halfSpread);
+
+  const askLevelCount = 4 + Math.floor(seededRand(seed + 1) * 4);
+  const bidLevelCount = 4 + Math.floor(seededRand(seed + 2) * 4);
+  const askTick = 1 + Math.floor(seededRand(seed + 3) * 3);
+  const bidTick = 1 + Math.floor(seededRand(seed + 4) * 3);
+  const maxDepth = 50 + Math.floor(seededRand(seed + 5) * 250);
+
+  const asks = Array.from({ length: askLevelCount }, (_, i) => ({
+    priceSats: Math.min(fc - 1, bestAsk + i * askTick),
+    contracts: Math.round(
+      (0.3 + (i / (askLevelCount - 1)) * 0.7) *
+        maxDepth *
+        (0.7 + seededRand(seed + 10 + i) * 0.6),
+    ),
+  })).filter((l) => l.contracts > 0);
+
+  const bids = Array.from({ length: bidLevelCount }, (_, i) => ({
+    priceSats: Math.max(1, bestBid - i * bidTick),
+    contracts: Math.round(
+      (0.3 + (i / (bidLevelCount - 1)) * 0.7) *
+        maxDepth *
+        (0.7 + seededRand(seed + 20 + i) * 0.6),
+    ),
+  })).filter((l) => l.contracts > 0);
+
+  asks.sort((a, b) => a.priceSats - b.priceSats);
+  bids.sort((a, b) => b.priceSats - a.priceSats);
+
+  return {
+    asks,
+    bids,
+    spread:
+      asks.length > 0 && bids.length > 0
+        ? asks[0].priceSats - bids[0].priceSats
+        : null,
+  };
+}
 
 // Mock current block height ~852,000 (late April 2026).
 // US Open starts June 12 → ~7,200 blocks away → expiry 859,200
