@@ -1280,15 +1280,19 @@ pub async fn fetch_nostr_profile(
     discovery::fetch_profile(&client, &pubkey).await
 }
 
-/// Fetch a kind 0 profile for an arbitrary npub without requiring a node.
-/// Used for previewing a profile before importing an identity.
-/// Uses shorter timeouts than the normal fetch for a snappier UI.
+/// Fetch a kind 0 profile for an arbitrary pubkey (npub or hex) without
+/// requiring a node. Used for previewing a profile before importing an
+/// identity, and for rendering comment author cards by hex pubkey.
 #[tauri::command]
 pub async fn preview_nostr_profile(
     npub: String,
 ) -> Result<Option<discovery::NostrProfile>, String> {
-    let pubkey =
-        nostr_sdk::PublicKey::from_bech32(&npub).map_err(|e| format!("invalid npub: {e}"))?;
+    // Accept either bech32 (npub...) or a 64-char hex pubkey. Callers
+    // that have only a hex author_pubkey (e.g. MarketComment) can pass
+    // it directly without converting to bech32 on the frontend.
+    let pubkey = nostr_sdk::PublicKey::from_bech32(&npub)
+        .or_else(|_| nostr_sdk::PublicKey::from_hex(&npub))
+        .map_err(|e| format!("invalid pubkey: {e}"))?;
     log::info!("[preview_profile] fetching kind:0 for {}", pubkey.to_hex());
     let client = nostr_sdk::Client::default();
     for url in discovery::DEFAULT_RELAYS {

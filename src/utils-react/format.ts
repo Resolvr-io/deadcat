@@ -146,3 +146,21 @@ export function satsToFiatStr(
   if (baseCurrency === "BTC") return "";
   return formatFiat(satsToFiat(sats, baseCurrency), baseCurrency);
 }
+
+/**
+ * Compact "time ago" formatter for past Unix timestamps (seconds).
+ * Returns "just now" for <60s, "Xm ago" / "Xh ago" / "Xd ago" / "Xw ago",
+ * and falls back to an absolute short date for >1 month ago.
+ */
+export function formatTimeAgo(unixSeconds: number): string {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const diff = Math.max(0, nowSec - unixSeconds);
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  if (diff < 2592000) return `${Math.floor(diff / 604800)}w ago`;
+  // Fallback to an absolute short date once "weeks ago" gets silly.
+  const d = new Date(unixSeconds * 1000);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
