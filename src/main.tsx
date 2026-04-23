@@ -10,10 +10,14 @@ import "./style.css";
 // extension paths — the only connect flow we support today is NWC.
 // `showBalance: false` skips BC's own balance rendering; if we ever
 // want a balance surface we'll build it to match our palette.
+// `persistConnection: false` keeps the NWC connection string out of
+// plaintext localStorage — we persist it encrypted via the Rust-side
+// `set_nwc_url` / `get_nwc_url` commands instead.
 initBitcoinConnect({
   appName: "Deadcat",
   showBalance: false,
   filters: ["nwc"],
+  persistConnection: false,
 });
 
 const rootElement = document.getElementById("app");
