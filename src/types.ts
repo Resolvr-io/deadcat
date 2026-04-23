@@ -150,6 +150,16 @@ export type DiscoveredMarket = {
   expired_txid?: string | null;
 };
 
+export type MarketComment = {
+  id: string;
+  author_pubkey: string;
+  content: string;
+  created_at: number;
+  market_id: string;
+  parent_id?: string | null;
+  nostr_event_json?: string | null;
+};
+
 export type DiscoveredOrder = {
   id: string;
   market_id: string;

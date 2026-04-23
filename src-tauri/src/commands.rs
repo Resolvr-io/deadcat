@@ -1417,6 +1417,113 @@ pub fn open_downloads_folder() -> Result<(), String> {
 }
 
 // =========================================================================
+// NIP-22 market comments
+// =========================================================================
+
+fn current_network_tag(app: &tauri::AppHandle) -> Result<String, String> {
+    let manager = app.state::<Mutex<AppStateManager>>();
+    let mgr = manager
+        .lock()
+        .map_err(|_| "state lock failed".to_string())?;
+    let network = mgr.network().ok_or("Network not initialized")?;
+    Ok(crate::state::to_sdk_network(network)
+        .discovery_tag()
+        .to_string())
+}
+
+#[tauri::command]
+pub async fn fetch_market_comments(
+    market_id_hex: String,
+    creator_pubkey_hex: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<deadcat_sdk::MarketComment>, String> {
+    // Read-only, no signing — a signer is still needed to acquire the
+    // connected relay client, but we don't call sign_event here.
+    let (_signer, client) = get_signer_and_client(&app).await?;
+    let network_tag = current_network_tag(&app)?;
+    deadcat_sdk::fetch_market_comments(
+        &client,
+        &creator_pubkey_hex,
+        &market_id_hex,
+        &network_tag,
+        Duration::from_secs(10),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn publish_market_comment(
+    market_id_hex: String,
+    creator_pubkey_hex: String,
+    market_event_id_hex: String,
+    parent_event_id_hex: Option<String>,
+    parent_author_pubkey_hex: Option<String>,
+    body: String,
+    app: tauri::AppHandle,
+) -> Result<deadcat_sdk::MarketComment, String> {
+    // Works for both local nsec and NIP-46 remote signers: we build an
+    // UnsignedEvent and let the signer abstraction handle the signing
+    // (local keys sign inline, remote signers round-trip via NIP-46).
+    let (signer, client) = get_signer_and_client(&app).await?;
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+    let network_tag = current_network_tag(&app)?;
+
+    let root = deadcat_sdk::CommentRoot {
+        market_id_hex: &market_id_hex,
+        creator_pubkey_hex: &creator_pubkey_hex,
+        market_event_id_hex: &market_event_id_hex,
+        relay_hint: None,
+    };
+
+    let parent_owned = match (parent_event_id_hex, parent_author_pubkey_hex) {
+        (Some(event_id), Some(author)) => Some((event_id, author)),
+        (Some(_), None) => {
+            return Err("parent_author_pubkey_hex is required when replying".to_string());
+        }
+        _ => None,
+    };
+    let parent = parent_owned
+        .as_ref()
+        .map(|(event_id, author)| deadcat_sdk::CommentParent {
+            event_id_hex: event_id.as_str(),
+            author_pubkey_hex: author.as_str(),
+            relay_hint: None,
+        });
+
+    let unsigned =
+        deadcat_sdk::build_comment_event(author, &root, parent.as_ref(), &body, &network_tag)?;
+    let signed = signer
+        .sign_event(unsigned)
+        .await
+        .map_err(|e| format!("sign_event failed: {e}"))?;
+    let parsed = deadcat_sdk::parse_comment_event(&signed, &network_tag)?;
+    deadcat_sdk::publish_event(&client, signed).await?;
+    Ok(parsed)
+}
+
+#[tauri::command]
+pub async fn delete_market_comment(
+    comment_event_id_hex: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let (signer, client) = get_signer_and_client(&app).await?;
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+    let unsigned = deadcat_sdk::build_comment_deletion_event(author, &comment_event_id_hex)?;
+    let signed = signer
+        .sign_event(unsigned)
+        .await
+        .map_err(|e| format!("sign_event failed: {e}"))?;
+    deadcat_sdk::publish_event(&client, signed).await?;
+    Ok(())
+}
+
+// =========================================================================
 // Contract discovery commands
 // =========================================================================
 
