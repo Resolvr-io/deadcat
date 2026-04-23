@@ -43,7 +43,12 @@ html {
 
 html,
 body {
-  overflow-x: hidden;
+  /* `clip` instead of `hidden`: both prevent horizontal scrollbars,
+     but `hidden` turns the element into a scroll container — which
+     in turn forces `overflow-y: visible` to compute as `auto` and
+     silently disables `position: sticky` inside descendants by
+     re-scoping their scroll context to a non-scrolling ancestor. */
+  overflow-x: clip;
 }
 
 body {
@@ -67,7 +72,7 @@ body {
 
 #app {
   min-height: 100vh;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 input,
