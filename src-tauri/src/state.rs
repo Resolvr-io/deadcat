@@ -7,6 +7,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use crate::payments::boltz::BoltzService;
+use crate::wallet::nwc_persister::NwcPersister;
 use crate::wallet::persister::MnemonicPersister;
 use crate::wallet::types::WalletStatus;
 use crate::Network;
@@ -103,6 +104,7 @@ pub struct AppStateManager {
     pub app_data_dir: PathBuf,
     network: Option<Network>,
     persister: Option<MnemonicPersister>,
+    nwc_persister: Option<NwcPersister>,
     store: Option<Arc<std::sync::Mutex<deadcat_store::DeadcatStore>>>,
     /// Whether the node's wallet is currently unlocked.
     /// Updated by the caller after node operations.
@@ -122,6 +124,7 @@ impl AppStateManager {
             app_data_dir,
             network: None,
             persister: None,
+            nwc_persister: None,
             store: None,
             wallet_unlocked: false,
             local_state,
@@ -160,6 +163,7 @@ impl AppStateManager {
     fn init_with_network(&mut self, network: Network) {
         self.network = Some(network);
         self.persister = Some(MnemonicPersister::new(&self.app_data_dir, network.as_str()));
+        self.nwc_persister = Some(NwcPersister::new(&self.app_data_dir, network.as_str()));
         self.boltz_service = Some(Arc::new(BoltzService::new(network, None)));
 
         // Open the store at <app_data_dir>/<network>/deadcat.db
@@ -220,6 +224,10 @@ impl AppStateManager {
 
     pub fn persister_mut(&mut self) -> Option<&mut MnemonicPersister> {
         self.persister.as_mut()
+    }
+
+    pub fn nwc_persister(&self) -> Option<&NwcPersister> {
+        self.nwc_persister.as_ref()
     }
 
     pub fn store(&self) -> Option<&Arc<std::sync::Mutex<deadcat_store::DeadcatStore>>> {

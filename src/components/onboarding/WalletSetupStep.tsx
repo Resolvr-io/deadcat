@@ -43,6 +43,7 @@ export function PasswordFields({
   onPasswordChange,
   onConfirmChange,
   onToggleReveal,
+  onSubmit,
 }: {
   password: string;
   confirm: string;
@@ -52,8 +53,21 @@ export function PasswordFields({
   onPasswordChange: (val: string) => void;
   onConfirmChange: (val: string) => void;
   onToggleReveal: () => void;
+  /** Fires when the user presses Enter in either password input and
+   *  the passwords are non-empty, long enough, and match. Callers
+   *  still need to do their own side-effect guards (loading state,
+   *  additional validation like mnemonic present). */
+  onSubmit?: () => void;
 }) {
   const inputType = revealed ? "text" : "password";
+  const canSubmit =
+    !disabled && !!password && password.length >= 8 && password === confirm;
+  const handleEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    if (!onSubmit || !canSubmit) return;
+    e.preventDefault();
+    onSubmit();
+  };
 
   return (
     <div className="space-y-4">
@@ -74,6 +88,7 @@ export function PasswordFields({
             onPaste={(e) => e.preventDefault()}
             value={password}
             onChange={(e) => onPasswordChange(e.target.value)}
+            onKeyDown={handleEnter}
             disabled={disabled}
             className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 pr-11 pl-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50"
           />
@@ -139,9 +154,19 @@ export function PasswordFields({
           onPaste={(e) => e.preventDefault()}
           value={confirm}
           onChange={(e) => onConfirmChange(e.target.value)}
+          onKeyDown={handleEnter}
           disabled={disabled}
-          className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50"
+          className={`h-11 w-full rounded-lg border ${confirm && password !== confirm ? "border-red-500/50" : "border-slate-700"} bg-slate-900 px-4 text-sm outline-none ring-emerald-400 transition focus:ring-2 disabled:opacity-50`}
         />
+      </div>
+      {/* Reserved-height validation row so the layout doesn't jump as
+          the user types. Mirrors the generate-flow profile-step UX. */}
+      <div className="-mt-2 h-5">
+        {password && password.length < 8 ? (
+          <p className="text-xs text-amber-300">Minimum 8 characters</p>
+        ) : confirm && password !== confirm ? (
+          <p className="text-xs text-rose-400">Passwords don&apos;t match</p>
+        ) : null}
       </div>
     </div>
   );
@@ -210,9 +235,12 @@ export default function WalletSetupStep({
   const nostrNpub = useStore((s) => s.nostrNpub);
   const queryClient = useQueryClient();
 
-  // Whether the optional "Add wallet recovery phrase" panel is expanded
-  // on the combined bunker setup screen. Local state, reset on unmount.
-  const [showRecoveryInput, setShowRecoveryInput] = useState(false);
+  // Wallet choice inside the bunker setup screen: create a new wallet
+  // or restore an existing one from its recovery phrase. Mirrors the
+  // same toggle in the nsec-restore flow for UX parity.
+  const [bunkerWalletChoice, setBunkerWalletChoice] = useState<
+    "new" | "restore"
+  >("new");
   // Tracks whether the profile fetch has settled at least once (success
   // or failure). Used to stop showing "Loading profile…" indefinitely.
   const [profileAttempted, setProfileAttempted] = useState(false);
@@ -489,10 +517,17 @@ export default function WalletSetupStep({
       });
       return;
     }
+    const typedMnemonic = mnemonic.trim();
+    const restoringWallet = bunkerWalletChoice === "restore";
+    if (restoringWallet && !typedMnemonic) {
+      useStore.setState({
+        onboardingError: "Enter your 12-word wallet recovery phrase.",
+      });
+      return;
+    }
     useStore.setState({ onboardingLoading: true, onboardingError: "" });
     try {
-      const typedMnemonic = mnemonic.trim();
-      if (typedMnemonic) {
+      if (restoringWallet) {
         await invoke("restore_wallet", {
           mnemonic: typedMnemonic,
           password,
@@ -521,7 +556,7 @@ export default function WalletSetupStep({
         onboardingLoading: false,
       });
     }
-  }, [password, passwordConfirm, mnemonic, queryClient]);
+  }, [password, passwordConfirm, mnemonic, bunkerWalletChoice, queryClient]);
 
   // ── Combined bunker setup screen ──────────────────────────────────
   // Single page that shows the connected Nostr identity, an optional
@@ -542,16 +577,17 @@ export default function WalletSetupStep({
     // Show real profile once fetched; fall back to npub after the
     // first attempt settles even if nothing was found.
     const profileReady = profileAttempted;
+    const restoringWallet = bunkerWalletChoice === "restore";
     const submitLabel = loading
       ? "Creating..."
-      : mnemonic.trim()
+      : restoringWallet
         ? "Restore wallet"
         : "Create wallet";
 
     return (
       <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
-        {stepIndicator}
         <BackButton onClick={handleBack} />
+        {stepIndicator}
 
         {/* Identity card — positioned above the title so the password
             fields below are unambiguously scoped to the wallet, not the
@@ -594,18 +630,83 @@ export default function WalletSetupStep({
         </div>
 
         <h2 className="text-2xl font-semibold text-white">
-          Create your wallet
+          Set up your wallet
         </h2>
         <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-          Deadcat uses a self-custodial wallet on Bitcoin's Liquid Network. Your
-          password encrypts this wallet on this device, separate from your
-          remote signer.
+          Deadcat uses a self-custodial wallet on Bitcoin's Liquid Network,
+          separate from your remote signer. Your password encrypts it on this
+          device.
         </p>
 
         {errorHtml && <div className="mt-5">{errorHtml}</div>}
 
-        {/* Password */}
+        {/* Wallet choice */}
         <div className="mt-6">
+          <p className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400">
+            Wallet
+          </p>
+          <div className="grid grid-cols-2 gap-2 rounded-lg border border-slate-700 bg-slate-900 p-1">
+            <button
+              type="button"
+              onClick={() => {
+                setBunkerWalletChoice("new");
+                useStore.setState({ onboardingWalletMnemonic: "" });
+              }}
+              disabled={loading}
+              className={`rounded-md px-3 py-2 text-xs font-medium transition ${
+                bunkerWalletChoice === "new"
+                  ? "bg-emerald-400 text-slate-950"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              Create new
+            </button>
+            <button
+              type="button"
+              onClick={() => setBunkerWalletChoice("restore")}
+              disabled={loading}
+              className={`rounded-md px-3 py-2 text-xs font-medium transition ${
+                bunkerWalletChoice === "restore"
+                  ? "bg-emerald-400 text-slate-950"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              Restore from phrase
+            </button>
+          </div>
+          <p className="mt-1.5 text-xs text-slate-600">
+            {restoringWallet
+              ? "We'll restore your existing wallet from its 12-word phrase."
+              : "A new wallet will be created and secured by the password below."}
+          </p>
+        </div>
+
+        {restoringWallet && (
+          <div className="mt-5">
+            <label
+              htmlFor="bunker-recovery-phrase"
+              className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
+            >
+              Wallet Recovery Phrase
+            </label>
+            <textarea
+              id="bunker-recovery-phrase"
+              rows={3}
+              placeholder="Enter your 12-word phrase..."
+              value={mnemonic}
+              onChange={(e) =>
+                useStore.setState({
+                  onboardingWalletMnemonic: e.target.value,
+                })
+              }
+              className="mono w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none ring-emerald-400 transition focus:ring-2"
+              disabled={loading}
+            />
+          </div>
+        )}
+
+        {/* Password */}
+        <div className="mt-5">
           <PasswordFields
             password={password}
             confirm={passwordConfirm}
@@ -623,10 +724,10 @@ export default function WalletSetupStep({
                 onboardingPasswordRevealed: !s.onboardingPasswordRevealed,
               }))
             }
+            onSubmit={handleBunkerWalletSubmit}
           />
         </div>
 
-        {/* Primary action — new-wallet creation is the default path */}
         <button
           type="button"
           onClick={handleBunkerWalletSubmit}
@@ -635,51 +736,6 @@ export default function WalletSetupStep({
         >
           {submitLabel}
         </button>
-
-        {/* Secondary path — existing users can expand to paste a mnemonic.
-            When populated, the primary button label flips to "Restore wallet". */}
-        <div className="mt-4">
-          {showRecoveryInput ? (
-            <div className="space-y-2">
-              <label
-                htmlFor="bunker-recovery-phrase"
-                className="text-xs font-medium uppercase tracking-wide text-slate-400"
-              >
-                Wallet recovery phrase
-              </label>
-              <textarea
-                id="bunker-recovery-phrase"
-                rows={3}
-                placeholder="word1 word2 word3 ... word12"
-                value={mnemonic}
-                onChange={(e) =>
-                  useStore.setState({
-                    onboardingWalletMnemonic: e.target.value,
-                  })
-                }
-                className="mono w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none ring-emerald-400 transition focus:ring-2"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  setShowRecoveryInput(false);
-                  useStore.setState({ onboardingWalletMnemonic: "" });
-                }}
-                className="text-xs text-slate-500 hover:text-slate-300 transition"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setShowRecoveryInput(true)}
-              className="w-full text-center text-xs text-slate-500 hover:text-slate-300 transition"
-            >
-              + Restore from an existing wallet recovery phrase
-            </button>
-          )}
-        </div>
       </div>
     );
   }
@@ -721,8 +777,8 @@ export default function WalletSetupStep({
 
     return (
       <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
-        {stepIndicator}
         <BackButton onClick={handleBack} />
+        {stepIndicator}
         <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">
           Protect your wallet
         </p>
@@ -749,6 +805,7 @@ export default function WalletSetupStep({
                 onboardingPasswordRevealed: !s.onboardingPasswordRevealed,
               }))
             }
+            onSubmit={submitAction}
           />
           <button
             type="button"
@@ -767,8 +824,8 @@ export default function WalletSetupStep({
   if (walletMode === "restore") {
     return (
       <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
-        {stepIndicator}
         <BackButton onClick={handleBack} />
+        {stepIndicator}
         {!walletOnly && (
           <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">
             Step 2 of 2
@@ -986,8 +1043,8 @@ export default function WalletSetupStep({
 
   return (
     <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
-      {stepIndicator}
       {!walletOnly && !backupScanning && <BackButton onClick={handleBack} />}
+      {stepIndicator}
       {!walletOnly && (
         <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-2">
           Step 2 of 2

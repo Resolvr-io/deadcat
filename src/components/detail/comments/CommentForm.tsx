@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { usePublishMarketComment } from "../../../queries/useComments";
 import { friendlyError } from "../../../utils-react/friendly-error";
+import { SigningHint } from "../../shared/SigningHint";
 
 // Client-side anti-spam cap. Backend enforces 4096 bytes; 1000 chars
 // sits comfortably under that even for emoji-heavy input (4 bytes per
@@ -72,6 +73,7 @@ export function CommentForm({
           {mutation.isPending ? "Posting…" : "Post"}
         </button>
       </div>
+      <SigningHint active={mutation.isPending} className="mt-2" />
       {error && <p className="mt-2 text-xs text-rose-400">{error}</p>}
     </div>
   );

@@ -5,7 +5,6 @@ Follow all instructions in [AGENTS.md](AGENTS.md) — especially the mandatory C
 ## Additional Claude-Specific Rules
 
 - Do NOT add Claude as co-author or contributor in any commits or git metadata
-- When creating PRs, use `🐱 Generated with [Claude Code](https://claude.com/claude-code)` in the PR body footer
 - Do NOT commit or push without explicit user permission
 - Do NOT push to master/main without explicit permission
 - `.DS_Store` files are always untracked and gitignored — never stage or commit them

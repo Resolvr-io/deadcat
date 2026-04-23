@@ -5,6 +5,8 @@ import { useStore } from "../../../store";
 import type { MarketComment } from "../../../types";
 import { generateAvatarDataUri } from "../../../utils-react/avatar";
 import { formatTimeAgo } from "../../../utils-react/format";
+import { friendlyError } from "../../../utils-react/friendly-error";
+import { showToast } from "../../shared/Toast";
 import { CommentBody } from "./CommentBody";
 import { CommentProfileDialog } from "./CommentProfileDialog";
 import { CommentRowMenu } from "./CommentRowMenu";
@@ -72,7 +74,11 @@ export function CommentRow({
 
   const handleConfirmDelete = () => {
     setConfirmOpen(false);
-    deleteMutation.mutate(comment.id);
+    deleteMutation.mutate(comment.id, {
+      onError: (e) => {
+        showToast(friendlyError(String(e)), "error");
+      },
+    });
   };
 
   return (
@@ -115,15 +121,23 @@ export function CommentRow({
             icon={<HeartIcon className="h-[18px] w-[18px]" />}
             title="Reactions coming soon"
           />
-          <button
-            type="button"
-            onClick={() => setZapOpen(true)}
-            title="Send a zap"
-            className="flex items-center gap-1 rounded-full px-2 py-1.5 text-slate-500 transition hover:bg-amber-400/10 hover:text-amber-300"
-          >
-            <ZapIcon className="h-[18px] w-[18px]" />
-            <span className="text-xs">{zapCount}</span>
-          </button>
+          {isOwn ? (
+            <PlaceholderAction
+              icon={<ZapIcon className="h-[18px] w-[18px]" />}
+              title="You can't zap your own comment"
+              trailing={String(zapCount)}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setZapOpen(true)}
+              title="Send a zap"
+              className="flex items-center gap-1 rounded-full px-2 py-1.5 text-slate-500 transition hover:bg-amber-400/10 hover:text-amber-300"
+            >
+              <ZapIcon className="h-[18px] w-[18px]" />
+              <span className="text-xs">{zapCount}</span>
+            </button>
+          )}
           <CommentRowMenu
             commentBody={comment.content}
             authorPubkeyHex={comment.author_pubkey}
