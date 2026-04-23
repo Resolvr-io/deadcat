@@ -120,8 +120,11 @@ export default function DetailPage() {
         </div>
       )}
 
-      <div className="grid gap-[21px] lg:grid-cols-[1.618fr_1fr]">
-        {/* Left column */}
+      <div className="grid gap-[21px] lg:grid-cols-[1.618fr_1fr] lg:items-start">
+        {/* Left column — market display, banners, and comments share
+            the same column so the comments-section width lines up with
+            the market display above it and the right column can stay
+            pinned as the user scrolls. */}
         <section className="space-y-[21px]">
           <div className="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
             <MarketHeaderTop market={market} />
@@ -204,14 +207,20 @@ export default function DetailPage() {
               </div>
             </section>
           )}
+          <CommentsSection market={market} />
         </section>
 
-        {/* Right column — Trading panel */}
-        <TradingPanel market={market} />
-      </div>
-
-      <div className="mt-[21px]">
-        <CommentsSection market={market} />
+        {/* Right column — Trading panel sticks to the top of the
+            viewport (below the drag strip) so it stays visible as the
+            user reads through comments. Kept overflow-free so WebKit
+            doesn't silently disable the sticky positioning.
+            If the panel ever outgrows the viewport, the inner
+            ORDER BOOK / Fee details sections are already collapsible
+            — we shrink the panel instead of adding an internal
+            scrollbar. */}
+        <div className="lg:sticky lg:top-10 lg:self-start">
+          <TradingPanel market={market} />
+        </div>
       </div>
     </div>
   );

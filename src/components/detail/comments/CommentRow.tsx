@@ -45,17 +45,22 @@ export function CommentRow({
   comment,
   marketId,
   creatorPubkey,
+  zapCount,
+  zapSats,
 }: {
   comment: MarketComment;
   marketId: string;
   creatorPubkey: string;
+  /** Number of kind:9735 zap receipts seen for this comment. */
+  zapCount: number;
+  /** Total sats zapped across those receipts (floor of msats/1000). */
+  zapSats: number;
 }) {
   const sessionPubkey = useStore((s) => s.nostrPubkey);
   const { data: profile } = useNostrProfileByPubkey(comment.author_pubkey);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [zapOpen, setZapOpen] = useState(false);
-  const [zapCount, setZapCount] = useState(0);
   const deleteMutation = useDeleteMarketComment(marketId, creatorPubkey);
 
   const avatarSrc = useMemo(
@@ -121,23 +126,34 @@ export function CommentRow({
             icon={<HeartIcon className="h-[18px] w-[18px]" />}
             title="Reactions coming soon"
           />
-          {isOwn ? (
-            <PlaceholderAction
-              icon={<ZapIcon className="h-[18px] w-[18px]" />}
-              title="You can't zap your own comment"
-              trailing={String(zapCount)}
-            />
-          ) : (
-            <button
-              type="button"
-              onClick={() => setZapOpen(true)}
-              title="Send a zap"
-              className="flex items-center gap-1 rounded-full px-2 py-1.5 text-slate-500 transition hover:bg-amber-400/10 hover:text-amber-300"
-            >
-              <ZapIcon className="h-[18px] w-[18px]" />
-              <span className="text-xs">{zapCount}</span>
-            </button>
-          )}
+          {(() => {
+            // Show total sats when zaps exist (matches Primal / Jumble
+            // convention); fall back to the count when nothing's been
+            // zapped so the icon still has a number next to it.
+            const trailing =
+              zapCount > 0 ? zapSats.toLocaleString() : String(zapCount);
+            const title =
+              zapCount > 0
+                ? `${zapSats.toLocaleString()} sats from ${zapCount} zap${zapCount === 1 ? "" : "s"}`
+                : "Send a zap";
+            return isOwn ? (
+              <PlaceholderAction
+                icon={<ZapIcon className="h-[18px] w-[18px]" />}
+                title="You can't zap your own comment"
+                trailing={trailing}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setZapOpen(true)}
+                title={title}
+                className="flex items-center gap-1 rounded-full px-2 py-1.5 text-slate-500 transition hover:bg-amber-400/10 hover:text-amber-300"
+              >
+                <ZapIcon className="h-[18px] w-[18px]" />
+                <span className="text-xs">{trailing}</span>
+              </button>
+            );
+          })()}
           <CommentRowMenu
             commentBody={comment.content}
             authorPubkeyHex={comment.author_pubkey}
@@ -166,7 +182,6 @@ export function CommentRow({
         eventIdHex={comment.id}
         open={zapOpen}
         onClose={() => setZapOpen(false)}
-        onZapped={() => setZapCount((n) => n + 1)}
       />
     </div>
   );

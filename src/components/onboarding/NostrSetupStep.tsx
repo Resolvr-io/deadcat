@@ -1731,6 +1731,27 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         });
         await invoke("init_nostr_identity");
         await invoke<void>("unlock_wallet", { password: restorePassword });
+        // Fresh identity in the restore-wallet flow has no kind:0 yet;
+        // publish one with a random cat name so the user doesn't land as
+        // "Unnamed". The Edit Profile dialog remains available if they
+        // want to customize further.
+        if (!restoringIdentity) {
+          const seededName = randomCatName();
+          useStore.setState({
+            nostrProfile: {
+              name: seededName,
+              display_name: seededName,
+            },
+          });
+          try {
+            await invoke("publish_nostr_profile", {
+              name: seededName,
+              picture: null,
+            });
+          } catch (e) {
+            console.warn("Failed to publish seed profile:", e);
+          }
+        }
         useStore.setState({
           walletStatus: "unlocked",
           walletSessionPassword: restorePassword,
@@ -1742,13 +1763,15 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           onboardingWalletPasswordConfirm: "",
         });
         setMnemonicIdentityChoice("new");
-        void invoke<import("../../types").NostrProfile | null>(
-          "fetch_nostr_profile",
-        )
-          .then((profile) => {
-            if (profile) useStore.setState({ nostrProfile: profile });
-          })
-          .catch(() => {});
+        if (restoringIdentity) {
+          void invoke<import("../../types").NostrProfile | null>(
+            "fetch_nostr_profile",
+          )
+            .then((profile) => {
+              if (profile) useStore.setState({ nostrProfile: profile });
+            })
+            .catch(() => {});
+        }
       } catch (e) {
         useStore.setState({
           onboardingError: String(e),

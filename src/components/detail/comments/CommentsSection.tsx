@@ -1,10 +1,12 @@
 import { useMemo } from "react";
 import { useMarketComments } from "../../../queries/useComments";
+import { useCommentZaps, zapStatsFor } from "../../../queries/useCommentZaps";
 import { useStore } from "../../../store";
 import type { Market } from "../../../types";
 import { friendlyError } from "../../../utils-react/friendly-error";
 import { CommentForm } from "./CommentForm";
 import { CommentRow } from "./CommentRow";
+import { CommentRowSkeleton } from "./CommentRowSkeleton";
 
 /** Parse the raw market event JSON to recover the hex event id. */
 function extractMarketEventId(market: Market): string | null {
@@ -28,6 +30,13 @@ export function CommentsSection({ market }: { market: Market }) {
     error,
     refetch,
   } = useMarketComments(market.marketId, market.creatorPubkey);
+
+  const commentIds = useMemo(() => comments.map((c) => c.id), [comments]);
+  const zapStats = useCommentZaps(
+    market.marketId,
+    market.creatorPubkey,
+    commentIds,
+  );
 
   const canPost = !!nostrPubkey && !!marketEventId;
 
@@ -70,9 +79,17 @@ export function CommentsSection({ market }: { market: Market }) {
 
       <div className="mt-5">
         {isLoading ? (
-          <div className="flex items-center justify-center py-6 text-xs text-slate-500">
-            Loading comments…
-          </div>
+          <ul className="divide-y divide-slate-800/80">
+            <li>
+              <CommentRowSkeleton variant={2} />
+            </li>
+            <li>
+              <CommentRowSkeleton variant={1} />
+            </li>
+            <li>
+              <CommentRowSkeleton variant={0} />
+            </li>
+          </ul>
         ) : isError ? (
           <div className="flex flex-col items-center gap-2 py-6 text-xs text-rose-300">
             <span>
@@ -92,15 +109,20 @@ export function CommentsSection({ market }: { market: Market }) {
           </p>
         ) : (
           <ul className="divide-y divide-slate-800/80">
-            {comments.map((c) => (
-              <li key={c.id}>
-                <CommentRow
-                  comment={c}
-                  marketId={market.marketId}
-                  creatorPubkey={market.creatorPubkey}
-                />
-              </li>
-            ))}
+            {comments.map((c) => {
+              const stats = zapStatsFor(zapStats, c.id);
+              return (
+                <li key={c.id}>
+                  <CommentRow
+                    comment={c}
+                    marketId={market.marketId}
+                    creatorPubkey={market.creatorPubkey}
+                    zapCount={stats.count}
+                    zapSats={stats.totalSats}
+                  />
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
