@@ -15,7 +15,34 @@ export type MarketCategory = Exclude<
   NavCategory,
   "Trending" | "Ending Soon" | "New" | "Portfolio" | "My Markets" | "Resolved"
 >;
-export type ViewMode = "home" | "detail" | "create";
+export type ViewMode = "home" | "detail" | "create" | "group";
+
+// ── Multi-outcome market group types ────────────────────────────────
+export type MarketGroupOutcome = {
+  id: string;
+  name: string;
+  yesPrice: number;
+  change24h: number;
+  volumeBtc: number;
+  traderCount: number;
+};
+
+export type MarketGroup = {
+  id: string;
+  title: string;
+  description: string;
+  category: MarketCategory;
+  resolutionSource: string;
+  expiryHeight: number;
+  currentHeight: number;
+  outcomes: MarketGroupOutcome[];
+  totalVolumeBtc: number;
+  traderCount: number;
+  createdAt: number;
+  state: "active" | "resolved";
+  resolvedOutcomeId?: string;
+  cptSats: number;
+};
 export type Side = "yes" | "no";
 export type OrderType = "market" | "limit";
 export type ActionTab = "trade" | "issue" | "redeem" | "cancel";

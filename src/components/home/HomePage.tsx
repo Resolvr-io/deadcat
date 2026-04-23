@@ -17,8 +17,10 @@ import {
   getTrendingMarkets,
   isExpired,
 } from "../../utils-react/market";
+import { getMockMarketGroups } from "../../utils-react/mock-groups";
 import FeaturedMarket from "./FeaturedMarket";
 import MarketCard, { openMarket, TrendIndicator } from "./MarketCard";
+import MarketGroupCard from "./MarketGroupCard";
 
 // ── Category icon (JSX version) ──────────────────────────────────────
 function CategoryIcon({
@@ -997,6 +999,7 @@ function TrendingHomeView({ markets }: { markets: Market[] }) {
   const search = useStore((s) => s.search);
   const nostrPubkey = useStore((s) => s.nostrPubkey);
   const marketsLoading = useStore((s) => s.marketsLoading);
+  const marketGroups = getMockMarketGroups();
 
   const trending = useMemo(() => getTrendingMarkets(markets), [markets]);
 
@@ -1043,6 +1046,25 @@ function TrendingHomeView({ markets }: { markets: Market[] }) {
               ))}
             </div>
           </section>
+
+          {/* Multi-outcome market groups */}
+          {marketGroups.length > 0 && (
+            <section>
+              <div className="mb-3 flex items-center gap-2">
+                <h2 className="text-base font-medium text-slate-400">
+                  Multi-Outcome Markets
+                </h2>
+                <span className="rounded border border-violet-700/50 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">
+                  {marketGroups.length}
+                </span>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                {marketGroups.map((group, idx) => (
+                  <MarketGroupCard key={group.id} group={group} index={idx} />
+                ))}
+              </div>
+            </section>
+          )}
         </section>
 
         {/* Right sidebar: Trending + Top Movers */}
