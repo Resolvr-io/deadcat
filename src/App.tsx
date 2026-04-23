@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect } from "react";
 import CreateMarketPage from "./components/create/CreateMarketPage";
 import DetailPage from "./components/detail/DetailPage";
@@ -16,6 +17,29 @@ import { useBootstrap } from "./hooks/useBootstrap";
 import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import { useStore } from "./store";
+
+/**
+ * Always-available window drag strip along the top 32px of the
+ * viewport. The TopShell header handles dragging when visible, but
+ * once the user scrolls down the header leaves the screen and the
+ * titlebar area becomes dead space. This fixed overlay catches
+ * drags regardless of scroll position. Transparent and only 32px
+ * tall so it never overlaps real UI below the traffic lights.
+ */
+function TitleBarDragStrip() {
+  const onMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.buttons !== 1) return;
+    e.preventDefault();
+    void getCurrentWindow().startDragging();
+  }, []);
+  return (
+    <div
+      aria-hidden="true"
+      onMouseDown={onMouseDown}
+      className="fixed top-0 right-0 left-0 z-[999] h-8"
+    />
+  );
+}
 
 function CloseConfirmDialog() {
   const open = useStore((s) => s.closeConfirmOpen);
@@ -97,6 +121,7 @@ export default function App() {
 
   return (
     <>
+      <TitleBarDragStrip />
       <div className="min-h-screen text-slate-100">
         <TopShell />
 

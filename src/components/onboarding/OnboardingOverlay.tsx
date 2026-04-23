@@ -104,18 +104,24 @@ export default function OnboardingOverlay() {
       className="macos-overlay-safe-top fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm"
     >
       <div className="relative w-full max-w-[432px] mx-4">
+        {/* Close button sits above the card at its top-right corner.
+            Because the card's internal scroller (below) has its own
+            overflow, this button's position never moves — it stays
+            pinned to the card no matter how tall the content grows. */}
         {!backupFileContent && (
           <CloseButton
             onClick={handleClose}
             variant="overlay"
-            className="absolute -top-12 right-0"
+            className="absolute top-4 right-4 z-10"
           />
         )}
-        {onboardingStep === "nostr" ? (
-          <NostrSetupStep stepIndicator={stepIndicator} />
-        ) : onboardingStep === "wallet" ? (
-          <WalletSetupStep stepIndicator={stepIndicator} />
-        ) : null}
+        <div className="max-h-[calc(100vh-48px)] overflow-y-auto rounded-2xl">
+          {onboardingStep === "nostr" ? (
+            <NostrSetupStep stepIndicator={stepIndicator} />
+          ) : onboardingStep === "wallet" ? (
+            <WalletSetupStep stepIndicator={stepIndicator} />
+          ) : null}
+        </div>
       </div>
     </div>
   );

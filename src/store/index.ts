@@ -187,7 +187,9 @@ export interface OnboardingSlice {
     | "generate"
     | "import"
     | "restore"
-    | "manual-restore"
+    | "restore-picker"
+    | "restore-nsec"
+    | "restore-mnemonic"
     | "bunker";
   onboardingBunkerUri: string;
   onboardingNostrNsec: string;

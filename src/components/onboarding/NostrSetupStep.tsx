@@ -23,6 +23,38 @@ import { randomCatName } from "../../utils-react/random-name";
 import { showToast } from "../shared/Toast";
 import { PasswordFields } from "./WalletSetupStep";
 
+type OnboardingNostrMode =
+  | "generate"
+  | "import"
+  | "restore"
+  | "restore-picker"
+  | "restore-nsec"
+  | "restore-mnemonic"
+  | "bunker";
+
+function RestoreOption({
+  title,
+  description,
+  onClick,
+}: {
+  title: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group w-full rounded-lg border border-slate-700 bg-slate-900/40 px-4 py-3.5 text-left transition hover:border-emerald-400/50 hover:bg-slate-900/70"
+    >
+      <p className="text-sm font-semibold text-slate-100">{title}</p>
+      <p className="mt-0.5 text-xs leading-relaxed text-slate-500 group-hover:text-slate-400">
+        {description}
+      </p>
+    </button>
+  );
+}
+
 function BackButton({ onClick }: { onClick: () => void }) {
   return (
     <button
@@ -56,9 +88,7 @@ interface NostrSetupStepProps {
 export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [mnemonicExpanded, setMnemonicExpanded] = useState(false);
   const [restorePasswordRevealed, setRestorePasswordRevealed] = useState(false);
-  const mnemonicTextareaRef = useRef<HTMLTextAreaElement>(null);
   // Guard against rapid clicks of the identity-randomize button spawning
   // concurrent preview_nostr_identity calls.
   const randomizingRef = useRef(false);
@@ -66,13 +96,16 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const [connectUri, setConnectUri] = useState("");
   const connectGenerated = useRef(false);
   const [bunkerTab, setBunkerTab] = useState<"scan" | "paste">("scan");
-
-  // Focus the mnemonic textarea only when first expanded, not on every re-render
-  useEffect(() => {
-    if (mnemonicExpanded && mnemonicTextareaRef.current) {
-      mnemonicTextareaRef.current.focus();
-    }
-  }, [mnemonicExpanded]);
+  // Wallet choice inside the restore-nsec flow: create a new wallet or
+  // restore an existing one from its recovery phrase.
+  const [nsecWalletChoice, setNsecWalletChoice] = useState<"new" | "restore">(
+    "new",
+  );
+  // Mirror choice inside the restore-mnemonic flow: generate a fresh
+  // Nostr identity or import one from an existing nsec.
+  const [mnemonicIdentityChoice, setMnemonicIdentityChoice] = useState<
+    "new" | "restore"
+  >("new");
   const nostrMode = useStore((s) => s.onboardingNostrMode);
   const nostrDone = useStore((s) => s.onboardingNostrDone);
   const loading = useStore((s) => s.onboardingLoading);
@@ -182,13 +215,13 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     };
   }, [nostrMode]);
 
-  // Preview profile when a valid nsec is entered (import or manual-restore)
+  // Preview profile when a valid nsec is entered (import or restore-nsec)
   const [importPreview, setImportPreview] = useState<NostrProfile | null>(null);
   const [importPreviewLoading, setImportPreviewLoading] = useState(false);
   const activeNsec =
     nostrMode === "import"
       ? onboardingNostrNsec
-      : nostrMode === "manual-restore"
+      : nostrMode === "restore-nsec"
         ? restoreNsec
         : "";
   useEffect(() => {
@@ -445,10 +478,31 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     const password = s.onboardingWalletPassword;
     useStore.setState({ onboardingLoading: true, onboardingError: "" });
     try {
+      // Defensive: if the previewed nsec got cleared between
+      // handleGenerate and submit (HMR during dev, stale state, etc.),
+      // regenerate rather than surfacing a cryptic bech32 parse error.
+      // The avatar is seeded from pendingNpub, so refresh that too so
+      // what the user sees matches what's persisted.
+      let pendingPubkey = s.onboardingPendingPubkey;
+      let pendingNpub = s.onboardingPendingNpub;
+      let generatedNsec = s.onboardingNostrGeneratedNsec;
+      if (!generatedNsec?.startsWith("nsec1")) {
+        const regenerated = await invoke<PreviewIdentityResponse>(
+          "preview_nostr_identity",
+        );
+        pendingPubkey = regenerated.pubkey_hex;
+        pendingNpub = regenerated.npub;
+        generatedNsec = regenerated.nsec;
+        useStore.setState({
+          onboardingPendingPubkey: pendingPubkey,
+          onboardingPendingNpub: pendingNpub,
+          onboardingNostrGeneratedNsec: generatedNsec,
+        });
+      }
       // 1. Commit identity
       useStore.setState({
-        nostrPubkey: s.onboardingPendingPubkey,
-        nostrNpub: s.onboardingPendingNpub,
+        nostrPubkey: pendingPubkey,
+        nostrNpub: pendingNpub,
         nostrProfile: {
           name: s.onboardingNostrDisplayName || undefined,
           display_name: s.onboardingNostrDisplayName || undefined,
@@ -463,7 +517,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
       //    commit it here via import_nostr_nsec — the single place that
       //    should ever build a DeadcatNode in the generate flow).
       await invoke<IdentityResponse>("import_nostr_nsec", {
-        nsec: s.onboardingNostrGeneratedNsec,
+        nsec: generatedNsec,
       });
       await invoke<void>("unlock_wallet", { password });
       useStore.setState({ walletSessionPassword: password });
@@ -478,13 +532,12 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         console.warn("Failed to publish profile:", e);
       }
       // 5. Generate backup file and show download screen
-      const nsec = s.onboardingNostrGeneratedNsec;
       const displayNameVal = s.onboardingNostrDisplayName || "unnamed";
       let backupContent = "";
       try {
         backupContent = await invoke<string>("export_identity_file", {
           password,
-          nsec,
+          nsec: generatedNsec,
           mnemonic,
           displayName: displayNameVal,
         });
@@ -693,6 +746,25 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
 
     return (
       <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
+        <BackButton
+          onClick={() => {
+            // Returning to the main menu abandons the previewed keypair.
+            // Clear everything so a future "Create new account" click
+            // regenerates a fresh identity instead of reusing the one
+            // shown on this screen.
+            useStore.setState({
+              onboardingProfileStep: false,
+              onboardingNostrGeneratedNsec: "",
+              onboardingPendingPubkey: "",
+              onboardingPendingNpub: "",
+              onboardingNostrDisplayName: "",
+              onboardingProfilePhotoDataUrl: "",
+              onboardingWalletPassword: "",
+              onboardingWalletPasswordConfirm: "",
+              onboardingError: "",
+            });
+          }}
+        />
         <h2 className="text-2xl font-semibold text-white">
           Create your account
         </h2>
@@ -924,6 +996,17 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               onChange={(e) =>
                 useStore.setState({ onboardingWalletPassword: e.target.value })
               }
+              onKeyDown={(e) => {
+                if (
+                  e.key === "Enter" &&
+                  !loading &&
+                  walletPassword.length >= 8 &&
+                  walletPassword === walletPasswordConfirm
+                ) {
+                  e.preventDefault();
+                  void handleCreateAccount();
+                }
+              }}
               placeholder="Enter a password"
               autoComplete="new-password"
               className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 pr-11 text-sm outline-none ring-emerald-400 transition focus:ring-2"
@@ -984,6 +1067,17 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                   onboardingWalletPasswordConfirm: e.target.value,
                 })
               }
+              onKeyDown={(e) => {
+                if (
+                  e.key === "Enter" &&
+                  !loading &&
+                  walletPassword.length >= 8 &&
+                  walletPassword === walletPasswordConfirm
+                ) {
+                  e.preventDefault();
+                  void handleCreateAccount();
+                }
+              }}
               placeholder="Confirm password"
               autoComplete="new-password"
               className={`h-11 w-full rounded-lg border ${walletPasswordConfirm && walletPassword !== walletPasswordConfirm ? "border-red-500/50" : "border-slate-700"} bg-slate-900 px-4 pr-11 text-sm outline-none ring-emerald-400 transition focus:ring-2`}
@@ -1079,8 +1173,8 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
 
     return (
       <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
-        {stepIndicator}
         <BackButton onClick={handleBack} />
+        {stepIndicator}
         <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400 mb-2">
           {eyebrow}
         </p>
@@ -1241,8 +1335,8 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   if (nostrMode === "import") {
     return (
       <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
-        {stepIndicator}
         <BackButton onClick={handleBack} />
+        {stepIndicator}
         <h2 className="text-2xl font-semibold text-white">
           Import Nostr identity
         </h2>
@@ -1315,90 +1409,92 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     );
   }
 
-  // ── Manual restore sub-page ─────────────────────────────────────────
-  if (nostrMode === "manual-restore") {
+  // ── Restore picker: choose a recovery source ────────────────────────
+  if (nostrMode === "restore-picker") {
+    const setMode = (mode: OnboardingNostrMode) =>
+      useStore.setState({
+        onboardingNostrMode: mode,
+        onboardingError: "",
+        onboardingRestorePassword: "",
+        onboardingWalletPasswordConfirm: "",
+      });
+
+    return (
+      <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
+        <BackButton
+          onClick={() =>
+            useStore.setState({
+              onboardingNostrMode: "generate",
+              onboardingError: "",
+            })
+          }
+        />
+        <h2 className="text-2xl font-semibold text-white">Restore account</h2>
+        <p className="mt-3 text-sm text-slate-400 leading-relaxed">
+          What do you have to restore from?
+        </p>
+        <div className="mt-6 space-y-2.5">
+          <RestoreOption
+            title="Encrypted backup file"
+            description="Your Deadcat .dcid file with its password."
+            onClick={() => setMode("restore")}
+          />
+          <RestoreOption
+            title="Nostr key (nsec)"
+            description="Import your identity; a new wallet will be created."
+            onClick={() => setMode("restore-nsec")}
+          />
+          <RestoreOption
+            title="Wallet recovery phrase"
+            description="Restore your wallet; a new Nostr identity will be generated."
+            onClick={() => setMode("restore-mnemonic")}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Restore: nsec + wallet choice ───────────────────────────────────
+  if (nostrMode === "restore-nsec") {
     const hasNsec = restoreNsec.trim().length > 0;
     const hasMnemonic = restoreMnemonic.trim().length > 0;
     const hasPassword = restorePassword.length >= 8;
-
-    const buttonLabel =
-      hasNsec && hasMnemonic
-        ? "Restore Account"
-        : hasNsec
-          ? "Import & Create Wallet"
-          : hasMnemonic
-            ? "Restore Wallet"
-            : "Restore";
-
     const passwordsMatch = restorePassword === walletPasswordConfirm;
-    const canSubmit = (hasNsec || hasMnemonic) && hasPassword && passwordsMatch;
+    const restoringWallet = nsecWalletChoice === "restore";
+    const canSubmit =
+      hasNsec &&
+      hasPassword &&
+      passwordsMatch &&
+      (!restoringWallet || hasMnemonic);
 
-    const handleManualRestore = async () => {
+    const handleRestoreNsec = async () => {
       useStore.setState({ onboardingLoading: true, onboardingError: "" });
       try {
-        if (hasNsec && hasMnemonic) {
-          // Path C — both nsec + mnemonic
-          const identity = await invoke<IdentityResponse>("import_nostr_nsec", {
-            nsec: restoreNsec.trim(),
-          });
-          useStore.setState({
-            nostrPubkey: identity.pubkey_hex,
-            nostrNpub: identity.npub,
-          });
+        const identity = await invoke<IdentityResponse>("import_nostr_nsec", {
+          nsec: restoreNsec.trim(),
+        });
+        useStore.setState({
+          nostrPubkey: identity.pubkey_hex,
+          nostrNpub: identity.npub,
+        });
+        if (restoringWallet) {
           await invoke("restore_wallet", {
             mnemonic: restoreMnemonic.trim(),
             password: restorePassword,
           });
           setWalletNeedsBackup(false);
-          await invoke("init_nostr_identity");
-          await invoke<void>("unlock_wallet", { password: restorePassword });
-          useStore.setState({
-            walletStatus: "unlocked",
-            walletSessionPassword: restorePassword,
-          });
-        } else if (hasNsec) {
-          // Path A — nsec + new wallet
-          const identity = await invoke<IdentityResponse>("import_nostr_nsec", {
-            nsec: restoreNsec.trim(),
-          });
-          useStore.setState({
-            nostrPubkey: identity.pubkey_hex,
-            nostrNpub: identity.npub,
-          });
+        } else {
           const mnemonic = await invoke<string>("create_wallet", {
             password: restorePassword,
           });
           setWalletNeedsBackup(true);
           useStore.setState({ walletMnemonic: mnemonic });
-          await invoke("init_nostr_identity");
-          await invoke<void>("unlock_wallet", { password: restorePassword });
-          useStore.setState({
-            walletStatus: "unlocked",
-            walletSessionPassword: restorePassword,
-          });
-        } else {
-          // Path B — mnemonic only
-          await invoke("restore_wallet", {
-            mnemonic: restoreMnemonic.trim(),
-            password: restorePassword,
-          });
-          setWalletNeedsBackup(false);
-          const identity = await invoke<IdentityResponse>(
-            "generate_nostr_identity",
-          );
-          useStore.setState({
-            nostrPubkey: identity.pubkey_hex,
-            nostrNpub: identity.npub,
-          });
-          await invoke("init_nostr_identity");
-          await invoke<void>("unlock_wallet", { password: restorePassword });
-          useStore.setState({
-            walletStatus: "unlocked",
-            walletSessionPassword: restorePassword,
-          });
         }
-        // Clean up and close
+        await invoke("init_nostr_identity");
+        await invoke<void>("unlock_wallet", { password: restorePassword });
         useStore.setState({
+          walletStatus: "unlocked",
+          walletSessionPassword: restorePassword,
           onboardingLoading: false,
           setupModalOpen: false,
           onboardingRestoreNsec: "",
@@ -1406,7 +1502,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           onboardingRestorePassword: "",
           onboardingWalletPasswordConfirm: "",
         });
-        // Fetch kind 0 profile from relays in background
+        setNsecWalletChoice("new");
         void invoke<import("../../types").NostrProfile | null>(
           "fetch_nostr_profile",
         )
@@ -1425,35 +1521,37 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     return (
       <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
         <BackButton
-          onClick={() =>
+          onClick={() => {
+            setNsecWalletChoice("new");
             useStore.setState({
-              onboardingNostrMode: "restore",
+              onboardingNostrMode: "restore-picker",
               onboardingError: "",
               onboardingRestoreNsec: "",
               onboardingRestoreMnemonic: "",
               onboardingRestorePassword: "",
               onboardingWalletPasswordConfirm: "",
-            })
-          }
+            });
+          }}
         />
-        <h2 className="text-2xl font-semibold text-white">Manual restore</h2>
+        <h2 className="text-2xl font-semibold text-white">
+          Restore from Nostr key
+        </h2>
         <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-          Enter your existing Nostr key and wallet recovery phrase. If you only
-          have one, a new key or wallet will be generated for the other.
+          Paste your Nostr private key, then choose whether to restore an
+          existing Liquid wallet or create a new one.
         </p>
         {errorHtml && <div className="mt-4">{errorHtml}</div>}
 
         <div className="mt-6 space-y-5">
-          {/* Nostr Identity */}
           <div>
             <label
-              htmlFor="manual-restore-nsec"
+              htmlFor="restore-nsec-input"
               className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
             >
               Nostr Private Key
             </label>
             <input
-              id="manual-restore-nsec"
+              id="restore-nsec-input"
               type="text"
               value={restoreNsec}
               onChange={(e) =>
@@ -1465,9 +1563,6 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
               disabled={loading}
             />
-            <p className="mt-1.5 text-xs text-slate-600">
-              A new wallet will be created automatically.
-            </p>
             {importPreviewLoading && (
               <p className="mt-2 text-xs text-slate-500 animate-pulse">
                 Looking up profile...
@@ -1500,31 +1595,53 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             )}
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="h-px flex-1 bg-slate-800" />
-            <span className="text-xs text-slate-600">and / or</span>
-            <div className="h-px flex-1 bg-slate-800" />
+          <div>
+            <p className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400">
+              Wallet
+            </p>
+            <div className="grid grid-cols-2 gap-2 rounded-lg border border-slate-700 bg-slate-900 p-1">
+              <button
+                type="button"
+                onClick={() => setNsecWalletChoice("new")}
+                disabled={loading}
+                className={`rounded-md px-3 py-2 text-xs font-medium transition ${
+                  nsecWalletChoice === "new"
+                    ? "bg-emerald-400 text-slate-950"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Create new
+              </button>
+              <button
+                type="button"
+                onClick={() => setNsecWalletChoice("restore")}
+                disabled={loading}
+                className={`rounded-md px-3 py-2 text-xs font-medium transition ${
+                  nsecWalletChoice === "restore"
+                    ? "bg-emerald-400 text-slate-950"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Restore from phrase
+              </button>
+            </div>
+            <p className="mt-1.5 text-xs text-slate-600">
+              {restoringWallet
+                ? "We'll restore your existing wallet from its 12-word phrase."
+                : "A new wallet will be created and secured by the password below."}
+            </p>
           </div>
 
-          {/* Liquid Wallet — collapsed until active */}
-          {!mnemonicExpanded && !hasMnemonic ? (
-            <button
-              type="button"
-              onClick={() => setMnemonicExpanded(true)}
-              className="w-full rounded-lg border border-dashed border-slate-700 px-4 py-3 text-sm text-slate-500 transition hover:border-slate-600 hover:text-slate-400"
-            >
-              + Add wallet recovery phrase
-            </button>
-          ) : (
+          {restoringWallet && (
             <div>
               <label
-                htmlFor="manual-restore-mnemonic"
+                htmlFor="restore-nsec-mnemonic"
                 className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
               >
                 Wallet Recovery Phrase
               </label>
               <textarea
-                id="manual-restore-mnemonic"
+                id="restore-nsec-mnemonic"
                 value={restoreMnemonic}
                 onChange={(e) =>
                   useStore.setState({
@@ -1535,37 +1652,30 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                 rows={3}
                 className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
                 disabled={loading}
-                ref={mnemonicTextareaRef}
-                onBlur={() => {
-                  if (!restoreMnemonic.trim()) setMnemonicExpanded(false);
-                }}
               />
-              <p className="mt-1.5 text-xs text-slate-600">
-                A new Nostr identity will be generated for you.
-              </p>
             </div>
           )}
 
-          {/* Password — required for wallet (new or restored) */}
-          {(hasNsec || hasMnemonic) && (
-            <PasswordFields
-              password={restorePassword}
-              confirm={walletPasswordConfirm}
-              revealed={restorePasswordRevealed}
-              disabled={loading}
-              onPasswordChange={(val) =>
-                useStore.setState({ onboardingRestorePassword: val })
-              }
-              onConfirmChange={(val) =>
-                useStore.setState({ onboardingWalletPasswordConfirm: val })
-              }
-              onToggleReveal={() => setRestorePasswordRevealed((r) => !r)}
-            />
-          )}
+          <PasswordFields
+            password={restorePassword}
+            confirm={walletPasswordConfirm}
+            revealed={restorePasswordRevealed}
+            disabled={loading}
+            onPasswordChange={(val) =>
+              useStore.setState({ onboardingRestorePassword: val })
+            }
+            onConfirmChange={(val) =>
+              useStore.setState({ onboardingWalletPasswordConfirm: val })
+            }
+            onToggleReveal={() => setRestorePasswordRevealed((r) => !r)}
+            onSubmit={() => {
+              if (canSubmit) void handleRestoreNsec();
+            }}
+          />
 
           <button
             type="button"
-            onClick={handleManualRestore}
+            onClick={handleRestoreNsec}
             disabled={loading || !canSubmit}
             className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed transition"
           >
@@ -1578,8 +1688,221 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                   <span className="loading-dot">.</span>
                 </span>
               </span>
+            ) : restoringWallet ? (
+              "Restore account"
             ) : (
-              buttonLabel
+              "Import account"
+            )}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Restore: mnemonic + identity choice ─────────────────────────────
+  if (nostrMode === "restore-mnemonic") {
+    const hasMnemonic = restoreMnemonic.trim().length > 0;
+    const hasNsec = restoreNsec.trim().length > 0;
+    const hasPassword = restorePassword.length >= 8;
+    const passwordsMatch = restorePassword === walletPasswordConfirm;
+    const restoringIdentity = mnemonicIdentityChoice === "restore";
+    const canSubmit =
+      hasMnemonic &&
+      hasPassword &&
+      passwordsMatch &&
+      (!restoringIdentity || hasNsec);
+
+    const handleRestoreMnemonic = async () => {
+      useStore.setState({ onboardingLoading: true, onboardingError: "" });
+      try {
+        await invoke("restore_wallet", {
+          mnemonic: restoreMnemonic.trim(),
+          password: restorePassword,
+        });
+        setWalletNeedsBackup(false);
+        const identity = restoringIdentity
+          ? await invoke<IdentityResponse>("import_nostr_nsec", {
+              nsec: restoreNsec.trim(),
+            })
+          : await invoke<IdentityResponse>("generate_nostr_identity");
+        useStore.setState({
+          nostrPubkey: identity.pubkey_hex,
+          nostrNpub: identity.npub,
+        });
+        await invoke("init_nostr_identity");
+        await invoke<void>("unlock_wallet", { password: restorePassword });
+        useStore.setState({
+          walletStatus: "unlocked",
+          walletSessionPassword: restorePassword,
+          onboardingLoading: false,
+          setupModalOpen: false,
+          onboardingRestoreMnemonic: "",
+          onboardingRestoreNsec: "",
+          onboardingRestorePassword: "",
+          onboardingWalletPasswordConfirm: "",
+        });
+        setMnemonicIdentityChoice("new");
+        void invoke<import("../../types").NostrProfile | null>(
+          "fetch_nostr_profile",
+        )
+          .then((profile) => {
+            if (profile) useStore.setState({ nostrProfile: profile });
+          })
+          .catch(() => {});
+      } catch (e) {
+        useStore.setState({
+          onboardingError: String(e),
+          onboardingLoading: false,
+        });
+      }
+    };
+
+    return (
+      <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
+        <BackButton
+          onClick={() => {
+            setMnemonicIdentityChoice("new");
+            useStore.setState({
+              onboardingNostrMode: "restore-picker",
+              onboardingError: "",
+              onboardingRestoreMnemonic: "",
+              onboardingRestoreNsec: "",
+              onboardingRestorePassword: "",
+              onboardingWalletPasswordConfirm: "",
+            });
+          }}
+        />
+        <h2 className="text-2xl font-semibold text-white">
+          Restore from recovery phrase
+        </h2>
+        <p className="mt-3 text-sm text-slate-400 leading-relaxed">
+          Paste your 12-word wallet recovery phrase, then choose whether to
+          import an existing Nostr identity or generate a new one.
+        </p>
+        {errorHtml && <div className="mt-4">{errorHtml}</div>}
+
+        <div className="mt-6 space-y-5">
+          <div>
+            <label
+              htmlFor="restore-mnemonic-input"
+              className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
+            >
+              Wallet Recovery Phrase
+            </label>
+            <textarea
+              id="restore-mnemonic-input"
+              value={restoreMnemonic}
+              onChange={(e) =>
+                useStore.setState({
+                  onboardingRestoreMnemonic: e.target.value,
+                })
+              }
+              placeholder="Enter your 12-word phrase..."
+              rows={3}
+              className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
+              disabled={loading}
+            />
+          </div>
+
+          <div>
+            <p className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400">
+              Nostr identity
+            </p>
+            <div className="grid grid-cols-2 gap-2 rounded-lg border border-slate-700 bg-slate-900 p-1">
+              <button
+                type="button"
+                onClick={() => setMnemonicIdentityChoice("new")}
+                disabled={loading}
+                className={`rounded-md px-3 py-2 text-xs font-medium transition ${
+                  mnemonicIdentityChoice === "new"
+                    ? "bg-emerald-400 text-slate-950"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Create new
+              </button>
+              <button
+                type="button"
+                onClick={() => setMnemonicIdentityChoice("restore")}
+                disabled={loading}
+                className={`rounded-md px-3 py-2 text-xs font-medium transition ${
+                  mnemonicIdentityChoice === "restore"
+                    ? "bg-emerald-400 text-slate-950"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Restore from Nostr key
+              </button>
+            </div>
+            <p className="mt-1.5 text-xs text-slate-600">
+              {restoringIdentity
+                ? "We'll import your existing identity from its nsec."
+                : "A new Nostr identity will be generated for you."}
+            </p>
+          </div>
+
+          {restoringIdentity && (
+            <div>
+              <label
+                htmlFor="restore-mnemonic-nsec"
+                className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
+              >
+                Nostr Private Key
+              </label>
+              <input
+                id="restore-mnemonic-nsec"
+                type="text"
+                value={restoreNsec}
+                onChange={(e) =>
+                  useStore.setState({
+                    onboardingRestoreNsec: e.target.value,
+                  })
+                }
+                placeholder="nsec1..."
+                autoComplete="off"
+                spellCheck={false}
+                className="h-11 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 text-sm mono outline-none ring-emerald-400 transition focus:ring-2"
+                disabled={loading}
+              />
+            </div>
+          )}
+
+          <PasswordFields
+            password={restorePassword}
+            confirm={walletPasswordConfirm}
+            revealed={restorePasswordRevealed}
+            disabled={loading}
+            onPasswordChange={(val) =>
+              useStore.setState({ onboardingRestorePassword: val })
+            }
+            onConfirmChange={(val) =>
+              useStore.setState({ onboardingWalletPasswordConfirm: val })
+            }
+            onToggleReveal={() => setRestorePasswordRevealed((r) => !r)}
+            onSubmit={() => {
+              if (canSubmit) void handleRestoreMnemonic();
+            }}
+          />
+
+          <button
+            type="button"
+            onClick={handleRestoreMnemonic}
+            disabled={loading || !canSubmit}
+            className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed transition"
+          >
+            {loading ? (
+              <span className="inline-flex items-center">
+                Restoring
+                <span className="ml-0.5 inline-flex">
+                  <span className="loading-dot">.</span>
+                  <span className="loading-dot">.</span>
+                  <span className="loading-dot">.</span>
+                </span>
+              </span>
+            ) : restoringIdentity ? (
+              "Restore account"
+            ) : (
+              "Restore wallet"
             )}
           </button>
         </div>
@@ -1691,20 +2014,21 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         <BackButton
           onClick={() =>
             useStore.setState({
-              onboardingNostrMode: "generate",
+              onboardingNostrMode: "restore-picker",
               onboardingError: "",
               onboardingRestoreFileContent: "",
               onboardingRestoreFileName: "",
               onboardingRestorePassword: "",
               onboardingWalletPasswordConfirm: "",
-              onboardingRestoreNsec: "",
-              onboardingRestoreMnemonic: "",
             })
           }
         />
-        <h2 className="text-2xl font-semibold text-white">Restore account</h2>
+        <h2 className="text-2xl font-semibold text-white">
+          Restore from backup file
+        </h2>
         <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-          Import your Deadcat identity file, or enter your keys manually.
+          Drop your Deadcat identity file and enter the password you set when
+          exporting it.
         </p>
         {errorHtml && <div className="mt-4">{errorHtml}</div>}
 
@@ -1808,40 +2132,6 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             </form>
           )}
         </div>
-
-        {/* Manual entry link */}
-        {!hasFile && (
-          <div className="mt-8 border-t border-slate-800 pt-6">
-            <button
-              type="button"
-              onClick={() =>
-                useStore.setState({
-                  onboardingNostrMode: "manual-restore",
-                  onboardingRestorePassword: "",
-                  onboardingWalletPasswordConfirm: "",
-                  onboardingError: "",
-                })
-              }
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-700 px-4 py-3.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:border-slate-600 transition"
-            >
-              <svg
-                aria-hidden="true"
-                className="h-4 w-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"
-                />
-              </svg>
-              Enter keys manually
-            </button>
-          </div>
-        )}
       </div>
     );
   }
@@ -1890,7 +2180,6 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
 
     return (
       <div className="w-full max-w-[432px] rounded-2xl border border-slate-800 bg-slate-950 p-10">
-        {stepIndicator}
         <BackButton
           onClick={() =>
             useStore.setState({
@@ -1900,6 +2189,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             })
           }
         />
+        {stepIndicator}
         <h2 className="text-2xl font-semibold text-white">
           Connect remote signer
         </h2>
@@ -2036,9 +2326,13 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           type="button"
           onClick={() =>
             useStore.setState({
-              onboardingNostrMode: "restore",
+              onboardingNostrMode: "restore-picker",
               onboardingRestorePassword: "",
               onboardingWalletPasswordConfirm: "",
+              onboardingRestoreNsec: "",
+              onboardingRestoreMnemonic: "",
+              onboardingRestoreFileContent: "",
+              onboardingRestoreFileName: "",
               onboardingError: "",
             })
           }
