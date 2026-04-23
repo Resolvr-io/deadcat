@@ -325,7 +325,21 @@ export default function GroupDetailPage() {
     return getMockMarketGroups().find((g) => g.id === selectedGroupId) ?? null;
   }, [selectedGroupId]);
 
+  // Auto-select the top outcome (highest probability) when the group loads
+  // or changes and nothing is selected yet.
+  const topOutcomeId = useMemo(() => {
+    if (!group) return null;
+    return (
+      [...group.outcomes].sort((a, b) => b.yesPrice - a.yesPrice)[0]?.id ?? null
+    );
+  }, [group]);
+
+  if (group && !selectedOutcomeId && topOutcomeId) {
+    useStore.setState({ selectedOutcomeId: topOutcomeId });
+  }
+
   const [search, setSearch] = useState("");
+  const [showOrderbook, setShowOrderbook] = useState(false);
 
   const filteredOutcomes = useMemo(() => {
     if (!group) return [];
@@ -546,69 +560,75 @@ export default function GroupDetailPage() {
                   color={color}
                 />
 
-                {/* Order book */}
+                {/* Order book — collapsed by default */}
                 <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                      Order Book
+                  <button
+                    type="button"
+                    onClick={() => setShowOrderbook((v) => !v)}
+                    className="flex w-full items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-400 transition hover:text-slate-200"
+                  >
+                    <span>Order Book</span>
+                    <span className="normal-case font-normal">
+                      {showOrderbook ? "Hide" : "Show"}
                     </span>
-                    <span className="text-[10px] font-medium" style={{ color }}>
-                      {selectedOutcome.name}
-                    </span>
-                  </div>
+                  </button>
 
-                  <div className="mb-1 flex justify-between text-[10px] text-slate-500">
-                    <span>Price (sats)</span>
-                    <span>Depth</span>
-                  </div>
-
-                  {/* Asks — highest first */}
-                  {cumAsks.map((level) => {
-                    const pct = (level.cumulative / maxCum) * 100;
-                    return (
-                      <div
-                        key={`ask-${level.priceSats}`}
-                        className="relative flex items-center justify-between px-2 py-0.5 text-xs"
-                      >
-                        <div
-                          className="absolute inset-y-0 right-0 bg-rose-500/15"
-                          style={{ width: `${pct.toFixed(1)}%` }}
-                        />
-                        <span className="relative text-rose-400">
-                          {level.priceSats}
-                        </span>
-                        <span className="relative text-slate-300">
-                          {level.cumulative.toFixed(0)}
-                        </span>
+                  {showOrderbook && (
+                    <>
+                      <div className="mt-2 mb-1 flex justify-between text-[10px] text-slate-500">
+                        <span>Price (sats)</span>
+                        <span>Depth</span>
                       </div>
-                    );
-                  })}
 
-                  <div className="border-y border-slate-800/50 py-1 text-center text-[10px] text-slate-500">
-                    {book.spread !== null ? `Spread: ${book.spread} sats` : "—"}
-                  </div>
+                      {cumAsks.map((level) => {
+                        const pct = (level.cumulative / maxCum) * 100;
+                        return (
+                          <div
+                            key={`ask-${level.priceSats}`}
+                            className="relative flex items-center justify-between px-2 py-0.5 text-xs"
+                          >
+                            <div
+                              className="absolute inset-y-0 right-0 bg-rose-500/15"
+                              style={{ width: `${pct.toFixed(1)}%` }}
+                            />
+                            <span className="relative text-rose-400">
+                              {level.priceSats}
+                            </span>
+                            <span className="relative text-slate-300">
+                              {level.cumulative.toFixed(0)}
+                            </span>
+                          </div>
+                        );
+                      })}
 
-                  {/* Bids — best bid first */}
-                  {cumBids.map((level) => {
-                    const pct = (level.cumulative / maxCum) * 100;
-                    return (
-                      <div
-                        key={`bid-${level.priceSats}`}
-                        className="relative flex items-center justify-between px-2 py-0.5 text-xs"
-                      >
-                        <div
-                          className="absolute inset-y-0 right-0 bg-emerald-500/15"
-                          style={{ width: `${pct.toFixed(1)}%` }}
-                        />
-                        <span className="relative text-emerald-400">
-                          {level.priceSats}
-                        </span>
-                        <span className="relative text-slate-300">
-                          {level.cumulative.toFixed(0)}
-                        </span>
+                      <div className="border-y border-slate-800/50 py-1 text-center text-[10px] text-slate-500">
+                        {book.spread !== null
+                          ? `Spread: ${book.spread} sats`
+                          : "—"}
                       </div>
-                    );
-                  })}
+
+                      {cumBids.map((level) => {
+                        const pct = (level.cumulative / maxCum) * 100;
+                        return (
+                          <div
+                            key={`bid-${level.priceSats}`}
+                            className="relative flex items-center justify-between px-2 py-0.5 text-xs"
+                          >
+                            <div
+                              className="absolute inset-y-0 right-0 bg-emerald-500/15"
+                              style={{ width: `${pct.toFixed(1)}%` }}
+                            />
+                            <span className="relative text-emerald-400">
+                              {level.priceSats}
+                            </span>
+                            <span className="relative text-slate-300">
+                              {level.cumulative.toFixed(0)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </>
+                  )}
                 </div>
               </>
             );
