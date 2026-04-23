@@ -11,20 +11,22 @@ This is achieved through three mechanisms:
 
 ### Design Principle: Covenants Are Permissive, Builders Are Opinionated
 
-The Simplicity covenants accept wide parameter ranges (u64 for prices, fees, collateral amounts). The `deadcat-core` PSET builders enforce tighter constraints — only parameter values that can be losslessly round-tripped through the OP_RETURN encoding are accepted. Non-conforming values produce `CoreError::InvalidParams`. This ensures every contract created through `deadcat-core` has a decodable recovery hint.
+The Simplicity covenants accept wide parameter ranges (u64 for prices, fees, collateral amounts). The `deadcat-core` APIs enforce tighter constraints — only parameter values that can be losslessly round-tripped through the canonical v1 OP_RETURN encoding are accepted. Non-conforming values surface as `ConventionError` in the pure derive helpers and `CoreError::ConventionViolation` in builders / ingestion. This keeps the supported contract surface aligned with the published recovery format.
+
+`deadcat-core` uses a **strict-canonical tracking policy**: if the engine creates or agrees to track a contract, the supplied params must conform to the documented recovery conventions. This avoids a mixed universe of "tracked but foreign" contracts whose mnemonic-recovery story depends on out-of-band assumptions. The one remaining caveat is non-initial pool/order ingestion via `Current` snapshots: those variants intentionally omit the creation transaction, so they cannot prove the historical hint was present on-chain. They still reject non-conforming supplied params and require a canonical parent market.
 
 Convention compliance is enforced at three layers:
 - **Derive functions** (`derive_order_params`, `derive_pool_params`): first line — catches convention violations at param construction time with the clearest error context
 - **PSET builders** (all three creation builders): defense in depth — catches violations for manually-constructed params that bypass derive functions
-- **Market ingestion** (`ingest_market`): protects all downstream users — rejects non-conforming markets, since non-conforming markets break the recovery chain for any child contracts (orders, pools) and any token holder tracing back to the market
+- **Ingestion** (`ingest_market`, `ingest_pool`, `ingest_persistent_order`, `ingest_ephemeral_order`): strict-canonical tracking boundary — rejects non-conforming supplied params before the engine agrees to track the contract
 
 | Contract | Creation enforcement | Ingestion enforcement | Why |
 |---|---|---|---|
-| Market | Builder rejects | `ingest_market` rejects | Non-conforming markets break all downstream users (token holders, orders, pools) |
-| Order | `derive_order_params` + builder reject | No convention check | Only the creator needs recovery; takers just fill |
-| Pool | `derive_pool_params` + builder reject | No convention check | Only the operator needs recovery; traders just swap |
+| Market | Builder rejects | `ingest_market` rejects and verifies the creation tx | Non-conforming markets break all downstream users (token holders, orders, pools) |
+| Order | `derive_order_params` + builder reject | All order ingestion paths reject non-conforming supplied params; `Creation` additionally verifies the creation tx | Strict-canonical tracking keeps the engine's supported order universe aligned with mnemonic recovery and canonical UX assumptions |
+| Pool | `derive_pool_params` + builder reject | All pool ingestion paths reject non-conforming supplied params; `Creation` additionally verifies the creation tx | Same: one canonical tracked-pool class is easier to reason about than "tracked but foreign" liquidity |
 
-Pool and order ingestion validates the parent market relationship (transitively ensuring the parent market is conforming) but does not enforce pool/order-specific conventions — a non-conforming pool or order is still fully functional for trading.
+For `PoolSnapshot::Current` and `OrderSnapshot::Current`, the caller intentionally omits the creation transaction. Those paths therefore cannot prove the historical OP_RETURN hint existed on-chain; they enforce only canonical param shape plus canonical-parent-market membership. This is the existing fast-start trust trade-off of non-initial ingestion, not a second-class convention policy.
 
 ## Integration Contract
 
@@ -37,12 +39,12 @@ Correct chain-only recovery depends on the wallet integrator providing specific 
 | **Deadcat xprv derived at `m/86'/1145258324'`** (see [HD Paths](#hd-paths)). The integrator is responsible for performing the derivation before passing the key to `derive_*_params` or engine construction. | Silent. Derive functions produce different keys, reconstructed covenant scripts do not match on-chain UTXOs, recovery reports "no matches" instead of an error. |
 | **Complete wallet rescan.** The caller must present every wallet-funded transaction on the target network, from the wallet's first use through the current tip. Incremental rescans must not skip block ranges. | Silent. Orders and pools whose creation txs were missed are simply absent from the recovered state. The engine has no way to know about txs it was never given. |
 | **Authoritative, tip-synced `ChainSource`.** Backends must return complete, current state — not filtered or stale results. | Latent. Stale tip produces stale state. Missing txs in `transactions_in_block` or equivalent queries produce the same silent gap as incomplete rescan. |
-| **`ChainSource::issuance_transaction(asset_id)` returns the first-issuance transaction**, not a subsequent reissuance. Esplora's `/asset/:asset_id` endpoint and Electrs's asset index both return this directly. | Loud. `ingest_market` re-derivation fails the script-pubkey match and returns `CoreError::InvalidCreationTransaction`. The error does not obviously point at the integrator's `ChainSource` implementation — integrators should treat this error as a signal to verify their issuance lookup is returning the genesis tx. |
+| **`ChainSource::issuance_transaction(asset_id)` returns the first-issuance transaction**, not a subsequent reissuance. Esplora's `/asset/:asset_id` endpoint and Electrs's asset index both return this directly. | Loud. `ingest_market` re-derivation fails the script-pubkey match and returns `CoreError::InvalidCreationTx`. The error does not obviously point at the integrator's `ChainSource` implementation — integrators should treat this error as a signal to verify their issuance lookup is returning the genesis tx. |
 | **Correct `Network` at engine construction.** The well-known collateral asset index (see [Well-Known Collateral Asset Index](#well-known-collateral-asset-index-4-bits)) resolves against network-specific asset IDs — mainnet L-BTC ≠ testnet L-BTC ≠ regtest L-BTC, and the v1 well-known USDt entry exists only on Liquid mainnet. | Silent. Decoded collateral asset IDs resolve to the wrong chain's policy asset or treat a mainnet-only USDt index as valid on the wrong network; downstream operations fail with "unknown asset" rather than an explicit network-mismatch error. |
 
 ### What `deadcat-core` verifies
 
-- **Creation tx / OP_RETURN authenticity** — ingestion re-derives the covenant script pubkey from the parsed params and requires it match the creation tx's output script. Spoofed hints or wrong creation txs are rejected with `CoreError::InvalidCreationTransaction`.
+- **Creation tx / OP_RETURN authenticity** — ingestion re-derives the covenant script pubkey from the parsed params and requires it match the creation tx's output script. Spoofed hints or wrong creation txs are rejected with `CoreError::InvalidCreationTx`.
 - **Asset identity on ingestion** — `identify_asset` cross-checks asset IDs against registered market params. Unknown asset IDs are reported, not silently accepted.
 - **Covenant state transitions** — every tx presented to `step` / `interpret_transaction` is validated against the expected covenant spend paths; invalid transitions are rejected.
 
@@ -123,7 +125,7 @@ Pool reserve UTXOs are at covenant addresses — standard wallet rescan cannot f
 
 The hint-based flows above assume every deadcat contract carries a parseable `deadcat-core`-format OP_RETURN. A creation transaction without such a hint — non-conforming contract built with custom tooling, format mismatch between recovery code and hint version, or pathological on-chain data loss — cannot be recovered via the fast path. The only fallback is brute-force index scanning: for each candidate `index` in `[0, 65535]` (and, for multi-outcome markets, each candidate `outcome`), derive the contract params with those values, compile the covenant, and check the script pubkey against known covenant-address UTXOs. At ~10-100 ms per Simplicity compilation, a full sweep costs 10-100 minutes per orphaned UTXO per outcome.
 
-This path is **not supported** by `deadcat-core` v1. Integrators who need it can implement it against the public `derive_order_params` / `derive_pool_params` functions; it is a thin loop over indices and outcomes that compares compiled covenant scripts against the target UTXO set. Adding a shipped helper is non-breaking and can happen in a future release if real-world demand emerges. In practice, `deadcat-core`-built contracts always carry a hint, and convention enforcement at ingestion rejects non-conforming ones — so this fallback is relevant only when the contract was built by a tool that bypassed `deadcat-core`, in which case the authoring tool is responsible for its own recovery story.
+This path is **not supported** by `deadcat-core` v1. Integrators who need it can implement it against the public `derive_order_params` / `derive_pool_params` functions; it is a thin loop over indices and outcomes that compares compiled covenant scripts against the target UTXO set. Adding a shipped helper is non-breaking and can happen in a future release if real-world demand emerges. In practice, `deadcat-core`-built contracts always carry a hint, and convention enforcement at creation / creation-based ingestion rejects non-conforming ones — so this fallback is relevant only when the contract was built by a tool that bypassed `deadcat-core`, or when a caller chooses a `Current` snapshot path that omits creation-time verification. In those cases the authoring / ingesting tool is responsible for the missing proof.
 
 ## ChainSource Addition
 
@@ -360,7 +362,7 @@ Byte  39:    min_remainder_lots (u8)                           --  8 bits
 | `maker_receive_spk_hash` | No | — | Derivable: mnemonic → nonce → tweak → P_order → hash |
 | `maker_pubkey` | No | — | Derivable: mnemonic at `order_index` |
 
-**Builder validation** (returns `CoreError::InvalidParams` if violated):
+**Builder validation** (builder returns `CoreError::ConventionViolation`; the pure derive helper returns `ConventionError` for the same class earlier in the flow):
 - `price <= 0xFFFFFF` (16,777,215)
 - `min_fill_lots` in range 1-255
 - `min_remainder_lots` in range 1-255
@@ -400,7 +402,7 @@ Within each bracketed byte, the first nibble is the high nibble and the second n
 | `admin_pubkey` | No | — | Derivable from mnemonic at `pool_index` |
 | Protocol constants | No | — | `TABLE_DEPTH`, `S_BIAS`, `S_MAX_INDEX`, `MIN_POOL_RESERVE` are fixed in the `.simf` |
 
-**Builder validation:**
+**Builder validation** (builder returns `CoreError::ConventionViolation`; the pure derive helper returns `ConventionError` for the same class earlier in the flow):
 - `max_loss_sats` and `half_payout_sats` must be valid indices into the 16-value 1-2-5 table
 - `fee_bps <= 4095` (40.95%)
 - `initial_s_index <= 65535`
