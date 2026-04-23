@@ -67,8 +67,8 @@ fn market_coordinate(creator_pubkey_hex: &str, market_id_hex: &str) -> String {
     )
 }
 
-fn event_tag_value(event: &Event, key: &str) -> Option<String> {
-    event.tags.iter().find_map(|tag| {
+fn tag_value(tags: &Tags, key: &str) -> Option<String> {
+    tags.iter().find_map(|tag| {
         let fields = tag.as_slice();
         if fields.len() >= 2 && fields[0] == key {
             Some(fields[1].to_string())
@@ -76,6 +76,10 @@ fn event_tag_value(event: &Event, key: &str) -> Option<String> {
             None
         }
     })
+}
+
+fn event_tag_value(event: &Event, key: &str) -> Option<String> {
+    tag_value(&event.tags, key)
 }
 
 fn event_network_tag(event: &Event) -> Option<String> {
@@ -167,14 +171,17 @@ fn build_comment_tags(
     Ok(tags)
 }
 
-/// Build a signed NIP-22 comment event.
+/// Build an UNSIGNED NIP-22 comment event. The caller signs it with
+/// whatever signer they have — local `Keys` via `.sign_with_keys(&keys)`,
+/// or a NIP-46 remote signer via the `NostrSigner::sign_event` trait
+/// method. This keeps the builder agnostic to where the secret lives.
 pub fn build_comment_event(
-    keys: &Keys,
+    author: PublicKey,
     root: &CommentRoot<'_>,
     parent: Option<&CommentParent<'_>>,
     body: &str,
     network_tag: &str,
-) -> Result<Event, String> {
+) -> Result<UnsignedEvent, String> {
     parse_network_tag(network_tag)?;
 
     let trimmed = body.trim();
@@ -189,19 +196,18 @@ pub fn build_comment_event(
 
     let tags = build_comment_tags(root, parent, network_tag)?;
 
-    EventBuilder::new(COMMENT_KIND, trimmed)
+    Ok(EventBuilder::new(COMMENT_KIND, trimmed)
         .tags(tags)
-        .sign_with_keys(keys)
-        .map_err(|e| format!("failed to build comment event: {e}"))
+        .build(author))
 }
 
-/// Build a kind 5 deletion request (NIP-09) targeting a comment authored
-/// by the signing key. Relays are expected to honour this only when the
-/// request comes from the comment author.
+/// Build an UNSIGNED kind 5 deletion request (NIP-09) targeting a comment
+/// authored by the signing key. Relays are expected to honour this only
+/// when the request is signed by the comment's original author.
 pub fn build_comment_deletion_event(
-    keys: &Keys,
+    author: PublicKey,
     comment_event_id_hex: &str,
-) -> Result<Event, String> {
+) -> Result<UnsignedEvent, String> {
     let event_id = EventId::from_hex(comment_event_id_hex)
         .map_err(|e| format!("invalid comment event id: {e}"))?;
     let tags = vec![
@@ -211,10 +217,9 @@ pub fn build_comment_deletion_event(
             vec![COMMENT_KIND.as_u16().to_string()],
         ),
     ];
-    EventBuilder::new(Kind::Custom(5), "delete comment")
+    Ok(EventBuilder::new(Kind::Custom(5), "delete comment")
         .tags(tags)
-        .sign_with_keys(keys)
-        .map_err(|e| format!("failed to build comment deletion event: {e}"))
+        .build(author))
 }
 
 /// Filter for fetching every comment rooted at a specific market.
@@ -384,10 +389,16 @@ mod tests {
             relay_hint: Some("wss://relay.example"),
         };
 
-        let event = build_comment_event(&keys, &root, None, "hello market", "liquid-testnet")
-            .expect("build");
+        let unsigned = build_comment_event(
+            keys.public_key(),
+            &root,
+            None,
+            "hello market",
+            "liquid-testnet",
+        )
+        .expect("build");
 
-        let tag_kinds: Vec<&str> = event
+        let tag_kinds: Vec<&str> = unsigned
             .tags
             .iter()
             .map(|t| t.as_slice()[0].as_str())
@@ -401,13 +412,13 @@ mod tests {
         assert!(tag_kinds.contains(&"network"));
 
         let expected_coord = format!("{}:{creator}:{market_id}", APP_EVENT_KIND.as_u16());
-        let a_tag = event_tag_value(&event, "A").unwrap();
+        let a_tag = tag_value(&unsigned.tags, "A").unwrap();
         assert_eq!(a_tag, expected_coord);
-        let a_lower = event_tag_value(&event, "a").unwrap();
+        let a_lower = tag_value(&unsigned.tags, "a").unwrap();
         assert_eq!(a_lower, expected_coord);
 
-        assert_eq!(event.kind, COMMENT_KIND);
-        assert_eq!(event.content, "hello market");
+        assert_eq!(unsigned.kind, COMMENT_KIND);
+        assert_eq!(unsigned.content, "hello market");
     }
 
     #[test]
@@ -427,27 +438,33 @@ mod tests {
             author_pubkey_hex: &parent_author,
             relay_hint: None,
         };
-        let event =
-            build_comment_event(&keys, &root, Some(&parent), "reply", "liquid-testnet").unwrap();
+        let unsigned = build_comment_event(
+            keys.public_key(),
+            &root,
+            Some(&parent),
+            "reply",
+            "liquid-testnet",
+        )
+        .unwrap();
 
         // Root scope is still the market.
         let expected_coord = format!("{}:{creator}:{market_id}", APP_EVENT_KIND.as_u16());
         assert_eq!(
-            event_tag_value(&event, "A").as_deref(),
+            tag_value(&unsigned.tags, "A").as_deref(),
             Some(expected_coord.as_str())
         );
 
         // Parent scope references the parent comment as `e` with kind 1111.
         assert_eq!(
-            event_tag_value(&event, "e").as_deref(),
+            tag_value(&unsigned.tags, "e").as_deref(),
             Some(parent_id.as_str())
         );
         assert_eq!(
-            event_tag_value(&event, "p").as_deref(),
+            tag_value(&unsigned.tags, "p").as_deref(),
             Some(parent_author.as_str())
         );
         assert_eq!(
-            event_tag_value(&event, "k").as_deref(),
+            tag_value(&unsigned.tags, "k").as_deref(),
             Some(COMMENT_KIND.as_u16().to_string().as_str())
         );
     }
@@ -462,7 +479,8 @@ mod tests {
             market_event_id_hex: &event_id,
             relay_hint: None,
         };
-        let err = build_comment_event(&keys, &root, None, "   ", "liquid-testnet").unwrap_err();
+        let err = build_comment_event(keys.public_key(), &root, None, "   ", "liquid-testnet")
+            .unwrap_err();
         assert!(err.contains("empty"));
     }
 
@@ -477,7 +495,8 @@ mod tests {
             relay_hint: None,
         };
         let body = "x".repeat(MAX_COMMENT_LEN + 1);
-        let err = build_comment_event(&keys, &root, None, &body, "liquid-testnet").unwrap_err();
+        let err = build_comment_event(keys.public_key(), &root, None, &body, "liquid-testnet")
+            .unwrap_err();
         assert!(err.contains("maximum"));
     }
 
@@ -491,7 +510,9 @@ mod tests {
             market_event_id_hex: &event_id,
             relay_hint: None,
         };
-        let event = build_comment_event(&keys, &root, None, "hi", "liquid-testnet").unwrap();
+        let unsigned =
+            build_comment_event(keys.public_key(), &root, None, "hi", "liquid-testnet").unwrap();
+        let event = unsigned.sign_with_keys(&keys).unwrap();
         let parsed = parse_comment_event(&event, "liquid-testnet").unwrap();
         assert_eq!(parsed.market_id, market_id);
         assert_eq!(parsed.parent_id, None);
@@ -509,7 +530,9 @@ mod tests {
             market_event_id_hex: &event_id,
             relay_hint: None,
         };
-        let event = build_comment_event(&keys, &root, None, "hi", "liquid-testnet").unwrap();
+        let unsigned =
+            build_comment_event(keys.public_key(), &root, None, "hi", "liquid-testnet").unwrap();
+        let event = unsigned.sign_with_keys(&keys).unwrap();
         let err = parse_comment_event(&event, "liquid-regtest").unwrap_err();
         assert!(err.contains("unsupported network tag"));
     }
@@ -548,14 +571,14 @@ mod tests {
     fn deletion_event_targets_comment_id_and_kind_1111() {
         let keys = Keys::generate();
         let comment_id = "ee".repeat(32);
-        let event = build_comment_deletion_event(&keys, &comment_id).unwrap();
-        assert_eq!(event.kind, Kind::Custom(5));
+        let unsigned = build_comment_deletion_event(keys.public_key(), &comment_id).unwrap();
+        assert_eq!(unsigned.kind, Kind::Custom(5));
         assert_eq!(
-            event_tag_value(&event, "e").as_deref(),
+            tag_value(&unsigned.tags, "e").as_deref(),
             Some(comment_id.as_str())
         );
         assert_eq!(
-            event_tag_value(&event, "k").as_deref(),
+            tag_value(&unsigned.tags, "k").as_deref(),
             Some(COMMENT_KIND.as_u16().to_string().as_str())
         );
     }

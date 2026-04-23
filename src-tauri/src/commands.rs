@@ -1437,7 +1437,9 @@ pub async fn fetch_market_comments(
     creator_pubkey_hex: String,
     app: tauri::AppHandle,
 ) -> Result<Vec<deadcat_sdk::MarketComment>, String> {
-    let (_keys, client) = get_keys_and_client(&app).await?;
+    // Read-only, no signing — a signer is still needed to acquire the
+    // connected relay client, but we don't call sign_event here.
+    let (_signer, client) = get_signer_and_client(&app).await?;
     let network_tag = current_network_tag(&app)?;
     deadcat_sdk::fetch_market_comments(
         &client,
@@ -1459,7 +1461,14 @@ pub async fn publish_market_comment(
     body: String,
     app: tauri::AppHandle,
 ) -> Result<deadcat_sdk::MarketComment, String> {
-    let (keys, client) = get_keys_and_client(&app).await?;
+    // Works for both local nsec and NIP-46 remote signers: we build an
+    // UnsignedEvent and let the signer abstraction handle the signing
+    // (local keys sign inline, remote signers round-trip via NIP-46).
+    let (signer, client) = get_signer_and_client(&app).await?;
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
     let network_tag = current_network_tag(&app)?;
 
     let root = deadcat_sdk::CommentRoot {
@@ -1484,10 +1493,14 @@ pub async fn publish_market_comment(
             relay_hint: None,
         });
 
-    let event =
-        deadcat_sdk::build_comment_event(&keys, &root, parent.as_ref(), &body, &network_tag)?;
-    let parsed = deadcat_sdk::parse_comment_event(&event, &network_tag)?;
-    deadcat_sdk::publish_event(&client, event).await?;
+    let unsigned =
+        deadcat_sdk::build_comment_event(author, &root, parent.as_ref(), &body, &network_tag)?;
+    let signed = signer
+        .sign_event(unsigned)
+        .await
+        .map_err(|e| format!("sign_event failed: {e}"))?;
+    let parsed = deadcat_sdk::parse_comment_event(&signed, &network_tag)?;
+    deadcat_sdk::publish_event(&client, signed).await?;
     Ok(parsed)
 }
 
@@ -1496,9 +1509,17 @@ pub async fn delete_market_comment(
     comment_event_id_hex: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let (keys, client) = get_keys_and_client(&app).await?;
-    let event = deadcat_sdk::build_comment_deletion_event(&keys, &comment_event_id_hex)?;
-    deadcat_sdk::publish_event(&client, event).await?;
+    let (signer, client) = get_signer_and_client(&app).await?;
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+    let unsigned = deadcat_sdk::build_comment_deletion_event(author, &comment_event_id_hex)?;
+    let signed = signer
+        .sign_event(unsigned)
+        .await
+        .map_err(|e| format!("sign_event failed: {e}"))?;
+    deadcat_sdk::publish_event(&client, signed).await?;
     Ok(())
 }
 
