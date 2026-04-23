@@ -54,7 +54,9 @@ export function WalletPage() {
       <div className="relative mx-4 flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
         {walletStatus !== "not_created" && (
           <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
-            <h2 className="text-lg font-medium text-slate-100">Wallet</h2>
+            <h2 className="text-lg font-medium text-slate-100">
+              Liquid Wallet
+            </h2>
             <CloseButton onClick={close} />
           </div>
         )}

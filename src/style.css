@@ -17,6 +17,17 @@
   --text-3: 1.125rem;
   --text-4: 1.5rem;
   --text-5: 2.125rem;
+
+  /* Bitcoin Connect theming. The Lit-based modal from
+     @getalby/bitcoin-connect reads a small set of CSS vars for its
+     brand accent; everything else is hardcoded. Point these at the
+     emerald-400 / slate-950 pair the rest of the app uses so the
+     connect modal reads as part of deadcat. */
+  --bc-color-brand: #34d399;
+  --bc-color-brand-dark: #34d399;
+  --bc-color-brand-button-text: #020617;
+  --bc-color-brand-button-text-dark: #020617;
+  --bc-brand-mix: 90%;
 }
 
 * {

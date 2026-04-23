@@ -10,6 +10,7 @@ import { randomCatName } from "../../utils-react/random-name";
 import { btcLabel } from "../../utils-react/wallet";
 import { CloseButton } from "../shared/CloseButton";
 import { showToast } from "../shared/Toast";
+import { LightningWalletSection } from "./LightningWalletSection";
 
 const DEV_MODE = import.meta.env.DEV;
 
@@ -1283,8 +1284,17 @@ function SettingsPanelContent({
               <SettingsAccordion sectionKey="nostr" title="Nostr Identity">
                 <NostrSection />
               </SettingsAccordion>
-              <SettingsAccordion sectionKey="wallet" title="Wallet">
+              <SettingsAccordion
+                sectionKey="wallet"
+                title="Liquid Bitcoin Wallet"
+              >
                 <WalletSection />
+              </SettingsAccordion>
+              <SettingsAccordion
+                sectionKey="lightningWallet"
+                title="Lightning Wallet"
+              >
+                <LightningWalletSection />
               </SettingsAccordion>
               <SettingsAccordion sectionKey="relays" title="Relays">
                 <RelaysSection />
