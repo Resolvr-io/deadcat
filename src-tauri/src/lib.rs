@@ -958,6 +958,69 @@ async fn get_mnemonic_word(
 }
 
 // ============================================================================
+// NWC (Nostr Wallet Connect) secret storage
+// ============================================================================
+//
+// The NWC connection string is a Lightning wallet credential with
+// full `pay_invoice` authority. We encrypt it at rest with the same
+// Argon2 + AES-256-GCM pipeline used for the wallet mnemonic, keyed
+// by the wallet unlock password.
+//
+// Bitcoin Connect on the frontend is configured with
+// `persistConnection: false` so it never writes this secret to
+// plaintext `localStorage`. Instead, the frontend saves the URL here
+// after a successful connect and reloads it on boot to reconnect.
+
+#[tauri::command]
+async fn set_nwc_url(url: String, password: String, app: AppHandle) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        let persister = mgr.nwc_persister().ok_or("NWC persister not initialized")?;
+        persister.save(&url, &password).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("set_nwc_url task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn get_nwc_url(password: String, app: AppHandle) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let manager = app.state::<Mutex<AppStateManager>>();
+        let mgr = manager
+            .lock()
+            .map_err(|_| "state lock failed".to_string())?;
+        let persister = mgr.nwc_persister().ok_or("NWC persister not initialized")?;
+        persister.load(&password).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("get_nwc_url task failed: {e}"))?
+}
+
+/// Password-less existence check — used by the frontend on boot to
+/// decide whether to prompt reconnection. Does NOT reveal the URL.
+#[tauri::command]
+fn has_nwc_url(app: AppHandle) -> Result<bool, String> {
+    let manager = app.state::<Mutex<AppStateManager>>();
+    let mgr = manager
+        .lock()
+        .map_err(|_| "state lock failed".to_string())?;
+    Ok(mgr.nwc_persister().is_some_and(|p| p.exists()))
+}
+
+#[tauri::command]
+fn clear_nwc_url(app: AppHandle) -> Result<(), String> {
+    let manager = app.state::<Mutex<AppStateManager>>();
+    let mgr = manager
+        .lock()
+        .map_err(|_| "state lock failed".to_string())?;
+    let persister = mgr.nwc_persister().ok_or("NWC persister not initialized")?;
+    persister.delete().map_err(|e| e.to_string())
+}
+
+// ============================================================================
 // Payment Commands (Boltz)
 // ============================================================================
 
@@ -1668,6 +1731,10 @@ pub fn run() {
             get_cached_mnemonic,
             get_mnemonic_word_count,
             get_mnemonic_word,
+            set_nwc_url,
+            get_nwc_url,
+            has_nwc_url,
+            clear_nwc_url,
             estimate_max_send,
             prepare_send,
             confirm_send,

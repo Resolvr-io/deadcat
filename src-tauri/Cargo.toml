@@ -73,6 +73,7 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 
 [dev-dependencies]
 deadcat-sdk = { path = "crates/deadcat-sdk", features = ["testing"] }
+tempfile = "3.25.0"
 
 [patch.crates-io]
 secp256k1-zkp = { git = "https://github.com/breez/rust-secp256k1-zkp.git", rev = "eac2e479255a6e32b5588bc25ee53c642fdd8395" }

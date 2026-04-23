@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 const DEFAULT_SATS_KEY = "deadcat:zapDefaultSats";
 const DEFAULT_COMMENT_KEY = "deadcat:zapDefaultComment";
 
-const FALLBACK_SATS = 21;
+const FALLBACK_SATS = 100;
 const FALLBACK_COMMENT = "";
 
 function readSats(): number {

@@ -1441,10 +1441,32 @@ pub async fn fetch_market_comments(
     creator_pubkey_hex: String,
     app: tauri::AppHandle,
 ) -> Result<Vec<deadcat_sdk::MarketComment>, String> {
-    // Read-only, no signing — a signer is still needed to acquire the
-    // connected relay client, but we don't call sign_event here.
-    let (_signer, client) = get_signer_and_client(&app).await?;
+    // Read-only, no signing. Comments are public Nostr events, so we
+    // build a standalone relay client instead of pulling the node from
+    // `NodeState` — that way viewers with no identity and/or a locked
+    // wallet can still read the comment thread.
     let network_tag = current_network_tag(&app)?;
+    let relays = {
+        let nostr_state = app.state::<NostrAppState>();
+        let list = nostr_state
+            .relay_list
+            .read()
+            .map_err(|_| "failed to read relay_list".to_string())?
+            .clone();
+        if list.is_empty() {
+            discovery::DEFAULT_RELAYS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<Vec<_>>()
+        } else {
+            list
+        }
+    };
+    let client = nostr_sdk::Client::default();
+    for url in &relays {
+        let _ = client.add_relay(url.as_str()).await;
+    }
+    client.connect_with_timeout(Duration::from_secs(5)).await;
     deadcat_sdk::fetch_market_comments(
         &client,
         &creator_pubkey_hex,
