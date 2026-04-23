@@ -14,25 +14,49 @@ export default function OnboardingOverlay() {
   const backupFileContent = useStore((s) => s.onboardingBackupFileContent);
   useLockScroll();
 
+  // Reset every onboarding-specific field back to its initial store
+  // value. Without this, any sub-step the user navigated into (profile
+  // picker, restore forms, bunker pairing) would still be active when
+  // they re-opened the modal — re-entry should always start at the
+  // three-button decision screen.
   const handleClose = useCallback(() => {
     useStore.setState({
       setupModalOpen: false,
       setupRequires: null,
       onboardingStep: null,
       onboardingNostrMode: "generate",
-      onboardingNostrDone: false,
+      onboardingBunkerUri: "",
+      onboardingNostrNsec: "",
       onboardingNostrGeneratedNsec: "",
       onboardingNsecRevealed: false,
       onboardingNsecAcknowledged: false,
-      onboardingError: "",
+      onboardingNostrDone: false,
+      onboardingPendingPubkey: "",
+      onboardingPendingNpub: "",
+      onboardingProfileStep: false,
+      onboardingNostrDisplayName: "",
+      onboardingProfilePhotoDataUrl: "",
+      onboardingKeysOpen: false,
+      onboardingRestoreFileContent: "",
+      onboardingRestoreFileName: "",
+      onboardingRestorePassword: "",
+      onboardingRestoreMnemonic: "",
+      onboardingRestoreNsec: "",
+      onboardingBackupDownloaded: false,
+      onboardingBackupFileContent: "",
       onboardingWalletMode: "create",
-      onboardingWalletMnemonic: "",
+      onboardingWalletPasswordStep: false,
       onboardingWalletPassword: "",
       onboardingWalletPasswordConfirm: "",
-      onboardingWalletPasswordStep: false,
+      onboardingWalletMnemonic: "",
+      onboardingError: "",
+      onboardingLoading: false,
       onboardingBackupFound: false,
       onboardingBackupScanning: false,
       onboardingPasswordRevealed: false,
+      onboardingWalletOnly: false,
+      onboardingWalletName: "My Wallet",
+      onboardingSelectedWalletDTag: "",
     });
   }, []);
 
