@@ -1722,6 +1722,7 @@ pub fn run() {
             commands::fetch_market_comments,
             commands::publish_market_comment,
             commands::delete_market_comment,
+            commands::sign_zap_request,
             commands::export_identity_file,
             commands::open_downloads_folder,
             commands::import_identity_file,

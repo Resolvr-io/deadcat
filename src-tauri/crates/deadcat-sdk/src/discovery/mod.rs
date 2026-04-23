@@ -12,6 +12,7 @@ pub(crate) mod market;
 pub(crate) mod pool;
 pub(crate) mod service;
 pub(crate) mod store_trait;
+pub(crate) mod zaps;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -85,6 +86,12 @@ pub use comments::{
     build_comment_deletion_event, build_comment_event, build_comment_filter_for_market,
     fetch_comments as fetch_market_comments, parse_comment_event,
 };
+
+// ---------------------------------------------------------------------------
+// Re-exports: zaps (NIP-57)
+// ---------------------------------------------------------------------------
+
+pub use zaps::{ZapRequest, build_zap_request_event};
 
 // ---------------------------------------------------------------------------
 // Re-exports: pool

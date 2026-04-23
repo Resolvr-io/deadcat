@@ -71,3 +71,32 @@ export function TrashIcon(props: IconProps) {
     </Frame>
   );
 }
+
+export function MoreIcon(props: IconProps) {
+  return (
+    <Frame {...props}>
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="19" cy="12" r="1" />
+      <circle cx="5" cy="12" r="1" />
+    </Frame>
+  );
+}
+
+export function CopyIcon(props: IconProps) {
+  return (
+    <Frame {...props}>
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </Frame>
+  );
+}
+
+export function MuteIcon(props: IconProps) {
+  return (
+    <Frame {...props}>
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <line x1="22" x2="16" y1="9" y2="15" />
+      <line x1="16" x2="22" y1="9" y2="15" />
+    </Frame>
+  );
+}
