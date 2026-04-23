@@ -7,8 +7,9 @@ import { generateAvatarDataUri } from "../../../utils-react/avatar";
 import { formatTimeAgo } from "../../../utils-react/format";
 import { CommentBody } from "./CommentBody";
 import { CommentProfileDialog } from "./CommentProfileDialog";
+import { CommentRowMenu } from "./CommentRowMenu";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { HeartIcon, ReplyIcon, TrashIcon, ZapIcon } from "./icons";
+import { HeartIcon, ReplyIcon, ZapIcon } from "./icons";
 
 function shortPubkey(hex: string): string {
   if (hex.length <= 14) return hex;
@@ -116,20 +117,13 @@ export function CommentRow({
             title="Zaps coming soon"
             trailing="0"
           />
-          {isOwn && (
-            <button
-              type="button"
-              onClick={() => setConfirmOpen(true)}
-              disabled={deleteMutation.isPending}
-              title="Delete comment"
-              className="ml-auto flex items-center gap-1.5 rounded-full px-2 py-1.5 text-slate-500 transition hover:bg-rose-400/10 hover:text-rose-400 disabled:opacity-50"
-            >
-              <TrashIcon className="h-[18px] w-[18px]" />
-              {deleteMutation.isPending && (
-                <span className="text-xs">Deleting…</span>
-              )}
-            </button>
-          )}
+          <CommentRowMenu
+            commentBody={comment.content}
+            authorPubkeyHex={comment.author_pubkey}
+            isOwn={isOwn}
+            onDelete={() => setConfirmOpen(true)}
+            deletePending={deleteMutation.isPending}
+          />
         </div>
       </div>
       <ConfirmDialog
