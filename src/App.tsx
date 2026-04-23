@@ -5,6 +5,7 @@ import { useCallback, useEffect } from "react";
 import CreateMarketPage from "./components/create/CreateMarketPage";
 import DetailPage from "./components/detail/DetailPage";
 import HomePage from "./components/home/HomePage";
+import { Footer } from "./components/layout/Footer";
 import { TopShell } from "./components/layout/TopShell";
 import { NostrEventModal } from "./components/modals/NostrEventModal";
 import OnboardingOverlay from "./components/onboarding/OnboardingOverlay";
@@ -122,14 +123,16 @@ export default function App() {
   return (
     <>
       <TitleBarDragStrip />
-      <div className="min-h-screen text-slate-100">
+      <div className="flex min-h-screen flex-col text-slate-100">
         <TopShell />
 
-        <main>
+        <main className="flex-1">
           {view === "home" && <HomePage />}
           {view === "detail" && <DetailPage />}
           {view === "create" && <CreateMarketPage />}
         </main>
+
+        <Footer />
       </div>
 
       <ProfilePage />

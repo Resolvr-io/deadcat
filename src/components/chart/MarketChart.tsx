@@ -339,7 +339,6 @@ export default function MarketChart({
   const hoverYesPct =
     hoverYesValue === null ? 0 : Math.round(hoverYesValue * 100);
   const hoverNoPct = hoverNoValue === null ? 0 : Math.round(hoverNoValue * 100);
-  const endpointOpacity = hoverActive ? "0.4" : "1";
   const showCurrentPulse = !hoverActive || hoverT > 0.985;
   const fadeX = hoverX;
   const fadeW = Math.max(0, plotRight - fadeX);
@@ -455,14 +454,23 @@ export default function MarketChart({
       const el = hoverRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
+      // Map pointer X to the full SVG coordinate space (0 → chartWidth)
+      // rather than to `plotXSpan`. The hover div overlays the entire
+      // SVG (including the right-hand axis-label gutter), so scaling
+      // to `plotXSpan` compressed the x coordinate and the marker
+      // drifted left of the cursor as it approached the plot's right
+      // edge — most visible after the readout pill flipped to the
+      // left side. Downstream `hoverX` math already clamps to
+      // `[plotLeft, plotRight]`, so the marker still parks at the
+      // last data point when the cursor enters the gutter.
       const fraction = (e.clientX - rect.left) / rect.width;
-      const svgX = plotLeft + fraction * plotXSpan;
+      const svgX = fraction * chartWidth;
       useStore.setState({
         chartHoverMarketId: market.id,
         chartHoverX: svgX,
       });
     },
-    [market.id, plotXSpan],
+    [market.id, chartWidth],
   );
 
   const handleMouseLeave = useCallback(() => {
@@ -553,6 +561,7 @@ export default function MarketChart({
             viewBox={`0 0 ${chartWidth} ${chartHeight}`}
             preserveAspectRatio="none"
             className="h-full w-full"
+            style={{ overflow: "visible" }}
             aria-hidden="true"
           >
             {/* Guide lines + y-axis labels */}
@@ -639,9 +648,10 @@ export default function MarketChart({
               showCurrentPulse &&
               pulseSvg(yesEnd.x, yesEnd.y, "chartLivePulseYes")}
 
-            {/* Endpoint markers */}
-            {hasPrice && (
-              <g opacity={endpointOpacity}>
+            {/* Endpoint markers — hidden while hovering so a ghosted
+                cat doesn't compete with the live hover marker. */}
+            {hasPrice && !hoverActive && (
+              <g>
                 {showYesLine && markerSvg(yesEnd.x, yesEnd.y, "#5eead4")}
                 {showNoLine && markerSvg(noEnd.x, noEnd.y, "#f87171", 1, true)}
               </g>

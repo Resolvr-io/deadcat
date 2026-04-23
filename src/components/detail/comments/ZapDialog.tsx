@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useEscapeKey } from "../../../hooks/useEscapeKey";
 import { useLockScroll } from "../../../hooks/useLockScroll";
@@ -19,16 +20,12 @@ export function ZapDialog({
   eventIdHex,
   open,
   onClose,
-  onZapped,
 }: {
   recipientPubkeyHex: string;
   /** Hex event id when zapping a specific comment/note; omit for profile zaps. */
   eventIdHex?: string;
   open: boolean;
   onClose: () => void;
-  /** Fires once the payment settles via the BC provider. Callers use
-   *  this to bump optimistic UI counters. */
-  onZapped?: () => void;
 }) {
   useLockScroll(open);
   useEscapeKey(open, onClose);
@@ -43,6 +40,7 @@ export function ZapDialog({
     () => relayEntries.map((r) => r.url).filter(Boolean),
     [relayEntries],
   );
+  const queryClient = useQueryClient();
 
   const [amount, setAmount] = useState<number>(defaultSats);
   const [comment, setComment] = useState<string>(defaultComment);
@@ -80,7 +78,14 @@ export function ZapDialog({
         eventIdHex,
       });
       showToast(`Zapped ${amount.toLocaleString()} sats`, "success");
-      onZapped?.();
+      // Kick the zap-count query so the UI reflects the new receipt.
+      // Receipts land on relays a few seconds after payment, so we
+      // invalidate both immediately and after a short delay to catch
+      // the late-arriving kind:9735.
+      void queryClient.invalidateQueries({ queryKey: ["commentZaps"] });
+      setTimeout(() => {
+        void queryClient.invalidateQueries({ queryKey: ["commentZaps"] });
+      }, 4000);
       onClose();
     } catch (e) {
       setError(friendlyError(String(e)));
@@ -95,7 +100,7 @@ export function ZapDialog({
     relayUrls,
     eventIdHex,
     onClose,
-    onZapped,
+    queryClient,
   ]);
 
   if (!open) return null;

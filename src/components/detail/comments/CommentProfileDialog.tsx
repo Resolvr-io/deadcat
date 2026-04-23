@@ -8,6 +8,7 @@ import { hexToNpub } from "../../../utils/crypto";
 import { generateAvatarDataUri } from "../../../utils-react/avatar";
 import { CloseButton } from "../../shared/CloseButton";
 import { showToast } from "../../shared/Toast";
+import { CommentBody } from "./CommentBody";
 import { ZapIcon } from "./icons";
 import { ZapDialog } from "./ZapDialog";
 
@@ -200,15 +201,16 @@ export function CommentProfileDialog({
               </div>
             </div>
 
-            {/* Bio */}
+            {/* Bio — routed through CommentBody so URLs render as
+                link buttons (with the external-link confirm dialog) and
+                `nostr:npub1…` / `nostr:nprofile1…` entries resolve to
+                @mention chips. */}
             {profile?.about && (
               <div className="mb-5">
                 <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
                   About
                 </p>
-                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-200">
-                  {profile.about}
-                </p>
+                <CommentBody text={profile.about} />
               </div>
             )}
 

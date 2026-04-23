@@ -168,6 +168,15 @@ fn build_comment_tags(
         vec![network_tag.to_string()],
     ));
 
+    // NIP-89 client tag — lets other Nostr clients show "posted via
+    // Deadcat.live" on the comment. Handler coordinate + relay hint
+    // are intentionally omitted until we publish a kind:31990
+    // handler; the plain two-element form is accepted everywhere.
+    tags.push(Tag::custom(
+        TagKind::custom("client"),
+        vec!["Deadcat.live".to_string()],
+    ));
+
     Ok(tags)
 }
 

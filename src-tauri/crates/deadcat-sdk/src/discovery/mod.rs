@@ -91,7 +91,7 @@ pub use comments::{
 // Re-exports: zaps (NIP-57)
 // ---------------------------------------------------------------------------
 
-pub use zaps::{ZapRequest, build_zap_request_event};
+pub use zaps::{ZapRequest, ZapSummary, build_zap_request_event, fetch_zap_summaries_for_events};
 
 // ---------------------------------------------------------------------------
 // Re-exports: pool

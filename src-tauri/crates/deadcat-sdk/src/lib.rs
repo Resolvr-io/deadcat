@@ -135,6 +135,7 @@ pub use discovery::{
     PredictionMarketCandidateIngestInput,
     StoredOrderStatus,
     ZapRequest,
+    ZapSummary,
     // Functions
     build_announcement_event,
     build_attestation_event,
@@ -149,6 +150,7 @@ pub use discovery::{
     discovered_market_to_contract_params,
     fetch_announcements,
     fetch_market_comments,
+    fetch_zap_summaries_for_events,
     parse_announcement_event,
     parse_comment_event,
     publish_event,

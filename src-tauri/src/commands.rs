@@ -1592,6 +1592,45 @@ pub async fn sign_zap_request(
     serde_json::to_string(&signed).map_err(|e| format!("failed to serialize zap request: {e}"))
 }
 
+/// Fetch NIP-57 kind:9735 zap receipts for a batch of event ids and
+/// return per-event aggregated summaries (count + total msats).
+///
+/// Read-only, identity-free: uses a standalone relay client (like
+/// `fetch_market_comments`) so signed-out / locked-wallet viewers
+/// still see accurate zap counters.
+#[tauri::command]
+pub async fn fetch_comment_zaps(
+    event_ids_hex: Vec<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<deadcat_sdk::ZapSummary>, String> {
+    if event_ids_hex.is_empty() {
+        return Ok(Vec::new());
+    }
+    let relays = {
+        let nostr_state = app.state::<NostrAppState>();
+        let list = nostr_state
+            .relay_list
+            .read()
+            .map_err(|_| "failed to read relay_list".to_string())?
+            .clone();
+        if list.is_empty() {
+            deadcat_sdk::DEFAULT_RELAYS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<Vec<_>>()
+        } else {
+            list
+        }
+    };
+    let client = nostr_sdk::Client::default();
+    for url in &relays {
+        let _ = client.add_relay(url.as_str()).await;
+    }
+    client.connect_with_timeout(Duration::from_secs(5)).await;
+    deadcat_sdk::fetch_zap_summaries_for_events(&client, &event_ids_hex, Duration::from_secs(10))
+        .await
+}
+
 // =========================================================================
 // Contract discovery commands
 // =========================================================================

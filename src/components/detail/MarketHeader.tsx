@@ -1,4 +1,3 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useStore } from "../../store";
 import type { Market } from "../../types";
 import {
@@ -11,6 +10,7 @@ import {
   getPositionContracts,
 } from "../../utils-react/market";
 import { categoryIcon } from "../layout/TopShell";
+import { MarketActionsMenu } from "./MarketActionsMenu";
 
 function stateBadge(state: number) {
   const colorMap: Record<number, string> = {
@@ -39,8 +39,6 @@ function stateBadge(state: number) {
 
 /** Above the chart: nav, title, probability, stats strip. */
 export function MarketHeaderTop({ market }: { market: Market }) {
-  const walletNetwork = useStore((s) => s.walletNetwork);
-
   const blocksLeft = market.expiryHeight - market.currentHeight;
   const closesColor =
     blocksLeft < 2880
@@ -85,35 +83,7 @@ export function MarketHeaderTop({ market }: { market: Market }) {
             {market.category}
           </span>
           {stateBadge(market.state)}
-          <span className="h-3.5 w-px bg-slate-700" />
-          <button
-            type="button"
-            onClick={() =>
-              useStore.setState({
-                nostrEventModal: true,
-                nostrEventJson: market.nostrEventJson,
-                nostrEventNevent: market.nevent,
-              })
-            }
-            className="text-xs text-slate-400 transition hover:text-slate-200"
-          >
-            Nostr Event
-          </button>
-          {market.creationTxid && (
-            <button
-              type="button"
-              onClick={() => {
-                const base =
-                  walletNetwork === "testnet"
-                    ? "https://blockstream.info/liquidtestnet"
-                    : "https://blockstream.info/liquid";
-                void openUrl(`${base}/tx/${market.creationTxid}`);
-              }}
-              className="text-xs text-slate-400 transition hover:text-slate-200"
-            >
-              Creation TX
-            </button>
-          )}
+          <MarketActionsMenu market={market} />
         </div>
       </div>
 
