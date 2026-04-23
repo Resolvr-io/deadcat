@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppNetwork,
   ChainTipResponse,
+  MarketComment,
   NostrBackupStatus,
   PaymentSwap,
   WalletNetwork,
@@ -43,4 +44,32 @@ export const tauriApi = {
   unlockWallet: (password: string) =>
     tauriInvoke<void>("unlock_wallet", { password }),
   syncWallet: () => tauriInvoke<void>("sync_wallet"),
+
+  // NIP-22 market comments
+  fetchMarketComments: (args: {
+    marketIdHex: string;
+    creatorPubkeyHex: string;
+  }) =>
+    tauriInvoke<MarketComment[]>("fetch_market_comments", {
+      marketIdHex: args.marketIdHex,
+      creatorPubkeyHex: args.creatorPubkeyHex,
+    }),
+  publishMarketComment: (args: {
+    marketIdHex: string;
+    creatorPubkeyHex: string;
+    marketEventIdHex: string;
+    body: string;
+    parentEventIdHex?: string;
+    parentAuthorPubkeyHex?: string;
+  }) =>
+    tauriInvoke<MarketComment>("publish_market_comment", {
+      marketIdHex: args.marketIdHex,
+      creatorPubkeyHex: args.creatorPubkeyHex,
+      marketEventIdHex: args.marketEventIdHex,
+      parentEventIdHex: args.parentEventIdHex ?? null,
+      parentAuthorPubkeyHex: args.parentAuthorPubkeyHex ?? null,
+      body: args.body,
+    }),
+  deleteMarketComment: (commentEventIdHex: string) =>
+    tauriInvoke<void>("delete_market_comment", { commentEventIdHex }),
 };
