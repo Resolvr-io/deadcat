@@ -17,6 +17,7 @@ import {
 } from "../../utils-react/market";
 import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
 import MarketChart from "../chart/MarketChart";
+import { CommentsSection } from "./comments/CommentsSection";
 import { MarketHeaderBottom, MarketHeaderTop } from "./MarketHeader";
 import TradingPanel from "./TradingPanel";
 
@@ -207,6 +208,10 @@ export default function DetailPage() {
 
         {/* Right column — Trading panel */}
         <TradingPanel market={market} />
+      </div>
+
+      <div className="mt-[21px]">
+        <CommentsSection market={market} />
       </div>
     </div>
   );
