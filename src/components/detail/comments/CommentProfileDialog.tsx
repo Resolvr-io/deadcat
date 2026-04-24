@@ -2,10 +2,16 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useMemo, useState } from "react";
 import { useEscapeKey } from "../../../hooks/useEscapeKey";
 import { useLockScroll } from "../../../hooks/useLockScroll";
+import {
+  useFollowPubkey,
+  useIsFollowing,
+  useUnfollowPubkey,
+} from "../../../queries/useFollows";
 import { useNostrProfileByPubkey } from "../../../queries/useNostrProfileByPubkey";
 import { useStore } from "../../../store";
 import { hexToNpub } from "../../../utils/crypto";
 import { generateAvatarDataUri } from "../../../utils-react/avatar";
+import { friendlyError } from "../../../utils-react/friendly-error";
 import { CloseButton } from "../../shared/CloseButton";
 import { showToast } from "../../shared/Toast";
 import { CommentBody } from "./CommentBody";
@@ -15,8 +21,8 @@ import { ZapDialog } from "./ZapDialog";
 /**
  * Read-only Nostr profile view for a comment author. Shows banner,
  * avatar, display name, NIP-05, npub, bio, website, and lud16. Follow
- * and Mute are disabled placeholders until NIP-02 / NIP-51 publish
- * plumbing lands in the backend.
+ * toggles the viewer's NIP-02 kind:3 contact list; Mute remains a
+ * placeholder until NIP-51 wiring lands.
  */
 export function CommentProfileDialog({
   pubkeyHex,
@@ -33,6 +39,22 @@ export function CommentProfileDialog({
   const sessionPubkey = useStore((s) => s.nostrPubkey);
   const isSelf = !!sessionPubkey && sessionPubkey === pubkeyHex;
   const [zapOpen, setZapOpen] = useState(false);
+
+  const isFollowing = useIsFollowing(pubkeyHex);
+  const followMutation = useFollowPubkey();
+  const unfollowMutation = useUnfollowPubkey();
+  const followPending = followMutation.isPending || unfollowMutation.isPending;
+  const handleToggleFollow = () => {
+    if (!sessionPubkey || !pubkeyHex) return;
+    const target = pubkeyHex;
+    const mutation = isFollowing ? unfollowMutation : followMutation;
+    mutation.mutate(target, {
+      onSuccess: () => {
+        showToast(isFollowing ? "Unfollowed" : "Followed", "success");
+      },
+      onError: (e) => showToast(friendlyError(String(e)), "error"),
+    });
+  };
 
   const { data: profile, isLoading } = useNostrProfileByPubkey(
     open ? pubkeyHex : null,
@@ -93,9 +115,8 @@ export function CommentProfileDialog({
                   <p className="min-w-0 flex-1 truncate text-lg font-medium text-slate-100">
                     {displayName}
                   </p>
-                  {/* Follow + mute — placeholders until NIP-02 / NIP-51
-                      publish plumbing lands. Hidden on your own profile
-                      since you can't follow or mute yourself. */}
+                  {/* Action row — hidden on your own profile since
+                      none of the actions apply to self. */}
                   {!isSelf && (
                     <div className="flex shrink-0 items-center gap-1.5">
                       {/* Zap requires a session key to sign the
@@ -119,9 +140,21 @@ export function CommentProfileDialog({
                       </button>
                       <button
                         type="button"
-                        disabled
-                        title="Follow coming soon"
-                        className="flex h-8 w-8 cursor-default items-center justify-center rounded-full border border-slate-700 bg-slate-900/60 text-slate-400 opacity-60"
+                        onClick={handleToggleFollow}
+                        disabled={!sessionPubkey || followPending}
+                        title={
+                          !sessionPubkey
+                            ? "Sign in to follow"
+                            : isFollowing
+                              ? "Unfollow"
+                              : "Follow"
+                        }
+                        aria-pressed={isFollowing}
+                        className={`flex h-8 w-8 items-center justify-center rounded-full border transition disabled:cursor-default disabled:opacity-60 ${
+                          isFollowing
+                            ? "border-emerald-400/40 bg-emerald-400/15 text-emerald-300 hover:border-emerald-400/60 hover:bg-emerald-400/20"
+                            : "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-emerald-400/40 hover:bg-emerald-400/10 hover:text-emerald-300"
+                        }`}
                       >
                         <svg
                           aria-hidden="true"
@@ -135,8 +168,14 @@ export function CommentProfileDialog({
                         >
                           <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
                           <circle cx="9" cy="7" r="4" />
-                          <path d="M19 8v6" />
-                          <path d="M22 11h-6" />
+                          {isFollowing ? (
+                            <path d="m17 11 2 2 4-4" />
+                          ) : (
+                            <>
+                              <path d="M19 8v6" />
+                              <path d="M22 11h-6" />
+                            </>
+                          )}
                         </svg>
                       </button>
                       <button
