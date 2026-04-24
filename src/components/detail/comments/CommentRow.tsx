@@ -122,23 +122,15 @@ export function CommentRow({
         <div className="mt-1">
           <CommentBody text={comment.content} />
         </div>
-        {/* Reaction row renders above the action row so the emoji
-            pills read naturally as part of the comment body. Hidden
-            when there are no reactions yet and the viewer can't add
-            one (signed-out readers see an empty row until someone
-            reacts). */}
-        {(reactions.length > 0 ||
-          (sessionPubkey && sessionPubkey !== comment.author_pubkey)) && (
-          <CommentReactions
-            commentEventId={comment.id}
-            commentAuthorPubkey={comment.author_pubkey}
-            stats={reactions}
-          />
-        )}
         <div className="mt-2 flex items-center gap-1 text-slate-500">
           <PlaceholderAction
             icon={<ReplyIcon className="h-[18px] w-[18px]" />}
             title="Replies coming soon"
+          />
+          <CommentReactions
+            commentEventId={comment.id}
+            commentAuthorPubkey={comment.author_pubkey}
+            stats={reactions}
           />
           {(() => {
             // Show total sats when zaps exist (matches Primal / Jumble
