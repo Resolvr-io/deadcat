@@ -1819,6 +1819,7 @@ pub fn run() {
             commands::connect_nip46_bunker,
             commands::disconnect_nip46,
             commands::get_nip46_status,
+            commands::get_nostr_key_storage,
             commands::discover_contracts,
             commands::publish_contract,
             commands::oracle_attest,

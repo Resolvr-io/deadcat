@@ -850,6 +850,40 @@ pub async fn disconnect_nip46(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// What the UI displays about where the user's Nostr key is stored.
+/// Combines `discovery::NostrKeyStorage` with a NIP-46 check so the
+/// frontend doesn't have to reconcile two separate queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NostrKeyStorageStatus {
+    Keychain,
+    LegacyFile,
+    Unavailable,
+    RemoteSigner,
+    None,
+}
+
+/// Report where the Nostr identity key currently lives. Drives the
+/// Settings-panel storage label + "Retry keychain access" button.
+#[tauri::command]
+pub async fn get_nostr_key_storage(app: tauri::AppHandle) -> Result<NostrKeyStorageStatus, String> {
+    // Remote signer trumps local storage — if a NIP-46 connection
+    // owns the identity, there's no local secret to report on.
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+    if crate::nip46::load_connection(&app_data_dir).is_some() {
+        return Ok(NostrKeyStorageStatus::RemoteSigner);
+    }
+    Ok(match discovery::nostr_key_storage(&app_data_dir) {
+        discovery::NostrKeyStorage::Keychain => NostrKeyStorageStatus::Keychain,
+        discovery::NostrKeyStorage::LegacyFile => NostrKeyStorageStatus::LegacyFile,
+        discovery::NostrKeyStorage::Unavailable => NostrKeyStorageStatus::Unavailable,
+        discovery::NostrKeyStorage::None => NostrKeyStorageStatus::None,
+    })
+}
+
 /// Get the status of the NIP-46 connection, if any.
 #[tauri::command]
 pub async fn get_nip46_status(

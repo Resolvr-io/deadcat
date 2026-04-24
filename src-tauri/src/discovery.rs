@@ -582,6 +582,67 @@ pub fn generate_keys(_app_data_dir: &std::path::Path) -> Result<Keys, String> {
     Ok(keys)
 }
 
+/// Where the local Nostr secret is currently stored. Surfaces to the
+/// Settings UI so an upgrading user can see the migration actually
+/// moved their key off disk. `RemoteSigner` is filled in by the
+/// command-layer wrapper when a NIP-46 connection owns the identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NostrKeyStorage {
+    /// Key is in the platform keychain and readable.
+    Keychain,
+    /// Legacy plaintext file still on disk — normally only seen
+    /// when the keychain write failed during migration. The UI
+    /// should flag this as insecure.
+    LegacyFile,
+    /// A keychain entry exists but we couldn't read it — user
+    /// denied the access prompt, the keyring daemon is locked, or
+    /// platform auth was cancelled. Recoverable: the UI can offer
+    /// a retry that re-invokes `init_nostr_identity`, which will
+    /// re-trigger the platform prompt.
+    Unavailable,
+    /// No local identity — either a brand-new install or the
+    /// identity lives with a remote NIP-46 signer (the command
+    /// wrapper distinguishes those two).
+    None,
+}
+
+/// Determine whether the local Nostr secret lives in the keychain,
+/// in the legacy plaintext file, is blocked by platform auth, or
+/// doesn't exist at all. Never errors — any keychain-call failure is
+/// mapped to a status variant so callers can render a label instead
+/// of handling a `Result`.
+pub fn nostr_key_storage(app_data_dir: &std::path::Path) -> NostrKeyStorage {
+    let entry = match keyring_entry() {
+        Ok(e) => e,
+        Err(e) => {
+            // Can't even construct an entry (platform binding broken?).
+            // Treat the same as an access failure so the UI can surface
+            // a retry affordance instead of silently reporting "none".
+            log::warn!("keychain entry creation failed: {e}");
+            return NostrKeyStorage::Unavailable;
+        }
+    };
+    match entry.get_password() {
+        Ok(_) => return NostrKeyStorage::Keychain,
+        Err(keyring::Error::NoEntry) => {
+            // Fall through to legacy-file + none handling.
+        }
+        Err(e) => {
+            // Every other keyring::Error variant indicates the entry
+            // *may* exist but we can't read it — platform auth, locked
+            // daemon, ambiguous entry match, etc. Report as unavailable
+            // so the UI can offer retry.
+            log::warn!("keychain read failed: {e}");
+            return NostrKeyStorage::Unavailable;
+        }
+    }
+    if app_data_dir.join(LEGACY_KEY_FILE).exists() {
+        return NostrKeyStorage::LegacyFile;
+    }
+    NostrKeyStorage::None
+}
+
 /// Remove the stored Nostr keypair from the keychain and wipe any
 /// lingering legacy plaintext file. Idempotent — missing entries
 /// aren't treated as errors because delete is often best-effort
