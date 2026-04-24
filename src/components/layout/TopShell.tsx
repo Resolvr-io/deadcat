@@ -225,7 +225,20 @@ function LogoutModal() {
       logoutBackedUp: false,
       profilePicError: false,
     });
-    localStorage.removeItem("deadcat_tx_labels");
+    // Purge every deadcat-owned localStorage entry on logout so the
+    // next user doesn't inherit the previous account's prefs (zap
+    // defaults, tx labels, transient backup flags, etc.). Cross-
+    // session prefs we want to survive live on relays as NIP-78
+    // kind:30078 events, not localStorage. Exempt any future
+    // device-level keys by name below.
+    const KEEP: ReadonlySet<string> = new Set();
+    for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (!key.startsWith("deadcat:") && !key.startsWith("deadcat_")) continue;
+      if (KEEP.has(key)) continue;
+      localStorage.removeItem(key);
+    }
     window.location.reload();
   }, []);
 

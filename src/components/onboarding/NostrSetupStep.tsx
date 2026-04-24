@@ -359,7 +359,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const handleImport = useCallback(async () => {
     const nsecInput = onboardingNostrNsec.trim();
     if (!nsecInput) {
-      useStore.setState({ onboardingError: "Paste an nsec to import." });
+      useStore.setState({ onboardingError: "Paste a secret key to import." });
       return;
     }
     if (!nsecInput.startsWith("nsec1")) {
@@ -448,7 +448,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
     const npub = pendingNpub || nostrNpub || "";
     if (npub) {
       void navigator.clipboard.writeText(npub);
-      showToast("Copied npub to clipboard");
+      showToast("Copied public key to clipboard");
     }
   }, [pendingNpub, nostrNpub]);
 
@@ -461,7 +461,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
   const handleCopyNsec = useCallback(() => {
     if (generatedNsec) {
       void navigator.clipboard.writeText(generatedNsec);
-      showToast("Copied nsec to clipboard");
+      showToast("Copied secret key to clipboard");
     }
   }, [generatedNsec]);
 
@@ -922,7 +922,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             <div className="border-t border-slate-800 px-4 py-3 space-y-3">
               <div>
                 <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500 mb-1">
-                  npub &mdash; public key
+                  Public key (npub)
                 </p>
                 <div className="flex items-start justify-between gap-2">
                   <p className="break-all mono text-xs text-slate-400">
@@ -939,7 +939,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               </div>
               <div>
                 <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500 mb-1">
-                  nsec &mdash; secret key
+                  Secret key (nsec)
                 </p>
                 {nsecRevealed ? (
                   <>
@@ -956,7 +956,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                       </button>
                     </div>
                     <p className="mt-2 text-[10px] text-amber-300/80">
-                      Never share your nsec with anyone.
+                      Never share your secret key with anyone.
                     </p>
                   </>
                 ) : (
@@ -1164,7 +1164,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
       ? "Connected to your remote signer via NIP-46. Your keys remain on the external device."
       : isImport
         ? "Your Nostr identity has been imported. Confirm your details below before continuing."
-        : "Your nsec is the only way to prove ownership of markets you create. Store it somewhere safe \u2014 it cannot be recovered if lost.";
+        : "Your secret key is the only way to prove ownership of markets you create. Store it somewhere safe \u2014 it cannot be recovered if lost.";
 
     const truncatedNpub =
       npubDisplay.length > 20
@@ -1186,8 +1186,8 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
         {!isImport && (
           <div className="mt-5 rounded-lg border border-amber-700/30 bg-amber-950/20 px-4 py-3">
             <p className="text-xs text-amber-300/90 leading-relaxed">
-              Never share your nsec with anyone. Anyone who has it can act as
-              you on Nostr.
+              Never share your secret key with anyone. Anyone who has it can act
+              as you on Nostr.
             </p>
           </div>
         )}
@@ -1236,7 +1236,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               <div className="py-4 flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500 mb-1">
-                    npub &mdash; public key
+                    Public key (npub)
                   </p>
                   <p className="mono truncate text-xs text-slate-600">
                     {npubDisplay}
@@ -1253,7 +1253,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               <div className="py-4 flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500 mb-1">
-                    nsec &mdash; secret key
+                    Secret key (nsec)
                   </p>
                   {nsecRevealed ? (
                     <p className="mono truncate text-xs text-rose-300">
@@ -1341,8 +1341,8 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           Import Nostr identity
         </h2>
         <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-          Paste your existing secret key (nsec) to restore your identity and
-          access markets you&apos;ve previously created.
+          Paste your secret key (nsec) to restore your identity and access
+          markets you&apos;ve previously created.
         </p>
         {errorHtml && <div className="mt-5">{errorHtml}</div>}
         <div className="mt-8 space-y-4">
@@ -1351,7 +1351,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               htmlFor="nostr-secret-key"
               className="text-xs font-medium text-slate-400 uppercase tracking-wide"
             >
-              Secret Key
+              Secret key (nsec)
             </label>
             <input
               id="nostr-secret-key"
@@ -1440,7 +1440,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             onClick={() => setMode("restore")}
           />
           <RestoreOption
-            title="Nostr key (nsec)"
+            title="Secret key (nsec)"
             description="Import your identity; a new wallet will be created."
             onClick={() => setMode("restore-nsec")}
           />
@@ -1534,10 +1534,10 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
           }}
         />
         <h2 className="text-2xl font-semibold text-white">
-          Restore from Nostr key
+          Restore from secret key
         </h2>
         <p className="mt-3 text-sm text-slate-400 leading-relaxed">
-          Paste your Nostr private key, then choose whether to restore an
+          Paste your secret key (nsec), then choose whether to restore an
           existing Liquid wallet or create a new one.
         </p>
         {errorHtml && <div className="mt-4">{errorHtml}</div>}
@@ -1548,7 +1548,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
               htmlFor="restore-nsec-input"
               className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
             >
-              Nostr Private Key
+              Secret key (nsec)
             </label>
             <input
               id="restore-nsec-input"
@@ -1859,7 +1859,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
             </div>
             <p className="mt-1.5 text-xs text-slate-600">
               {restoringIdentity
-                ? "We'll import your existing identity from its nsec."
+                ? "We'll import your existing identity from its secret key."
                 : "A new Nostr identity will be generated for you."}
             </p>
           </div>
@@ -1870,7 +1870,7 @@ export default function NostrSetupStep({ stepIndicator }: NostrSetupStepProps) {
                 htmlFor="restore-mnemonic-nsec"
                 className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400"
               >
-                Nostr Private Key
+                Secret key (nsec)
               </label>
               <input
                 id="restore-mnemonic-nsec"

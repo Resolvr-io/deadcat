@@ -69,7 +69,7 @@ export function ZapDialog({
     setZapping(true);
     setError(null);
     try {
-      await sendZap({
+      const result = await sendZap({
         recipientProfile: profile,
         recipientPubkeyHex,
         amountSats: amount,
@@ -77,15 +77,27 @@ export function ZapDialog({
         relays: relayUrls,
         eventIdHex,
       });
-      showToast(`Zapped ${amount.toLocaleString()} sats`, "success");
+      // Payment-modal cancel can't distinguish between truly-cancelled
+      // and paid-in-an-external-wallet — show a non-committal message
+      // and rely on kind:9735 aggregation to confirm. Invalidate a few
+      // times to catch the late-arriving receipt.
+      if (result.pending) {
+        showToast("If you paid, your zap will appear shortly.", "info");
+      } else {
+        showToast(`Zapped ${amount.toLocaleString()} sats`, "success");
+      }
       // Kick the zap-count query so the UI reflects the new receipt.
       // Receipts land on relays a few seconds after payment, so we
-      // invalidate both immediately and after a short delay to catch
-      // the late-arriving kind:9735.
+      // invalidate repeatedly to catch late-arriving kind:9735.
       void queryClient.invalidateQueries({ queryKey: ["commentZaps"] });
       setTimeout(() => {
         void queryClient.invalidateQueries({ queryKey: ["commentZaps"] });
       }, 4000);
+      if (result.pending) {
+        setTimeout(() => {
+          void queryClient.invalidateQueries({ queryKey: ["commentZaps"] });
+        }, 15000);
+      }
       onClose();
     } catch (e) {
       setError(friendlyError(String(e)));
