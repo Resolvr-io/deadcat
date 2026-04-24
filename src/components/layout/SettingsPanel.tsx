@@ -742,6 +742,18 @@ function WalletSection() {
                     walletData: null,
                     walletDeletePrompt: false,
                     walletDeleteConfirm: "",
+                    // Reset onboarding modal state so the next "Set
+                    // up wallet" lands on step 1 regardless of which
+                    // close path the prior session took. Defensive:
+                    // `finishOnboarding` now resets these too, but a
+                    // skipped reset elsewhere shouldn't be able to
+                    // strand the user on the password screen.
+                    onboardingStep: null,
+                    onboardingWalletMode: "create",
+                    onboardingWalletPasswordStep: false,
+                    onboardingWalletPassword: "",
+                    onboardingWalletPasswordConfirm: "",
+                    onboardingWalletMnemonic: "",
                   });
                 } catch {
                   /* ignore */

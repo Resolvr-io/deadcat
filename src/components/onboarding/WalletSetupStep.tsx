@@ -185,7 +185,16 @@ async function finishOnboarding(
     onboardingSelectedWalletDTag: "",
     onboardingPendingPubkey: "",
     onboardingPendingNpub: "",
+    onboardingWalletMode: "create",
+    // Reset the step-1-vs-step-2 flag so a later wallet-delete +
+    // re-open of the setup modal lands on the create/restore choice
+    // screen. `OnboardingOverlay.handleClose` already does this, but
+    // success paths go through `finishOnboarding` instead — without
+    // this line the flag stays `true` from the user's last session
+    // and the next setup opens straight on the password screen.
+    onboardingWalletPasswordStep: false,
     onboardingWalletPassword: "",
+    onboardingWalletPasswordConfirm: "",
     onboardingWalletMnemonic: "",
     onboardingNostrNsec: "",
     onboardingNostrGeneratedNsec: "",
