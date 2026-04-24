@@ -541,7 +541,10 @@ mod tests {
         assert_eq!(parsed.kind, NotificationKind::Reply);
         assert_eq!(parsed.event_id.as_str(), reply_event_id.as_str());
         assert_eq!(parsed.comment_id.as_deref(), Some(reply_event_id.as_str()));
-        assert_ne!(parsed.comment_id.as_deref(), Some(parent_comment_id.as_str()));
+        assert_ne!(
+            parsed.comment_id.as_deref(),
+            Some(parent_comment_id.as_str())
+        );
         assert_eq!(parsed.market_id.as_deref(), Some(market_id.as_str()));
         assert_eq!(
             parsed.market_creator_pubkey.as_deref(),
