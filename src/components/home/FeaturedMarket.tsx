@@ -71,6 +71,13 @@ function StateBadge({ state }: { state: 0 | 1 | 2 | 3 | 4 }) {
   );
 }
 
+/** Grace window after a manual prev/next click before auto-advance
+ *  is allowed to tick again. Long enough for a user to read the card
+ *  they just landed on without the rotation yanking them away; short
+ *  enough that an inattentive visitor still sees the rotation resume
+ *  on its own. */
+const MANUAL_ADVANCE_PAUSE_MS = 12_000;
+
 // ── Shared nav arrows ────────────────────────────────────────────────
 function CarouselNav({
   index,
@@ -131,12 +138,14 @@ export default function FeaturedMarket({
   const handlePrev = useCallback(() => {
     useStore.setState({
       trendingIndex: (trendingIndex - 1 + totalItems) % totalItems,
+      trendingAutoAdvancePausedUntil: Date.now() + MANUAL_ADVANCE_PAUSE_MS,
     });
   }, [trendingIndex, totalItems]);
 
   const handleNext = useCallback(() => {
     useStore.setState({
       trendingIndex: (trendingIndex + 1) % totalItems,
+      trendingAutoAdvancePausedUntil: Date.now() + MANUAL_ADVANCE_PAUSE_MS,
     });
   }, [trendingIndex, totalItems]);
 
@@ -164,7 +173,7 @@ export default function FeaturedMarket({
     ) : null;
 
   return (
-    <div className="flex h-[520px] flex-col rounded-xl bg-slate-950/50 p-5 lg:p-8">
+    <div className="flex h-[520px] flex-col overflow-hidden rounded-xl bg-slate-950/50 p-5 lg:p-8">
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-xs">
           <span className="text-slate-500">{market.category}</span>
@@ -183,43 +192,56 @@ export default function FeaturedMarket({
         />
       </div>
 
-      <button
-        type="button"
-        onClick={handleOpenMarket}
-        className="mb-4 block text-left"
+      {/* Everything below the header slides on advance. Keyed on the
+          market id so a new featured market remounts this subtree and
+          the CSS keyframe replays; the header row above stays in
+          place so the nav arrows never jump. */}
+      <div
+        key={market.marketId}
+        className="animate-carousel-slide flex min-h-0 flex-1 flex-col"
       >
-        <FittedTitle className="phi-title font-medium leading-tight text-slate-100 transition hover:text-white">
-          {market.question}
-        </FittedTitle>
-      </button>
+        <button
+          type="button"
+          onClick={handleOpenMarket}
+          className="mb-4 block text-left"
+        >
+          <FittedTitle className="phi-title font-medium leading-tight text-slate-100 transition hover:text-white">
+            {market.question}
+          </FittedTitle>
+        </button>
 
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        {resolvedActions ?? (
-          <>
-            <button
-              type="button"
-              onClick={handleBuyYes}
-              className="w-32 rounded-full bg-emerald-500 px-4 py-2 text-center text-base font-semibold text-white transition hover:bg-emerald-400"
-            >
-              {featuredYesPct != null ? `Yes ${featuredYesPct}%` : "Buy Yes"}
-            </button>
-            <button
-              type="button"
-              onClick={handleBuyNo}
-              className="w-32 rounded-full bg-rose-500 px-4 py-2 text-center text-base font-semibold text-white transition hover:bg-rose-400"
-            >
-              {featuredNoPct != null ? `No ${featuredNoPct}%` : "Buy No"}
-            </button>
-          </>
-        )}
-        <span className="text-xs text-slate-500">
-          {formatVolumeBtc(market.volumeBtc)} vol · {timeLeft} ·{" "}
-          <TrendIndicator change={market.change24h} />
-        </span>
-      </div>
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          {resolvedActions ?? (
+            <>
+              <button
+                type="button"
+                onClick={handleBuyYes}
+                className="w-32 rounded-full bg-emerald-500 px-4 py-2 text-center text-base font-semibold text-white transition hover:bg-emerald-400"
+              >
+                {featuredYesPct != null ? `Yes ${featuredYesPct}%` : "Buy Yes"}
+              </button>
+              <button
+                type="button"
+                onClick={handleBuyNo}
+                className="w-32 rounded-full bg-rose-500 px-4 py-2 text-center text-base font-semibold text-white transition hover:bg-rose-400"
+              >
+                {featuredNoPct != null ? `No ${featuredNoPct}%` : "Buy No"}
+              </button>
+            </>
+          )}
+          <span className="text-xs text-slate-500">
+            {formatVolumeBtc(market.volumeBtc)} vol · {timeLeft} ·{" "}
+            <TrendIndicator change={market.change24h} />
+          </span>
+        </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
-        <MarketChart market={market} priceHistory={priceHistory} mode="home" />
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <MarketChart
+            market={market}
+            priceHistory={priceHistory}
+            mode="home"
+          />
+        </div>
       </div>
     </div>
   );
@@ -245,12 +267,14 @@ export function FeaturedGroupCard({
   const handlePrev = useCallback(() => {
     useStore.setState({
       trendingIndex: (trendingIndex - 1 + totalItems) % totalItems,
+      trendingAutoAdvancePausedUntil: Date.now() + MANUAL_ADVANCE_PAUSE_MS,
     });
   }, [trendingIndex, totalItems]);
 
   const handleNext = useCallback(() => {
     useStore.setState({
       trendingIndex: (trendingIndex + 1) % totalItems,
+      trendingAutoAdvancePausedUntil: Date.now() + MANUAL_ADVANCE_PAUSE_MS,
     });
   }, [trendingIndex, totalItems]);
 
@@ -263,8 +287,8 @@ export function FeaturedGroupCard({
   }, [group.id]);
 
   return (
-    <div className="flex h-[520px] flex-col rounded-xl bg-slate-950/50 p-5 lg:p-8">
-      {/* Header */}
+    <div className="flex h-[520px] flex-col overflow-hidden rounded-xl bg-slate-950/50 p-5 lg:p-8">
+      {/* Header — stays put on advance so the nav arrows are stable. */}
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-xs">
           <span className="text-slate-500">{group.category}</span>
@@ -282,63 +306,69 @@ export function FeaturedGroupCard({
         />
       </div>
 
-      {/* Title */}
-      <button
-        type="button"
-        onClick={handleOpen}
-        className="mb-5 block text-left"
+      {/* Sliding body — see FeaturedMarket for the same pattern. */}
+      <div
+        key={group.id}
+        className="animate-carousel-slide flex min-h-0 flex-1 flex-col"
       >
-        <FittedTitle className="phi-title font-medium leading-tight text-slate-100 transition hover:text-white">
-          {group.title}
-        </FittedTitle>
-      </button>
+        {/* Title */}
+        <button
+          type="button"
+          onClick={handleOpen}
+          className="mb-5 block text-left"
+        >
+          <FittedTitle className="phi-title font-medium leading-tight text-slate-100 transition hover:text-white">
+            {group.title}
+          </FittedTitle>
+        </button>
 
-      {/* Two-column: outcomes left, chart right */}
-      <div className="grid min-h-0 flex-1 grid-cols-[0.6fr_1.618fr] gap-6">
-        {/* Outcomes list */}
-        <div className="space-y-2.5">
-          {topOutcomes.map((outcome, i) => {
-            const pct = Math.round(outcome.yesPrice * 100);
-            const color = OUTCOME_COLORS[i % OUTCOME_COLORS.length];
-            return (
-              <div
-                key={outcome.id}
-                className="flex items-baseline justify-between gap-2"
-              >
-                <div className="flex min-w-0 items-center gap-2">
-                  <span
-                    className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: color }}
-                  />
-                  <span className="truncate text-sm text-slate-300">
-                    {outcome.name}
+        {/* Two-column: outcomes left, chart right */}
+        <div className="grid min-h-0 flex-1 grid-cols-[0.6fr_1.618fr] gap-6">
+          {/* Outcomes list */}
+          <div className="space-y-2.5">
+            {topOutcomes.map((outcome, i) => {
+              const pct = Math.round(outcome.yesPrice * 100);
+              const color = OUTCOME_COLORS[i % OUTCOME_COLORS.length];
+              return (
+                <div
+                  key={outcome.id}
+                  className="flex items-baseline justify-between gap-2"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: color }}
+                    />
+                    <span className="truncate text-sm text-slate-300">
+                      {outcome.name}
+                    </span>
+                  </div>
+                  <span className="shrink-0 text-sm font-semibold text-slate-100">
+                    {pct < 1 ? "<1" : pct}%
                   </span>
                 </div>
-                <span className="shrink-0 text-sm font-semibold text-slate-100">
-                  {pct < 1 ? "<1" : pct}%
-                </span>
-              </div>
-            );
-          })}
-          {group.outcomes.length > 6 && (
-            <p className="pl-4 text-xs text-slate-600">
-              +{group.outcomes.length - 6} more
-            </p>
-          )}
-          {/* Footer meta */}
-          <div className="pt-2 text-xs text-slate-500">
-            {formatVolumeBtc(group.totalVolumeBtc)} vol · {timeLeft}
+              );
+            })}
+            {group.outcomes.length > 6 && (
+              <p className="pl-4 text-xs text-slate-600">
+                +{group.outcomes.length - 6} more
+              </p>
+            )}
+            {/* Footer meta */}
+            <div className="pt-2 text-xs text-slate-500">
+              {formatVolumeBtc(group.totalVolumeBtc)} vol · {timeLeft}
+            </div>
           </div>
-        </div>
 
-        {/* Chart — fills column height */}
-        <GroupChart
-          group={group}
-          highlightedOutcomeId={null}
-          showLegend={false}
-          showControls={false}
-          className="h-full"
-        />
+          {/* Chart — fills column height */}
+          <GroupChart
+            group={group}
+            highlightedOutcomeId={null}
+            showLegend={false}
+            showControls={false}
+            className="h-full"
+          />
+        </div>
       </div>
     </div>
   );

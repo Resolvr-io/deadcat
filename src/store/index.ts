@@ -49,6 +49,11 @@ export interface NavigationSlice {
   categoryFilter: "all" | "live" | "ending-soon";
   search: string;
   trendingIndex: number;
+  /** Unix ms. While `Date.now()` is below this value the trending-
+   *  carousel auto-advance skips its tick. Set whenever the user
+   *  clicks the prev/next arrows so manual browsing isn't yanked
+   *  away mid-read. Default 0 = auto-advance runs normally. */
+  trendingAutoAdvancePausedUntil: number;
   userMenuOpen: boolean;
   searchOpen: boolean;
   helpOpen: boolean;
@@ -319,6 +324,7 @@ export const useStore = create<StoreState>()(() => ({
   categoryFilter: "all",
   search: "",
   trendingIndex: 0,
+  trendingAutoAdvancePausedUntil: 0,
   userMenuOpen: false,
   searchOpen: false,
   helpOpen: false,
