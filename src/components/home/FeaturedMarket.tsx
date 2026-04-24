@@ -76,7 +76,7 @@ function StateBadge({ state }: { state: 0 | 1 | 2 | 3 | 4 }) {
  *  they just landed on without the rotation yanking them away; short
  *  enough that an inattentive visitor still sees the rotation resume
  *  on its own. */
-const MANUAL_ADVANCE_PAUSE_MS = 20_000;
+const MANUAL_ADVANCE_PAUSE_MS = 12_000;
 
 // ── Shared nav arrows ────────────────────────────────────────────────
 function CarouselNav({
