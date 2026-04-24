@@ -117,23 +117,20 @@ export function CommentRow({
   if (comment.deleted) {
     const hasTimestamp = comment.created_at > 0;
     return (
-      <div className="flex items-start gap-3 py-3 opacity-60">
+      <div className="flex items-center gap-3 py-3 opacity-60">
         <div
           aria-hidden="true"
           className="h-8 w-8 shrink-0 rounded-full border border-slate-800 bg-slate-900"
         />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
-            <span className="text-sm font-semibold italic text-slate-500">
-              [deleted]
+        <div className="flex min-w-0 flex-1 items-baseline gap-2">
+          <span className="text-sm font-semibold italic text-slate-500">
+            [deleted]
+          </span>
+          {hasTimestamp && (
+            <span className="shrink-0 text-xs text-slate-600" title={tsIso}>
+              {tsRel}
             </span>
-            {hasTimestamp && (
-              <span className="shrink-0 text-xs text-slate-600" title={tsIso}>
-                {tsRel}
-              </span>
-            )}
-          </div>
-          <p className="mt-1 text-sm italic text-slate-600">[deleted]</p>
+          )}
         </div>
       </div>
     );
