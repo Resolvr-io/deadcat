@@ -17,6 +17,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Filename under `app_data_dir/<network>/` holding the persisted
@@ -215,6 +216,186 @@ impl NotificationStore {
             }
             Err(e) => log::warn!("notifications: failed to serialize: {e}"),
         }
+    }
+}
+
+// ============================================================================
+// Parsing
+// ============================================================================
+
+/// Soft cap on `body_preview` length — the full comment body is
+/// typically already bounded to 4096 bytes but we only need a taste
+/// for the notification row.
+const PREVIEW_MAX_CHARS: usize = 140;
+
+fn tag_value<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
+    event.tags.iter().find_map(|tag| {
+        let fields = tag.as_slice();
+        if fields.len() >= 2 && fields[0] == key {
+            Some(fields[1].as_str())
+        } else {
+            None
+        }
+    })
+}
+
+fn lowercase_p_targets_me(event: &Event, my_pubkey_hex: &str) -> bool {
+    event.tags.iter().any(|tag| {
+        let fields = tag.as_slice();
+        fields.len() >= 2 && fields[0] == "p" && fields[1].eq_ignore_ascii_case(my_pubkey_hex)
+    })
+}
+
+/// Market `id:creator` pair recovered from the comment's uppercase
+/// `A` coordinate. Format in NIP-22 land: `30078:<creator>:<id>`.
+fn parse_market_coordinate(coord: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = coord.splitn(3, ':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    if parts[0] != "30078" {
+        return None;
+    }
+    Some((parts[2].to_string(), parts[1].to_string()))
+}
+
+fn truncated_preview(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.chars().count() <= PREVIEW_MAX_CHARS {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(PREVIEW_MAX_CHARS).collect();
+    out.push('…');
+    out
+}
+
+/// Pull the declared amount (msats) from a kind:9735 receipt by
+/// parsing the embedded kind:9734 request JSON in the `description`
+/// tag. Same helper the zap-aggregation path uses — duplicated here
+/// to keep the notifications module self-contained.
+fn zap_receipt_amount_msats(event: &Event) -> Option<u64> {
+    let description = tag_value(event, "description")?;
+    let parsed: serde_json::Value = serde_json::from_str(description).ok()?;
+    let tags = parsed.get("tags")?.as_array()?;
+    for tag in tags {
+        let arr = tag.as_array()?;
+        if arr.len() >= 2 && arr[0].as_str() == Some("amount") {
+            if let Some(s) = arr[1].as_str() {
+                return s.parse::<u64>().ok();
+            }
+        }
+    }
+    None
+}
+
+/// Extract the `zap request` event (kind:9734) author + content from
+/// a kind:9735 receipt's `description` tag. The author is the zapper,
+/// the content is the optional zap message.
+fn zap_receipt_sender(event: &Event) -> Option<(String, Option<String>)> {
+    let description = tag_value(event, "description")?;
+    let parsed: serde_json::Value = serde_json::from_str(description).ok()?;
+    let pubkey = parsed.get("pubkey")?.as_str()?.to_string();
+    let content = parsed
+        .get("content")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    Some((pubkey, content))
+}
+
+/// Turn a raw inbound Nostr event into a notification record. Returns
+/// `None` when the event isn't notification-worthy — either it's the
+/// viewer's own event, it doesn't actually target them, or its shape
+/// doesn't match a supported kind.
+pub fn parse_notification_event(event: &Event, my_pubkey_hex: &str) -> Option<NotificationRecord> {
+    // Self-authored events never generate notifications — you don't
+    // need to be told about your own reply / reaction / zap receipt.
+    if event.pubkey.to_hex().eq_ignore_ascii_case(my_pubkey_hex) {
+        return None;
+    }
+
+    let market = tag_value(event, "A")
+        .and_then(parse_market_coordinate)
+        .map(|(id, creator)| (Some(id), Some(creator)));
+    let (market_id, market_creator_pubkey) = market.unwrap_or((None, None));
+
+    match event.kind.as_u16() {
+        1111 => {
+            // Only treat as a Reply when the lowercase `p` tag
+            // matches us — that's the NIP-22 signal that the event
+            // is a direct reply to our comment. The filter-level
+            // `#p: [me]` also matches uppercase-P hits (we're the
+            // market creator); those get filtered out here so we
+            // don't notify on every comment on markets we created.
+            // Mention-in-body detection is a follow-up.
+            if !lowercase_p_targets_me(event, my_pubkey_hex) {
+                return None;
+            }
+            // The parent comment id (the event of ours that was
+            // replied to) lives in the lowercase `e` tag.
+            let comment_id = tag_value(event, "e").map(String::from);
+            Some(NotificationRecord {
+                event_id: event.id.to_hex(),
+                kind: NotificationKind::Reply,
+                author_pubkey: event.pubkey.to_hex(),
+                market_id,
+                market_creator_pubkey,
+                comment_id,
+                emoji: None,
+                amount_msats: None,
+                body_preview: Some(truncated_preview(&event.content)),
+                created_at: event.created_at.as_u64(),
+                read: false,
+            })
+        }
+        7 => {
+            // NIP-25: target event in lowercase `e`, emoji in content.
+            let comment_id = tag_value(event, "e").map(String::from)?;
+            let emoji = event.content.trim();
+            if emoji.is_empty() {
+                return None;
+            }
+            Some(NotificationRecord {
+                event_id: event.id.to_hex(),
+                kind: NotificationKind::Reaction,
+                author_pubkey: event.pubkey.to_hex(),
+                market_id,
+                market_creator_pubkey,
+                comment_id: Some(comment_id),
+                emoji: Some(emoji.to_string()),
+                amount_msats: None,
+                body_preview: None,
+                created_at: event.created_at.as_u64(),
+                read: false,
+            })
+        }
+        9735 => {
+            // NIP-57 receipt — sender lives in the embedded kind:9734
+            // request's `pubkey` field, not the receipt's author
+            // (which is the recipient's LNURL provider).
+            let comment_id = tag_value(event, "e").map(String::from);
+            let amount_msats = zap_receipt_amount_msats(event);
+            let (sender_pubkey, zap_message) =
+                zap_receipt_sender(event).unwrap_or((event.pubkey.to_hex(), None));
+            // Skip zaps the recipient sent themselves.
+            if sender_pubkey.eq_ignore_ascii_case(my_pubkey_hex) {
+                return None;
+            }
+            Some(NotificationRecord {
+                event_id: event.id.to_hex(),
+                kind: NotificationKind::Zap,
+                author_pubkey: sender_pubkey,
+                market_id,
+                market_creator_pubkey,
+                comment_id,
+                emoji: None,
+                amount_msats,
+                body_preview: zap_message.map(|m| truncated_preview(&m)),
+                created_at: event.created_at.as_u64(),
+                read: false,
+            })
+        }
+        _ => None,
     }
 }
 
