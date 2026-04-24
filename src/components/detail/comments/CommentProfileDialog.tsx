@@ -51,7 +51,7 @@ export function CommentProfileDialog({
 
   const handleCopyNpub = () => {
     void navigator.clipboard.writeText(npub);
-    showToast("Copied npub to clipboard");
+    showToast("Copied public key to clipboard");
   };
 
   return (

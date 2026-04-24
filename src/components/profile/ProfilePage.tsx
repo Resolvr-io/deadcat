@@ -302,7 +302,7 @@ function ProfilePageContent() {
                     type="button"
                     onClick={() => {
                       void navigator.clipboard.writeText(nostrNpub);
-                      showToast("Copied npub to clipboard");
+                      showToast("Copied public key to clipboard");
                     }}
                     className="group mt-0.5 flex items-center gap-1.5 mono text-xs text-slate-400 hover:text-white transition"
                     title="Click to copy"

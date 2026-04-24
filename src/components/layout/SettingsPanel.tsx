@@ -120,7 +120,7 @@ function NostrSection() {
     const npub = useStore.getState().nostrNpub;
     if (npub) {
       await navigator.clipboard.writeText(npub);
-      showToast("Copied npub to clipboard");
+      showToast("Copied public key to clipboard");
     }
   }, []);
 
@@ -131,7 +131,7 @@ function NostrSection() {
       useStore.setState({ nostrNsecRevealed: null });
       setNsecPasswordPrompt(false);
       setNsecPasswordInput("");
-      showToast("Copied nsec to clipboard");
+      showToast("Copied secret key to clipboard");
     }
   }, []);
 
@@ -210,9 +210,9 @@ function NostrSection() {
       ) : nostrNpub ? (
         <p className="text-xs text-amber-300/80">
           Your Nostr keypair signs everything you publish — markets,
-          attestations, comments, zaps, and settings. Back up your nsec now;
-          without it you can't resolve markets you create or recover your
-          identity.
+          attestations, comments, zaps, and settings. Back up your secret key
+          (nsec) now; without it you can't resolve markets you create or recover
+          your identity.
         </p>
       ) : (
         <p className="text-xs text-slate-500">
@@ -223,7 +223,7 @@ function NostrSection() {
 
       {/* npub */}
       <div>
-        <p className="text-xs text-slate-500 mb-1">Public Key</p>
+        <p className="text-xs text-slate-500 mb-1">Public key (npub)</p>
         <div className="flex items-center gap-2">
           <p className="mono text-xs text-slate-300 min-w-0 truncate">
             {nostrNpub ?? "Not initialized"}
@@ -269,7 +269,7 @@ function NostrSection() {
       {/* nsec — only for local keys */}
       {nostrNpub && !isRemoteSigner && (
         <div>
-          <p className="text-xs text-slate-500 mb-1">Secret Key</p>
+          <p className="text-xs text-slate-500 mb-1">Secret key (nsec)</p>
           <div className="flex items-center gap-2">
             {nostrNsecRevealed ? (
               <>
@@ -955,9 +955,9 @@ function DataSourceSection() {
     try {
       await invoke("set_source_npub", { npub });
       useStore.setState({ sourceNpub: npub });
-      showToast("Source npub saved — restart to apply");
+      showToast("Source public key saved — restart to apply");
     } catch (e) {
-      showToast(`Invalid npub: ${e}`);
+      showToast(`Invalid public key: ${e}`);
     } finally {
       useStore.setState({ sourceNpubSaving: false });
     }
@@ -983,7 +983,7 @@ function DataSourceSection() {
           htmlFor="source-npub-input"
           className="block text-[10px] font-medium uppercase tracking-wider text-slate-500"
         >
-          Source npub
+          Source public key (npub)
         </label>
         <input
           id="source-npub-input"
@@ -1234,7 +1234,7 @@ function NostrReplacePanel() {
         </div>
 
         <div className="space-y-2">
-          <p className="text-xs text-slate-500">Import nsec</p>
+          <p className="text-xs text-slate-500">Import secret key (nsec)</p>
           <div className="flex items-center gap-2">
             <input
               type="password"

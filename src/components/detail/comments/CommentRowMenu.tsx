@@ -51,7 +51,7 @@ export function CommentRowMenu({
 
   const handleCopyNpub = () => {
     void navigator.clipboard.writeText(hexToNpub(authorPubkeyHex));
-    showToast("Copied npub to clipboard");
+    showToast("Copied public key to clipboard");
     close();
   };
 
@@ -85,7 +85,7 @@ export function CommentRowMenu({
           />
           <MenuItem
             icon={<CopyIcon className="h-4 w-4" />}
-            label="Copy author npub"
+            label="Copy author public key"
             onClick={handleCopyNpub}
           />
           <MenuItem
