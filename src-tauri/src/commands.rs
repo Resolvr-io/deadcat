@@ -11,8 +11,9 @@ use crate::discovery::{
     self, ContractMetadata, CreateContractRequest, DiscoveredMarket, DiscoveredOrder,
     IdentityResponse,
 };
+use crate::notifications::{NotificationRecord, NotificationStore};
 use crate::state::AppStateManager;
-use crate::{NodeState, NostrAppState};
+use crate::{NodeState, NostrAppState, NotificationsState};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -4008,4 +4009,77 @@ async fn get_pool_price_history_inner<R: tauri::Runtime>(
     };
 
     Ok(map_price_history_entries(entries))
+}
+
+// =========================================================================
+// Notifications (PR D)
+// =========================================================================
+
+/// Return the live notification store, lazy-initializing it from the
+/// current network's JSON file on first use. Used by the four Tauri
+/// commands below and also shared with the background subscription
+/// task so both sides append / flush through the same instance.
+async fn get_or_init_notification_store(
+    app: &tauri::AppHandle,
+) -> Result<std::sync::Arc<NotificationStore>, String> {
+    let state = app.state::<NotificationsState>();
+    let mut guard = state.store.lock().await;
+    if let Some(store) = guard.as_ref() {
+        return Ok(store.clone());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+    let network_tag = current_network_tag(app)?;
+    let store = std::sync::Arc::new(NotificationStore::load(&app_data_dir, &network_tag));
+    *guard = Some(store.clone());
+    Ok(store)
+}
+
+/// Most-recent-first slice of the stored notifications, capped at
+/// `limit`. The frontend's bell popover typically asks for 30 at a
+/// time; anything beyond the retained 500 is already off the tail.
+#[tauri::command]
+pub async fn list_notifications(
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<NotificationRecord>, String> {
+    let store = get_or_init_notification_store(&app).await?;
+    Ok(store.list(limit))
+}
+
+/// Count of unread notifications. Drives the red dot on the bell
+/// icon. Invalidated whenever the `notifications_updated` event
+/// fires (new inbound arrival or local mark-read mutation).
+#[tauri::command]
+pub async fn unread_notification_count(app: tauri::AppHandle) -> Result<u32, String> {
+    let store = get_or_init_notification_store(&app).await?;
+    Ok(store.unread_count())
+}
+
+/// Flip a single notification to read. Flushes to disk and emits
+/// `notifications_updated` so any mounted bell / list view can
+/// re-fetch. No-ops when the id isn't present or was already read.
+#[tauri::command]
+pub async fn mark_notification_read(event_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let store = get_or_init_notification_store(&app).await?;
+    if store.mark_read(&event_id) {
+        store.flush();
+        let _ = app.emit("notifications_updated", ());
+    }
+    Ok(())
+}
+
+/// Flip every unread entry to read. Same flush + emit semantics as
+/// single-mark. Called from the bell popover's "Mark all as read"
+/// action.
+#[tauri::command]
+pub async fn mark_all_notifications_read(app: tauri::AppHandle) -> Result<(), String> {
+    let store = get_or_init_notification_store(&app).await?;
+    if store.mark_all_read() {
+        store.flush();
+        let _ = app.emit("notifications_updated", ());
+    }
+    Ok(())
 }

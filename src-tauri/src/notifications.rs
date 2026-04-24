@@ -207,7 +207,10 @@ impl NotificationStore {
         match serde_json::to_string(&entries) {
             Ok(raw) => {
                 if let Err(e) = fs::write(&self.path, raw) {
-                    log::warn!("notifications: failed to write {}: {e}", self.path.display());
+                    log::warn!(
+                        "notifications: failed to write {}: {e}",
+                        self.path.display()
+                    );
                 }
             }
             Err(e) => log::warn!("notifications: failed to serialize: {e}"),

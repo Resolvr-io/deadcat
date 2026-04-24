@@ -81,6 +81,24 @@ pub struct NostrAppState {
     pub source_npub: std::sync::RwLock<String>,
 }
 
+/// Local inbound-engagement store — lazily initialized once the
+/// current network is known (the backing file path is scoped
+/// `<app_data_dir>/<network>/notifications.json` so testnet and
+/// mainnet don't cross-pollinate). Shared between the Tauri
+/// commands that read/mutate the store and the Nostr subscription
+/// task that appends to it.
+pub struct NotificationsState {
+    pub store: tokio::sync::Mutex<Option<std::sync::Arc<notifications::NotificationStore>>>,
+}
+
+impl Default for NotificationsState {
+    fn default() -> Self {
+        Self {
+            store: tokio::sync::Mutex::new(None),
+        }
+    }
+}
+
 impl Default for NostrAppState {
     fn default() -> Self {
         Self {
@@ -1573,6 +1591,7 @@ pub fn run() {
             app.manage(PendingSendState::default());
             app.manage(nostr_state);
             app.manage(WalletStoreState::default());
+            app.manage(NotificationsState::default());
 
             // Load persisted relay market cache for instant cold-start display
             commands::load_relay_cache(app.handle());
@@ -1795,6 +1814,10 @@ pub fn run() {
             commands::publish_comment_reaction,
             commands::delete_comment_reaction,
             commands::fetch_comment_reactions,
+            commands::list_notifications,
+            commands::unread_notification_count,
+            commands::mark_notification_read,
+            commands::mark_all_notifications_read,
             commands::export_identity_file,
             commands::open_downloads_folder,
             commands::import_identity_file,
