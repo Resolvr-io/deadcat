@@ -557,14 +557,9 @@ pub async fn import_nostr_nsec(
         SecretKey::from_bech32(nsec.trim()).map_err(|e| format!("invalid nsec: {e}"))?;
     let keys = Keys::new(secret_key);
 
-    // Persist to disk
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to get app data dir: {e}"))?;
-    let key_path = app_data_dir.join("nostr_identity.key");
-    std::fs::write(&key_path, keys.secret_key().to_secret_hex())
-        .map_err(|e| format!("failed to write key file: {e}"))?;
+    // Persist via the OS keychain — same path `generate_keys` uses
+    // so imports and fresh identities converge on the same storage.
+    discovery::save_keys(&keys)?;
 
     let response = IdentityResponse {
         pubkey_hex: keys.public_key().to_hex(),
@@ -621,15 +616,13 @@ pub async fn delete_nostr_identity(app: tauri::AppHandle) -> Result<(), String> 
         mgr.clear_payment_swaps();
     }
 
-    // Delete key file and NIP-46 connection
+    // Wipe the stored identity (keychain + any legacy plaintext
+    // file) and NIP-46 connection.
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to get app data dir: {e}"))?;
-    let key_path = app_data_dir.join("nostr_identity.key");
-    if key_path.exists() {
-        std::fs::remove_file(&key_path).map_err(|e| format!("failed to delete key file: {e}"))?;
-    }
+    discovery::delete_keys(&app_data_dir)?;
     let _ = crate::nip46::delete_connection(&app_data_dir);
 
     bump_revision_and_emit(&app).await?;
