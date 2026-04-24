@@ -121,7 +121,10 @@ export function CommentRow({
   if (comment.deleted) {
     const hasTimestamp = comment.created_at > 0;
     return (
-      <div className="flex items-center gap-3 py-3 opacity-60">
+      <div
+        data-comment-id={comment.id}
+        className="flex items-center gap-3 py-3 opacity-60 rounded-md transition"
+      >
         <div
           aria-hidden="true"
           className="h-8 w-8 shrink-0 rounded-full border border-slate-800 bg-slate-900"
@@ -141,7 +144,10 @@ export function CommentRow({
   }
 
   return (
-    <div className="flex items-start gap-3 py-3">
+    <div
+      data-comment-id={comment.id}
+      className="flex items-start gap-3 py-3 rounded-md transition"
+    >
       <button
         type="button"
         onClick={() => setProfileOpen(true)}

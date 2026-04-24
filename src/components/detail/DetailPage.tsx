@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useMemo } from "react";
+import { useScrollToComment } from "../../hooks/useScrollToComment";
 import {
   useRedeemExpiredTokens,
   useRedeemTokens,
@@ -27,6 +28,12 @@ export default function DetailPage() {
   const nostrPubkey = useStore((s) => s.nostrPubkey);
   const walletData = useStore((s) => s.walletData);
   const attestationLoading = useStore((s) => s.attestationLoading);
+
+  // Wired from the notification bell: when the user clicks a
+  // notification that points at a comment, the store's
+  // focusCommentId is set and this hook finds the row, scrolls it
+  // into view, and pulses it for 2s.
+  useScrollToComment();
 
   const redeemMutation = useRedeemTokens();
   const redeemExpiredMutation = useRedeemExpiredTokens();

@@ -8,6 +8,7 @@ import { useStore } from "../../store";
 import type { NavCategory } from "../../types";
 import { formatCompactSats } from "../../utils-react/wallet";
 import { CloseButton } from "../shared/CloseButton";
+import { NotificationBell } from "./NotificationBell";
 import { SearchBar } from "./SearchBar";
 import { SettingsPanel } from "./SettingsPanel";
 import { UserMenu } from "./UserMenu";
@@ -875,6 +876,7 @@ export function TopShell() {
                 </button>
               )}
               <WalletButton />
+              {nostrPubkey && <NotificationBell />}
               {nostrPubkey && <UserMenu />}
             </div>
           </div>
