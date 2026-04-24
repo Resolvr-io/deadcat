@@ -3,7 +3,6 @@ import type { Market } from "../../types";
 import {
   formatSettlementDateTime,
   formatTimeRemaining,
-  formatVolumeBtc,
 } from "../../utils-react/format";
 import {
   getEstimatedSettlementDate,
@@ -37,7 +36,7 @@ function stateBadge(state: number) {
   );
 }
 
-/** Above the chart: nav, title, probability, stats strip. */
+/** Above the chart: nav, title, stats strip. Matches group market layout. */
 export function MarketHeaderTop({ market }: { market: Market }) {
   const blocksLeft = market.expiryHeight - market.currentHeight;
   const closesColor =
@@ -47,24 +46,16 @@ export function MarketHeaderTop({ market }: { market: Market }) {
         ? "text-amber-400"
         : "text-slate-200";
 
-  const changePct =
-    market.change24h !== 0
-      ? `${market.change24h > 0 ? "+" : ""}${(market.change24h * 100).toFixed(1)}%`
-      : null;
-
   return (
     <>
-      {/* Top bar: back button + badges */}
-      <div className="mb-3 flex items-center justify-between">
+      {/* Back nav — category + state badge inline, matching group market */}
+      <div className="mb-2 flex items-center gap-2">
         <button
           type="button"
           onClick={() => useStore.setState({ view: "home" })}
-          className="flex items-center gap-1 text-sm text-slate-400 transition hover:text-slate-200"
+          className="flex items-center gap-1.5 text-sm text-slate-500 transition hover:text-slate-200"
         >
           <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="16"
-            height="16"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -72,6 +63,7 @@ export function MarketHeaderTop({ market }: { market: Market }) {
             strokeLinecap="round"
             strokeLinejoin="round"
             aria-hidden="true"
+            className="h-4 w-4"
           >
             <polyline points="15 18 9 12 15 6" />
           </svg>
@@ -88,52 +80,20 @@ export function MarketHeaderTop({ market }: { market: Market }) {
       </div>
 
       {/* Title */}
-      <h1 className="phi-title mb-3 text-2xl font-medium leading-tight text-slate-100 lg:text-[34px]">
+      <h1 className="mb-2 text-2xl font-semibold leading-tight text-slate-100 lg:text-3xl">
         {market.question}
       </h1>
 
-      {/* Probability + 24h change */}
-      {market.yesPrice != null && (
-        <div className="mb-3 flex items-baseline gap-3">
-          <p className="text-5xl font-bold text-emerald-400">
-            {Math.round(market.yesPrice * 100)}
-            <span className="text-2xl text-slate-400">%</span>
-          </p>
-          <span className="text-lg font-normal text-slate-500">chance</span>
-          {changePct && (
-            <span
-              className={`text-sm font-medium ${market.change24h > 0 ? "text-emerald-400" : "text-rose-400"}`}
-            >
-              {changePct} today
-            </span>
-          )}
-        </div>
-      )}
-
       {/* Stats strip */}
-      <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
-        <span className="text-slate-500">
-          Vol{" "}
-          <span className="text-slate-200">
-            {formatVolumeBtc(market.volumeBtc)}
-          </span>
-        </span>
-        <span className="text-slate-700">·</span>
-        <span className="text-slate-500">
-          Traders{" "}
-          <span className="text-slate-200">
+      <div className="mb-8 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-500">
+        <span>
+          <span className="text-slate-300">
             {market.traderCount > 0 ? market.traderCount.toLocaleString() : "—"}
-          </span>
+          </span>{" "}
+          traders
         </span>
         <span className="text-slate-700">·</span>
-        <span className="text-slate-500">
-          Liquidity{" "}
-          <span className="text-slate-200">
-            {formatVolumeBtc(market.liquidityBtc)}
-          </span>
-        </span>
-        <span className="text-slate-700">·</span>
-        <span className="text-slate-500">
+        <span>
           Closes{" "}
           <span className={closesColor}>{formatTimeRemaining(blocksLeft)}</span>
         </span>
@@ -173,7 +133,7 @@ export function MarketHeaderBottom({ market }: { market: Market }) {
 
       {/* Position display */}
       {(positions.yes > 0 || positions.no > 0) && (
-        <div className="mb-4 flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/40 px-4 py-2 text-sm">
+        <div className="mb-4 flex items-center gap-3 rounded-xl bg-slate-900/40 px-4 py-2 text-sm">
           <span className="text-slate-400">Your position</span>
           {positions.yes > 0 && (
             <span className="rounded bg-emerald-500/20 px-2 py-0.5 font-medium text-emerald-300">

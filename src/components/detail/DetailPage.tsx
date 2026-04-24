@@ -111,38 +111,33 @@ export default function DetailPage() {
     !market.resolveTx;
 
   return (
-    <div className="phi-container py-6 lg:py-8">
+    <div className="phi-container py-6 lg:py-10">
       {expired && market.state === 1 && (
-        <div className="mb-4 rounded-xl border border-slate-600 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">
+        <div className="mb-4 rounded-xl bg-slate-900/60 px-4 py-3 text-sm text-slate-300">
           Market expired unresolved at height {market.expiryHeight}. Redeem will
           auto-finalize to EXPIRED first, then execute expiry redemption (can be
           two transactions and two fees).
         </div>
       )}
 
-      <div className="grid gap-[21px] lg:grid-cols-[1.618fr_1fr] lg:items-start">
-        {/* Left column — market display, banners, and comments share
-            the same column so the comments-section width lines up with
-            the market display above it and the right column can stay
-            pinned as the user scrolls. */}
-        <section className="space-y-[21px]">
-          <div className="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
-            <MarketHeaderTop market={market} />
+      {/* Header above grid — matches group market layout so trading panel
+          aligns with the chart rather than the top of the title block */}
+      <MarketHeaderTop market={market} />
 
-            <MarketChart
-              market={market}
-              priceHistory={priceHistory}
-              mode="detail"
-            />
+      <div className="grid gap-8 lg:grid-cols-[1.618fr_0.8fr]">
+        {/* Left column */}
+        <section className="min-w-0 space-y-6">
+          <MarketChart
+            market={market}
+            priceHistory={priceHistory}
+            mode="detail"
+          />
 
-            <div className="mt-5">
-              <MarketHeaderBottom market={market} />
-            </div>
-          </div>
+          <MarketHeaderBottom market={market} />
 
           {/* Redemption banner */}
           {(isResolved || canExpRedeem) && redeemableTokens > 0 && (
-            <section className="rounded-[21px] border border-emerald-700/60 bg-emerald-950/20 p-[21px]">
+            <section className="rounded-xl bg-emerald-950/20 p-5">
               <p className="mb-2 text-sm font-semibold text-emerald-200">
                 {isResolved
                   ? `Market resolved ${winningSide?.toUpperCase()}`
@@ -179,7 +174,7 @@ export default function DetailPage() {
 
           {/* Oracle resolution panel */}
           {isOracle && (
-            <section className="rounded-[21px] border border-amber-700/60 bg-amber-950/20 p-[21px]">
+            <section className="rounded-xl bg-amber-950/20 p-5">
               <p className="mb-2 text-sm font-semibold text-amber-200">
                 You are the oracle for this market
               </p>

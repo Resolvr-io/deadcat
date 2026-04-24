@@ -131,9 +131,9 @@ export default function CreateMarketPage() {
 
   return (
     <div className="phi-container py-6 lg:py-8">
-      <div className="mx-auto grid max-w-[1180px] gap-[21px] xl:grid-cols-[1.618fr_1fr]">
+      <div className="mx-auto grid max-w-[1180px] gap-5 xl:grid-cols-[1.618fr_1fr]">
         {/* Left: Form */}
-        <section className="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[34px]">
+        <section className="rounded-xl border border-slate-800 bg-slate-950/55 p-5 lg:p-8">
           <button
             type="button"
             onClick={handleCancel}
@@ -273,7 +273,7 @@ export default function CreateMarketPage() {
         </section>
 
         {/* Right: Preview + Submit */}
-        <aside className="rounded-[21px] border border-slate-800 bg-slate-900/80 p-[21px]">
+        <aside className="rounded-xl border border-slate-800 bg-slate-900/80 p-5">
           <p className="panel-subtitle">Preview</p>
           <h3 className="panel-title mb-3 text-lg">New Contract Ticket</h3>
           <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">

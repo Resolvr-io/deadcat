@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect } from "react";
 import CreateMarketPage from "./components/create/CreateMarketPage";
 import DetailPage from "./components/detail/DetailPage";
+import GroupDetailPage from "./components/group/GroupDetailPage";
 import HomePage from "./components/home/HomePage";
 import { Footer } from "./components/layout/Footer";
 import { TopShell } from "./components/layout/TopShell";
@@ -129,6 +130,7 @@ export default function App() {
         <main className="flex-1">
           {view === "home" && <HomePage />}
           {view === "detail" && <DetailPage />}
+          {view === "group" && <GroupDetailPage />}
           {view === "create" && <CreateMarketPage />}
         </main>
 

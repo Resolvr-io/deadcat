@@ -7,11 +7,19 @@ import {
 import { useMarketComments } from "../../../queries/useComments";
 import { useCommentZaps, zapStatsFor } from "../../../queries/useCommentZaps";
 import { useStore } from "../../../store";
-import type { Market, MarketComment } from "../../../types";
+import type { MarketComment } from "../../../types";
 import { friendlyError } from "../../../utils-react/friendly-error";
 import { CommentForm } from "./CommentForm";
 import { CommentRow } from "./CommentRow";
 import { CommentRowSkeleton } from "./CommentRowSkeleton";
+
+/** Minimal market shape required to render comments. Satisfied by both
+ *  binary `Market` and multi-outcome `MarketGroup`. */
+export type CommentableMarket = {
+  marketId: string;
+  creatorPubkey: string;
+  nostrEventJson: string | null | undefined;
+};
 
 /**
  * Flatten nested replies into a single list keyed by the top-level
@@ -123,7 +131,7 @@ function Thread({
 }: {
   parent: MarketComment;
   replies: MarketComment[];
-  market: Market;
+  market: CommentableMarket;
   marketEventId: string | null;
   zapStats: Map<string, { count: number; totalSats: number }>;
   reactionStats: Map<string, ReactionStats[]>;
@@ -157,50 +165,46 @@ function Thread({
         isReplyTarget={replyTargetId === parent.id}
         onToggleReply={canReply ? () => toggleReply(parent.id) : undefined}
       />
-      {(replies.length > 0 || (replyTarget && marketEventId)) && (
-        <ul className="ml-11 border-l border-slate-800/60 pl-3">
-          {replies.map((r) => {
-            const rStats = zapStatsFor(zapStats, r.id);
-            const rReactions = reactionStatsFor(reactionStats, r.id);
-            return (
-              <li key={r.id}>
-                <CommentRow
-                  comment={r}
-                  marketId={market.marketId}
-                  creatorPubkey={market.creatorPubkey}
-                  zapCount={rStats.count}
-                  zapSats={rStats.totalSats}
-                  reactions={rReactions}
-                  isReplyTarget={replyTargetId === r.id}
-                  onToggleReply={
-                    canReply && !r.deleted ? () => toggleReply(r.id) : undefined
-                  }
-                />
-              </li>
-            );
-          })}
-          {replyTarget && marketEventId && (
-            <li className="py-3">
-              <CommentForm
-                marketId={market.marketId}
-                creatorPubkey={market.creatorPubkey}
-                marketEventId={marketEventId}
-                parentEventId={replyTarget.id}
-                parentAuthorPubkey={replyTarget.author_pubkey}
-                onCancel={() => setReplyTargetId(null)}
-                onPosted={() => setReplyTargetId(null)}
-                autoFocus
-              />
-            </li>
-          )}
-        </ul>
+      {replies.map((r) => {
+        const rStats = zapStatsFor(zapStats, r.id);
+        const rReactions = reactionStatsFor(reactionStats, r.id);
+        return (
+          <div key={r.id} className="border-t border-slate-800/40">
+            <CommentRow
+              comment={r}
+              marketId={market.marketId}
+              creatorPubkey={market.creatorPubkey}
+              zapCount={rStats.count}
+              zapSats={rStats.totalSats}
+              reactions={rReactions}
+              isReplyTarget={replyTargetId === r.id}
+              onToggleReply={
+                canReply && !r.deleted ? () => toggleReply(r.id) : undefined
+              }
+            />
+          </div>
+        );
+      })}
+      {replyTarget && marketEventId && (
+        <div className="border-t border-slate-800/40 py-3">
+          <CommentForm
+            marketId={market.marketId}
+            creatorPubkey={market.creatorPubkey}
+            marketEventId={marketEventId}
+            parentEventId={replyTarget.id}
+            parentAuthorPubkey={replyTarget.author_pubkey}
+            onCancel={() => setReplyTargetId(null)}
+            onPosted={() => setReplyTargetId(null)}
+            autoFocus
+          />
+        </div>
       )}
     </li>
   );
 }
 
 /** Parse the raw market event JSON to recover the hex event id. */
-function extractMarketEventId(market: Market): string | null {
+function extractMarketEventId(market: CommentableMarket): string | null {
   if (!market.nostrEventJson) return null;
   try {
     const parsed = JSON.parse(market.nostrEventJson) as { id?: string };
@@ -210,7 +214,7 @@ function extractMarketEventId(market: Market): string | null {
   }
 }
 
-export function CommentsSection({ market }: { market: Market }) {
+export function CommentsSection({ market }: { market: CommentableMarket }) {
   const nostrPubkey = useStore((s) => s.nostrPubkey);
   const marketEventId = useMemo(() => extractMarketEventId(market), [market]);
 
@@ -238,7 +242,7 @@ export function CommentsSection({ market }: { market: Market }) {
   const canPost = !!nostrPubkey && !!marketEventId;
 
   return (
-    <section className="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px] lg:p-[28px]">
+    <section>
       <div className="mb-4 flex items-baseline justify-between gap-3">
         <h3 className="text-base font-semibold text-slate-100">
           Comments <span className="text-slate-500">({comments.length})</span>
@@ -276,7 +280,7 @@ export function CommentsSection({ market }: { market: Market }) {
 
       <div className="mt-5">
         {isLoading ? (
-          <ul className="divide-y divide-slate-800/80">
+          <ul className="divide-y divide-slate-800/50">
             <li>
               <CommentRowSkeleton variant={2} />
             </li>
@@ -305,7 +309,7 @@ export function CommentsSection({ market }: { market: Market }) {
             No comments yet. Be the first to weigh in.
           </p>
         ) : (
-          <ul className="divide-y divide-slate-800/80">
+          <ul className="divide-y divide-slate-800/50">
             {threaded.map(({ parent, replies }) => (
               <Thread
                 key={parent.id}
@@ -326,7 +330,7 @@ export function CommentsSection({ market }: { market: Market }) {
           <button
             type="button"
             onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-            className="flex items-center gap-1.5 rounded-full border border-slate-800 bg-slate-900/40 px-3 py-1.5 text-xs text-slate-400 transition hover:border-slate-700 hover:bg-slate-900 hover:text-slate-200"
+            className="flex items-center gap-1.5 rounded-full border border-slate-800 px-3 py-1.5 text-xs text-slate-500 transition hover:border-slate-700 hover:text-slate-300"
           >
             <svg
               aria-hidden="true"

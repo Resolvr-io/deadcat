@@ -42,6 +42,8 @@ function defaultSettlementInput(): string {
 export interface NavigationSlice {
   view: ViewMode;
   previousView: ViewMode | null;
+  selectedGroupId: string | null;
+  selectedOutcomeId: string | null;
   activeCategory: NavCategory;
   categorySortMode: "trending" | "frequency";
   categoryFilter: "all" | "live" | "ending-soon";
@@ -303,6 +305,8 @@ export const useStore = create<StoreState>()(() => ({
   // ── Navigation ──────────────────────────────────────────────────
   view: "home",
   previousView: null,
+  selectedGroupId: null,
+  selectedOutcomeId: null,
   activeCategory: "Trending",
   categorySortMode: "trending",
   categoryFilter: "all",

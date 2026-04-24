@@ -1,14 +1,55 @@
-import { useCallback } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { usePriceHistory } from "../../queries/usePools";
 import { useStore } from "../../store";
-import type { Market } from "../../types";
+import type { Market, MarketGroup } from "../../types";
 import { formatTimeRemaining, formatVolumeBtc } from "../../utils-react/format";
 import { stateLabel } from "../../utils-react/market";
 import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
 import MarketChart from "../chart/MarketChart";
+import GroupChart, { OUTCOME_COLORS } from "../group/GroupChart";
 import { openMarket, TrendIndicator } from "./MarketCard";
 
-// ── State badge (React version) ──────────────────────────────────────
+// ── Auto-sizing title — steps down the type scale until single line ──
+const TITLE_SIZES = ["text-[34px]", "text-2xl", "text-xl", "text-lg"] as const;
+
+function FittedTitle({
+  children,
+  className,
+}: {
+  children: string;
+  className: string;
+}) {
+  const ref = useRef<HTMLHeadingElement>(null);
+  const [sizeClass, setSizeClass] = useState<(typeof TITLE_SIZES)[number]>(
+    TITLE_SIZES[0],
+  );
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: children triggers remeasure when text changes
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    for (let i = 0; i < TITLE_SIZES.length; i++) {
+      const size = TITLE_SIZES[i];
+      el.className = `${className} ${size}`;
+      const lh = parseFloat(getComputedStyle(el).lineHeight) || 999;
+      // Largest size: only 1 line allowed. Smaller sizes: up to 2 lines OK.
+      const threshold = i === 0 ? 1.4 : 2.1;
+      if (el.scrollHeight <= Math.ceil(lh * threshold)) {
+        setSizeClass(size);
+        return;
+      }
+    }
+    setSizeClass(TITLE_SIZES[TITLE_SIZES.length - 1]);
+  }, [children, className]);
+
+  return (
+    <h1 ref={ref} className={`${className} ${sizeClass}`}>
+      {children}
+    </h1>
+  );
+}
+
+// ── State badge ──────────────────────────────────────────────────────
 function StateBadge({ state }: { state: 0 | 1 | 2 | 3 | 4 }) {
   const label = stateLabel(state);
   const colors =
@@ -30,13 +71,48 @@ function StateBadge({ state }: { state: 0 | 1 | 2 | 3 | 4 }) {
   );
 }
 
-// ── FeaturedMarket component ─────────────────────────────────────────
+// ── Shared nav arrows ────────────────────────────────────────────────
+function CarouselNav({
+  index,
+  total,
+  onPrev,
+  onNext,
+}: {
+  index: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={onPrev}
+        className="h-9 w-9 rounded-full border border-slate-700 text-lg text-slate-300 hover:bg-slate-800"
+      >
+        &#8249;
+      </button>
+      <p className="w-16 text-center text-xs text-slate-400">
+        {index + 1} of {total}
+      </p>
+      <button
+        type="button"
+        onClick={onNext}
+        className="h-9 w-9 rounded-full border border-slate-700 text-lg text-slate-300 hover:bg-slate-800"
+      >
+        &#8250;
+      </button>
+    </div>
+  );
+}
+
+// ── FeaturedMarket (binary) ──────────────────────────────────────────
 export default function FeaturedMarket({
   market,
-  trending,
+  totalItems,
 }: {
   market: Market;
-  trending: Market[];
+  totalItems: number;
 }) {
   const trendingIndex = useStore((s) => s.trendingIndex);
   const { data: rawPriceHistory } = usePriceHistory(market.marketId);
@@ -45,43 +121,39 @@ export default function FeaturedMarket({
       ? rawPriceHistory
       : generateMockPriceHistory(market);
 
-  const featuredNo = market.yesPrice != null ? 1 - market.yesPrice : null;
   const featuredYesPct =
     market.yesPrice != null ? Math.round(market.yesPrice * 100) : null;
   const featuredNoPct =
-    featuredNo != null ? Math.round(featuredNo * 100) : null;
+    market.yesPrice != null ? Math.round((1 - market.yesPrice) * 100) : null;
   const blocksLeft = market.expiryHeight - market.currentHeight;
   const timeLeft = blocksLeft > 0 ? formatTimeRemaining(blocksLeft) : "Expired";
 
   const handlePrev = useCallback(() => {
     useStore.setState({
-      trendingIndex: (trendingIndex - 1 + trending.length) % trending.length,
+      trendingIndex: (trendingIndex - 1 + totalItems) % totalItems,
     });
-  }, [trendingIndex, trending.length]);
+  }, [trendingIndex, totalItems]);
 
   const handleNext = useCallback(() => {
     useStore.setState({
-      trendingIndex: (trendingIndex + 1) % trending.length,
+      trendingIndex: (trendingIndex + 1) % totalItems,
     });
-  }, [trendingIndex, trending.length]);
+  }, [trendingIndex, totalItems]);
 
-  const handleOpenMarket = useCallback(() => {
-    openMarket(market);
-  }, [market]);
+  const handleOpenMarket = useCallback(() => openMarket(market), [market]);
+  const handleBuyYes = useCallback(
+    () => openMarket(market, { side: "yes", intent: "open" }),
+    [market],
+  );
+  const handleBuyNo = useCallback(
+    () => openMarket(market, { side: "no", intent: "open" }),
+    [market],
+  );
 
-  const handleBuyYes = useCallback(() => {
-    openMarket(market, { side: "yes", intent: "open" });
-  }, [market]);
-
-  const handleBuyNo = useCallback(() => {
-    openMarket(market, { side: "no", intent: "open" });
-  }, [market]);
-
-  // ── Resolved / expired action area ─────────────────────────────────
   const resolvedActions =
     market.state === 2 || market.state === 3 ? (
       <span
-        className={`w-40 rounded-full ${market.state === 2 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"} px-4 py-2 text-center text-base font-semibold`}
+        className={`w-40 rounded-full px-4 py-2 text-center text-base font-semibold ${market.state === 2 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"}`}
       >
         {market.state === 2 ? "Resolved YES" : "Resolved NO"}
       </span>
@@ -92,8 +164,7 @@ export default function FeaturedMarket({
     ) : null;
 
   return (
-    <div className="rounded-[21px] border border-slate-800 bg-slate-950/60 p-[21px] lg:p-[34px]">
-      {/* Header row: category + nav arrows */}
+    <div className="flex h-[520px] flex-col rounded-xl bg-slate-950/50 p-5 lg:p-8">
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-xs">
           <span className="text-slate-500">{market.category}</span>
@@ -104,39 +175,24 @@ export default function FeaturedMarket({
           )}
           <StateBadge state={market.state} />
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handlePrev}
-            className="h-9 w-9 rounded-full border border-slate-700 text-lg text-slate-300 hover:bg-slate-800"
-          >
-            &#8249;
-          </button>
-          <p className="w-16 text-center text-xs text-slate-400">
-            {trendingIndex + 1} of {trending.length}
-          </p>
-          <button
-            type="button"
-            onClick={handleNext}
-            className="h-9 w-9 rounded-full border border-slate-700 text-lg text-slate-300 hover:bg-slate-800"
-          >
-            &#8250;
-          </button>
-        </div>
+        <CarouselNav
+          index={trendingIndex}
+          total={totalItems}
+          onPrev={handlePrev}
+          onNext={handleNext}
+        />
       </div>
 
-      {/* Question / title */}
       <button
         type="button"
         onClick={handleOpenMarket}
         className="mb-4 block text-left"
       >
-        <h1 className="phi-title text-2xl font-medium leading-tight text-slate-100 transition hover:text-white lg:text-[34px]">
+        <FittedTitle className="phi-title font-medium leading-tight text-slate-100 transition hover:text-white">
           {market.question}
-        </h1>
+        </FittedTitle>
       </button>
 
-      {/* Action buttons + meta */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         {resolvedActions ?? (
           <>
@@ -162,14 +218,127 @@ export default function FeaturedMarket({
         </span>
       </div>
 
-      {/* Description */}
-      <p className="mb-4 line-clamp-2 text-sm text-slate-400">
-        {market.description}
-      </p>
-
-      {/* Chart — real price history */}
-      <div>
+      <div className="min-h-0 flex-1 overflow-hidden">
         <MarketChart market={market} priceHistory={priceHistory} mode="home" />
+      </div>
+    </div>
+  );
+}
+
+// ── FeaturedGroupCard (multi-outcome) ────────────────────────────────
+export function FeaturedGroupCard({
+  group,
+  totalItems,
+}: {
+  group: MarketGroup;
+  totalItems: number;
+}) {
+  const trendingIndex = useStore((s) => s.trendingIndex);
+
+  const blocksLeft = group.expiryHeight - group.currentHeight;
+  const timeLeft = blocksLeft > 0 ? formatTimeRemaining(blocksLeft) : "Expired";
+
+  const topOutcomes = [...group.outcomes]
+    .sort((a, b) => b.yesPrice - a.yesPrice)
+    .slice(0, 6);
+
+  const handlePrev = useCallback(() => {
+    useStore.setState({
+      trendingIndex: (trendingIndex - 1 + totalItems) % totalItems,
+    });
+  }, [trendingIndex, totalItems]);
+
+  const handleNext = useCallback(() => {
+    useStore.setState({
+      trendingIndex: (trendingIndex + 1) % totalItems,
+    });
+  }, [trendingIndex, totalItems]);
+
+  const handleOpen = useCallback(() => {
+    useStore.setState({
+      selectedGroupId: group.id,
+      selectedOutcomeId: null,
+      view: "group",
+    });
+  }, [group.id]);
+
+  return (
+    <div className="flex h-[520px] flex-col rounded-xl bg-slate-950/50 p-5 lg:p-8">
+      {/* Header */}
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-slate-500">{group.category}</span>
+          {group.state === "active" && (
+            <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
+              Active
+            </span>
+          )}
+        </div>
+        <CarouselNav
+          index={trendingIndex}
+          total={totalItems}
+          onPrev={handlePrev}
+          onNext={handleNext}
+        />
+      </div>
+
+      {/* Title */}
+      <button
+        type="button"
+        onClick={handleOpen}
+        className="mb-5 block text-left"
+      >
+        <FittedTitle className="phi-title font-medium leading-tight text-slate-100 transition hover:text-white">
+          {group.title}
+        </FittedTitle>
+      </button>
+
+      {/* Two-column: outcomes left, chart right */}
+      <div className="grid min-h-0 flex-1 grid-cols-[0.6fr_1.618fr] gap-6">
+        {/* Outcomes list */}
+        <div className="space-y-2.5">
+          {topOutcomes.map((outcome, i) => {
+            const pct = Math.round(outcome.yesPrice * 100);
+            const color = OUTCOME_COLORS[i % OUTCOME_COLORS.length];
+            return (
+              <div
+                key={outcome.id}
+                className="flex items-baseline justify-between gap-2"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: color }}
+                  />
+                  <span className="truncate text-sm text-slate-300">
+                    {outcome.name}
+                  </span>
+                </div>
+                <span className="shrink-0 text-sm font-semibold text-slate-100">
+                  {pct < 1 ? "<1" : pct}%
+                </span>
+              </div>
+            );
+          })}
+          {group.outcomes.length > 6 && (
+            <p className="pl-4 text-xs text-slate-600">
+              +{group.outcomes.length - 6} more
+            </p>
+          )}
+          {/* Footer meta */}
+          <div className="pt-2 text-xs text-slate-500">
+            {formatVolumeBtc(group.totalVolumeBtc)} vol · {timeLeft}
+          </div>
+        </div>
+
+        {/* Chart — fills column height */}
+        <GroupChart
+          group={group}
+          highlightedOutcomeId={null}
+          showLegend={false}
+          showControls={false}
+          className="h-full"
+        />
       </div>
     </div>
   );
