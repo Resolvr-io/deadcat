@@ -235,6 +235,19 @@ export default function WalletSetupStep({
   const nostrNpub = useStore((s) => s.nostrNpub);
   const queryClient = useQueryClient();
 
+  // Clear any leftover password state every time this step mounts.
+  // The modal's close handler already wipes these, but certain paths
+  // (backdrop dismiss, race with wallet-state transitions, stale
+  // zustand entries) have left a previous session's confirm value
+  // in place, producing a spurious "Passwords don't match" on a
+  // fresh open. Belt-and-suspenders: zero-out on every mount.
+  useEffect(() => {
+    useStore.setState({
+      onboardingWalletPassword: "",
+      onboardingWalletPasswordConfirm: "",
+    });
+  }, []);
+
   // Wallet choice inside the bunker setup screen: create a new wallet
   // or restore an existing one from its recovery phrase. Mirrors the
   // same toggle in the nsec-restore flow for UX parity.
@@ -406,8 +419,17 @@ export default function WalletSetupStep({
       await invoke("create_wallet", { password });
       setWalletNeedsBackup(true);
       await invoke("unlock_wallet", { password });
+      // The `app_state_updated` event listener only syncs
+      // `unlocked → locked` transitions to the store; we must
+      // explicitly flip walletStatus here so finishOnboarding's
+      // `walletOpen: true` doesn't land on WalletPage's legacy
+      // setup screen with a stale "not_created" status.
+      useStore.setState({
+        walletStatus: "unlocked",
+        walletSessionPassword: password,
+        onboardingLoading: false,
+      });
       showToast("Wallet created!", "success");
-      useStore.setState({ onboardingLoading: false });
       await finishOnboarding(queryClient);
     } catch (e) {
       useStore.setState({
@@ -444,6 +466,11 @@ export default function WalletSetupStep({
       });
       setWalletNeedsBackup(false);
       await invoke("unlock_wallet", { password });
+      useStore.setState({
+        walletStatus: "unlocked",
+        walletSessionPassword: password,
+        onboardingLoading: false,
+      });
       showToast("Wallet restored!", "success");
       await finishOnboarding(queryClient);
     } catch (e) {
@@ -487,6 +514,11 @@ export default function WalletSetupStep({
       });
       setWalletNeedsBackup(false);
       await invoke("unlock_wallet", { password });
+      useStore.setState({
+        walletStatus: "unlocked",
+        walletSessionPassword: password,
+        onboardingLoading: false,
+      });
       showToast("Wallet restored from Nostr backup!", "success");
       await finishOnboarding(queryClient);
     } catch (e) {

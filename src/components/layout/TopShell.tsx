@@ -658,7 +658,16 @@ function WalletButton() {
     return (
       <button
         type="button"
-        onClick={openWallet}
+        onClick={() =>
+          useStore.setState({
+            setupRequires: "identity+wallet",
+            onboardingStep: "wallet",
+            onboardingNostrDone: true,
+            onboardingWalletOnly: true,
+            onboardingWalletMode: "create",
+            setupModalOpen: true,
+          })
+        }
         className="shrink-0 px-3 py-1.5 text-sm font-medium text-emerald-400 hover:text-emerald-300 transition"
       >
         Set up wallet
