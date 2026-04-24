@@ -8,6 +8,7 @@ import { useStore } from "../../store";
 import type { BaseCurrency, Nip46Status, RelayEntry } from "../../types";
 import { randomCatName } from "../../utils-react/random-name";
 import { btcLabel } from "../../utils-react/wallet";
+import { ConfirmDialog } from "../detail/comments/ConfirmDialog";
 import { CloseButton } from "../shared/CloseButton";
 import { showToast } from "../shared/Toast";
 import { LightningWalletSection } from "./LightningWalletSection";
@@ -1129,6 +1130,7 @@ function NostrReplacePanel() {
   const nostrNpub = useStore((s) => s.nostrNpub);
   const nostrImportNsec = useStore((s) => s.nostrImportNsec);
   const nostrImporting = useStore((s) => s.nostrImporting);
+  const [generateConfirmOpen, setGenerateConfirmOpen] = useState(false);
 
   const generateKey = useCallback(async () => {
     try {
@@ -1263,13 +1265,36 @@ function NostrReplacePanel() {
           </p>
           <button
             type="button"
-            onClick={generateKey}
+            onClick={() => {
+              // When no identity exists yet (initial setup), skip the
+              // confirm — there's nothing to lose. When replacing an
+              // existing identity, gate behind a destructive confirm
+              // so a misclick can't orphan their comments, markets,
+              // and zaps without the chance to bail.
+              if (nostrNpub) {
+                setGenerateConfirmOpen(true);
+              } else {
+                void generateKey();
+              }
+            }}
             className="w-full rounded-lg border border-slate-700 px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 transition"
           >
             Generate new keypair
           </button>
         </div>
       </div>
+      <ConfirmDialog
+        open={generateConfirmOpen}
+        title="Replace your identity?"
+        body="This creates a brand-new Nostr keypair and replaces the current one. Without a backup of your current secret key (nsec), you can't sign in as this identity again — and markets, comments, and zaps tied to it will no longer be yours."
+        confirmLabel="Generate new keypair"
+        destructive
+        onConfirm={() => {
+          setGenerateConfirmOpen(false);
+          void generateKey();
+        }}
+        onClose={() => setGenerateConfirmOpen(false)}
+      />
     </>
   );
 }
