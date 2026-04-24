@@ -45,6 +45,7 @@ export type MarketGroup = {
   nevent?: string;
   nostrEventJson?: string;
   creationTxid?: string;
+  creatorPubkey?: string;
 };
 export type Side = "yes" | "no";
 export type OrderType = "market" | "limit";

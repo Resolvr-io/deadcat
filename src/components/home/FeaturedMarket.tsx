@@ -268,9 +268,6 @@ export function FeaturedGroupCard({
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-xs">
           <span className="text-slate-500">{group.category}</span>
-          <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-400">
-            Multi-outcome
-          </span>
           {group.state === "active" && (
             <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
               Active

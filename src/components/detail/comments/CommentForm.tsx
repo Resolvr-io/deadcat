@@ -99,15 +99,9 @@ export function CommentForm({
   ]);
 
   return (
-    <div
-      className={
-        isReply
-          ? "rounded-lg border border-slate-800 bg-slate-950/30 p-3"
-          : "rounded-xl border border-slate-800 bg-slate-950/40 p-4"
-      }
-    >
+    <div className="space-y-2.5">
       {isReply && parentAuthorName && (
-        <p className="mb-2 text-xs text-slate-500">
+        <p className="text-xs text-slate-500">
           Replying to{" "}
           <span className="text-slate-300">@{parentAuthorName}</span>
         </p>
@@ -124,10 +118,10 @@ export function CommentForm({
         }
         rows={isReply ? 2 : 3}
         className={`dc-input resize-none ${
-          isReply ? "h-auto min-h-[64px]" : "h-auto min-h-[88px]"
+          isReply ? "h-auto min-h-[60px]" : "h-auto min-h-[88px]"
         }`}
       />
-      <div className="mt-3 flex items-center justify-between gap-3">
+      <div className="flex items-center justify-between gap-3">
         <span
           className={`text-xs ${
             overLimit
@@ -137,7 +131,7 @@ export function CommentForm({
                 : "text-slate-500"
           }`}
         >
-          {chars.toLocaleString()} / {MAX_CHARS.toLocaleString()} characters
+          {chars.toLocaleString()} / {MAX_CHARS.toLocaleString()}
         </span>
         <div className="flex items-center gap-2">
           {isReply && onCancel && (
@@ -162,8 +156,8 @@ export function CommentForm({
           </button>
         </div>
       </div>
-      <SigningHint active={mutation.isPending} className="mt-2" />
-      {error && <p className="mt-2 text-xs text-rose-400">{error}</p>}
+      <SigningHint active={mutation.isPending} />
+      {error && <p className="text-xs text-rose-400">{error}</p>}
     </div>
   );
 }

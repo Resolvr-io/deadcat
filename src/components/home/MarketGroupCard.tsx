@@ -34,12 +34,7 @@ export default function MarketGroupCard({
     >
       {/* Header */}
       <div className="mb-2 flex items-center justify-between text-xs">
-        <span className="text-slate-500">
-          {group.category}
-          <span className="ml-1.5 rounded border border-violet-700/50 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">
-            Multi-outcome
-          </span>
-        </span>
+        <span className="text-slate-500">{group.category}</span>
         <span className="text-slate-500">{timeLeft}</span>
       </div>
 

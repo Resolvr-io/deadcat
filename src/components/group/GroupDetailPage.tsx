@@ -1,9 +1,9 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useMemo, useState } from "react";
 import { useStore } from "../../store";
 import type { MarketGroup, MarketGroupOutcome } from "../../types";
 import {
   formatSats,
+  formatSettlementDateTime,
   formatTimeRemaining,
   formatVolumeBtc,
 } from "../../utils-react/format";
@@ -11,6 +11,9 @@ import {
   generateMockOutcomeOrderbook,
   getMockMarketGroups,
 } from "../../utils-react/mock-groups";
+import { MarketActionsMenu } from "../detail/MarketActionsMenu";
+import { CommentsSection } from "../detail/comments/CommentsSection";
+import { categoryIcon } from "../layout/TopShell";
 import GroupChart, { OUTCOME_COLORS } from "./GroupChart";
 
 // ── Trend icons ──────────────────────────────────────────────────────
@@ -565,7 +568,6 @@ function NoOutcomeSelected({ group }: { group: MarketGroup }) {
 export default function GroupDetailPage() {
   const selectedGroupId = useStore((s) => s.selectedGroupId);
   const selectedOutcomeId = useStore((s) => s.selectedOutcomeId);
-  const walletNetwork = useStore((s) => s.walletNetwork);
 
   const group = useMemo(() => {
     if (!selectedGroupId) return null;
@@ -641,47 +643,17 @@ export default function GroupDetailPage() {
           </svg>
           Markets
         </button>
-        <span className="text-slate-700">·</span>
-        <span className="text-sm text-slate-600">{group.category}</span>
-        <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-400">
-          Multi-outcome
-        </span>
-        {group.state === "active" && (
-          <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
-            Active
+        <div className="flex items-center gap-2">
+          <span className="flex items-center gap-1.5 rounded-full bg-slate-800 px-2.5 py-0.5 text-xs text-slate-300">
+            {categoryIcon(group.category, "h-3 w-3")}
+            {group.category}
           </span>
-        )}
-        <div className="ml-auto flex items-center gap-3">
-          {group.nevent && (
-            <button
-              type="button"
-              onClick={() =>
-                useStore.setState({
-                  nostrEventModal: true,
-                  nostrEventJson: group.nostrEventJson ?? null,
-                  nostrEventNevent: group.nevent ?? null,
-                })
-              }
-              className="text-xs text-slate-500 transition hover:text-slate-300"
-            >
-              Nostr Event
-            </button>
+{group.state === "active" && (
+            <span className="rounded-full bg-sky-500/20 px-2.5 py-0.5 text-xs font-medium text-sky-300">
+              Active
+            </span>
           )}
-          {group.creationTxid && (
-            <button
-              type="button"
-              onClick={() => {
-                const base =
-                  walletNetwork === "testnet"
-                    ? "https://blockstream.info/liquidtestnet"
-                    : "https://blockstream.info/liquid";
-                void openUrl(`${base}/tx/${group.creationTxid}`);
-              }}
-              className="text-xs text-slate-500 transition hover:text-slate-300"
-            >
-              Creation TX
-            </button>
-          )}
+          <MarketActionsMenu market={group} />
         </div>
       </div>
 
@@ -775,7 +747,36 @@ export default function GroupDetailPage() {
           </div>
 
           {/* Description */}
-          <p className="text-sm text-slate-500">{group.description}</p>
+          <p className="mb-4 text-sm text-slate-400">{group.description}</p>
+
+          {/* Resolution metadata */}
+          <p className="mb-4 text-xs text-slate-500">
+            <span className="font-semibold uppercase tracking-wider text-slate-400">
+              Resolution
+            </span>
+            {" · "}Source:{" "}
+            <span className="text-slate-300">{group.resolutionSource}</span>
+            {" · "}Deadline:{" "}
+            <span className="text-slate-300">
+              Est.{" "}
+              {formatSettlementDateTime(
+                new Date(Date.now() + blocksLeft * 60 * 1000),
+              )}
+            </span>
+            {" · "}Block:{" "}
+            <span className="text-slate-300">
+              {group.expiryHeight.toLocaleString()}
+            </span>
+          </p>
+
+          {/* Comments */}
+          <CommentsSection
+            market={{
+              marketId: group.id,
+              creatorPubkey: group.creatorPubkey ?? "",
+              nostrEventJson: group.nostrEventJson ?? null,
+            }}
+          />
         </section>
 
         {/* Right: trading panel */}

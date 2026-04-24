@@ -465,7 +465,7 @@ export default function TradingPanel({ market }: { market: Market }) {
         <button
           type="button"
           onClick={() => useStore.setState({ selectedSide: "yes" })}
-          className={`rounded-xl border px-3 py-3 ${
+          className={`rounded-xl border px-3 py-3 transition ${
             selectedSide === "yes"
               ? tradeIntent === "open"
                 ? "border-emerald-500 bg-emerald-500 text-slate-950"
@@ -473,19 +473,17 @@ export default function TradingPanel({ market }: { market: Market }) {
               : "border-slate-700 text-slate-300 hover:border-slate-500"
           }`}
         >
-          <span className="block text-lg font-semibold">
-            Yes{yesPct != null ? ` ${yesPct}%` : ""}
-          </span>
+          <span className="block text-lg font-semibold">Yes</span>
           {yesDisplaySats != null && (
-            <span className="block text-xs opacity-60">
-              {yesDisplaySats} sats/contract
+            <span className="block text-sm font-medium opacity-75">
+              {yesDisplaySats.toLocaleString()} sats
             </span>
           )}
         </button>
         <button
           type="button"
           onClick={() => useStore.setState({ selectedSide: "no" })}
-          className={`rounded-xl border px-3 py-3 ${
+          className={`rounded-xl border px-3 py-3 transition ${
             selectedSide === "no"
               ? tradeIntent === "open"
                 ? "border-rose-500 bg-rose-500 text-slate-950"
@@ -493,12 +491,10 @@ export default function TradingPanel({ market }: { market: Market }) {
               : "border-slate-700 text-slate-300 hover:border-slate-500"
           }`}
         >
-          <span className="block text-lg font-semibold">
-            No{noPct != null ? ` ${noPct}%` : ""}
-          </span>
+          <span className="block text-lg font-semibold">No</span>
           {noDisplaySats != null && (
-            <span className="block text-xs opacity-60">
-              {noDisplaySats} sats/contract
+            <span className="block text-sm font-medium opacity-75">
+              {noDisplaySats.toLocaleString()} sats
             </span>
           )}
         </button>

@@ -95,6 +95,8 @@ const F1_CHAMPIONSHIP_2026: MarketGroup = {
   nevent: "nevent1mock-f1-wdc-2026",
   nostrEventJson: '{"kind":30050,"id":"mock-f1-wdc-2026"}',
   creationTxid: "mocktxid-f1-wdc-2026",
+  creatorPubkey:
+    "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
   outcomes: [
     {
       id: "ou-verstappen",
@@ -276,6 +278,8 @@ const US_OPEN_2026: MarketGroup = {
   nevent: "nevent1mock-us-open-2026",
   nostrEventJson: '{"kind":30050,"id":"mock-us-open-2026"}',
   creationTxid: "mocktxid-us-open-2026",
+  creatorPubkey:
+    "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
   outcomes: [
     {
       id: "ou-scottie",
@@ -406,6 +410,8 @@ const NBA_FINALS_2026: MarketGroup = {
   createdAt: Date.now() - 28 * 24 * 60 * 60 * 1000,
   state: "active",
   cptSats: 10_000,
+  creatorPubkey:
+    "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
   outcomes: [
     {
       id: "ou-celtics",
