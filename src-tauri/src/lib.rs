@@ -3,6 +3,7 @@ pub mod commands;
 pub mod discovery;
 pub mod identity_file;
 pub mod nip46;
+pub mod notifications;
 mod payments;
 pub mod state;
 pub mod wallet;
