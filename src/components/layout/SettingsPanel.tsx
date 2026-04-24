@@ -529,7 +529,15 @@ function WalletSection() {
         <button
           type="button"
           onClick={() =>
-            useStore.setState({ walletOpen: true, settingsOpen: false })
+            useStore.setState({
+              settingsOpen: false,
+              setupRequires: "identity+wallet",
+              onboardingStep: "wallet",
+              onboardingNostrDone: true,
+              onboardingWalletOnly: true,
+              onboardingWalletMode: "create",
+              setupModalOpen: true,
+            })
           }
           className="w-full rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
         >

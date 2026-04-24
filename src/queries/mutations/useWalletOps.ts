@@ -1,7 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { tauriApi } from "../../api/tauri";
-import { setWalletNeedsBackup } from "../../hooks/useWalletNeedsBackup";
 import { DEFAULT_TX_OPTIONS } from "../../services/tx";
 import { useStore } from "../../store";
 import type {
@@ -13,77 +12,12 @@ import type {
   TxOptions,
 } from "../../types";
 
-export function useCreateWallet() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (params: {
-      password: string;
-    }): Promise<{ mnemonic: string }> => {
-      const mnemonic = await invoke<string>("create_wallet", {
-        password: params.password,
-      });
-      setWalletNeedsBackup(true);
-      // Ensure a Nostr node exists before unlocking (unlock_wallet requires it)
-      if (!useStore.getState().nostrPubkey) {
-        const identity = await invoke<{ pubkey_hex: string; npub: string }>(
-          "generate_nostr_identity",
-        );
-        useStore.setState({
-          nostrPubkey: identity.pubkey_hex,
-          nostrNpub: identity.npub,
-        });
-      } else {
-        // Re-initialize existing identity so the node is available
-        await invoke("init_nostr_identity");
-      }
-      await tauriApi.unlockWallet(params.password);
-      return { mnemonic };
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["walletStatus"] });
-    },
-  });
-}
-
 export function useUnlockWallet() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (params: { password: string }): Promise<void> => {
       await tauriApi.unlockWallet(params.password);
       useStore.setState({ walletSessionPassword: params.password });
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["walletStatus"] });
-      void queryClient.invalidateQueries({ queryKey: ["walletSnapshot"] });
-    },
-  });
-}
-
-export function useRestoreWallet() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (params: {
-      mnemonic: string;
-      password: string;
-      unlock?: boolean;
-    }): Promise<void> => {
-      await tauriApi.restoreWallet(params.mnemonic.trim(), params.password);
-      if (params.unlock !== false) {
-        // Ensure a Nostr node exists before unlocking
-        if (!useStore.getState().nostrPubkey) {
-          const identity = await invoke<{ pubkey_hex: string; npub: string }>(
-            "generate_nostr_identity",
-          );
-          useStore.setState({
-            nostrPubkey: identity.pubkey_hex,
-            nostrNpub: identity.npub,
-          });
-        } else {
-          await invoke("init_nostr_identity");
-        }
-        await tauriApi.unlockWallet(params.password);
-      }
-      await tauriApi.syncWallet();
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["walletStatus"] });
