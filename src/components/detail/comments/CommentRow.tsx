@@ -88,8 +88,15 @@ export function CommentRow({
     shortPubkey(comment.author_pubkey);
 
   const isOwn = sessionPubkey === comment.author_pubkey;
+  // Optimistic entries carry a temp id until the signed event lands
+  // back from the relay. During that window (~1–2s) the real event
+  // id doesn't exist yet, so reactions / zaps / replies / delete
+  // would target a fake id and fail. Hide interactive affordances
+  // while pending — the row still shows the comment body + author
+  // so the user sees it went through.
+  const isPending = comment.id.startsWith("optimistic-");
   const tsIso = new Date(comment.created_at * 1000).toISOString();
-  const tsRel = formatTimeAgo(comment.created_at);
+  const tsRel = isPending ? "posting…" : formatTimeAgo(comment.created_at);
 
   const handleConfirmDelete = () => {
     setConfirmOpen(false);
@@ -159,7 +166,15 @@ export function CommentRow({
         <div className="mt-1">
           <CommentBody text={comment.content} />
         </div>
-        <div className="mt-2 flex items-center gap-1 text-slate-500">
+        {/* Hide the whole action row while the optimistic entry is in
+            place — no real event id means reactions / zaps / replies
+            / delete would all fail against the relay. The row snaps
+            into full interactivity the moment the signed event lands
+            back in the cache (usually 1–2s). */}
+        <div
+          className={`mt-2 flex items-center gap-1 text-slate-500 ${isPending ? "invisible" : ""}`}
+          aria-hidden={isPending}
+        >
           {sessionPubkey ? (
             <button
               type="button"

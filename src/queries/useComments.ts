@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { tauriApi } from "../api/tauri";
+import { useStore } from "../store";
 import type { MarketComment } from "../types";
 import { useDeletedCommentIds } from "./deletedComments";
 
@@ -41,6 +42,7 @@ export function usePublishMarketComment(
   creatorPubkey: string,
 ) {
   const qc = useQueryClient();
+  const sessionPubkey = useStore((s) => s.nostrPubkey);
   return useMutation({
     mutationFn: (args: {
       marketEventIdHex: string;
@@ -56,8 +58,50 @@ export function usePublishMarketComment(
         parentEventIdHex: args.parentEventIdHex,
         parentAuthorPubkeyHex: args.parentAuthorPubkeyHex,
       }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: keyFor(marketId, creatorPubkey) });
+    // Insert the user's new comment into the cache immediately so the
+    // thread updates without waiting for relay propagation. The real
+    // event (with its final id + signature) replaces this temporary
+    // entry in `onSuccess`; on error the entry is removed so the
+    // user sees the failure cleanly.
+    onMutate: (args) => {
+      if (!sessionPubkey) return;
+      const tempId = `optimistic-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const optimistic: MarketComment = {
+        id: tempId,
+        author_pubkey: sessionPubkey,
+        content: args.body,
+        created_at: Math.floor(Date.now() / 1000),
+        market_id: marketId,
+        parent_id: args.parentEventIdHex ?? null,
+        deleted: false,
+      };
+      const key = keyFor(marketId, creatorPubkey);
+      qc.setQueryData<MarketComment[]>(key, (prev) => {
+        const base = prev ?? [];
+        return [optimistic, ...base];
+      });
+      return { tempId };
+    },
+    onSuccess: (real, _args, ctx) => {
+      const key = keyFor(marketId, creatorPubkey);
+      if (ctx?.tempId) {
+        qc.setQueryData<MarketComment[]>(key, (prev) => {
+          if (!prev) return prev;
+          // Replace the optimistic placeholder with the real event so
+          // the row picks up its actual id for reaction / zap / delete
+          // affordances.
+          return prev.map((c) => (c.id === ctx.tempId ? real : c));
+        });
+      }
+      void qc.invalidateQueries({ queryKey: key });
+    },
+    onError: (_err, _args, ctx) => {
+      if (!ctx?.tempId) return;
+      const key = keyFor(marketId, creatorPubkey);
+      qc.setQueryData<MarketComment[]>(key, (prev) => {
+        if (!prev) return prev;
+        return prev.filter((c) => c.id !== ctx.tempId);
+      });
     },
   });
 }

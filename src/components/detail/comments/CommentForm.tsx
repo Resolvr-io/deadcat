@@ -64,16 +64,24 @@ export function CommentForm({
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
     setError(null);
+    // Clear the textarea immediately — the mutation pairs an
+    // optimistic cache insert with the signing round-trip, so the
+    // comment appears in the thread at the same moment the input
+    // resets. Keep the form mounted until the signing round-trip
+    // completes so an error surfaces inline; restore the draft on
+    // failure so the user can retry without retyping.
+    const body = trimmed;
+    setValue("");
     try {
       await mutation.mutateAsync({
         marketEventIdHex: marketEventId,
-        body: trimmed,
+        body,
         parentEventIdHex: parentEventId,
         parentAuthorPubkeyHex: parentAuthorPubkey,
       });
-      setValue("");
       onPosted?.();
     } catch (e) {
+      setValue(body);
       setError(friendlyError(String(e)));
     }
   }, [
