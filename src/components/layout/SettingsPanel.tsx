@@ -193,11 +193,33 @@ function NostrSection() {
         </div>
       )}
 
-      <p className="text-xs text-slate-500">
-        {isRemoteSigner
-          ? "Your keys are managed by an external signer via the NIP-46 protocol. They sign everything you publish — markets, attestations, comments, zaps, and settings changes."
-          : "Your Nostr keypair is your unique identity. It signs everything you publish — markets, attestations, comments, zaps, and settings changes."}
-      </p>
+      {/* Single consolidated description.
+          - Remote signer: no nsec to back up; purely descriptive.
+          - Local keys + identity set: combines "what it does" with
+            the backup urgency in one amber paragraph, so users get
+            the reason and the action side-by-side instead of in
+            two separated blocks.
+          - No identity yet: generic description to set expectations
+            before they pick Create / Restore / Connect. */}
+      {isRemoteSigner ? (
+        <p className="text-xs text-slate-500">
+          Your keys are managed by an external signer via the NIP-46 protocol.
+          They sign everything you publish — markets, attestations, comments,
+          zaps, and settings changes.
+        </p>
+      ) : nostrNpub ? (
+        <p className="text-xs text-amber-300/80">
+          Your Nostr keypair signs everything you publish — markets,
+          attestations, comments, zaps, and settings. Back up your nsec now;
+          without it you can't resolve markets you create or recover your
+          identity.
+        </p>
+      ) : (
+        <p className="text-xs text-slate-500">
+          Your Nostr keypair is your unique identity. It signs everything you
+          publish — markets, attestations, comments, zaps, and settings changes.
+        </p>
+      )}
 
       {/* npub */}
       <div>
@@ -326,12 +348,6 @@ function NostrSection() {
             )}
           </div>
         </div>
-      )}
-
-      {nostrNpub && !isRemoteSigner && (
-        <p className="text-xs text-amber-300/70">
-          Back up your nsec. You need it to resolve markets you create.
-        </p>
       )}
 
       {!nostrNpub ? (
