@@ -436,6 +436,7 @@ export default function WalletSetupStep({
       useStore.setState({
         walletStatus: "unlocked",
         walletSessionPassword: password,
+        walletSyncing: true,
         onboardingLoading: false,
       });
       showToast("Wallet created!", "success");
@@ -478,6 +479,7 @@ export default function WalletSetupStep({
       useStore.setState({
         walletStatus: "unlocked",
         walletSessionPassword: password,
+        walletSyncing: true,
         onboardingLoading: false,
       });
       showToast("Wallet restored!", "success");
@@ -526,6 +528,7 @@ export default function WalletSetupStep({
       useStore.setState({
         walletStatus: "unlocked",
         walletSessionPassword: password,
+        walletSyncing: true,
         onboardingLoading: false,
       });
       showToast("Wallet restored from Nostr backup!", "success");
@@ -588,6 +591,7 @@ export default function WalletSetupStep({
       useStore.setState({
         walletStatus: "unlocked",
         walletSessionPassword: password,
+        walletSyncing: true,
         onboardingLoading: false,
       });
       await finishOnboarding(queryClient);

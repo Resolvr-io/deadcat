@@ -440,12 +440,20 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
         // `wallet_snapshot` listener picks up the real balance as
         // soon as the scan completes, not 15s after unlock.
         let sync_node = node.clone();
+        let sync_app = bg_app.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(e) = sync_node.sync().await {
+            let sync_result = sync_node.sync().await;
+            if let Err(e) = &sync_result {
                 log::warn!("[restore-trace] post-unlock sync failed: {e}");
             } else {
                 log::info!("[restore-trace] post-unlock sync completed");
             }
+            // Emit the completion event either way so the frontend
+            // can drop its "syncing" indicator — even a failed sync
+            // shouldn't leave the balance pulsing indefinitely.
+            // `wallet_snapshot` carries the actual balance; this
+            // event is a pure UX signal.
+            let _ = sync_app.emit("wallet_sync_complete", &sync_result.is_ok());
         });
     });
 

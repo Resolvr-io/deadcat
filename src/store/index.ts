@@ -136,6 +136,14 @@ export interface WalletUiSlice {
   walletUtxosExpanded: boolean;
   walletError: string;
   walletLoading: boolean;
+  /** True while we're waiting for the first post-unlock sync to
+   *  complete. Drives a pulse on the balance so a user who restores
+   *  from a seed doesn't see a static `0 sats` that looks like an
+   *  empty wallet before the chain scan finishes. Cleared by the
+   *  `wallet_sync_complete` Tauri event (emitted whether the sync
+   *  succeeded or failed) so the balance can never stay pulsing
+   *  indefinitely. */
+  walletSyncing: boolean;
   walletUnit: "sats" | "btc";
   walletBalanceHidden: boolean;
   walletDeletePrompt: boolean;
@@ -403,6 +411,7 @@ export const useStore = create<StoreState>()(() => ({
   walletUtxosExpanded: false,
   walletError: "",
   walletLoading: false,
+  walletSyncing: false,
   walletUnit: "sats",
   walletBalanceHidden: false,
   walletDeletePrompt: false,
