@@ -12,6 +12,7 @@ pub(crate) mod market;
 pub(crate) mod pool;
 pub(crate) mod reactions;
 pub(crate) mod service;
+pub(crate) mod social;
 pub(crate) mod store_trait;
 pub(crate) mod zaps;
 
@@ -95,6 +96,16 @@ pub use comments::{
 pub use reactions::{
     EventReactionSummary, REACTION_KIND, ReactionCount, build_reaction_deletion_event,
     build_reaction_event, fetch_reaction_summaries_for_events,
+};
+
+// ---------------------------------------------------------------------------
+// Re-exports: social (NIP-02 follows, NIP-51 mutes)
+// ---------------------------------------------------------------------------
+
+pub use social::{
+    FOLLOW_LIST_KIND, FollowList, MUTE_LIST_KIND, MuteEntry, MuteList, build_follow_list_event,
+    build_mute_list_event, deserialize_private_mutes, fetch_follow_list_event,
+    fetch_mute_list_event, parse_follow_list, parse_mute_list, serialize_private_mutes,
 };
 
 // ---------------------------------------------------------------------------
