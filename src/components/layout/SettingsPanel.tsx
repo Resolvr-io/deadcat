@@ -181,28 +181,26 @@ function NostrSection() {
 
   return (
     <div className="space-y-4">
-      {/* Signer type badge + storage location. The storage line sits
-          just below the badge for local-key users so the "where is
-          my nsec kept?" answer is one glance away — important after
-          the plaintext-file → keychain migration. */}
+      {/* Signer type badge + inline storage indicator. Same row so
+          the "where is my nsec kept?" answer reads at a glance;
+          flex-wrap lets the warning variants (with Retry) drop to a
+          second line on narrow viewports. */}
       {nostrNpub && (
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium ${
+              isRemoteSigner
+                ? "bg-blue-500/10 text-blue-300 border border-blue-500/20"
+                : "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
+            }`}
+          >
             <span
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium ${
-                isRemoteSigner
-                  ? "bg-blue-500/10 text-blue-300 border border-blue-500/20"
-                  : "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
-              }`}
-            >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${isRemoteSigner ? "bg-blue-400" : "bg-emerald-400"}`}
-              />
-              {isRemoteSigner ? "Remote Signer (NIP-46)" : "Local Keys"}
-            </span>
-          </div>
+              className={`h-1.5 w-1.5 rounded-full ${isRemoteSigner ? "bg-blue-400" : "bg-emerald-400"}`}
+            />
+            {isRemoteSigner ? "Remote Signer (NIP-46)" : "Local Keys"}
+          </span>
           {!isRemoteSigner && keyStorage === "keychain" && (
-            <p className="flex items-center gap-1.5 text-[11px] text-slate-500">
+            <span className="flex items-center gap-1.5 text-[11px] text-slate-500">
               <svg
                 aria-hidden="true"
                 className="h-3 w-3"
@@ -217,10 +215,10 @@ function NostrSection() {
                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
               Stored in OS keychain
-            </p>
+            </span>
           )}
           {!isRemoteSigner && keyStorage === "legacy_file" && (
-            <p className="flex items-center gap-1.5 text-[11px] text-amber-300">
+            <span className="flex items-center gap-1.5 text-[11px] text-amber-300">
               <svg
                 aria-hidden="true"
                 className="h-3 w-3"
@@ -244,10 +242,10 @@ function NostrSection() {
               >
                 Retry
               </button>
-            </p>
+            </span>
           )}
           {!isRemoteSigner && keyStorage === "unavailable" && (
-            <p className="flex items-center gap-1.5 text-[11px] text-rose-300">
+            <span className="flex items-center gap-1.5 text-[11px] text-rose-300">
               <svg
                 aria-hidden="true"
                 className="h-3 w-3"
@@ -271,7 +269,7 @@ function NostrSection() {
               >
                 Retry
               </button>
-            </p>
+            </span>
           )}
         </div>
       )}
