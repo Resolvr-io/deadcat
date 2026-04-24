@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { baseCurrencyOptions } from "../../constants";
 import { useLockScroll } from "../../hooks/useLockScroll";
 import { queryClient } from "../../queries/queryClient";
@@ -107,11 +107,19 @@ function NostrSection() {
     }
   }, [walletStatus]);
 
+  // Re-fetch the NIP-46 status whenever the wallet state transitions.
+  // On delete_wallet the node is dropped + rebuilt, and
+  // get_nip46_status can briefly return stale data or an error,
+  // causing the subtree to render with an inconsistent
+  // isRemoteSigner flag until the next panel open. Re-running on
+  // walletStatus change keeps the section's signer assumptions
+  // correct without waiting for a manual refresh.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: walletStatus is the re-run trigger, not used in the effect body
   useEffect(() => {
     invoke<Nip46Status | null>("get_nip46_status")
       .then((status) => setNip46Status(status))
       .catch(() => {});
-  }, []);
+  }, [walletStatus]);
 
   const isRemoteSigner = nip46Status?.connected === true;
 
@@ -1281,6 +1289,18 @@ function SettingsPanelContent({
   nostrReplacePanel: boolean;
 }) {
   useLockScroll();
+  const walletStatus = useStore((s) => s.walletStatus);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // When the wallet status transitions (delete / create / lock /
+  // unlock) the Liquid Bitcoin Wallet accordion shrinks or grows,
+  // and the scroll container can get stranded mid-scroll with the
+  // earlier sections clipped above the viewport. Snap back to the
+  // top so the Nostr Identity section stays visible.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: walletStatus is the re-run trigger, not used in the effect body
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, [walletStatus]);
 
   return (
     <div className="macos-overlay-safe-top fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm py-8">
@@ -1293,7 +1313,10 @@ function SettingsPanelContent({
               <h2 className="text-lg font-medium text-slate-100">Settings</h2>
               <CloseButton onClick={closeSettings} />
             </div>
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-0">
+            <div
+              ref={scrollRef}
+              className="flex-1 overflow-y-auto px-6 py-4 space-y-0"
+            >
               <SettingsAccordion sectionKey="nostr" title="Nostr Identity">
                 <NostrSection />
               </SettingsAccordion>
