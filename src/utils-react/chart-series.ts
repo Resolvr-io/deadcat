@@ -56,7 +56,10 @@ function scaleConfig(
 }
 
 /** Approximate wall-clock date for a given block height. */
-function blockHeightToDate(blockHeight: number, currentHeight: number): Date {
+export function blockHeightToDate(
+  blockHeight: number,
+  currentHeight: number,
+): Date {
   const blocksAgo = currentHeight - blockHeight;
   // ~1 block per minute on Liquid
   return new Date(Date.now() - blocksAgo * 60_000);
@@ -90,7 +93,7 @@ export function blockHeightToHoverLabel(
   return `${dateStr} ${timeStr}`;
 }
 
-function blockHeightToAxisLabel(
+export function blockHeightToAxisLabel(
   blockHeight: number,
   currentHeight: number,
   timescale: ChartTimescale,

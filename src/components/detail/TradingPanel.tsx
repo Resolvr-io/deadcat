@@ -21,12 +21,15 @@ import {
   commitTradeContractsDraft,
   commitTradeSizeSatsDraft,
   fullContractSats,
+  getFullOrderbook,
   getPathAvailability,
   getPositionContracts,
   getTradePreview,
   isExpired,
   setLimitPriceSats,
 } from "../../utils-react/market";
+import { generateMockOrderbook } from "../../utils-react/mock-orderbook";
+import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
 import OrderbookPanel from "./OrderbookPanel";
 import PoolSection from "./PoolSection";
 
@@ -127,12 +130,30 @@ export default function TradingPanel({ market }: { market: Market }) {
         : "bg-rose-400 text-slate-950 hover:bg-rose-300";
 
   const yesPrice = market.yesPrice;
+
+  // Derive effective yes price from orderbook mid when market.yesPrice is null
+  const effectiveYesPrice = useMemo(() => {
+    if (yesPrice != null) return yesPrice;
+    const realBook = getFullOrderbook(market, "yes");
+    const book =
+      realBook.asks.length > 0 || realBook.bids.length > 0
+        ? realBook
+        : generateMockOrderbook(market);
+    const bestAsk = book.asks[0]?.priceSats;
+    const bestBid = book.bids[0]?.priceSats;
+    if (bestAsk != null && bestBid != null) return (bestAsk + bestBid) / 2 / fc;
+    if (bestAsk != null) return bestAsk / fc;
+    if (bestBid != null) return bestBid / fc;
+    return null;
+  }, [yesPrice, market, fc]);
+
   const yesDisplaySats =
-    yesPrice != null
-      ? clampContractPriceSats(Math.round(yesPrice * fc), fc)
+    effectiveYesPrice != null
+      ? clampContractPriceSats(Math.round(effectiveYesPrice * fc), fc)
       : null;
   const noDisplaySats = yesDisplaySats != null ? fc - yesDisplaySats : null;
-  const yesPct = yesPrice != null ? Math.round(yesPrice * 100) : null;
+  const yesPct =
+    effectiveYesPrice != null ? Math.round(effectiveYesPrice * 100) : null;
   const noPct = yesPct != null ? 100 - yesPct : null;
 
   const estimatedGrossPayoutSats = Math.floor(preview.requestedContracts * fc);
@@ -357,8 +378,42 @@ export default function TradingPanel({ market }: { market: Market }) {
       : 0;
   const redeemCollateral = tokensInput * redeemRate;
 
+  // Effective 24h change — use real value if available, otherwise derive from
+  // mock price history (series spans ~45 days; scale to a per-day delta).
+  const effectiveChange24h = useMemo(() => {
+    if (market.change24h !== 0) return market.change24h;
+    const history = generateMockPriceHistory(market, 400);
+    if (history.length < 2) return 0;
+    const firstBps = history[0].implied_yes_price_bps;
+    const lastBps = history[history.length - 1].implied_yes_price_bps;
+    if (firstBps === 0) return 0;
+    const totalChange = (lastBps - firstBps) / firstBps;
+    return totalChange / 45; // scale 45-day range to approximate 1-day delta
+  }, [market]);
+
+  const panelChangePct =
+    effectiveChange24h !== 0
+      ? `${effectiveChange24h > 0 ? "+" : ""}${(effectiveChange24h * 100).toFixed(1)}%`
+      : null;
+
   return (
-    <aside className="rounded-[21px] border border-slate-800 bg-slate-900/80 p-[21px]">
+    <aside className="sticky top-4 self-start rounded-xl border border-slate-800 bg-slate-900/80 p-5">
+      {/* Probability + daily change */}
+      <div className="mb-4 flex items-baseline gap-2 border-b border-slate-800 pb-4">
+        <p className="text-4xl font-bold text-slate-100">
+          {yesPct ?? "—"}
+          {yesPct != null && <span className="text-xl text-slate-400">%</span>}
+        </p>
+        <span className="text-sm text-slate-500">chance</span>
+        {panelChangePct && (
+          <span
+            className={`text-sm font-medium ${effectiveChange24h > 0 ? "text-emerald-400" : "text-rose-400"}`}
+          >
+            {panelChangePct} today
+          </span>
+        )}
+      </div>
+
       {/* Buy / Sell toggle */}
       <div className="mb-3 flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
         <div className="flex items-center gap-4">
@@ -497,29 +552,6 @@ export default function TradingPanel({ market }: { market: Market }) {
         </div>
       )}
 
-      {/* Size mode toggle */}
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <span className="text-xs text-slate-400">Amount</span>
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            disabled={tradeIntent === "close"}
-            onClick={() => useStore.setState({ sizeMode: "sats" })}
-            className={`rounded border px-2 py-1 text-xs ${sizeMode === "sats" ? "border-slate-500 bg-slate-700 text-slate-100" : "border-slate-700 text-slate-300"} ${tradeIntent === "close" ? "cursor-not-allowed opacity-50" : ""}`}
-          >
-            sats
-          </button>
-          <button
-            type="button"
-            disabled={tradeIntent === "open"}
-            onClick={() => useStore.setState({ sizeMode: "contracts" })}
-            className={`rounded border px-2 py-1 text-xs ${sizeMode === "contracts" ? "border-slate-500 bg-slate-700 text-slate-100" : "border-slate-700 text-slate-300"} ${tradeIntent === "open" ? "cursor-not-allowed opacity-50" : ""}`}
-          >
-            contracts
-          </button>
-        </div>
-      </div>
-
       {/* Size input */}
       {tradeIntent === "open" ? (
         <>
@@ -603,21 +635,21 @@ export default function TradingPanel({ market }: { market: Market }) {
               <button
                 type="button"
                 onClick={() => handleSellPreset(0.25)}
-                className="rounded border border-slate-700 px-3 py-1 text-slate-300"
+                className="rounded bg-slate-800/70 px-3 py-1 text-slate-400 transition hover:bg-slate-700 hover:text-slate-200"
               >
                 25%
               </button>
               <button
                 type="button"
                 onClick={() => handleSellPreset(0.5)}
-                className="rounded border border-slate-700 px-3 py-1 text-slate-300"
+                className="rounded bg-slate-800/70 px-3 py-1 text-slate-400 transition hover:bg-slate-700 hover:text-slate-200"
               >
                 50%
               </button>
               <button
                 type="button"
                 onClick={() => handleSellPreset(1)}
-                className="rounded border border-slate-700 px-3 py-1 text-slate-300"
+                className="rounded bg-slate-800/70 px-3 py-1 text-slate-400 transition hover:bg-slate-700 hover:text-slate-200"
               >
                 Max
               </button>
@@ -629,7 +661,7 @@ export default function TradingPanel({ market }: { market: Market }) {
       {/* Preview / Quote section */}
       {orderType === "limit" ? (
         <>
-          <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
+          <div className="rounded-lg bg-slate-950/50 p-3 text-sm">
             <div className="flex items-center justify-between py-1">
               <span>Order type</span>
               <span>Limit</span>
@@ -684,7 +716,7 @@ export default function TradingPanel({ market }: { market: Market }) {
               {preview.fill.bestPriceSats}–{preview.fill.worstPriceSats})
             </p>
           )}
-          <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-sm">
+          <div className="rounded-lg bg-slate-950/50 p-3 text-sm">
             {tradeIntent === "open" ? (
               <>
                 <div className="flex items-center justify-between py-1">
@@ -729,7 +761,7 @@ export default function TradingPanel({ market }: { market: Market }) {
           )}
 
           {quote && (
-            <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-xs">
+            <div className="mt-3 rounded-lg bg-slate-950/50 p-3 text-xs">
               <p className="mb-2 font-semibold text-slate-200">
                 Live route quote
               </p>
@@ -758,7 +790,7 @@ export default function TradingPanel({ market }: { market: Market }) {
                   return (
                     <div
                       key={legKey}
-                      className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/50 px-2 py-1"
+                      className="flex items-center justify-between px-2 py-1"
                     >
                       <span className="text-slate-300">
                         {idx + 1}. {sourceLabel}
@@ -793,7 +825,7 @@ export default function TradingPanel({ market }: { market: Market }) {
           )}
           {walletStatus === "not_created" ? (
             <div
-              className={`${market.traderCount > 0 ? "" : "mt-4"} rounded-lg border border-slate-700 bg-slate-900/60 p-4 text-center`}
+              className={`${market.traderCount > 0 ? "" : "mt-4"} rounded-lg bg-slate-900/60 p-4 text-center`}
             >
               {/* Branch the CTA on whether the user already has a
                   Nostr identity. A signed-in user only needs to set
@@ -884,7 +916,7 @@ export default function TradingPanel({ market }: { market: Market }) {
           <button
             type="button"
             onClick={() => handleSellPreset(1)}
-            className="rounded border border-slate-700 px-2 py-1 text-slate-300"
+            className="rounded bg-slate-800/70 px-2 py-1 text-slate-400 transition hover:bg-slate-700 hover:text-slate-200"
           >
             Sell max
           </button>
@@ -905,7 +937,7 @@ export default function TradingPanel({ market }: { market: Market }) {
         <summary className="cursor-pointer select-none hover:text-slate-300">
           Fee details
         </summary>
-        <div className="mt-2 space-y-1 rounded border border-slate-800 bg-slate-900/40 p-2">
+        <div className="mt-2 space-y-1 rounded bg-slate-900/40 p-2">
           <p>Execution fee: 1% of matched notional.</p>
           <p>
             Winning PnL fee: 2% of positive payout minus entry cost (buy only).

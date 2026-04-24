@@ -42,6 +42,9 @@ export type MarketGroup = {
   state: "active" | "resolved";
   resolvedOutcomeId?: string;
   cptSats: number;
+  nevent?: string;
+  nostrEventJson?: string;
+  creationTxid?: string;
 };
 export type Side = "yes" | "no";
 export type OrderType = "market" | "limit";

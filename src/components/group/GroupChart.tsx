@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MarketGroup, MarketGroupOutcome } from "../../types";
+import type {
+  ChartTimescale,
+  MarketGroup,
+  MarketGroupOutcome,
+} from "../../types";
+import {
+  blockHeightToAxisLabel,
+  blockHeightToHoverLabel,
+} from "../../utils-react/chart-series";
+import { formatVolumeBtc } from "../../utils-react/format";
 
 // ── Palette — 14 perceptually distinct colours ───────────────────────
 export const OUTCOME_COLORS = [
@@ -20,53 +29,48 @@ export const OUTCOME_COLORS = [
 ];
 
 // ── Timescale config ─────────────────────────────────────────────────
-type Timescale = "1h" | "4h" | "1d" | "3d" | "7d" | "1M" | "ALL";
-
-const TIMESCALES: Timescale[] = ["1h", "4h", "1d", "3d", "7d", "1M", "ALL"];
+const TIMESCALES: ChartTimescale[] = [
+  "1h",
+  "4h",
+  "1d",
+  "3d",
+  "7d",
+  "1M",
+  "all",
+];
 
 // Blocks per timescale window (1 block ≈ 1 min on Liquid)
-const SCALE_BLOCKS: Record<Timescale, number> = {
+const SCALE_BLOCKS: Record<ChartTimescale, number> = {
   "1h": 60,
   "4h": 240,
   "1d": 1440,
   "3d": 4320,
   "7d": 10080,
   "1M": 43200,
-  ALL: 64800,
+  all: 64800,
 };
 
 // How many data points to slice from the full 120-pt series
-const SCALE_POINTS: Record<Timescale, number> = {
+const SCALE_POINTS: Record<ChartTimescale, number> = {
   "1h": 8,
   "4h": 20,
   "1d": 40,
   "3d": 60,
   "7d": 80,
   "1M": 100,
-  ALL: 120,
+  all: 120,
 };
 
-// X-axis label count per timescale
-function xLabelsForScale(scale: Timescale, currentHeight: number): string[] {
+// X-axis labels using real wall-clock dates (matches binary market format)
+function xLabelsForScale(
+  scale: ChartTimescale,
+  currentHeight: number,
+): string[] {
   const blocks = SCALE_BLOCKS[scale];
   const startBlock = currentHeight - blocks;
-  const count = 5;
-  return Array.from({ length: count }, (_, i) => {
-    const block = startBlock + (blocks * i) / (count - 1);
-    const minutesFromNow = (block - currentHeight) * 1; // 1 block ≈ 1 min
-    if (minutesFromNow >= -1) return "Now";
-    const absMin = Math.abs(minutesFromNow);
-    if (scale === "1h" || scale === "4h") {
-      const h = Math.floor(absMin / 60);
-      const m = Math.round(absMin % 60);
-      return h > 0 ? `${h}h${m > 0 ? `${m}m` : ""} ago` : `${m}m ago`;
-    }
-    if (scale === "1d" || scale === "3d") {
-      const h = Math.round(absMin / 60);
-      return `${h}h ago`;
-    }
-    const days = Math.round(absMin / 1440);
-    return `${days}d ago`;
+  return [0, 0.25, 0.5, 0.75, 1].map((fraction) => {
+    const blockHeight = Math.round(startBlock + fraction * blocks);
+    return blockHeightToAxisLabel(blockHeight, currentHeight, scale);
   });
 }
 
@@ -150,6 +154,7 @@ function buildPoints(
 type TooltipData = {
   clientX: number;
   svgX: number;
+  fraction: number;
   items: { name: string; color: string; pct: number }[];
 };
 
@@ -191,21 +196,29 @@ function LegendItem({
 export default function GroupChart({
   group,
   highlightedOutcomeId,
+  showLegend = true,
+  showControls = true,
+  className,
 }: {
   group: MarketGroup;
   highlightedOutcomeId: string | null;
+  showLegend?: boolean;
+  showControls?: boolean;
+  className?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState({ w: 600, h: 216 });
-  const [timescale, setTimescale] = useState<Timescale>("7d");
+  const [timescale, setTimescale] = useState<ChartTimescale>("7d");
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!containerRef.current) return;
     const ro = new ResizeObserver((entries) => {
-      const { width } = entries[0].contentRect;
-      setDims({ w: width, h: Math.round(width * 0.34) });
+      const { width, height } = entries[0].contentRect;
+      // Use measured height if container has an explicit height, else derive from width
+      const h = height > 40 ? Math.round(height) : Math.round(width * 0.34);
+      setDims({ w: width, h });
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
@@ -240,9 +253,9 @@ export default function GroupChart({
   // Layout constants (SVG-space)
   const { w, h } = dims;
   const PAD_L = 4;
-  const PAD_R = 30; // space for y-axis labels on the right
-  const PAD_T = 6;
-  const PAD_B = 20; // space for x-axis labels at bottom
+  const PAD_R = 40; // space for y-axis labels on the right
+  const PAD_T = 28; // reserve space above 100% line for the hover time box
+  const PAD_B = 22; // space for x-axis labels at bottom
 
   const yFromValue = (v: number) => PAD_T + (1 - v) * (h - PAD_T - PAD_B);
   const plotW = w - PAD_L - PAD_R;
@@ -280,6 +293,7 @@ export default function GroupChart({
       setTooltip({
         clientX: relX,
         svgX: PAD_L + fraction * plotW,
+        fraction,
         items,
       });
     },
@@ -295,11 +309,39 @@ export default function GroupChart({
   const xLabels = xLabelsForScale(timescale, group.currentHeight);
 
   return (
-    <div className="space-y-2">
+    <div className={`flex flex-col space-y-2 ${className ?? ""}`}>
+      {/* Legend — above the chart */}
+      {showLegend && (
+        <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 sm:grid-cols-3 lg:grid-cols-4">
+          {chartOutcomes.map((outcome, i) => {
+            const color = OUTCOME_COLORS[i % OUTCOME_COLORS.length];
+            const pct = Math.round(outcome.yesPrice * 100);
+            return (
+              <LegendItem
+                key={outcome.id}
+                color={color}
+                name={outcome.name}
+                pct={pct}
+                dimmed={hidden.has(outcome.id)}
+                onClick={() => toggleHidden(outcome.id)}
+              />
+            );
+          })}
+          {rankedOutcomes.length > TOP_N && (
+            <div className="flex items-center gap-1.5 px-2 py-1">
+              <span className="h-2 w-2 shrink-0 rounded-full bg-slate-700" />
+              <span className="text-[11px] text-slate-600">
+                +{rankedOutcomes.length - TOP_N} others
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Chart container */}
       <div
         ref={containerRef}
-        className="relative rounded-xl border border-slate-800 bg-slate-950/60"
+        className="relative min-h-0 w-full flex-1 rounded-xl"
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
       >
@@ -307,7 +349,7 @@ export default function GroupChart({
           aria-label="Outcome probability chart"
           role="img"
           viewBox={`0 0 ${w} ${h}`}
-          className="w-full"
+          className="h-full w-full"
           style={{ display: "block" }}
         >
           {/* Y-axis grid lines + labels */}
@@ -327,12 +369,12 @@ export default function GroupChart({
                 />
                 {/* Y label on right edge */}
                 <text
-                  x={w - PAD_R + 3}
+                  x={w - 3}
                   y={y}
                   fill="#475569"
-                  fontSize="7"
+                  fontSize="11"
                   dominantBaseline="middle"
-                  textAnchor="start"
+                  textAnchor="end"
                   fontFamily="monospace"
                 >
                   {`${Math.round(v * 100)}%`}
@@ -352,7 +394,7 @@ export default function GroupChart({
                 x={x}
                 y={h - 3}
                 fill="#475569"
-                fontSize="7"
+                fontSize="11"
                 dominantBaseline="auto"
                 textAnchor={anchor}
                 fontFamily="monospace"
@@ -390,25 +432,69 @@ export default function GroupChart({
             );
           })}
 
-          {/* Hover crosshair */}
-          {tooltip && (
-            <line
-              x1={tooltip.svgX}
-              y1={PAD_T}
-              x2={tooltip.svgX}
-              y2={h - PAD_B}
-              stroke="#64748b"
-              strokeWidth="0.6"
-              strokeDasharray="2 3"
-            />
-          )}
+          {/* Hover crosshair + time box */}
+          {tooltip &&
+            (() => {
+              const scaleBlocks = SCALE_BLOCKS[timescale];
+              const startBlock = group.currentHeight - scaleBlocks;
+              const hoverBlockHeight = Math.round(
+                startBlock + tooltip.fraction * scaleBlocks,
+              );
+              const timeText = blockHeightToHoverLabel(
+                hoverBlockHeight,
+                group.currentHeight,
+              );
+              const boxH = 18;
+              const boxW = Math.max(60, timeText.length * 7 + 16);
+              const boxX = Math.max(
+                PAD_L,
+                Math.min(PAD_L + plotW - boxW, tooltip.svgX - boxW / 2),
+              );
+              const boxY = 4; // above the 100% gridline (PAD_T=28)
+              return (
+                <>
+                  <line
+                    x1={tooltip.svgX}
+                    y1={PAD_T}
+                    x2={tooltip.svgX}
+                    y2={h - PAD_B}
+                    stroke="#64748b"
+                    strokeWidth="0.6"
+                    strokeDasharray="2 3"
+                  />
+                  <rect
+                    x={boxX}
+                    y={boxY}
+                    width={boxW}
+                    height={boxH}
+                    rx="4"
+                    fill="#020617"
+                    fillOpacity="0.85"
+                    stroke="#475569"
+                    strokeOpacity="0.5"
+                    strokeWidth="0.5"
+                  />
+                  <text
+                    x={boxX + boxW / 2}
+                    y={boxY + boxH / 2 + 4}
+                    fill="#dbe7f6"
+                    fontSize="11"
+                    fontWeight="500"
+                    textAnchor="middle"
+                  >
+                    {timeText}
+                  </text>
+                </>
+              );
+            })()}
         </svg>
 
-        {/* Hover tooltip */}
+        {/* Hover tooltip — starts below the time box (PAD_T 28 + boxH 18 + gap) */}
         {tooltip && (
           <div
-            className="pointer-events-none absolute top-2 z-10 w-44 rounded-lg border border-slate-700 bg-slate-900/95 p-2 text-xs shadow-lg backdrop-blur-sm"
+            className="pointer-events-none absolute z-10 w-44 rounded-lg bg-slate-900/95 p-2 text-xs shadow-lg backdrop-blur-sm"
             style={{
+              top: 50,
               left:
                 tooltip.clientX > dims.w * 0.6
                   ? tooltip.clientX - 188
@@ -441,51 +527,30 @@ export default function GroupChart({
         )}
       </div>
 
-      {/* Controls row: timescale buttons */}
-      <div className="flex items-center justify-end">
-        <div className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/65 p-1 text-[12px]">
-          {TIMESCALES.map((key) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setTimescale(key)}
-              className={`rounded px-2 py-0.5 transition ${
-                timescale === key
-                  ? "bg-slate-700 text-slate-100"
-                  : "text-slate-500 hover:bg-slate-800/70 hover:text-slate-300"
-              }`}
-            >
-              {key}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Legend */}
-      <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 sm:grid-cols-3 lg:grid-cols-4">
-        {chartOutcomes.map((outcome, i) => {
-          const color = OUTCOME_COLORS[i % OUTCOME_COLORS.length];
-          const pct = Math.round(outcome.yesPrice * 100);
-          return (
-            <LegendItem
-              key={outcome.id}
-              color={color}
-              name={outcome.name}
-              pct={pct}
-              dimmed={hidden.has(outcome.id)}
-              onClick={() => toggleHidden(outcome.id)}
-            />
-          );
-        })}
-        {rankedOutcomes.length > TOP_N && (
-          <div className="flex items-center gap-1.5 px-2 py-1">
-            <span className="h-2 w-2 shrink-0 rounded-full bg-slate-700" />
-            <span className="text-[11px] text-slate-600">
-              +{rankedOutcomes.length - TOP_N} others
-            </span>
+      {/* Controls row: vol + timescale buttons */}
+      {showControls && (
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold text-slate-300">
+            {formatVolumeBtc(group.totalVolumeBtc)} vol
+          </span>
+          <div className="inline-flex items-center gap-1 rounded-lg bg-slate-950/65 p-1 text-[12px]">
+            {TIMESCALES.map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setTimescale(key)}
+                className={`rounded px-2 py-0.5 transition ${
+                  timescale === key
+                    ? "bg-slate-700 text-slate-100"
+                    : "text-slate-500 hover:bg-slate-800/70 hover:text-slate-300"
+                }`}
+              >
+                {key === "all" ? "ALL" : key}
+              </button>
+            ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

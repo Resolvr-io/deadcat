@@ -1,3 +1,4 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useMemo, useState } from "react";
 import { useStore } from "../../store";
 import type { MarketGroup, MarketGroupOutcome } from "../../types";
@@ -77,31 +78,29 @@ function OutcomeRow({
     <button
       type="button"
       onClick={onSelect}
-      className={`group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${
-        isSelected
-          ? "border border-slate-600 bg-slate-800/60"
-          : "border border-transparent hover:border-slate-700 hover:bg-slate-900/50"
+      className={`group flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition ${
+        isSelected ? "bg-slate-800/60" : "hover:bg-slate-900/40"
       }`}
     >
       {/* Color swatch + rank */}
-      <span className="flex w-7 shrink-0 items-center gap-1.5">
+      <span className="flex w-6 shrink-0 items-center gap-1.5">
         <span
           className="h-2 w-2 shrink-0 rounded-full"
           style={{ backgroundColor: color }}
         />
-        <span className="text-xs text-slate-600">{rank}</span>
+        <span className="text-[11px] text-slate-600">{rank}</span>
       </span>
 
       {/* Name + bar */}
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm text-slate-200">{outcome.name}</p>
-        <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-slate-800">
+        <div className="mt-1.5 h-0.5 w-full overflow-hidden rounded-full bg-slate-800">
           <div
             className="h-full rounded-full"
             style={{
               width: `${Math.max(2, pct)}%`,
               backgroundColor: color,
-              opacity: 0.5,
+              opacity: 0.6,
             }}
           />
         </div>
@@ -124,19 +123,9 @@ function OutcomeRow({
       </span>
 
       {/* Volume */}
-      <span className="hidden w-16 shrink-0 text-right text-xs text-slate-500 lg:block">
+      <span className="hidden w-16 shrink-0 text-right text-xs text-slate-600 lg:block">
         {formatVolumeBtc(outcome.volumeBtc)}
       </span>
-
-      {/* Yes / No buttons */}
-      <div className="flex shrink-0 gap-1.5">
-        <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-400">
-          Yes {pct}%
-        </span>
-        <span className="rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-medium text-rose-400">
-          No {100 - pct}%
-        </span>
-      </div>
     </button>
   );
 }
@@ -152,18 +141,28 @@ function OutcomeTradingPanel({
   color: string;
 }) {
   const [side, setSide] = useState<"yes" | "no">("yes");
+  const [intent, setIntent] = useState<"open" | "close">("open");
+  const [orderType, setOrderType] = useState<"market" | "limit">("market");
   const [amountSats, setAmountSats] = useState(10000);
   const [amountDraft, setAmountDraft] = useState("10,000");
+  const [limitPriceSats, setLimitPriceSats] = useState(() =>
+    Math.round(outcome.yesPrice * group.cptSats * 2),
+  );
+  const [limitPriceDraft, setLimitPriceDraft] = useState(() =>
+    String(Math.round(outcome.yesPrice * group.cptSats * 2)),
+  );
+  const [showOrderbook, setShowOrderbook] = useState(false);
 
+  const fc = group.cptSats * 2;
   const pct = Math.round(outcome.yesPrice * 100);
-  const noPct = 100 - pct;
+  const yesDisplaySats = Math.round(outcome.yesPrice * fc);
+  const noDisplaySats = fc - yesDisplaySats;
 
-  // Rough payout estimate: (collateral / price) * 2 * cptSats - collateral
-  // For a YES position: payout = contracts * 2 * cptSats; contracts = amountSats / (yesPrice * 2 * cptSats)
+  const clamp = (v: number) => Math.max(1, Math.min(fc - 1, v));
+
   const activePrice = side === "yes" ? outcome.yesPrice : 1 - outcome.yesPrice;
-  const contracts = amountSats / (activePrice * 2 * group.cptSats);
-  const grossPayout = contracts * 2 * group.cptSats;
-  const netProfit = grossPayout - amountSats;
+  const contracts = amountSats / (activePrice * fc);
+  const grossPayout = contracts * fc;
 
   const handleAmountChange = (raw: string) => {
     const digits = raw.replace(/\D/g, "");
@@ -172,59 +171,188 @@ function OutcomeTradingPanel({
     setAmountDraft(num > 0 ? num.toLocaleString() : "");
   };
 
+  const handleLimitBlur = () => {
+    const parsed = Number(limitPriceDraft.replace(/\D/g, ""));
+    const clamped = clamp(Number.isFinite(parsed) ? parsed : limitPriceSats);
+    setLimitPriceSats(clamped);
+    setLimitPriceDraft(String(clamped));
+  };
+
+  const stepLimit = (delta: number) => {
+    const next = clamp(limitPriceSats + delta);
+    setLimitPriceSats(next);
+    setLimitPriceDraft(String(next));
+  };
+
   const ctaBg =
-    side === "yes"
-      ? "bg-emerald-300 text-slate-950 hover:bg-emerald-200"
-      : "bg-rose-400 text-slate-950 hover:bg-rose-300";
+    intent === "open"
+      ? side === "yes"
+        ? "bg-emerald-300 text-slate-950 hover:bg-emerald-200"
+        : "bg-rose-400 text-slate-950 hover:bg-rose-300"
+      : "bg-slate-600 text-slate-100 hover:bg-slate-500";
+
+  // Orderbook data
+  const book = generateMockOutcomeOrderbook(
+    outcome.id,
+    outcome.yesPrice,
+    group.cptSats,
+  );
+  let askRunning = 0;
+  const cumAsks = book.asks.map((l) => {
+    askRunning += l.contracts;
+    return { ...l, cumulative: askRunning };
+  });
+  let bidRunning = 0;
+  const cumBids = book.bids.map((l) => {
+    bidRunning += l.contracts;
+    return { ...l, cumulative: bidRunning };
+  });
+  const maxCum = Math.max(
+    cumAsks.length > 0 ? cumAsks[cumAsks.length - 1].cumulative : 0,
+    cumBids.length > 0 ? cumBids[cumBids.length - 1].cumulative : 0,
+    1,
+  );
 
   return (
-    <div className="rounded-[21px] border border-slate-800 bg-slate-950/55 p-5">
-      {/* Outcome title */}
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-        {group.category} · Multi-outcome
-      </p>
-      <h2 className="mb-3 text-base font-semibold text-slate-100">
+    <aside className="sticky top-4 self-start rounded-xl border border-slate-800 bg-slate-900/80 p-5">
+      {/* Outcome identity */}
+      <h2 className="mb-3 text-base font-semibold" style={{ color }}>
         {outcome.name}
       </h2>
 
-      {/* Probability display */}
-      <div className="mb-4 flex items-baseline gap-2">
-        <p className="text-4xl font-bold" style={{ color }}>
+      {/* Probability */}
+      <div className="mb-3 flex items-baseline gap-2">
+        <p className="text-4xl font-bold text-slate-100">
           {pct}
           <span className="text-xl text-slate-400">%</span>
         </p>
         <span className="text-base text-slate-500">chance</span>
+        {outcome.change24h !== 0 && (
+          <span
+            className={`text-sm font-medium ${outcome.change24h > 0 ? "text-emerald-400" : "text-rose-400"}`}
+          >
+            {outcome.change24h > 0 ? "+" : ""}
+            {(outcome.change24h * 100).toFixed(1)}% today
+          </span>
+        )}
       </div>
 
-      {/* YES / NO selector */}
-      <div className="mb-4 flex gap-2">
+      {/* Buy / Sell + Market / Limit toggles */}
+      <div className="mb-3 flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
+        <div className="flex items-center gap-4">
+          <button
+            type="button"
+            onClick={() => setIntent("open")}
+            className={`border-b-2 pb-1 text-xl font-medium transition ${intent === "open" ? "border-slate-100 text-slate-100" : "border-transparent text-slate-500"}`}
+          >
+            Buy
+          </button>
+          <button
+            type="button"
+            onClick={() => setIntent("close")}
+            className={`border-b-2 pb-1 text-xl font-medium transition ${intent === "close" ? "border-slate-100 text-slate-100" : "border-transparent text-slate-500"}`}
+          >
+            Sell
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setOrderType("market")}
+            className={`rounded border px-2 py-1 text-xs transition ${orderType === "market" ? "border-slate-500 bg-slate-700 text-slate-100" : "border-slate-700 text-slate-400"}`}
+          >
+            Market
+          </button>
+          <button
+            type="button"
+            onClick={() => setOrderType("limit")}
+            className={`rounded border px-2 py-1 text-xs transition ${orderType === "limit" ? "border-slate-500 bg-slate-700 text-slate-100" : "border-slate-700 text-slate-400"}`}
+          >
+            Limit
+          </button>
+        </div>
+      </div>
+
+      {/* YES / NO selector — matches binary panel exactly */}
+      <div className="mb-3 grid grid-cols-2 gap-2">
         <button
           type="button"
           onClick={() => setSide("yes")}
-          className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition ${
+          className={`rounded-xl border px-3 py-3 transition ${
             side === "yes"
-              ? "bg-emerald-500 text-slate-950"
-              : "border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
+              ? intent === "open"
+                ? "border-emerald-500 bg-emerald-500 text-slate-950"
+                : "border-slate-500 bg-slate-600 text-slate-100"
+              : "border-slate-700 text-slate-300 hover:border-slate-500"
           }`}
         >
-          Yes {pct}%
+          <span className="block text-lg font-semibold">Yes</span>
+          <span className="block text-sm font-medium opacity-75">
+            {yesDisplaySats} sats
+          </span>
         </button>
         <button
           type="button"
           onClick={() => setSide("no")}
-          className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition ${
+          className={`rounded-xl border px-3 py-3 transition ${
             side === "no"
-              ? "bg-rose-500 text-slate-950"
-              : "border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
+              ? intent === "open"
+                ? "border-rose-500 bg-rose-500 text-slate-950"
+                : "border-slate-500 bg-slate-600 text-slate-100"
+              : "border-slate-700 text-slate-300 hover:border-slate-500"
           }`}
         >
-          No {noPct}%
+          <span className="block text-lg font-semibold">No</span>
+          <span className="block text-sm font-medium opacity-75">
+            {noDisplaySats} sats
+          </span>
         </button>
       </div>
 
-      {/* Amount input */}
-      <p className="mb-1.5 text-xs font-medium text-slate-400">Amount</p>
-      <div className="relative mb-3">
+      {/* Limit price input */}
+      {orderType === "limit" && (
+        <div className="mb-3">
+          <label
+            className="mb-1 block text-xs text-slate-400"
+            htmlFor="outcome-limit-price"
+          >
+            Price (sats per contract)
+          </label>
+          <div className="grid grid-cols-[42px_1fr_42px] gap-2">
+            <button
+              type="button"
+              onClick={() => stepLimit(-1)}
+              className="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800"
+              aria-label="Decrease price"
+            >
+              &minus;
+            </button>
+            <input
+              id="outcome-limit-price"
+              type="text"
+              inputMode="numeric"
+              value={limitPriceDraft}
+              onChange={(e) => setLimitPriceDraft(e.target.value)}
+              onBlur={handleLimitBlur}
+              className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 text-center text-base font-semibold text-slate-100 outline-none ring-emerald-400/70 transition focus:ring-2"
+            />
+            <button
+              type="button"
+              onClick={() => stepLimit(1)}
+              className="h-10 rounded-lg border border-slate-700 bg-slate-900/70 text-lg font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-800"
+              aria-label="Increase price"
+            >
+              +
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Amount */}
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-xs text-slate-400">Amount</span>
+      </div>
+      <div className="relative mb-2">
         <input
           type="text"
           inputMode="numeric"
@@ -238,13 +366,13 @@ function OutcomeTradingPanel({
         </span>
       </div>
 
-      {/* Potential payout */}
-      {amountSats > 0 && (
-        <div className="mb-4 flex items-center justify-between rounded-lg bg-slate-900/60 px-3 py-2 text-sm">
+      {/* Potential payout — buy mode only */}
+      {intent === "open" && amountSats > 0 && (
+        <div className="mb-3 flex items-center justify-between rounded-lg bg-slate-900/60 px-3 py-2 text-sm">
           <span className="text-slate-400">Potential payout</span>
           <span className="font-semibold text-emerald-300">
             {formatSats(grossPayout)}
-            {netProfit > 0 && (
+            {grossPayout > amountSats && (
               <span className="ml-1.5 text-xs text-slate-500">
                 {(grossPayout / amountSats).toFixed(2)}x
               </span>
@@ -253,9 +381,57 @@ function OutcomeTradingPanel({
         </div>
       )}
 
+      {/* Preview box */}
+      <div className="rounded-lg bg-slate-950/50 p-3 text-sm">
+        {orderType === "limit" ? (
+          <>
+            <div className="flex items-center justify-between py-1">
+              <span>Order type</span>
+              <span>Limit</span>
+            </div>
+            <div className="flex items-center justify-between py-1">
+              <span>Price</span>
+              <span>{limitPriceSats} sats</span>
+            </div>
+            <div className="flex items-center justify-between py-1">
+              <span>Amount</span>
+              <span>{formatSats(amountSats)}</span>
+            </div>
+            <div className="mt-1 flex items-center justify-between py-1 text-xs text-slate-500">
+              <span>Side</span>
+              <span>
+                {side.toUpperCase()} · {intent === "open" ? "buy" : "sell"}
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center justify-between py-1">
+              <span>{intent === "open" ? "Amount" : "You receive"}</span>
+              <span>{formatSats(amountSats)}</span>
+            </div>
+            <div className="flex items-center justify-between py-1">
+              <span>{intent === "open" ? "Max payout" : "Position after"}</span>
+              <span>
+                {intent === "open"
+                  ? formatSats(Math.floor(grossPayout))
+                  : "0 contracts"}
+              </span>
+            </div>
+            <div className="mt-1 flex items-center justify-between py-1 text-xs text-slate-500">
+              <span>Avg price</span>
+              <span>
+                {side === "yes" ? yesDisplaySats : noDisplaySats} sats · Yes +
+                No = {fc}
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+
       {/* Social proof */}
       {outcome.traderCount > 0 && (
-        <p className="mb-3 text-center text-xs text-slate-500">
+        <p className="mb-2 mt-4 text-center text-xs text-slate-500">
           {outcome.traderCount.toLocaleString()} traders on this outcome
         </p>
       )}
@@ -264,43 +440,113 @@ function OutcomeTradingPanel({
       <button
         type="button"
         disabled
-        className={`w-full rounded-xl py-3 text-sm font-semibold opacity-60 ${ctaBg}`}
+        className={`${outcome.traderCount > 0 ? "" : "mt-4"} w-full rounded-lg ${ctaBg} px-4 py-2 font-semibold opacity-50 transition`}
       >
-        {side === "yes"
-          ? `Buy Yes — ${outcome.name}`
-          : `Buy No — ${outcome.name}`}
+        {orderType === "limit"
+          ? `Place Limit ${intent === "open" ? "Buy" : "Sell"} ${side === "yes" ? "Yes" : "No"}`
+          : intent === "open"
+            ? `Buy ${side === "yes" ? "Yes" : "No"}`
+            : `Sell ${side === "yes" ? "Yes" : "No"}`}
       </button>
       <p className="mt-2 text-center text-xs text-slate-600">
         Multi-outcome trading coming soon
       </p>
 
-      {/* Stats footer */}
-      <div className="mt-4 border-t border-slate-800/60 pt-3 text-xs text-slate-500">
-        <div className="flex justify-between">
-          <span>Volume</span>
-          <span className="text-slate-300">
-            {formatVolumeBtc(outcome.volumeBtc)}
-          </span>
-        </div>
-        <div className="mt-1 flex justify-between">
-          <span>Collateral per token</span>
-          <span className="text-slate-300">{formatSats(group.cptSats)}</span>
-        </div>
-        <div className="mt-1 flex justify-between">
-          <span>Resolution</span>
-          <span className="text-slate-300 text-right max-w-[60%] truncate">
-            {group.resolutionSource}
-          </span>
-        </div>
+      {/* Position info */}
+      <div className="mt-3 flex items-center justify-between text-xs text-slate-400">
+        <span>You hold: YES 0 · NO 0</span>
       </div>
-    </div>
+
+      {/* Fee details */}
+      <details className="mt-3 text-xs text-slate-500">
+        <summary className="cursor-pointer select-none hover:text-slate-300">
+          Fee details
+        </summary>
+        <div className="mt-2 space-y-1 rounded bg-slate-900/40 p-2">
+          <p>Execution fee: 1% of matched notional.</p>
+          <p>
+            Winning PnL fee: 2% of positive payout minus entry cost (buy only).
+          </p>
+          <p>Final fee depends on actual matched fills.</p>
+        </div>
+      </details>
+
+      {/* Collapsible order book */}
+      <div className="mt-4 border-t border-slate-800 pt-3">
+        <button
+          type="button"
+          onClick={() => setShowOrderbook((v) => !v)}
+          className="flex w-full items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400 transition hover:text-slate-200"
+        >
+          <span>Order Book</span>
+          <span className="font-normal normal-case">
+            {showOrderbook ? "Hide" : "Show"}
+          </span>
+        </button>
+
+        {showOrderbook && (
+          <>
+            <div className="mb-1 mt-2 flex justify-between text-[10px] text-slate-500">
+              <span>Price (sats)</span>
+              <span>Depth</span>
+            </div>
+
+            {[...cumAsks].reverse().map((level) => {
+              const depthPct = (level.cumulative / maxCum) * 100;
+              return (
+                <div
+                  key={`ask-${level.priceSats}`}
+                  className="relative flex items-center justify-between px-2 py-0.5 text-xs"
+                >
+                  <div
+                    className="absolute inset-y-0 right-0 bg-rose-500/15"
+                    style={{ width: `${depthPct.toFixed(1)}%` }}
+                  />
+                  <span className="relative text-rose-400">
+                    {level.priceSats}
+                  </span>
+                  <span className="relative text-slate-300">
+                    {level.cumulative.toFixed(0)}
+                  </span>
+                </div>
+              );
+            })}
+
+            <div className="border-y border-slate-800/50 py-1 text-center text-[10px] text-slate-500">
+              {book.spread !== null ? `Spread: ${book.spread} sats` : "—"}
+            </div>
+
+            {cumBids.map((level) => {
+              const depthPct = (level.cumulative / maxCum) * 100;
+              return (
+                <div
+                  key={`bid-${level.priceSats}`}
+                  className="relative flex items-center justify-between px-2 py-0.5 text-xs"
+                >
+                  <div
+                    className="absolute inset-y-0 right-0 bg-emerald-500/15"
+                    style={{ width: `${depthPct.toFixed(1)}%` }}
+                  />
+                  <span className="relative text-emerald-400">
+                    {level.priceSats}
+                  </span>
+                  <span className="relative text-slate-300">
+                    {level.cumulative.toFixed(0)}
+                  </span>
+                </div>
+              );
+            })}
+          </>
+        )}
+      </div>
+    </aside>
   );
 }
 
 // ── Empty selection state ────────────────────────────────────────────
 function NoOutcomeSelected({ group }: { group: MarketGroup }) {
   return (
-    <div className="flex h-64 flex-col items-center justify-center rounded-[21px] border border-slate-800 bg-slate-950/30 px-6 text-center">
+    <div className="flex h-64 flex-col items-center justify-center px-6 text-center">
       <p className="mb-1 text-sm font-medium text-slate-400">
         Select an outcome
       </p>
@@ -319,6 +565,7 @@ function NoOutcomeSelected({ group }: { group: MarketGroup }) {
 export default function GroupDetailPage() {
   const selectedGroupId = useStore((s) => s.selectedGroupId);
   const selectedOutcomeId = useStore((s) => s.selectedOutcomeId);
+  const walletNetwork = useStore((s) => s.walletNetwork);
 
   const group = useMemo(() => {
     if (!selectedGroupId) return null;
@@ -339,7 +586,6 @@ export default function GroupDetailPage() {
   }
 
   const [search, setSearch] = useState("");
-  const [showOrderbook, setShowOrderbook] = useState(false);
 
   const filteredOutcomes = useMemo(() => {
     if (!group) return [];
@@ -371,82 +617,98 @@ export default function GroupDetailPage() {
         : "text-slate-200";
 
   return (
-    <div className="phi-container py-6 lg:py-8">
-      {/* Back + header */}
-      <div className="mb-5">
-        <div className="mb-3 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() =>
-              useStore.setState({ view: "home", selectedGroupId: null })
-            }
-            className="flex items-center gap-1.5 text-sm text-slate-400 transition hover:text-slate-200"
+    <div className="phi-container py-6 lg:py-10">
+      {/* Back nav */}
+      <div className="mb-2 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() =>
+            useStore.setState({ view: "home", selectedGroupId: null })
+          }
+          className="flex items-center gap-1.5 text-sm text-slate-500 transition hover:text-slate-200"
+        >
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-4 w-4"
           >
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="h-4 w-4"
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+          Markets
+        </button>
+        <span className="text-slate-700">·</span>
+        <span className="text-sm text-slate-600">{group.category}</span>
+        <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-400">
+          Multi-outcome
+        </span>
+        {group.state === "active" && (
+          <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
+            Active
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-3">
+          {group.nevent && (
+            <button
+              type="button"
+              onClick={() =>
+                useStore.setState({
+                  nostrEventModal: true,
+                  nostrEventJson: group.nostrEventJson ?? null,
+                  nostrEventNevent: group.nevent ?? null,
+                })
+              }
+              className="text-xs text-slate-500 transition hover:text-slate-300"
             >
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
-            Back
-          </button>
-          <span className="text-slate-700">·</span>
-          <span className="text-sm text-slate-500">{group.category}</span>
-          <span className="rounded border border-violet-700/50 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">
-            Multi-outcome
-          </span>
-          {group.state === "active" && (
-            <span className="rounded border border-emerald-700/50 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">
-              Active
-            </span>
+              Nostr Event
+            </button>
           )}
-        </div>
-
-        <h1 className="mb-3 text-2xl font-semibold text-slate-100">
-          {group.title}
-        </h1>
-
-        {/* Stats strip */}
-        <div className="mb-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
-          <span className="text-slate-500">
-            Vol{" "}
-            <span className="text-slate-200">
-              {formatVolumeBtc(group.totalVolumeBtc)}
-            </span>
-          </span>
-          <span className="text-slate-700">·</span>
-          <span className="text-slate-500">
-            Traders{" "}
-            <span className="text-slate-200">
-              {group.traderCount.toLocaleString()}
-            </span>
-          </span>
-          <span className="text-slate-700">·</span>
-          <span className="text-slate-500">
-            Outcomes{" "}
-            <span className="text-slate-200">{group.outcomes.length}</span>
-          </span>
-          <span className="text-slate-700">·</span>
-          <span className="text-slate-500">
-            Closes{" "}
-            <span className={closesColor}>
-              {blocksLeft > 0 ? formatTimeRemaining(blocksLeft) : "Expired"}
-            </span>
-          </span>
+          {group.creationTxid && (
+            <button
+              type="button"
+              onClick={() => {
+                const base =
+                  walletNetwork === "testnet"
+                    ? "https://blockstream.info/liquidtestnet"
+                    : "https://blockstream.info/liquid";
+                void openUrl(`${base}/tx/${group.creationTxid}`);
+              }}
+              className="text-xs text-slate-500 transition hover:text-slate-300"
+            >
+              Creation TX
+            </button>
+          )}
         </div>
       </div>
 
+      {/* Title + stats */}
+      <h1 className="mb-2 text-2xl font-semibold leading-tight text-slate-100 lg:text-3xl">
+        {group.title}
+      </h1>
+      <div className="mb-8 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-500">
+        <span>
+          <span className="text-slate-300">
+            {group.traderCount.toLocaleString()}
+          </span>{" "}
+          traders
+        </span>
+        <span className="text-slate-700">·</span>
+        <span>
+          Closes{" "}
+          <span className={closesColor}>
+            {blocksLeft > 0 ? formatTimeRemaining(blocksLeft) : "Expired"}
+          </span>
+        </span>
+      </div>
+
       {/* Two-column layout */}
-      <div className="grid gap-5 lg:grid-cols-[1.618fr_1fr]">
+      <div className="grid gap-8 lg:grid-cols-[1.618fr_0.8fr]">
         {/* Left: chart + outcome list + description */}
-        <section className="space-y-4">
-          {/* Chart sits in left column so right panel stays visible */}
+        <section className="min-w-0 space-y-6">
           <GroupChart group={group} highlightedOutcomeId={selectedOutcomeId} />
 
           {/* Search */}
@@ -459,7 +721,7 @@ export default function GroupDetailPage() {
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600"
             >
               <circle cx="11" cy="11" r="8" />
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -469,22 +731,21 @@ export default function GroupDetailPage() {
               placeholder={`Search ${group.outcomes.length} outcomes...`}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="h-9 w-full rounded-lg border border-slate-700 bg-slate-950/80 pl-9 pr-3 text-sm text-slate-100 placeholder-slate-600 focus:border-slate-500 focus:outline-none"
+              className="h-9 w-full max-w-xs rounded-full border border-slate-800 bg-slate-950/60 pl-9 pr-3 text-sm text-slate-100 placeholder-slate-600 focus:border-slate-600 focus:outline-none"
             />
           </div>
 
           {/* Column headers */}
-          <div className="mb-1 flex items-center gap-3 px-3 text-[10px] font-semibold uppercase tracking-wider text-slate-600">
+          <div className="-mb-4 flex items-center gap-3 px-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
             <span className="w-5 text-center">#</span>
             <span className="flex-1">Outcome</span>
             <span className="w-10 text-right">Prob.</span>
             <span className="hidden w-14 text-right sm:block">24h</span>
             <span className="hidden w-16 text-right lg:block">Volume</span>
-            <span className="w-28 text-right">Trade</span>
           </div>
 
           {/* Outcome rows */}
-          <div className="space-y-1">
+          <div className="space-y-0.5">
             {filteredOutcomes.map((outcome) => {
               const globalRank =
                 group.outcomes
@@ -513,124 +774,24 @@ export default function GroupDetailPage() {
             )}
           </div>
 
-          {/* Description — below outcome list */}
-          <p className="border-t border-slate-800/60 pt-4 text-sm text-slate-400">
-            {group.description}
-          </p>
+          {/* Description */}
+          <p className="text-sm text-slate-500">{group.description}</p>
         </section>
 
-        {/* Right: trading panel + orderbook */}
-        <aside className="space-y-4">
+        {/* Right: trading panel */}
+        <aside>
           {(() => {
             if (!selectedOutcome) return <NoOutcomeSelected group={group} />;
             const rank = [...group.outcomes]
               .sort((a, b) => b.yesPrice - a.yesPrice)
               .findIndex((o) => o.id === selectedOutcome.id);
             const color = OUTCOME_COLORS[rank % OUTCOME_COLORS.length];
-            const book = generateMockOutcomeOrderbook(
-              selectedOutcome.id,
-              selectedOutcome.yesPrice,
-              group.cptSats,
-            );
-            // Cumulative depth
-            let askRunning = 0;
-            const cumAsks = [...book.asks]
-              .reverse()
-              .map((l) => {
-                askRunning += l.contracts;
-                return { ...l, cumulative: askRunning };
-              })
-              .reverse();
-            let bidRunning = 0;
-            const cumBids = book.bids.map((l) => {
-              bidRunning += l.contracts;
-              return { ...l, cumulative: bidRunning };
-            });
-            const maxCum = Math.max(
-              cumAsks.length > 0 ? cumAsks[0].cumulative : 0,
-              cumBids.length > 0 ? cumBids[cumBids.length - 1].cumulative : 0,
-              1,
-            );
-
             return (
-              <>
-                <OutcomeTradingPanel
-                  group={group}
-                  outcome={selectedOutcome}
-                  color={color}
-                />
-
-                {/* Order book — collapsed by default */}
-                <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
-                  <button
-                    type="button"
-                    onClick={() => setShowOrderbook((v) => !v)}
-                    className="flex w-full items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-400 transition hover:text-slate-200"
-                  >
-                    <span>Order Book</span>
-                    <span className="normal-case font-normal">
-                      {showOrderbook ? "Hide" : "Show"}
-                    </span>
-                  </button>
-
-                  {showOrderbook && (
-                    <>
-                      <div className="mt-2 mb-1 flex justify-between text-[10px] text-slate-500">
-                        <span>Price (sats)</span>
-                        <span>Depth</span>
-                      </div>
-
-                      {cumAsks.map((level) => {
-                        const pct = (level.cumulative / maxCum) * 100;
-                        return (
-                          <div
-                            key={`ask-${level.priceSats}`}
-                            className="relative flex items-center justify-between px-2 py-0.5 text-xs"
-                          >
-                            <div
-                              className="absolute inset-y-0 right-0 bg-rose-500/15"
-                              style={{ width: `${pct.toFixed(1)}%` }}
-                            />
-                            <span className="relative text-rose-400">
-                              {level.priceSats}
-                            </span>
-                            <span className="relative text-slate-300">
-                              {level.cumulative.toFixed(0)}
-                            </span>
-                          </div>
-                        );
-                      })}
-
-                      <div className="border-y border-slate-800/50 py-1 text-center text-[10px] text-slate-500">
-                        {book.spread !== null
-                          ? `Spread: ${book.spread} sats`
-                          : "—"}
-                      </div>
-
-                      {cumBids.map((level) => {
-                        const pct = (level.cumulative / maxCum) * 100;
-                        return (
-                          <div
-                            key={`bid-${level.priceSats}`}
-                            className="relative flex items-center justify-between px-2 py-0.5 text-xs"
-                          >
-                            <div
-                              className="absolute inset-y-0 right-0 bg-emerald-500/15"
-                              style={{ width: `${pct.toFixed(1)}%` }}
-                            />
-                            <span className="relative text-emerald-400">
-                              {level.priceSats}
-                            </span>
-                            <span className="relative text-slate-300">
-                              {level.cumulative.toFixed(0)}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </>
-                  )}
-                </div>
-              </>
+              <OutcomeTradingPanel
+                group={group}
+                outcome={selectedOutcome}
+                color={color}
+              />
             );
           })()}
         </aside>

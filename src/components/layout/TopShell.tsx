@@ -578,7 +578,7 @@ function CategoryBar() {
   );
 
   return (
-    <div className="border-t border-slate-800">
+    <div>
       <div className="phi-container py-2">
         <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap">
           {filteredCategories.map((category) => {
@@ -816,7 +816,7 @@ export function TopShell() {
   return (
     <>
       <header
-        className="relative z-30 border-b border-slate-800 bg-slate-950/80 backdrop-blur"
+        className="relative z-30 bg-slate-950/80 backdrop-blur"
         onMouseDown={onDragMouseDown}
       >
         <div

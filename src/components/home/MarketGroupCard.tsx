@@ -29,7 +29,7 @@ export default function MarketGroupCard({
     <button
       type="button"
       onClick={() => openGroup(group)}
-      className="market-card w-full cursor-pointer rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600"
+      className="market-card w-full cursor-pointer rounded-xl bg-slate-950/50 p-4 text-left transition hover:bg-slate-900/60"
       style={{ animationDelay: `${index * 50}ms` }}
     >
       {/* Header */}
