@@ -54,8 +54,8 @@ export function MarketActionsMenu({ market }: { market: MarketLike }) {
     if (!market.creationTxid) return;
     const base =
       walletNetwork === "testnet"
-        ? "https://blockstream.info/liquidtestnet"
-        : "https://blockstream.info/liquid";
+        ? "https://liquid.network/testnet"
+        : "https://liquid.network";
     void openUrl(`${base}/tx/${market.creationTxid}`);
     close();
   };

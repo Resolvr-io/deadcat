@@ -41,8 +41,8 @@ export function UtxoList({
 
   const explorerBase =
     walletNetwork === "testnet"
-      ? "https://blockstream.info/liquidtestnet"
-      : "https://blockstream.info/liquid";
+      ? "https://liquid.network/testnet"
+      : "https://liquid.network";
 
   const lbtcUtxos = utxos.filter((u) => u.assetId === walletPolicyAssetId);
   const tokenUtxos = utxos.filter((u) => u.assetId !== walletPolicyAssetId);

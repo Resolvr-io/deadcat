@@ -293,8 +293,8 @@ export function SendModal() {
             onClick={() => {
               const base =
                 walletNetwork === "testnet"
-                  ? "https://blockstream.info/liquidtestnet"
-                  : "https://blockstream.info/liquid";
+                  ? "https://liquid.network/testnet"
+                  : "https://liquid.network";
               void openUrl(`${base}/tx/${r.txid}`);
             }}
             className="w-full rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800 transition"
