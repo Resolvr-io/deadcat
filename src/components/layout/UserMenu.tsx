@@ -25,7 +25,7 @@ export function UserMenu() {
   const copyNpub = useCallback(async () => {
     if (nostrNpub) {
       await navigator.clipboard.writeText(nostrNpub);
-      showToast("Copied npub to clipboard");
+      showToast("Copied public key to clipboard");
     }
   }, [nostrNpub]);
 
@@ -88,7 +88,7 @@ export function UserMenu() {
               type="button"
               onClick={copyNpub}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-slate-800"
-              title="Click to copy npub"
+              title="Click to copy public key"
             >
               <span className="mono min-w-0 truncate text-xs text-slate-300">
                 {nostrNpub}

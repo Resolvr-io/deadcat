@@ -8,6 +8,7 @@ import { useStore } from "../../store";
 import type { BaseCurrency, Nip46Status, RelayEntry } from "../../types";
 import { randomCatName } from "../../utils-react/random-name";
 import { btcLabel } from "../../utils-react/wallet";
+import { ConfirmDialog } from "../detail/comments/ConfirmDialog";
 import { CloseButton } from "../shared/CloseButton";
 import { showToast } from "../shared/Toast";
 import { LightningWalletSection } from "./LightningWalletSection";
@@ -93,18 +94,16 @@ function NostrSection() {
   const nostrNpub = useStore((s) => s.nostrNpub);
   const nostrNsecRevealed = useStore((s) => s.nostrNsecRevealed);
   const walletStatus = useStore((s) => s.walletStatus);
-  const [nsecPasswordInput, setNsecPasswordInput] = useState("");
-  const [nsecPasswordPrompt, setNsecPasswordPrompt] = useState(false);
-  const [nsecPasswordError, setNsecPasswordError] = useState("");
   const [nip46Status, setNip46Status] = useState<Nip46Status | null>(null);
+  const [revealError, setRevealError] = useState<string | null>(null);
 
-  // Auto-hide nsec when wallet locks
+  // Auto-hide the revealed nsec when the wallet locks — locking the
+  // wallet is a "stepping away" signal and leaving the secret key
+  // visible after that would be a shoulder-surf risk.
   useEffect(() => {
     if (walletStatus !== "unlocked") {
       useStore.setState({ nostrNsecRevealed: null });
-      setNsecPasswordPrompt(false);
-      setNsecPasswordInput("");
-      setNsecPasswordError("");
+      setRevealError(null);
     }
   }, [walletStatus]);
 
@@ -120,7 +119,7 @@ function NostrSection() {
     const npub = useStore.getState().nostrNpub;
     if (npub) {
       await navigator.clipboard.writeText(npub);
-      showToast("Copied npub to clipboard");
+      showToast("Copied public key to clipboard");
     }
   }, []);
 
@@ -129,49 +128,27 @@ function NostrSection() {
     if (nsec) {
       await navigator.clipboard.writeText(nsec);
       useStore.setState({ nostrNsecRevealed: null });
-      setNsecPasswordPrompt(false);
-      setNsecPasswordInput("");
-      showToast("Copied nsec to clipboard");
+      showToast("Copied secret key to clipboard");
     }
   }, []);
 
+  // Reveal is a simple click — no password gate. The previous
+  // wallet-password prompt was cosmetic (the key file is stored in
+  // plaintext on disk) and broke entirely when the wallet was
+  // deleted, leaving users unable to back up their nsec. Matches
+  // how Amethyst / Primal / Damus handle this on mobile: the
+  // device/OS is the auth boundary, not a separate per-app password.
   const handleRevealClick = useCallback(() => {
-    // If wallet is unlocked with a session password, use it directly
-    const sessionPw = useStore.getState().walletSessionPassword;
-    if (walletStatus === "unlocked" && sessionPw) {
-      void (async () => {
-        try {
-          // Verify the session password is valid
-          await invoke<string>("get_wallet_mnemonic", {
-            password: sessionPw,
-          });
-          const nsec = await invoke<string>("export_nostr_nsec");
-          useStore.setState({ nostrNsecRevealed: nsec });
-        } catch {
-          // Session password invalid or wallet issue — fall back to prompt
-          setNsecPasswordPrompt(true);
-          setNsecPasswordError("");
-        }
-      })();
-    } else {
-      setNsecPasswordPrompt(true);
-      setNsecPasswordError("");
-    }
-  }, [walletStatus]);
-
-  const handlePasswordSubmit = useCallback(async () => {
-    if (!nsecPasswordInput) return;
-    try {
-      await invoke<string>("get_wallet_mnemonic", {
-        password: nsecPasswordInput,
-      });
-      const nsec = await invoke<string>("export_nostr_nsec");
-      useStore.setState({ nostrNsecRevealed: nsec });
-      setNsecPasswordError("");
-    } catch {
-      setNsecPasswordError("Incorrect password");
-    }
-  }, [nsecPasswordInput]);
+    void (async () => {
+      try {
+        const nsec = await invoke<string>("export_nostr_nsec");
+        useStore.setState({ nostrNsecRevealed: nsec });
+        setRevealError(null);
+      } catch (e) {
+        setRevealError(String(e));
+      }
+    })();
+  }, []);
 
   return (
     <div className="space-y-4">
@@ -193,15 +170,37 @@ function NostrSection() {
         </div>
       )}
 
-      <p className="text-xs text-slate-500">
-        {isRemoteSigner
-          ? "Your keys are managed by an external signer via the NIP-46 protocol."
-          : "Your Nostr keypair is your unique identity, and is used to publish markets and sign attestations."}
-      </p>
+      {/* Single consolidated description.
+          - Remote signer: no nsec to back up; purely descriptive.
+          - Local keys + identity set: combines "what it does" with
+            the backup urgency in one amber paragraph, so users get
+            the reason and the action side-by-side instead of in
+            two separated blocks.
+          - No identity yet: generic description to set expectations
+            before they pick Create / Restore / Connect. */}
+      {isRemoteSigner ? (
+        <p className="text-xs text-slate-500">
+          Your keys are managed by an external signer via the NIP-46 protocol.
+          They sign everything you publish — markets, attestations, comments,
+          zaps, and settings changes.
+        </p>
+      ) : nostrNpub ? (
+        <p className="text-xs text-amber-300/80">
+          Your Nostr keypair signs everything you publish — markets,
+          attestations, comments, zaps, and settings. Back up your secret key
+          (nsec) now; without it you can't resolve markets you create or recover
+          your identity.
+        </p>
+      ) : (
+        <p className="text-xs text-slate-500">
+          Your Nostr keypair is your unique identity. It signs everything you
+          publish — markets, attestations, comments, zaps, and settings changes.
+        </p>
+      )}
 
       {/* npub */}
       <div>
-        <p className="text-xs text-slate-500 mb-1">Public Key</p>
+        <p className="text-xs text-slate-500 mb-1">Public key (npub)</p>
         <div className="flex items-center gap-2">
           <p className="mono text-xs text-slate-300 min-w-0 truncate">
             {nostrNpub ?? "Not initialized"}
@@ -247,7 +246,7 @@ function NostrSection() {
       {/* nsec — only for local keys */}
       {nostrNpub && !isRemoteSigner && (
         <div>
-          <p className="text-xs text-slate-500 mb-1">Secret Key</p>
+          <p className="text-xs text-slate-500 mb-1">Secret key (nsec)</p>
           <div className="flex items-center gap-2">
             {nostrNsecRevealed ? (
               <>
@@ -274,42 +273,6 @@ function NostrSection() {
                   </svg>
                 </button>
               </>
-            ) : nsecPasswordPrompt ? (
-              <div className="flex flex-col gap-1.5 w-full">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="password"
-                    value={nsecPasswordInput}
-                    onChange={(e) => setNsecPasswordInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") void handlePasswordSubmit();
-                    }}
-                    placeholder="Account password"
-                    className="h-7 flex-1 min-w-0 rounded border border-slate-700 bg-slate-900 px-2 text-xs outline-none ring-emerald-400 transition focus:ring-1"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void handlePasswordSubmit()}
-                    className="shrink-0 rounded border border-amber-700/40 px-2.5 py-1 text-xs text-amber-300 hover:bg-amber-900/20 transition"
-                  >
-                    Reveal
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNsecPasswordPrompt(false);
-                      setNsecPasswordInput("");
-                      setNsecPasswordError("");
-                    }}
-                    className="shrink-0 text-xs text-slate-500 hover:text-slate-300 transition"
-                  >
-                    Cancel
-                  </button>
-                </div>
-                {nsecPasswordError && (
-                  <p className="text-xs text-rose-300">{nsecPasswordError}</p>
-                )}
-              </div>
             ) : (
               <>
                 <p className="text-xs text-slate-600 italic">
@@ -325,13 +288,10 @@ function NostrSection() {
               </>
             )}
           </div>
+          {revealError && (
+            <p className="mt-1 text-xs text-rose-300">{revealError}</p>
+          )}
         </div>
-      )}
-
-      {nostrNpub && !isRemoteSigner && (
-        <p className="text-xs text-amber-300/70">
-          Back up your nsec. You need it to resolve markets you create.
-        </p>
       )}
 
       {!nostrNpub ? (
@@ -939,9 +899,9 @@ function DataSourceSection() {
     try {
       await invoke("set_source_npub", { npub });
       useStore.setState({ sourceNpub: npub });
-      showToast("Source npub saved — restart to apply");
+      showToast("Source public key saved — restart to apply");
     } catch (e) {
-      showToast(`Invalid npub: ${e}`);
+      showToast(`Invalid public key: ${e}`);
     } finally {
       useStore.setState({ sourceNpubSaving: false });
     }
@@ -967,7 +927,7 @@ function DataSourceSection() {
           htmlFor="source-npub-input"
           className="block text-[10px] font-medium uppercase tracking-wider text-slate-500"
         >
-          Source npub
+          Source public key (npub)
         </label>
         <input
           id="source-npub-input"
@@ -1113,6 +1073,7 @@ function NostrReplacePanel() {
   const nostrNpub = useStore((s) => s.nostrNpub);
   const nostrImportNsec = useStore((s) => s.nostrImportNsec);
   const nostrImporting = useStore((s) => s.nostrImporting);
+  const [generateConfirmOpen, setGenerateConfirmOpen] = useState(false);
 
   const generateKey = useCallback(async () => {
     try {
@@ -1201,9 +1162,7 @@ function NostrReplacePanel() {
           </svg>
           Back
         </button>
-        <CloseButton
-          onClick={() => useStore.setState({ settingsOpen: false })}
-        />
+        <CloseButton onClick={closeSettings} />
       </div>
       <div className="px-6 py-6 space-y-5">
         <div>
@@ -1218,7 +1177,7 @@ function NostrReplacePanel() {
         </div>
 
         <div className="space-y-2">
-          <p className="text-xs text-slate-500">Import nsec</p>
+          <p className="text-xs text-slate-500">Import secret key (nsec)</p>
           <div className="flex items-center gap-2">
             <input
               type="password"
@@ -1247,13 +1206,36 @@ function NostrReplacePanel() {
           </p>
           <button
             type="button"
-            onClick={generateKey}
+            onClick={() => {
+              // When no identity exists yet (initial setup), skip the
+              // confirm — there's nothing to lose. When replacing an
+              // existing identity, gate behind a destructive confirm
+              // so a misclick can't orphan their comments, markets,
+              // and zaps without the chance to bail.
+              if (nostrNpub) {
+                setGenerateConfirmOpen(true);
+              } else {
+                void generateKey();
+              }
+            }}
             className="w-full rounded-lg border border-slate-700 px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 transition"
           >
             Generate new keypair
           </button>
         </div>
       </div>
+      <ConfirmDialog
+        open={generateConfirmOpen}
+        title="Replace your identity?"
+        body="This creates a brand-new Nostr keypair and replaces the current one. Without a backup of your current secret key (nsec), you can't sign in as this identity again — and markets, comments, and zaps tied to it will no longer be yours."
+        confirmLabel="Generate new keypair"
+        destructive
+        onConfirm={() => {
+          setGenerateConfirmOpen(false);
+          void generateKey();
+        }}
+        onClose={() => setGenerateConfirmOpen(false)}
+      />
     </>
   );
 }
@@ -1267,6 +1249,22 @@ export function SettingsPanel() {
   if (!settingsOpen) return null;
 
   return <SettingsPanelContent nostrReplacePanel={nostrReplacePanel} />;
+}
+
+/**
+ * Reset every settings sub-panel / scratch field on close. Without
+ * this, reopening Settings would drop the user back into whatever
+ * sub-panel they X-ed out of — reopening should always land on the
+ * main settings screen.
+ */
+function closeSettings() {
+  useStore.setState({
+    settingsOpen: false,
+    nostrReplacePanel: false,
+    nostrReplacePrompt: false,
+    nostrReplaceConfirm: "",
+    nostrImportNsec: "",
+  });
 }
 
 function SettingsPanelContent({
@@ -1285,9 +1283,7 @@ function SettingsPanelContent({
           <>
             <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
               <h2 className="text-lg font-medium text-slate-100">Settings</h2>
-              <CloseButton
-                onClick={() => useStore.setState({ settingsOpen: false })}
-              />
+              <CloseButton onClick={closeSettings} />
             </div>
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-0">
               <SettingsAccordion sectionKey="nostr" title="Nostr Identity">
