@@ -1,5 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
+  type ReactionStats,
   reactionStatsFor,
   useCommentReactions,
 } from "../../../queries/useCommentReactions";
@@ -103,6 +104,99 @@ function buildThread(comments: MarketComment[]): ThreadedComment[] {
     out.push(entry);
   }
   return out;
+}
+
+/**
+ * Render a single top-level thread plus its flattened replies. Owns
+ * the reply-target state so the compose box always renders once per
+ * thread at the reply-indent level, regardless of which row the
+ * user clicked — matches the visual rule that replies-to-replies
+ * land as siblings of the first reply, not as a deeper indent.
+ */
+function Thread({
+  parent,
+  replies,
+  market,
+  marketEventId,
+  zapStats,
+  reactionStats,
+}: {
+  parent: MarketComment;
+  replies: MarketComment[];
+  market: Market;
+  marketEventId: string | null;
+  zapStats: Map<string, { count: number; totalSats: number }>;
+  reactionStats: Map<string, ReactionStats[]>;
+}) {
+  const sessionPubkey = useStore((s) => s.nostrPubkey);
+  const [replyTargetId, setReplyTargetId] = useState<string | null>(null);
+
+  const replyTarget = useMemo<MarketComment | null>(() => {
+    if (!replyTargetId) return null;
+    if (parent.id === replyTargetId) return parent;
+    return replies.find((r) => r.id === replyTargetId) ?? null;
+  }, [replyTargetId, parent, replies]);
+
+  const toggleReply = (commentId: string) => {
+    setReplyTargetId((cur) => (cur === commentId ? null : commentId));
+  };
+  const canReply = !!sessionPubkey && !!marketEventId && !parent.deleted;
+
+  const parentStats = zapStatsFor(zapStats, parent.id);
+  const parentReactions = reactionStatsFor(reactionStats, parent.id);
+
+  return (
+    <li>
+      <CommentRow
+        comment={parent}
+        marketId={market.marketId}
+        creatorPubkey={market.creatorPubkey}
+        zapCount={parentStats.count}
+        zapSats={parentStats.totalSats}
+        reactions={parentReactions}
+        isReplyTarget={replyTargetId === parent.id}
+        onToggleReply={canReply ? () => toggleReply(parent.id) : undefined}
+      />
+      {(replies.length > 0 || (replyTarget && marketEventId)) && (
+        <ul className="ml-11 border-l border-slate-800/60 pl-3">
+          {replies.map((r) => {
+            const rStats = zapStatsFor(zapStats, r.id);
+            const rReactions = reactionStatsFor(reactionStats, r.id);
+            return (
+              <li key={r.id}>
+                <CommentRow
+                  comment={r}
+                  marketId={market.marketId}
+                  creatorPubkey={market.creatorPubkey}
+                  zapCount={rStats.count}
+                  zapSats={rStats.totalSats}
+                  reactions={rReactions}
+                  isReplyTarget={replyTargetId === r.id}
+                  onToggleReply={
+                    canReply && !r.deleted ? () => toggleReply(r.id) : undefined
+                  }
+                />
+              </li>
+            );
+          })}
+          {replyTarget && marketEventId && (
+            <li className="py-3">
+              <CommentForm
+                marketId={market.marketId}
+                creatorPubkey={market.creatorPubkey}
+                marketEventId={marketEventId}
+                parentEventId={replyTarget.id}
+                parentAuthorPubkey={replyTarget.author_pubkey}
+                onCancel={() => setReplyTargetId(null)}
+                onPosted={() => setReplyTargetId(null)}
+                autoFocus
+              />
+            </li>
+          )}
+        </ul>
+      )}
+    </li>
+  );
 }
 
 /** Parse the raw market event JSON to recover the hex event id. */
@@ -212,50 +306,17 @@ export function CommentsSection({ market }: { market: Market }) {
           </p>
         ) : (
           <ul className="divide-y divide-slate-800/80">
-            {threaded.map(({ parent, replies }) => {
-              const parentStats = zapStatsFor(zapStats, parent.id);
-              const parentReactions = reactionStatsFor(
-                reactionStats,
-                parent.id,
-              );
-              return (
-                <li key={parent.id}>
-                  <CommentRow
-                    comment={parent}
-                    marketId={market.marketId}
-                    creatorPubkey={market.creatorPubkey}
-                    marketEventId={marketEventId ?? ""}
-                    zapCount={parentStats.count}
-                    zapSats={parentStats.totalSats}
-                    reactions={parentReactions}
-                  />
-                  {replies.length > 0 && (
-                    <ul className="ml-11 border-l border-slate-800/60 pl-3">
-                      {replies.map((r) => {
-                        const rStats = zapStatsFor(zapStats, r.id);
-                        const rReactions = reactionStatsFor(
-                          reactionStats,
-                          r.id,
-                        );
-                        return (
-                          <li key={r.id}>
-                            <CommentRow
-                              comment={r}
-                              marketId={market.marketId}
-                              creatorPubkey={market.creatorPubkey}
-                              marketEventId={marketEventId ?? ""}
-                              zapCount={rStats.count}
-                              zapSats={rStats.totalSats}
-                              reactions={rReactions}
-                            />
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </li>
-              );
-            })}
+            {threaded.map(({ parent, replies }) => (
+              <Thread
+                key={parent.id}
+                parent={parent}
+                replies={replies}
+                market={market}
+                marketEventId={marketEventId}
+                zapStats={zapStats}
+                reactionStats={reactionStats}
+              />
+            ))}
           </ul>
         )}
       </div>

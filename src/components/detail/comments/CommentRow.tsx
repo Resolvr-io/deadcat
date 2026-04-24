@@ -9,7 +9,6 @@ import { formatTimeAgo } from "../../../utils-react/format";
 import { friendlyError } from "../../../utils-react/friendly-error";
 import { showToast } from "../../shared/Toast";
 import { CommentBody } from "./CommentBody";
-import { CommentForm } from "./CommentForm";
 import { CommentProfileDialog } from "./CommentProfileDialog";
 import { CommentReactions } from "./CommentReactions";
 import { CommentRowMenu } from "./CommentRowMenu";
@@ -48,24 +47,30 @@ export function CommentRow({
   comment,
   marketId,
   creatorPubkey,
-  marketEventId,
   zapCount,
   zapSats,
   reactions,
+  isReplyTarget = false,
+  onToggleReply,
 }: {
   comment: MarketComment;
   marketId: string;
   creatorPubkey: string;
-  /** Event id of the market this comment is rooted at. Required to
-   *  build the NIP-22 root tags on a reply publish; passed through
-   *  from CommentsSection. */
-  marketEventId: string;
   /** Number of kind:9735 zap receipts seen for this comment. */
   zapCount: number;
   /** Total sats zapped across those receipts (floor of msats/1000). */
   zapSats: number;
   /** NIP-25 reactions aggregated per emoji; empty when none seen. */
   reactions: ReactionStats[];
+  /** True when this row is the active reply target (thread-level
+   *  state owned by CommentsSection). Drives the pressed styling on
+   *  the reply button. */
+  isReplyTarget?: boolean;
+  /** Toggle reply-target state for this row. The parent thread
+   *  renders a single composer at the reply-indent level regardless
+   *  of which row was clicked, so the form never visually nests
+   *  further than the rest of the thread. */
+  onToggleReply?: () => void;
 }) {
   const sessionPubkey = useStore((s) => s.nostrPubkey);
   const { data: profile } = useNostrProfileByPubkey(
@@ -74,7 +79,6 @@ export function CommentRow({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [zapOpen, setZapOpen] = useState(false);
-  const [replyOpen, setReplyOpen] = useState(false);
   const deleteMutation = useDeleteMarketComment(marketId, creatorPubkey);
 
   const avatarSrc = useMemo(
@@ -176,14 +180,14 @@ export function CommentRow({
           className={`mt-2 flex items-center gap-1 text-slate-500 ${isPending ? "invisible" : ""}`}
           aria-hidden={isPending}
         >
-          {sessionPubkey ? (
+          {sessionPubkey && onToggleReply ? (
             <button
               type="button"
-              onClick={() => setReplyOpen((v) => !v)}
-              title={replyOpen ? "Cancel reply" : "Reply"}
-              aria-pressed={replyOpen}
+              onClick={onToggleReply}
+              title={isReplyTarget ? "Cancel reply" : "Reply"}
+              aria-pressed={isReplyTarget}
               className={`flex items-center gap-1 rounded-full px-2 py-1.5 transition ${
-                replyOpen
+                isReplyTarget
                   ? "bg-slate-800 text-slate-200"
                   : "text-slate-500 hover:bg-slate-800 hover:text-slate-300"
               }`}
@@ -254,21 +258,6 @@ export function CommentRow({
             deletePending={deleteMutation.isPending}
           />
         </div>
-        {replyOpen && sessionPubkey && (
-          <div className="mt-3">
-            <CommentForm
-              marketId={marketId}
-              creatorPubkey={creatorPubkey}
-              marketEventId={marketEventId}
-              parentEventId={comment.id}
-              parentAuthorPubkey={comment.author_pubkey}
-              parentAuthorName={displayName}
-              onCancel={() => setReplyOpen(false)}
-              onPosted={() => setReplyOpen(false)}
-              autoFocus
-            />
-          </div>
-        )}
       </div>
       <ConfirmDialog
         open={confirmOpen}

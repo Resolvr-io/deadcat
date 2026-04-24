@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePublishMarketComment } from "../../../queries/useComments";
+import { useNostrProfileByPubkey } from "../../../queries/useNostrProfileByPubkey";
 import { friendlyError } from "../../../utils-react/friendly-error";
 import { SigningHint } from "../../shared/SigningHint";
 
@@ -23,7 +24,6 @@ export function CommentForm({
   marketEventId,
   parentEventId,
   parentAuthorPubkey,
-  parentAuthorName,
   onCancel,
   onPosted,
   autoFocus = false,
@@ -34,10 +34,9 @@ export function CommentForm({
   /** When set, the form posts as a reply to this comment id. */
   parentEventId?: string;
   /** Required when `parentEventId` is set — backend rejects replies
-   *  without the parent author pubkey. */
+   *  without the parent author pubkey. The "Replying to @name" hint
+   *  resolves itself from this pubkey via the profile cache. */
   parentAuthorPubkey?: string;
-  /** Shown in the "replying to @name" hint above the textarea. */
-  parentAuthorName?: string;
   /** Invoked when the user dismisses the reply form without posting.
    *  Only rendered when in reply mode. */
   onCancel?: () => void;
@@ -51,6 +50,11 @@ export function CommentForm({
   const mutation = usePublishMarketComment(marketId, creatorPubkey);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isReply = !!parentEventId;
+  const { data: parentProfile } = useNostrProfileByPubkey(
+    parentAuthorPubkey ?? null,
+  );
+  const parentAuthorName =
+    parentProfile?.display_name?.trim() || parentProfile?.name?.trim() || null;
 
   useEffect(() => {
     if (autoFocus) textareaRef.current?.focus();
