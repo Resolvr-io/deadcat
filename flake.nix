@@ -48,6 +48,10 @@
             gdk-pixbuf
             atk
             harfbuzz
+            # libdbus is required on Linux for the `keyring` crate
+            # (dbus-secret-service backend). CI uses this flake, so
+            # it needs the headers available at link time.
+            dbus
           ]);
           shellHook = lib.optionalString (chromium != null) ''
             export PUPPETEER_EXECUTABLE_PATH="${chromium}/bin/chromium"
