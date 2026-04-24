@@ -1052,24 +1052,21 @@ function TrendingHomeView({ markets }: { markets: Market[] }) {
     <div className="phi-container py-6 lg:py-8">
       <div className="grid gap-8 xl:grid-cols-[1.618fr_0.8fr]">
         <section className="space-y-6">
-          {/* Featured market carousel — groups + binary markets. The
-              `key` on the inner div remounts the card on every
-              trendingIndex change so the slide-in keyframe replays,
-              giving a visible cue that the carousel advanced (auto
-              tick or arrow click). */}
-          <div key={trendingIndex} className="animate-carousel-slide">
-            {isGroup(featured) ? (
-              <FeaturedGroupCard
-                group={featured}
-                totalItems={featuredItems.length}
-              />
-            ) : (
-              <FeaturedMarket
-                market={featured}
-                totalItems={featuredItems.length}
-              />
-            )}
-          </div>
+          {/* Featured market carousel — groups + binary markets. Slide
+              animation lives *inside* each featured card so the nav
+              arrows stay stationary and only the content sweeps on
+              advance. */}
+          {isGroup(featured) ? (
+            <FeaturedGroupCard
+              group={featured}
+              totalItems={featuredItems.length}
+            />
+          ) : (
+            <FeaturedMarket
+              market={featured}
+              totalItems={featuredItems.length}
+            />
+          )}
 
           {/* All markets grid — binary + multi-outcome interleaved */}
           <section>
