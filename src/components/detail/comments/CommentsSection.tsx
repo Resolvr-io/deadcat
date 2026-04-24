@@ -13,6 +13,7 @@ import { friendlyError } from "../../../utils-react/friendly-error";
 import { CommentForm } from "./CommentForm";
 import { CommentRow } from "./CommentRow";
 import { CommentRowSkeleton } from "./CommentRowSkeleton";
+import { MutedAuthorsPopover } from "./MutedAuthorsPopover";
 
 /** Minimal market shape required to render comments. Satisfied by both
  *  binary `Market` and multi-outcome `MarketGroup`. */
@@ -166,39 +167,43 @@ function Thread({
         isReplyTarget={replyTargetId === parent.id}
         onToggleReply={canReply ? () => toggleReply(parent.id) : undefined}
       />
-      {replies.map((r) => {
-        const rStats = zapStatsFor(zapStats, r.id);
-        const rReactions = reactionStatsFor(reactionStats, r.id);
-        return (
-          <div key={r.id} className="border-t border-slate-800/40">
-            <CommentRow
-              comment={r}
-              marketId={market.marketId}
-              creatorPubkey={market.creatorPubkey}
-              zapCount={rStats.count}
-              zapSats={rStats.totalSats}
-              reactions={rReactions}
-              isReplyTarget={replyTargetId === r.id}
-              onToggleReply={
-                canReply && !r.deleted ? () => toggleReply(r.id) : undefined
-              }
-            />
-          </div>
-        );
-      })}
-      {replyTarget && marketEventId && (
-        <div className="border-t border-slate-800/40 py-3">
-          <CommentForm
-            marketId={market.marketId}
-            creatorPubkey={market.creatorPubkey}
-            marketEventId={marketEventId}
-            parentEventId={replyTarget.id}
-            parentAuthorPubkey={replyTarget.author_pubkey}
-            onCancel={() => setReplyTargetId(null)}
-            onPosted={() => setReplyTargetId(null)}
-            autoFocus
-          />
-        </div>
+      {(replies.length > 0 || (replyTarget && marketEventId)) && (
+        <ul className="ml-11 border-l border-slate-800/60 pl-3">
+          {replies.map((r) => {
+            const rStats = zapStatsFor(zapStats, r.id);
+            const rReactions = reactionStatsFor(reactionStats, r.id);
+            return (
+              <li key={r.id}>
+                <CommentRow
+                  comment={r}
+                  marketId={market.marketId}
+                  creatorPubkey={market.creatorPubkey}
+                  zapCount={rStats.count}
+                  zapSats={rStats.totalSats}
+                  reactions={rReactions}
+                  isReplyTarget={replyTargetId === r.id}
+                  onToggleReply={
+                    canReply && !r.deleted ? () => toggleReply(r.id) : undefined
+                  }
+                />
+              </li>
+            );
+          })}
+          {replyTarget && marketEventId && (
+            <li className="py-3">
+              <CommentForm
+                marketId={market.marketId}
+                creatorPubkey={market.creatorPubkey}
+                marketEventId={marketEventId}
+                parentEventId={replyTarget.id}
+                parentAuthorPubkey={replyTarget.author_pubkey}
+                onCancel={() => setReplyTargetId(null)}
+                onPosted={() => setReplyTargetId(null)}
+                autoFocus
+              />
+            </li>
+          )}
+        </ul>
       )}
     </li>
   );
@@ -264,9 +269,7 @@ export function CommentsSection({ market }: { market: CommentableMarket }) {
           Comments <span className="text-slate-500">({comments.length})</span>
         </h3>
         {mutedHiddenCount > 0 && (
-          <span className="text-xs text-slate-500">
-            {mutedHiddenCount} hidden by mute
-          </span>
+          <MutedAuthorsPopover hiddenCount={mutedHiddenCount} />
         )}
       </div>
 
