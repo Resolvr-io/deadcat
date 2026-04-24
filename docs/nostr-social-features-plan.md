@@ -16,20 +16,24 @@ Already shipped on `master`:
 
 ## Priority + Sequencing
 
-Recommend six sub-PRs, roughly ordered by user impact and
+Recommend seven sub-PRs, roughly ordered by user impact and
 dependencies:
 
 1. **PR A — zap UX fixes** (1 day). Paper cuts from #94. Should land
    first.
-2. **PR B — reactions** (2–3 days). NIP-25 kind:7, emoji picker,
+2. **PR A.3 — NIP-78 prefs + logout purge** (1–2 days). Account-
+   scoped data hygiene: wipe device localStorage on logout, migrate
+   zap prefs to NIP-78 kind:30078 per-category events. Lands before
+   any new pref would be added.
+3. **PR B — reactions** (2–3 days). NIP-25 kind:7, emoji picker,
    aggregation.
-3. **PR C — one-level threads** (2–3 days). Uses existing `parent_id`
+4. **PR C — one-level threads** (2–3 days). Uses existing `parent_id`
    in the SDK. Requires the delete-with-replies decision.
-4. **PR D — notifications** (3–4 days). Bell icon, relay
+5. **PR D — notifications** (3–4 days). Bell icon, relay
    subscription, deep-link. Makes B + C feel complete.
-5. **PR E — follow / mute** (3–4 days). NIP-02 + NIP-51 behind a
+6. **PR E — follow / mute** (3–4 days). NIP-02 + NIP-51 behind a
    shared read-before-write safety helper.
-6. **PR F — polish** (1 day). NIP-05 verification + comment sort.
+7. **PR F — polish** (1 day). NIP-05 verification + comment sort.
 
 ## Shared infrastructure
 
@@ -70,6 +74,48 @@ Two-tier layout: 6–8 visible emojis + a `…` button that opens a
 `<Popover>` with the full set. Used by both reactions and any future
 emoji-driven UI (mute reasons, tags, etc.).
 
+### Account-scoped data hygiene
+
+Two rules to prevent account-to-account data leakage on a shared
+device:
+
+1. **Logout purges account-scoped device storage.** On logout, wipe
+   every `deadcat:` / `deadcat_` localStorage key. Any pref that
+   needs to survive a login/logout cycle lives on relays, not
+   localStorage. Device-level exemptions (window position, etc.) go
+   in a `KEEP` set referenced from the logout handler — cheaper than
+   the inverse default.
+2. **Cross-session prefs live on relays.** No new localStorage-
+   backed pref may be added without first checking whether it should
+   instead be an `useAppData` entry (next helper).
+
+### `useAppData<T>(category, schemaVersion)` — NIP-78 per-category prefs
+
+One kind:30078 event per pref category, keyed by a stable `d` tag:
+
+- `live.deadcat.zaps` — default amount, default comment
+- `live.deadcat.notifications` — last-seen timestamp, read markers
+  (future)
+- `live.deadcat.ui` — comment sort preference, emoji-picker MRU
+  (future)
+
+Per-category events (not a single fat blob) so each feature owns its
+schema, categories are added without touching existing code, and
+sensitive categories can be NIP-44 encrypted independently while
+benign ones stay public.
+
+Every event carries a `schema: <number>` field and is written via
+read-merge-write so unknown fields from newer app versions aren't
+dropped when an older client edits the same category. Unknown-field
+preservation is the single invariant — forget it once and a future
+version's data silently disappears the next time the user opens an
+older build.
+
+On login, fetch all known categories in parallel; hydrate Zustand
+slices from the results; mark slices "remote-loaded" so writes only
+fire after hydration (never overwrite an unseen remote event with
+local defaults).
+
 ## Features
 
 ### A1 — Fix: signed-out zap gate
@@ -94,17 +140,59 @@ falls back to showing a QR / invoice for the user to pay externally.
 The app has no callback when the external wallet settles, so it
 always shows *"Error: Payment cancelled"* — even when the zap landed.
 
-**Fix**: use the NIP-57 zap receipt (kind:9735) as the success signal.
-On open, subscribe to
-`{kinds: [9735], #p: [recipientPubkey], #e: [commentId?], since: now}`
-for ~60 seconds. When a receipt whose `bolt11` tag matches our
-invoice arrives, flip UI to success and close. On timeout, show a
-non-committal *"Zap not yet confirmed. If you paid, it'll appear
-shortly."* instead of "cancelled" — avoids the false failure.
+**Fix (shipped in PR #96)**: soften the BC payment-modal cancel into
+a `{ pending: true }` result. ZapDialog surfaces "If you paid, your
+zap will appear shortly." as an info toast and schedules extra zap-
+count invalidations at 4s + 15s so the late-arriving kind:9735
+receipt updates the row counter.
 
-Tradeoff: relies on the recipient's LNURL provider to publish kind:
-9735 receipts. Modern LNURL implementations do; a handful don't. If
-the receipt never arrives, we degrade to the non-committal timeout.
+Follow-up (deferred): subscribe to
+`{kinds: [9735], #p: [recipientPubkey], #e: [commentId?], since: now}`
+and match the bolt11 tag to our invoice for a definitive paid/not-
+paid determination. Needs a new Tauri command. Not gating PR A.
+
+### A.3 — NIP-78 prefs + logout purge
+
+**Bug / gap**: zap defaults (sats, comment) persist in localStorage
+across logout, so a restored user sees the previous account's
+settings. Same risk applies to every future pref we'd want to hold
+across sessions.
+
+**Fix — logout purge (shipped in PR #96)**: wipe all `deadcat:` /
+`deadcat_` localStorage on logout via the generic loop in
+`confirmLogout`. Exempt device-level keys by name as they emerge.
+
+**Fix — relay-backed prefs**: introduce `useAppData<T>(category,
+schemaVersion)` (see shared infrastructure). Migrate zap prefs to
+`live.deadcat.zaps` as the first category. Keep localStorage as an
+optional write-through cache for offline reads, cleared on logout.
+
+**Schema for zaps (v1)**:
+
+```json
+{
+  "schema": 1,
+  "defaultSats": 100,
+  "defaultComment": ""
+}
+```
+
+**Files**:
+- `src-tauri/src/app_data.rs` (new) — fetch + publish kind:30078 via
+  `NostrSigner`, returns decrypted content
+- `src/queries/useAppData.ts` (new) — React hook + cache
+- `src/queries/useZapPrefs.ts` — swap storage layer; keep API
+- `src/components/layout/TopShell.tsx` — logout loop already shipped
+  in PR #96
+
+**Risks**:
+- Read-merge-write footgun — must preserve unknown fields so a
+  future version's data isn't silently dropped by an older client.
+  Covered by a shared test in the `useAppData` module.
+- Clock skew on `created_at` — when two clients edit concurrently,
+  the highest `created_at` wins per NIP-33/replaceable-event rules;
+  we don't need a CRDT, just make sure the read-then-write gap is
+  short (single async task).
 
 ### B — Reactions (NIP-25)
 
