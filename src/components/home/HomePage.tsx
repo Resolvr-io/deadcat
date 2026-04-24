@@ -1028,11 +1028,17 @@ function TrendingHomeView({ markets }: { markets: Market[] }) {
     [markets],
   );
 
-  // Auto-advance carousel every 6 seconds
+  // Auto-advance carousel every 6 seconds. Each tick checks the
+  // `trendingAutoAdvancePausedUntil` timestamp so recent manual
+  // prev/next clicks can suppress the tick for a grace window —
+  // keeps the carousel from yanking a user mid-browse.
   useEffect(() => {
     const total = featuredItems.length;
     if (total === 0) return;
     const id = setInterval(() => {
+      if (Date.now() < useStore.getState().trendingAutoAdvancePausedUntil) {
+        return;
+      }
       useStore.setState((s) => ({
         trendingIndex: (s.trendingIndex + 1) % total,
       }));

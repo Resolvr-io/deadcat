@@ -71,6 +71,13 @@ function StateBadge({ state }: { state: 0 | 1 | 2 | 3 | 4 }) {
   );
 }
 
+/** Grace window after a manual prev/next click before auto-advance
+ *  is allowed to tick again. Long enough for a user to read the card
+ *  they just landed on without the rotation yanking them away; short
+ *  enough that an inattentive visitor still sees the rotation resume
+ *  on its own. */
+const MANUAL_ADVANCE_PAUSE_MS = 20_000;
+
 // ── Shared nav arrows ────────────────────────────────────────────────
 function CarouselNav({
   index,
@@ -131,12 +138,14 @@ export default function FeaturedMarket({
   const handlePrev = useCallback(() => {
     useStore.setState({
       trendingIndex: (trendingIndex - 1 + totalItems) % totalItems,
+      trendingAutoAdvancePausedUntil: Date.now() + MANUAL_ADVANCE_PAUSE_MS,
     });
   }, [trendingIndex, totalItems]);
 
   const handleNext = useCallback(() => {
     useStore.setState({
       trendingIndex: (trendingIndex + 1) % totalItems,
+      trendingAutoAdvancePausedUntil: Date.now() + MANUAL_ADVANCE_PAUSE_MS,
     });
   }, [trendingIndex, totalItems]);
 
@@ -258,12 +267,14 @@ export function FeaturedGroupCard({
   const handlePrev = useCallback(() => {
     useStore.setState({
       trendingIndex: (trendingIndex - 1 + totalItems) % totalItems,
+      trendingAutoAdvancePausedUntil: Date.now() + MANUAL_ADVANCE_PAUSE_MS,
     });
   }, [trendingIndex, totalItems]);
 
   const handleNext = useCallback(() => {
     useStore.setState({
       trendingIndex: (trendingIndex + 1) % totalItems,
+      trendingAutoAdvancePausedUntil: Date.now() + MANUAL_ADVANCE_PAUSE_MS,
     });
   }, [trendingIndex, totalItems]);
 
