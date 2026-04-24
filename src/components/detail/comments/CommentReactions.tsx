@@ -120,15 +120,35 @@ export function CommentReactions({
     setShowAll(false);
   };
 
-  const toggle = (emoji: string) => {
+  /** One reaction per user per comment. Clicking the emoji you
+   *  already reacted with removes it; clicking any other emoji
+   *  replaces it — delete-the-old-then-publish-the-new, so the row
+   *  can never carry two reactions from the same user. */
+  const toggle = async (emoji: string) => {
     setOpen(false);
     setShowAll(false);
-    const existing = stats.find((r) => r.emoji === emoji);
-    if (existing?.mine && existing.myEventId) {
-      del.mutate(existing.myEventId, {
+    const myReactions = stats.filter((r) => r.mine && r.myEventId);
+    const clickedIsMine = myReactions.some((r) => r.emoji === emoji);
+
+    if (clickedIsMine) {
+      const target = myReactions.find((r) => r.emoji === emoji);
+      if (!target?.myEventId) return;
+      del.mutate(target.myEventId, {
         onError: (e) => showToast(friendlyError(String(e)), "error"),
       });
       return;
+    }
+
+    // Clean up any existing reaction(s) we've previously left on this
+    // comment before publishing the new one. Usually there's at most
+    // one; the loop covers the edge case where an older build left
+    // multiple from this same pubkey that haven't been reconciled.
+    for (const r of myReactions) {
+      if (r.myEventId) {
+        del.mutate(r.myEventId, {
+          onError: (e) => showToast(friendlyError(String(e)), "error"),
+        });
+      }
     }
     publish.mutate(
       {
@@ -190,7 +210,9 @@ export function CommentReactions({
                 title={
                   mySet.has(emoji)
                     ? `Remove your ${emoji}`
-                    : `React with ${emoji}`
+                    : myEmoji
+                      ? `Replace with ${emoji}`
+                      : `React with ${emoji}`
                 }
                 className={`flex aspect-square items-center justify-center rounded-lg border text-xl transition hover:scale-110 ${
                   mySet.has(emoji)
