@@ -12,17 +12,29 @@ export function WalletPage() {
   const walletStatus = useStore((s) => s.walletStatus);
   const walletNetwork = useStore((s) => s.walletNetwork);
 
+  // Clear every wallet-scoped password input + scratch field on
+  // close. Inputs read from the store rather than local state, so
+  // without this reset a half-typed password survives across
+  // close/reopen — confusing at best, and a shoulder-surf risk at
+  // worst when the same device is shared.
   const close = useCallback(() => {
-    useStore.setState({ walletOpen: false });
+    useStore.setState({
+      walletOpen: false,
+      walletPassword: "",
+      walletPasswordConfirm: "",
+      walletRestoreMnemonic: "",
+      walletMnemonic: "",
+      walletShowCreate: false,
+      walletShowRestore: false,
+      walletError: "",
+    });
   }, []);
 
   const handleBackdropClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      if (e.target === e.currentTarget) {
-        useStore.setState({ walletOpen: false });
-      }
+      if (e.target === e.currentTarget) close();
     },
-    [],
+    [close],
   );
 
   useLockScroll();
