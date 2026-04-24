@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useMarkets } from "../../queries/useMarkets";
 import { useNostrProfileByPubkey } from "../../queries/useNostrProfileByPubkey";
 import {
   useMarkAllNotificationsRead,
@@ -144,6 +145,7 @@ function shortPubkey(hex: string): string {
 function NotificationRow({ notification }: { notification: Notification }) {
   const markRead = useMarkNotificationRead();
   const { data: profile } = useNostrProfileByPubkey(notification.authorPubkey);
+  const { data: markets = [] } = useMarkets();
 
   const displayName =
     profile?.display_name?.trim() ||
@@ -167,15 +169,20 @@ function NotificationRow({ notification }: { notification: Notification }) {
 
   const handleClick = () => {
     if (!notification.read) markRead.mutate(notification.eventId);
+    // The notification's `marketId` is the hex market id parsed
+    // from the `A` tag, but `selectedMarketId` holds the Nostr
+    // event id (see `getMarketById` in utils-react/market.ts).
+    // Resolve one to the other via the current markets list so the
+    // detail page renders the correct market — and therefore the
+    // target comment is actually in its comments fetch.
+    const target = notification.marketId
+      ? markets.find((m) => m.marketId === notification.marketId)
+      : null;
     useStore.setState({
       notificationsOpen: false,
-      // Deep-link to the market the notification belongs to, then
-      // let `useScrollToComment` (mounted on DetailPage) land on
-      // the exact comment. Falls back to the market root when the
-      // notification has no associated comment id.
-      ...(notification.marketId
+      ...(target
         ? {
-            selectedMarketId: notification.marketId,
+            selectedMarketId: target.id,
             view: "detail" as const,
             focusCommentId: notification.commentId ?? null,
           }

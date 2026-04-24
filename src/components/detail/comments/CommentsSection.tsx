@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   type ReactionStats,
   reactionStatsFor,
@@ -20,12 +20,6 @@ export type CommentableMarket = {
   creatorPubkey: string;
   nostrEventJson: string | null | undefined;
 };
-
-/** Duration of the ring-pulse highlight applied after a notification
- *  deep-link lands on its target row. Matches the
- *  `deadcat-notification-pulse` keyframe in style.css. */
-const PULSE_MS = 2000;
-const PULSE_CLASS = "animate-notification-pulse";
 
 /**
  * Flatten nested replies into a single list keyed by the top-level
@@ -222,7 +216,6 @@ function extractMarketEventId(market: CommentableMarket): string | null {
 
 export function CommentsSection({ market }: { market: CommentableMarket }) {
   const nostrPubkey = useStore((s) => s.nostrPubkey);
-  const focusCommentId = useStore((s) => s.focusCommentId);
   const marketEventId = useMemo(() => extractMarketEventId(market), [market]);
 
   const {
@@ -234,56 +227,6 @@ export function CommentsSection({ market }: { market: CommentableMarket }) {
   } = useMarketComments(market.marketId, market.creatorPubkey);
 
   const threaded = useMemo(() => buildThread(comments), [comments]);
-
-  // Notification deep-link lands here. `focusCommentId` is set by
-  // the notification bell alongside the market navigation; we wait
-  // for the comments query to resolve and the target row to mount,
-  // then scroll into view + pulse. Owning the scroll inside
-  // `CommentsSection` (instead of a shared hook at the page level)
-  // means we don't race with the React Query fetch — we know when
-  // the row exists in the rendered list.
-  useEffect(() => {
-    if (!focusCommentId) return;
-    // Only scroll once the target is actually in our data set. If
-    // the notification points at a comment that isn't returned for
-    // this market (bad id, network mismatch), clear and bail so
-    // future notifications aren't blocked.
-    if (isLoading) return;
-    const present = comments.some((c) => c.id === focusCommentId);
-    if (!present) {
-      useStore.setState({ focusCommentId: null });
-      return;
-    }
-    const selector = `[data-comment-id="${CSS.escape(focusCommentId)}"]`;
-    // Wait one RAF so the newly-rendered row has its position
-    // resolved by layout before we scroll — otherwise the scroll
-    // snaps to the old position that existed pre-render.
-    const raf = window.requestAnimationFrame(() => {
-      const el = document.querySelector<HTMLElement>(selector);
-      if (!el) {
-        // Retry once more on the next frame; this catches the edge
-        // where the row's still committing to the DOM.
-        window.requestAnimationFrame(() => {
-          const retry = document.querySelector<HTMLElement>(selector);
-          if (retry) {
-            retry.scrollIntoView({ behavior: "smooth", block: "center" });
-            retry.classList.add(PULSE_CLASS);
-            window.setTimeout(
-              () => retry.classList.remove(PULSE_CLASS),
-              PULSE_MS,
-            );
-          }
-          useStore.setState({ focusCommentId: null });
-        });
-        return;
-      }
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-      el.classList.add(PULSE_CLASS);
-      window.setTimeout(() => el.classList.remove(PULSE_CLASS), PULSE_MS);
-      useStore.setState({ focusCommentId: null });
-    });
-    return () => window.cancelAnimationFrame(raf);
-  }, [focusCommentId, comments, isLoading]);
   const commentIds = useMemo(() => comments.map((c) => c.id), [comments]);
   const zapStats = useCommentZaps(
     market.marketId,
