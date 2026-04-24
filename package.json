@@ -21,6 +21,7 @@
     "@tauri-apps/plugin-fs": "^2.5.0",
     "@tauri-apps/plugin-log": "^2.0.0",
     "@tauri-apps/plugin-opener": "^2.5.3",
+    "emoji-picker-element": "^1.29.1",
     "qrcode": "^1.5.4",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",

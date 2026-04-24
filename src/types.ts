@@ -196,6 +196,26 @@ export type MarketComment = {
   nostr_event_json?: string | null;
 };
 
+/** Category of inbound engagement that produced a notification. */
+export type NotificationKind = "reply" | "mention" | "zap" | "reaction";
+
+/** Matches the Rust-side `NotificationRecord` shape. Keep the field
+ *  order aligned with the bincode-free JSON serialization used by the
+ *  backend — camelCase names, optional fields absent when missing. */
+export type Notification = {
+  eventId: string;
+  kind: NotificationKind;
+  authorPubkey: string;
+  marketId?: string;
+  marketCreatorPubkey?: string;
+  commentId?: string;
+  emoji?: string;
+  amountMsats?: number;
+  bodyPreview?: string;
+  createdAt: number;
+  read: boolean;
+};
+
 export type DiscoveredOrder = {
   id: string;
   market_id: string;
