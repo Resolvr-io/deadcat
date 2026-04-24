@@ -1001,6 +1001,9 @@ function MarketSkeletons() {
 // ── Main trending home view ──────────────────────────────────────────
 function TrendingHomeView({ markets }: { markets: Market[] }) {
   const trendingIndex = useStore((s) => s.trendingIndex);
+  const trendingAutoAdvancePausedUntil = useStore(
+    (s) => s.trendingAutoAdvancePausedUntil,
+  );
   const search = useStore((s) => s.search);
   const nostrPubkey = useStore((s) => s.nostrPubkey);
   const marketsLoading = useStore((s) => s.marketsLoading);
@@ -1028,23 +1031,29 @@ function TrendingHomeView({ markets }: { markets: Market[] }) {
     [markets],
   );
 
-  // Auto-advance carousel every 6 seconds. Each tick checks the
-  // `trendingAutoAdvancePausedUntil` timestamp so recent manual
-  // prev/next clicks can suppress the tick for a grace window —
-  // keeps the carousel from yanking a user mid-browse.
+  // Auto-advance carousel. One-shot timer re-armed after each
+  // advance so the fire time can adapt to manual-click pauses: the
+  // delay is `max(pausedUntil - now, 6000)`, meaning a fresh click
+  // pushes the next advance out to exactly when the pause ends —
+  // not the next tick of a fixed 6s grid, which could add up to
+  // another 6s of wait on top of the user's browsing window.
+  // `trendingIndex` is listed in the deps so each advance re-runs
+  // this effect and schedules the next timer; biome flags it as
+  // unused (the effect body doesn't read it) but removing it
+  // breaks the chain.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: trendingIndex re-arms the chain
   useEffect(() => {
     const total = featuredItems.length;
     if (total === 0) return;
-    const id = setInterval(() => {
-      if (Date.now() < useStore.getState().trendingAutoAdvancePausedUntil) {
-        return;
-      }
+    const now = Date.now();
+    const delay = Math.max(trendingAutoAdvancePausedUntil - now, 6000);
+    const id = window.setTimeout(() => {
       useStore.setState((s) => ({
         trendingIndex: (s.trendingIndex + 1) % total,
       }));
-    }, 6000);
-    return () => clearInterval(id);
-  }, [featuredItems.length]);
+    }, delay);
+    return () => clearTimeout(id);
+  }, [featuredItems.length, trendingIndex, trendingAutoAdvancePausedUntil]);
 
   if (trending.length === 0) {
     return marketsLoading ? <MarketSkeletons /> : <EmptyState />;
