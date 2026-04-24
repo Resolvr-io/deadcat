@@ -21,11 +21,9 @@ export default function OrderbookPanel({ market }: { market: Market }) {
     return hasOrders ? realBook : generateMockOrderbook(market);
   }, [realBook, market]);
 
-  // Cumulative sums — asks accumulate away from spread (top of book outward),
-  // bids accumulate away from spread (top of book outward). Both grow outward
-  // from the spread, producing a V-curve depth shape.
+  // Accumulate asks from best ask (lowest price, closest to spread) upward.
+  // Result: closest-to-spread row has smallest cumulative, furthest has largest.
   const cumAsks = useMemo(() => {
-    // asks are sorted ascending; cumulate from best (lowest) upward
     let running = 0;
     return book.asks.map((l) => {
       running += l.contracts;
@@ -33,8 +31,9 @@ export default function OrderbookPanel({ market }: { market: Market }) {
     });
   }, [book.asks]);
 
+  // Accumulate bids from best bid (highest price, closest to spread) downward.
+  // Result: closest-to-spread row has smallest cumulative, furthest has largest.
   const cumBids = useMemo(() => {
-    // bids are sorted descending; cumulate from best (highest) downward
     let running = 0;
     return book.bids.map((l) => {
       running += l.contracts;
@@ -42,13 +41,17 @@ export default function OrderbookPanel({ market }: { market: Market }) {
     });
   }, [book.bids]);
 
-  const maxCumulative = Math.max(
-    cumAsks.length > 0 ? cumAsks[cumAsks.length - 1].cumulative : 0,
-    cumBids.length > 0 ? cumBids[cumBids.length - 1].cumulative : 0,
-    1,
+  const maxCum = useMemo(
+    () =>
+      Math.max(
+        cumAsks.length > 0 ? cumAsks[cumAsks.length - 1].cumulative : 0,
+        cumBids.length > 0 ? cumBids[cumBids.length - 1].cumulative : 0,
+        1,
+      ),
+    [cumAsks, cumBids],
   );
 
-  // Asks displayed highest price at top → reverse so highest ask is first row
+  // Asks displayed highest price at top (furthest from spread = largest bar)
   const askRows = useMemo(() => [...cumAsks].reverse(), [cumAsks]);
 
   const myOrders = useMemo(
@@ -62,23 +65,17 @@ export default function OrderbookPanel({ market }: { market: Market }) {
   const handleCancelOrder = (orderId: string) => {
     const order = market.limitOrders.find((o) => o.id === orderId);
     if (!order) return;
-
     useStore.setState({ cancellingOrderId: orderId });
-
     cancelLimitOrderMutation.mutate(
       { order },
-      {
-        onSettled: () => {
-          useStore.setState({ cancellingOrderId: null });
-        },
-      },
+      { onSettled: () => useStore.setState({ cancellingOrderId: null }) },
     );
   };
 
   return (
     <>
       {/* Order Book */}
-      <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+      <div className="mt-3">
         <div className="mb-2 flex items-center justify-between">
           <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
             Order Book
@@ -89,12 +86,12 @@ export default function OrderbookPanel({ market }: { market: Market }) {
         </div>
         <div className="mb-1 flex items-center justify-between text-[10px] text-slate-500">
           <span>Price (sats)</span>
-          <span>Contracts</span>
+          <span>Depth</span>
         </div>
 
-        {/* Asks (reversed — highest at top, widest bar at top) */}
+        {/* Asks (highest at top) */}
         {askRows.map((level) => {
-          const pct = (level.cumulative / maxCumulative) * 100;
+          const depthPct = (level.cumulative / maxCum) * 100;
           return (
             <div
               key={`ask-${level.priceSats}`}
@@ -102,7 +99,7 @@ export default function OrderbookPanel({ market }: { market: Market }) {
             >
               <div
                 className="absolute inset-y-0 right-0 bg-rose-500/15"
-                style={{ width: `${pct.toFixed(1)}%` }}
+                style={{ width: `${depthPct.toFixed(1)}%` }}
               />
               <span className="relative text-rose-400">{level.priceSats}</span>
               <span className="relative text-slate-300">
@@ -122,15 +119,14 @@ export default function OrderbookPanel({ market }: { market: Market }) {
           {book.spread !== null ? `Spread: ${book.spread} sats` : "\u2014"}
         </div>
 
-        {/* Bids */}
+        {/* Bids (best at top) */}
         {book.bids.length === 0 && (
           <div className="py-2 text-center text-[10px] text-slate-600">
             No bids
           </div>
         )}
-        {/* Bids (best bid at top, widest bar at bottom) */}
         {cumBids.map((level) => {
-          const pct = (level.cumulative / maxCumulative) * 100;
+          const depthPct = (level.cumulative / maxCum) * 100;
           return (
             <div
               key={`bid-${level.priceSats}`}
@@ -138,7 +134,7 @@ export default function OrderbookPanel({ market }: { market: Market }) {
             >
               <div
                 className="absolute inset-y-0 right-0 bg-emerald-500/15"
-                style={{ width: `${pct.toFixed(1)}%` }}
+                style={{ width: `${depthPct.toFixed(1)}%` }}
               />
               <span className="relative text-emerald-400">
                 {level.priceSats}
@@ -153,7 +149,7 @@ export default function OrderbookPanel({ market }: { market: Market }) {
 
       {/* Your Orders */}
       {myOrders.length > 0 && (
-        <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+        <div className="mt-3">
           <span className="mb-2 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">
             Your Orders
           </span>
@@ -172,7 +168,7 @@ export default function OrderbookPanel({ market }: { market: Market }) {
                   type="button"
                   onClick={() => handleCancelOrder(o.id)}
                   disabled={cancelling}
-                  className={`rounded border ${cancelling ? "border-slate-700 text-slate-500" : "border-rose-800 text-rose-400 hover:bg-rose-900/30"} px-2 py-0.5 text-xs transition`}
+                  className={`rounded px-2 py-0.5 text-xs transition ${cancelling ? "text-slate-500" : "text-rose-400 hover:text-rose-300"}`}
                 >
                   {cancelling ? "Cancelling..." : "Cancel"}
                 </button>

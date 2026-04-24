@@ -23,7 +23,7 @@ export function SearchBar() {
       <input
         value={search}
         onChange={handleChange}
-        className="hidden h-9 w-48 min-w-[160px] max-w-[320px] flex-1 rounded-full border border-slate-700 bg-slate-900 px-4 text-sm outline-none ring-emerald-300 transition focus:ring-2 md:block"
+        className="hidden h-9 w-48 min-w-[160px] max-w-[320px] flex-1 rounded-full bg-slate-900 px-4 text-sm outline-none ring-slate-400 transition focus:ring-2 md:block"
         placeholder="Search"
       />
 
@@ -31,7 +31,7 @@ export function SearchBar() {
       <button
         type="button"
         onClick={openSearch}
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-400 transition hover:border-slate-500 hover:text-slate-200 md:hidden"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-400 transition hover:text-slate-200 md:hidden"
       >
         <svg
           aria-hidden="true"
@@ -55,7 +55,7 @@ export function SearchBar() {
             <input
               value={search}
               onChange={handleChange}
-              className="h-10 flex-1 rounded-full border border-slate-700 bg-slate-900 px-4 text-sm text-slate-200 outline-none ring-emerald-300 transition focus:ring-2"
+              className="h-10 flex-1 rounded-full border border-slate-700 bg-slate-900 px-4 text-sm text-slate-200 outline-none ring-slate-400 transition focus:ring-2"
               placeholder="Search"
             />
             <button

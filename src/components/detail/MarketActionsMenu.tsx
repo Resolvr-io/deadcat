@@ -2,15 +2,23 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useStore } from "../../store";
-import type { Market } from "../../types";
+
+type MarketLike = {
+  nevent?: string | null;
+  nostrEventJson?: string | null;
+  creationTxid?: string | null;
+};
 
 /**
  * Kebab "more actions" menu pinned to the top-right of the market
  * header. Hides secondary links — Nostr event JSON viewer and the
  * block-explorer creation transaction — behind a small icon so the
  * header's primary metadata (category, state) stays the visual focus.
+ *
+ * Accepts any object with nevent / nostrEventJson / creationTxid so it
+ * works for both binary Market and MarketGroup.
  */
-export function MarketActionsMenu({ market }: { market: Market }) {
+export function MarketActionsMenu({ market }: { market: MarketLike }) {
   const walletNetwork = useStore((s) => s.walletNetwork);
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -36,8 +44,8 @@ export function MarketActionsMenu({ market }: { market: Market }) {
   const handleNostrEvent = () => {
     useStore.setState({
       nostrEventModal: true,
-      nostrEventJson: market.nostrEventJson,
-      nostrEventNevent: market.nevent,
+      nostrEventJson: market.nostrEventJson ?? null,
+      nostrEventNevent: market.nevent ?? null,
     });
     close();
   };

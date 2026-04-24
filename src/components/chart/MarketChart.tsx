@@ -263,7 +263,7 @@ export default function MarketChart({
   // Reserve top strip for the hover timestamp box (height 15.8 + 2 gap)
   const hoverTimeBoxHeight = 10.5;
   const plotTop = hoverTimeBoxHeight + 2;
-  const plotBottom = chartHeight - 2.5;
+  const plotBottom = chartHeight - 9;
   const plotXSpan = plotRight - plotLeft;
   const plotYSpan = plotBottom - plotTop;
 
@@ -340,8 +340,6 @@ export default function MarketChart({
     hoverYesValue === null ? 0 : Math.round(hoverYesValue * 100);
   const hoverNoPct = hoverNoValue === null ? 0 : Math.round(hoverNoValue * 100);
   const showCurrentPulse = !hoverActive || hoverT > 0.985;
-  const fadeX = hoverX;
-  const fadeW = Math.max(0, plotRight - fadeX);
   const hoverAvailable = hoverActive && yesHover !== null;
 
   // ── Paw trails skip zones ─────────────────────────────────────────
@@ -500,9 +498,12 @@ export default function MarketChart({
   const noReadoutPct = hasPrice ? (hoverActive ? hoverNoPct : noPct) : null;
 
   return (
-    <div style={{ fontVariantNumeric: "tabular-nums" }}>
+    <div
+      style={{ fontVariantNumeric: "tabular-nums" }}
+      className={isHomeChart ? "flex h-full flex-col" : undefined}
+    >
       <div
-        className={`relative ${isHomeChart ? "h-[17.5rem]" : "h-[19.5rem]"} rounded-xl border border-slate-800 bg-slate-950/60 p-3`}
+        className={`relative ${isHomeChart ? "min-h-0 flex-1" : "h-[19.5rem]"} rounded-xl p-3`}
       >
         {/* Legend bar */}
         <div className="mb-2 flex items-center gap-3 text-[14px] font-medium">
@@ -555,7 +556,7 @@ export default function MarketChart({
         {/* SVG chart */}
         <div
           ref={svgContainerRef}
-          className="pointer-events-none absolute inset-x-3 top-10 bottom-8"
+          className="pointer-events-none absolute inset-x-3 top-10 bottom-3"
         >
           <svg
             viewBox={`0 0 ${chartWidth} ${chartHeight}`}
@@ -594,6 +595,27 @@ export default function MarketChart({
               );
             })}
 
+            {/* X-axis labels */}
+            {xLabels.map((label, i) => {
+              const x = plotLeft + (i / (xLabels.length - 1)) * plotXSpan;
+              const anchor =
+                i === 0 ? "start" : i === xLabels.length - 1 ? "end" : "middle";
+              return (
+                <text
+                  key={`xl-${i}`}
+                  x={x}
+                  y={chartHeight - 2}
+                  fill="#64748b"
+                  fontSize={isHomeChart ? 4 : 4.5}
+                  fontWeight="400"
+                  dominantBaseline="auto"
+                  textAnchor={anchor}
+                >
+                  {label}
+                </text>
+              );
+            })}
+
             {/* Series lines */}
             {hasPrice && showYesLine && (
               <>
@@ -619,27 +641,18 @@ export default function MarketChart({
                 {noPawTrail}
               </>
             )}
-            {/* Hover fade + crosshair */}
+            {/* Hover crosshair */}
             {hoverAvailable && (
-              <>
-                <rect
-                  x={fadeX}
-                  y={plotTop}
-                  width={fadeW}
-                  height={plotYSpan}
-                  fill="#020617"
-                  fillOpacity="0.5"
-                />
-                <line
-                  x1={yesHover?.x}
-                  y1={plotTop}
-                  x2={yesHover?.x}
-                  y2={plotBottom}
-                  stroke="#e2e8f0"
-                  strokeOpacity="0.6"
-                  strokeWidth="0.32"
-                />
-              </>
+              <line
+                x1={yesHover?.x}
+                y1={plotTop}
+                x2={yesHover?.x}
+                y2={plotBottom}
+                stroke="#64748b"
+                strokeOpacity="0.6"
+                strokeWidth="0.32"
+                strokeDasharray="0.9 2.1"
+              />
             )}
 
             {/* Pulse animation at current point */}
@@ -774,45 +787,34 @@ export default function MarketChart({
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
         />
-
-        {/* X-axis labels */}
-        <div
-          className="pointer-events-none absolute inset-x-3 bottom-1 flex items-center justify-between text-[12px] font-normal text-slate-500"
-          style={{
-            textShadow: "0 1px 1px rgba(2, 6, 23, 0.35)",
-            // Align last label with plotRight by reserving the same proportion
-            // as axisTickGutter occupies in the SVG coordinate space.
-            paddingRight: `${(axisTickGutter / chartWidth) * 100}%`,
-          }}
-        >
-          {xLabels.map((label, i) => (
-            <span key={i}>{label}</span>
-          ))}
-        </div>
       </div>
 
       {/* Volume + timescale controls */}
-      <div className="mt-2 flex items-center justify-between">
-        <span className="pl-0.5 text-[13px] font-medium text-slate-300">
-          {volumeLabel}
-        </span>
-        <div className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/65 p-1 text-[12px]">
-          {(["1h", "4h", "1d", "3d", "7d", "1M", "all"] as const).map((key) => (
-            <button
-              type="button"
-              key={key}
-              onClick={() => useStore.setState({ chartTimescale: key })}
-              className={`rounded px-2 py-0.5 transition ${
-                chartTimescale === key
-                  ? "bg-slate-700 text-slate-100"
-                  : "text-slate-500 hover:bg-slate-800/70 hover:text-slate-300"
-              }`}
-            >
-              {key === "all" ? "ALL" : key}
-            </button>
-          ))}
+      {!isHomeChart && (
+        <div className="mt-2 flex items-center justify-between">
+          <span className="pl-0.5 text-[13px] font-medium text-slate-300">
+            {volumeLabel}
+          </span>
+          <div className="inline-flex items-center gap-1 rounded-lg bg-slate-950/65 p-1 text-[12px]">
+            {(["1h", "4h", "1d", "3d", "7d", "1M", "all"] as const).map(
+              (key) => (
+                <button
+                  type="button"
+                  key={key}
+                  onClick={() => useStore.setState({ chartTimescale: key })}
+                  className={`rounded px-2 py-0.5 transition ${
+                    chartTimescale === key
+                      ? "bg-slate-700 text-slate-100"
+                      : "text-slate-500 hover:bg-slate-800/70 hover:text-slate-300"
+                  }`}
+                >
+                  {key === "all" ? "ALL" : key}
+                </button>
+              ),
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -1,7 +1,12 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useMarkets } from "../../queries/useMarkets";
 import { useStore } from "../../store";
-import type { CovenantState, Market, NavCategory } from "../../types";
+import type {
+  CovenantState,
+  Market,
+  MarketGroup,
+  NavCategory,
+} from "../../types";
 import {
   formatProbabilityWithPercent,
   formatSats,
@@ -17,8 +22,10 @@ import {
   getTrendingMarkets,
   isExpired,
 } from "../../utils-react/market";
-import FeaturedMarket from "./FeaturedMarket";
+import { getMockMarketGroups } from "../../utils-react/mock-groups";
+import FeaturedMarket, { FeaturedGroupCard } from "./FeaturedMarket";
 import MarketCard, { openMarket, TrendIndicator } from "./MarketCard";
+import MarketGroupCard from "./MarketGroupCard";
 
 // ── Category icon (JSX version) ──────────────────────────────────────
 function CategoryIcon({
@@ -318,7 +325,7 @@ function SortedView({
           {sortedMarkets.length !== 1 ? "s" : ""}
         </p>
       </div>
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
         {sortedMarkets.map((market, idx) => (
           <MarketCard key={market.id} market={market} index={idx} />
         ))}
@@ -405,7 +412,7 @@ function PortfolioView({ markets }: { markets: Market[] }) {
       </div>
 
       <div className="mb-6 grid gap-3 sm:grid-cols-3">
-        <div className="rounded-xl border border-slate-800 bg-slate-950/45 px-4 py-3">
+        <div className="rounded-xl bg-slate-950/45 px-4 py-3">
           <p className="text-xs uppercase tracking-wider text-slate-500">
             Portfolio Value
           </p>
@@ -413,7 +420,7 @@ function PortfolioView({ markets }: { markets: Market[] }) {
             {formatSats(totalPortfolioValue)}
           </p>
         </div>
-        <div className="rounded-xl border border-slate-800 bg-slate-950/45 px-4 py-3">
+        <div className="rounded-xl bg-slate-950/45 px-4 py-3">
           <p className="text-xs uppercase tracking-wider text-slate-500">
             Active Positions
           </p>
@@ -421,7 +428,7 @@ function PortfolioView({ markets }: { markets: Market[] }) {
             {activePositions.length}
           </p>
         </div>
-        <div className="rounded-xl border border-slate-800 bg-slate-950/45 px-4 py-3">
+        <div className="rounded-xl bg-slate-950/45 px-4 py-3">
           <p className="text-xs uppercase tracking-wider text-slate-500">
             Settled
           </p>
@@ -446,7 +453,7 @@ function PortfolioView({ markets }: { markets: Market[] }) {
                   type="button"
                   key={p.market.id}
                   onClick={() => openMarket(p.market)}
-                  className="block w-full rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600"
+                  className="block w-full rounded-xl bg-slate-950/50 p-4 text-left transition hover:bg-slate-900/60"
                 >
                   <div className="mb-2 flex items-center justify-between">
                     <span className="flex items-center gap-1.5 text-xs text-slate-500">
@@ -462,7 +469,7 @@ function PortfolioView({ markets }: { markets: Market[] }) {
                   </p>
                   <div className="flex flex-wrap items-center gap-3">
                     {p.pos.yes > 0 && (
-                      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5">
+                      <div className="rounded-lg bg-emerald-500/10 px-3 py-1.5">
                         <span className="text-xs text-slate-400">YES</span>
                         <span className="ml-1 text-sm font-semibold text-emerald-300">
                           {p.pos.yes.toLocaleString()}
@@ -475,7 +482,7 @@ function PortfolioView({ markets }: { markets: Market[] }) {
                       </div>
                     )}
                     {p.pos.no > 0 && (
-                      <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5">
+                      <div className="rounded-lg bg-rose-500/10 px-3 py-1.5">
                         <span className="text-xs text-slate-400">NO</span>
                         <span className="ml-1 text-sm font-semibold text-rose-300">
                           {p.pos.no.toLocaleString()}
@@ -512,7 +519,7 @@ function PortfolioView({ markets }: { markets: Market[] }) {
                   type="button"
                   key={p.market.id}
                   onClick={() => openMarket(p.market)}
-                  className="block w-full rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600"
+                  className="block w-full rounded-xl bg-slate-950/50 p-4 text-left transition hover:bg-slate-900/60"
                 >
                   <p className="mb-3 text-sm text-slate-200">
                     {p.market.question}
@@ -610,7 +617,7 @@ function MyMarketsView({ markets }: { markets: Market[] }) {
         type="button"
         key={market.id}
         onClick={() => openMarket(market)}
-        className="rounded-2xl border border-slate-800 bg-slate-950/55 p-4 text-left transition hover:border-slate-600"
+        className="rounded-xl bg-slate-950/50 p-4 text-left transition hover:bg-slate-900/60"
       >
         <div className="mb-2 flex items-center justify-between text-sm">
           <span className="flex items-center gap-1.5 text-xs text-slate-500">
@@ -676,19 +683,19 @@ function MyMarketsView({ markets }: { markets: Market[] }) {
         )}
       </div>
       <div className="mb-4 grid gap-2 sm:grid-cols-3">
-        <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+        <div className="rounded-xl bg-slate-950/45 p-3">
           <p className="text-xs text-slate-500">Total</p>
           <p className="text-lg font-medium text-slate-100">
             {myMarkets.length}
           </p>
         </div>
-        <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+        <div className="rounded-xl bg-slate-950/45 p-3">
           <p className="text-xs text-slate-500">Active</p>
           <p className="text-lg font-medium text-emerald-300">
             {active.length}
           </p>
         </div>
-        <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+        <div className="rounded-xl bg-slate-950/45 p-3">
           <p className="text-xs text-slate-500">Awaiting resolution</p>
           <p className="text-lg font-medium text-amber-300">
             {active.filter((m) => isExpired(m)).length}
@@ -772,7 +779,7 @@ function CategoryPageView({
 
   return (
     <div className="phi-container py-6 lg:py-8">
-      <div className="grid gap-[21px] xl:grid-cols-[233px_1fr_320px]">
+      <div className="grid gap-8 xl:grid-cols-[233px_1fr_320px]">
         {/* Left sidebar */}
         <aside className="hidden xl:block">
           <div className="space-y-1 text-sm text-slate-400">
@@ -807,7 +814,7 @@ function CategoryPageView({
                   key={mode}
                   type="button"
                   onClick={() => useStore.setState({ categorySortMode: mode })}
-                  className={`rounded-full border px-3 py-1.5 capitalize transition ${categorySortMode === mode ? "border-slate-500 text-slate-100" : "border-slate-700 hover:border-slate-500 hover:text-slate-300"}`}
+                  className={`rounded-full px-3 py-1.5 capitalize transition ${categorySortMode === mode ? "bg-slate-800 text-slate-100" : "text-slate-500 hover:text-slate-300"}`}
                 >
                   {mode}
                 </button>
@@ -815,19 +822,19 @@ function CategoryPageView({
             </div>
           </div>
           <div className="mb-4 grid gap-2 sm:grid-cols-3">
-            <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+            <div className="rounded-xl bg-slate-950/45 p-3">
               <p className="text-xs text-slate-500">Contracts</p>
               <p className="text-lg font-medium text-slate-100">
                 {sortedMarkets.length}
               </p>
             </div>
-            <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+            <div className="rounded-xl bg-slate-950/45 p-3">
               <p className="text-xs text-slate-500">Live now</p>
               <p className="text-lg font-medium text-rose-300">
                 {liveContracts.length}
               </p>
             </div>
-            <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+            <div className="rounded-xl bg-slate-950/45 p-3">
               <p className="text-xs text-slate-500">24h volume</p>
               <p className="text-lg font-medium text-slate-100">
                 {formatVolumeBtc(
@@ -847,19 +854,19 @@ function CategoryPageView({
         </section>
 
         {/* Right sidebar */}
-        <aside className="space-y-3">
-          <section className="rounded-2xl border border-slate-800 bg-slate-950/55 p-4">
-            <h3 className="mb-3 text-sm font-medium text-slate-400">
+        <aside className="space-y-8 xl:content-start">
+          <section>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
               Live contracts
             </h3>
-            <div className="space-y-3">
+            <div className="divide-y divide-slate-800/60">
               {liveContracts.length ? (
                 liveContracts.map((market) => (
                   <button
                     type="button"
                     key={market.id}
                     onClick={() => openMarket(market)}
-                    className="w-full text-left"
+                    className="w-full py-2.5 text-left"
                   >
                     <p className="text-sm font-normal text-slate-300">
                       {market.question}
@@ -873,24 +880,24 @@ function CategoryPageView({
                   </button>
                 ))
               ) : (
-                <p className="text-sm text-slate-500">
+                <p className="py-2.5 text-sm text-slate-500">
                   No live contracts in this category right now.
                 </p>
               )}
             </div>
           </section>
 
-          <section className="rounded-2xl border border-slate-800 bg-slate-950/55 p-4">
-            <h3 className="mb-3 text-sm font-medium text-slate-400">
+          <section>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
               Highest liquidity
             </h3>
-            <div className="space-y-3">
+            <div className="divide-y divide-slate-800/60">
               {highestLiquidity.map((market, idx) => (
                 <button
                   type="button"
                   key={market.id}
                   onClick={() => openMarket(market)}
-                  className="flex w-full items-start justify-between gap-2 text-left"
+                  className="flex w-full items-start justify-between gap-2 py-2.5 text-left"
                 >
                   <p className="text-sm text-slate-300">
                     {idx + 1}. {market.question}
@@ -903,28 +910,28 @@ function CategoryPageView({
             </div>
           </section>
 
-          <section className="rounded-2xl border border-slate-800 bg-slate-950/55 p-4">
-            <h3 className="mb-3 text-sm font-medium text-slate-400">
+          <section>
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
               Market states
             </h3>
-            <div className="space-y-2 text-sm text-slate-300">
-              <p className="flex items-center justify-between">
-                <span>Dormant</span>
+            <div className="divide-y divide-slate-800/60 text-sm text-slate-300">
+              <p className="flex items-center justify-between py-2">
+                <span className="text-slate-400">Dormant</span>
                 <span>{stateMix[0]}</span>
               </p>
-              <p className="flex items-center justify-between">
+              <p className="flex items-center justify-between py-2">
                 <span className="text-emerald-400">Live</span>
                 <span>{stateMix[1]}</span>
               </p>
-              <p className="flex items-center justify-between">
-                <span>Resolved YES</span>
+              <p className="flex items-center justify-between py-2">
+                <span className="text-slate-400">Resolved YES</span>
                 <span>{stateMix[2]}</span>
               </p>
-              <p className="flex items-center justify-between">
-                <span>Resolved NO</span>
+              <p className="flex items-center justify-between py-2">
+                <span className="text-slate-400">Resolved NO</span>
                 <span>{stateMix[3]}</span>
               </p>
-              <p className="flex items-center justify-between">
+              <p className="flex items-center justify-between py-2">
                 <span className="text-amber-400">Expired</span>
                 <span>{stateMix[4]}</span>
               </p>
@@ -939,7 +946,7 @@ function CategoryPageView({
 // ── Skeleton cards for loading state ────────────────────────────────
 function SkeletonCard() {
   return (
-    <div className="animate-pulse rounded-2xl border border-slate-800 bg-slate-950/55 p-4">
+    <div className="animate-pulse rounded-xl bg-slate-950/50 p-4">
       <div className="mb-2 flex items-center justify-between">
         <div className="h-3 w-16 rounded bg-slate-800" />
         <div className="h-3 w-12 rounded bg-slate-800" />
@@ -957,7 +964,7 @@ function SkeletonCard() {
 
 function SkeletonFeatured() {
   return (
-    <div className="animate-pulse rounded-2xl border border-slate-800 bg-slate-950/55 p-6">
+    <div className="animate-pulse rounded-xl bg-slate-950/50 p-6">
       <div className="mb-3 h-4 w-20 rounded bg-slate-800" />
       <div className="mb-2 h-6 w-2/3 rounded bg-slate-800" />
       <div className="mb-4 h-10 w-24 rounded bg-slate-800" />
@@ -972,8 +979,8 @@ function SkeletonFeatured() {
 function MarketSkeletons() {
   return (
     <div className="phi-container py-6 lg:py-8">
-      <div className="grid gap-[21px] xl:grid-cols-[1.618fr_1fr]">
-        <section className="space-y-[21px]">
+      <div className="grid gap-8 xl:grid-cols-[1.618fr_1fr]">
+        <section className="space-y-6">
           <SkeletonFeatured />
           <div className="grid gap-3 md:grid-cols-2">
             {Array.from({ length: 4 }, (_, i) => (
@@ -981,7 +988,7 @@ function MarketSkeletons() {
             ))}
           </div>
         </section>
-        <aside className="space-y-[21px]">
+        <aside className="space-y-6">
           {Array.from({ length: 3 }, (_, i) => (
             <SkeletonCard key={`sk-side-${i}`} />
           ))}
@@ -997,8 +1004,15 @@ function TrendingHomeView({ markets }: { markets: Market[] }) {
   const search = useStore((s) => s.search);
   const nostrPubkey = useStore((s) => s.nostrPubkey);
   const marketsLoading = useStore((s) => s.marketsLoading);
+  const marketGroups = getMockMarketGroups();
 
   const trending = useMemo(() => getTrendingMarkets(markets), [markets]);
+
+  // Combined carousel: groups first, then binary markets
+  const featuredItems = useMemo<(MarketGroup | Market)[]>(
+    () => [...marketGroups, ...trending],
+    [marketGroups, trending],
+  );
 
   const topMarkets = useMemo(
     () =>
@@ -1014,46 +1028,77 @@ function TrendingHomeView({ markets }: { markets: Market[] }) {
     [markets],
   );
 
+  // Auto-advance carousel every 6 seconds
+  useEffect(() => {
+    const total = featuredItems.length;
+    if (total === 0) return;
+    const id = setInterval(() => {
+      useStore.setState((s) => ({
+        trendingIndex: (s.trendingIndex + 1) % total,
+      }));
+    }, 6000);
+    return () => clearInterval(id);
+  }, [featuredItems.length]);
+
   if (trending.length === 0) {
     return marketsLoading ? <MarketSkeletons /> : <EmptyState />;
   }
 
-  const featured = trending[trendingIndex % trending.length];
+  const featured = featuredItems[trendingIndex % featuredItems.length];
+  const isGroup = (item: MarketGroup | Market): item is MarketGroup =>
+    "outcomes" in item;
 
   return (
     <div className="phi-container py-6 lg:py-8">
-      <div className="grid gap-[21px] xl:grid-cols-[1.618fr_1fr]">
-        <section className="space-y-[21px]">
-          {/* Featured market carousel */}
-          <FeaturedMarket market={featured} trending={trending} />
+      <div className="grid gap-8 xl:grid-cols-[1.618fr_0.8fr]">
+        <section className="space-y-6">
+          {/* Featured market carousel — groups + binary markets */}
+          {isGroup(featured) ? (
+            <FeaturedGroupCard
+              group={featured}
+              totalItems={featuredItems.length}
+            />
+          ) : (
+            <FeaturedMarket
+              market={featured}
+              totalItems={featuredItems.length}
+            />
+          )}
 
-          {/* Top markets grid */}
+          {/* All markets grid — binary + multi-outcome interleaved */}
           <section>
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-base font-medium text-slate-400">
-                Top Markets
+              <h2 className="text-sm font-medium uppercase tracking-wider text-slate-500">
+                All Markets
               </h2>
-              <p className="text-sm text-slate-400">
-                {topMarkets.length} shown
+              <p className="text-sm text-slate-600">
+                {topMarkets.length + marketGroups.length} shown
               </p>
             </div>
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid gap-2 md:grid-cols-2">
+              {marketGroups.map((group, idx) => (
+                <MarketGroupCard key={group.id} group={group} index={idx} />
+              ))}
               {topMarkets.map((market, idx) => (
-                <MarketCard key={market.id} market={market} index={idx} />
+                <MarketCard
+                  key={market.id}
+                  market={market}
+                  index={marketGroups.length + idx}
+                />
               ))}
             </div>
           </section>
         </section>
 
         {/* Right sidebar: Trending + Top Movers */}
-        <aside className="grid gap-[13px] sm:grid-cols-2 xl:grid-cols-1">
+        <aside className="grid gap-8 sm:grid-cols-2 xl:grid-cols-1 xl:content-start">
           {/* Trending sidebar */}
-          <section className="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px]">
-            <h3 className="mb-3 flex items-center gap-1.5 text-base font-medium text-slate-400">
-              <CategoryIcon category="Trending" className="h-4 w-4" />
+          <section>
+            <h3 className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <CategoryIcon category="Trending" className="h-3.5 w-3.5" />
               Trending
             </h3>
-            <div className="divide-y divide-slate-800">
+            <div className="divide-y divide-slate-800/60">
               {trending.slice(0, 3).map((market, idx) => (
                 <SidebarMarketItem
                   key={market.id}
@@ -1065,12 +1110,12 @@ function TrendingHomeView({ markets }: { markets: Market[] }) {
           </section>
 
           {/* Top movers sidebar */}
-          <section className="rounded-[21px] border border-slate-800 bg-slate-950/55 p-[21px]">
-            <h3 className="mb-3 flex items-center gap-1.5 text-base font-medium text-slate-400">
+          <section>
+            <h3 className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
               <TopMoversIcon />
               Top movers
             </h3>
-            <div className="divide-y divide-slate-800">
+            <div className="divide-y divide-slate-800/60">
               {topMovers.map((market, idx) => (
                 <SidebarMarketItem
                   key={market.id}
