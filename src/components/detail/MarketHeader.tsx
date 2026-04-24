@@ -38,8 +38,6 @@ function stateBadge(state: number) {
 
 /** Above the chart: nav, title, stats strip. Matches group market layout. */
 export function MarketHeaderTop({ market }: { market: Market }) {
-  const walletNetwork = useStore((s) => s.walletNetwork);
-
   const blocksLeft = market.expiryHeight - market.currentHeight;
   const closesColor =
     blocksLeft < 2880

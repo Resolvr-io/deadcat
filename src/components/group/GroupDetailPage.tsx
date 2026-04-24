@@ -11,8 +11,8 @@ import {
   generateMockOutcomeOrderbook,
   getMockMarketGroups,
 } from "../../utils-react/mock-groups";
-import { MarketActionsMenu } from "../detail/MarketActionsMenu";
 import { CommentsSection } from "../detail/comments/CommentsSection";
+import { MarketActionsMenu } from "../detail/MarketActionsMenu";
 import { categoryIcon } from "../layout/TopShell";
 import GroupChart, { OUTCOME_COLORS } from "./GroupChart";
 
@@ -648,7 +648,7 @@ export default function GroupDetailPage() {
             {categoryIcon(group.category, "h-3 w-3")}
             {group.category}
           </span>
-{group.state === "active" && (
+          {group.state === "active" && (
             <span className="rounded-full bg-sky-500/20 px-2.5 py-0.5 text-xs font-medium text-sky-300">
               Active
             </span>

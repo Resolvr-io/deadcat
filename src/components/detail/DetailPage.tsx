@@ -18,7 +18,6 @@ import {
 import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
 import MarketChart from "../chart/MarketChart";
 import { CommentsSection } from "./comments/CommentsSection";
-import { showToast } from "../shared/Toast";
 import { MarketHeaderBottom, MarketHeaderTop } from "./MarketHeader";
 import TradingPanel from "./TradingPanel";
 

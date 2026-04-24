@@ -4,9 +4,9 @@ import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useStore } from "../../store";
 
 type MarketLike = {
-  nevent?: string;
-  nostrEventJson?: string;
-  creationTxid?: string;
+  nevent?: string | null;
+  nostrEventJson?: string | null;
+  creationTxid?: string | null;
 };
 
 /**

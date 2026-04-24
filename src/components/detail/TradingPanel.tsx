@@ -154,7 +154,6 @@ export default function TradingPanel({ market }: { market: Market }) {
   const noDisplaySats = yesDisplaySats != null ? fc - yesDisplaySats : null;
   const yesPct =
     effectiveYesPrice != null ? Math.round(effectiveYesPrice * 100) : null;
-  const noPct = yesPct != null ? 100 - yesPct : null;
 
   const estimatedGrossPayoutSats = Math.floor(preview.requestedContracts * fc);
 
