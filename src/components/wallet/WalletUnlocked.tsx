@@ -37,6 +37,7 @@ export function WalletUnlocked({
   const walletBalanceHidden = useStore((s) => s.walletBalanceHidden);
   const walletError = useStore((s) => s.walletError);
   const walletLoading = useStore((s) => s.walletLoading);
+  const walletSyncing = useStore((s) => s.walletSyncing);
   const walletTokenPage = useStore((s) => s.walletTokenPage);
   const walletNetwork = useStore((s) => s.walletNetwork);
   const showLbtcLabel = useStore((s) => s.showLbtcLabel);
@@ -348,7 +349,7 @@ export function WalletUnlocked({
               <HiddenBalance className="text-3xl text-slate-500" />
             ) : (
               <span
-                className={`text-3xl ${hasUnconfirmed ? "animate-pulse" : ""}`}
+                className={`text-3xl ${hasUnconfirmed || walletSyncing ? "animate-pulse" : ""}`}
               >
                 {formatLbtc(policyBalance, walletUnit, showLbtcLabel)}
               </span>

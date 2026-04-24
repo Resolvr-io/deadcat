@@ -46,11 +46,26 @@ export function useTauriEvents(): void {
               walletData: null,
               walletMnemonic: "",
               walletModal: "none",
+              walletSyncing: false,
             });
           }
           void queryClient.invalidateQueries({ queryKey: ["walletStatus"] });
         },
       ),
+    );
+
+    // ── wallet_sync_complete ────────────────────────────────────
+    // Rust emits this once after the post-unlock sync returns
+    // (success or failure). Used to drop the UI's "syncing" pulse
+    // on the balance so a freshly restored wallet doesn't look
+    // stuck at `0 sats`. The actual balance lands via the
+    // `wallet_snapshot` listener below — this event is strictly a
+    // UX signal.
+    register(
+      listen("wallet_sync_complete", () => {
+        if (disposed) return;
+        useStore.setState({ walletSyncing: false });
+      }),
     );
 
     // ── wallet_snapshot ──────────────────────────────────────────

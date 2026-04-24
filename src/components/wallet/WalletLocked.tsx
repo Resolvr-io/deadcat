@@ -26,6 +26,7 @@ export function WalletLocked() {
             walletPassword: "",
             walletLoading: false,
             walletStatus: "unlocked",
+            walletSyncing: true,
           });
         },
         onError: (e) => {
