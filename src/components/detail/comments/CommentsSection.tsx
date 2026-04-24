@@ -27,7 +27,39 @@ type ThreadedComment = {
 };
 
 function buildThread(comments: MarketComment[]): ThreadedComment[] {
+  // Synthesize tombstone placeholders for parents referenced by
+  // replies but missing from the result set — typically because the
+  // relay honored a kind:5 deletion and removed the event entirely.
+  // Without this, orphaned replies would float to the top-level list
+  // and appear as standalone comments, stripping them of their
+  // original thread context. Showing a "[deleted]" tombstone in the
+  // parent's slot preserves the flow ("someone said something; this
+  // was a reply to it") without identifying the deleted author.
   const byId = new Map(comments.map((c) => [c.id, c]));
+  const marketId = comments[0]?.market_id ?? "";
+  const syntheticTombstones = new Map<string, MarketComment>();
+  for (const c of comments) {
+    if (!c.parent_id) continue;
+    if (byId.has(c.parent_id)) continue;
+    if (syntheticTombstones.has(c.parent_id)) continue;
+    syntheticTombstones.set(c.parent_id, {
+      id: c.parent_id,
+      author_pubkey: "",
+      content: "",
+      // 0 flags "synthetic tombstone — we have no source timestamp"
+      // so the row can hide the time-ago label.
+      created_at: 0,
+      market_id: marketId,
+      parent_id: null,
+      deleted: true,
+    });
+  }
+  const allComments: MarketComment[] = [
+    ...comments,
+    ...syntheticTombstones.values(),
+  ];
+  for (const t of syntheticTombstones.values()) byId.set(t.id, t);
+
   const ancestorOf = (c: MarketComment): MarketComment => {
     let cursor = c;
     // Bounded walk — a runaway chain shouldn't loop forever.
@@ -39,7 +71,7 @@ function buildThread(comments: MarketComment[]): ThreadedComment[] {
     return cursor;
   };
   const groups = new Map<string, ThreadedComment>();
-  for (const c of comments) {
+  for (const c of allComments) {
     const ancestor = ancestorOf(c);
     const entry =
       groups.get(ancestor.id) ??
@@ -47,9 +79,11 @@ function buildThread(comments: MarketComment[]): ThreadedComment[] {
     if (ancestor.id !== c.id) entry.replies.push(c);
     groups.set(ancestor.id, entry);
   }
-  // Preserve top-level parent order from the source list (already
-  // sorted newest-first upstream). Replies inside each thread are
-  // sorted oldest-first so the conversation reads forward.
+
+  // Output order: real top-level parents keep their newest-first
+  // position from the source list; synthetic tombstones slot in at
+  // the bottom (their created_at is 0). Replies inside each thread
+  // are sorted oldest-first so the conversation reads forward.
   const seen = new Set<string>();
   const out: ThreadedComment[] = [];
   for (const c of comments) {
@@ -57,6 +91,13 @@ function buildThread(comments: MarketComment[]): ThreadedComment[] {
     if (seen.has(c.id)) continue;
     seen.add(c.id);
     const entry = groups.get(c.id);
+    if (!entry) continue;
+    entry.replies.sort((a, b) => a.created_at - b.created_at);
+    out.push(entry);
+  }
+  for (const t of syntheticTombstones.values()) {
+    if (seen.has(t.id)) continue;
+    const entry = groups.get(t.id);
     if (!entry) continue;
     entry.replies.sort((a, b) => a.created_at - b.created_at);
     out.push(entry);
@@ -88,13 +129,6 @@ export function CommentsSection({ market }: { market: Market }) {
   } = useMarketComments(market.marketId, market.creatorPubkey);
 
   const threaded = useMemo(() => buildThread(comments), [comments]);
-  /** Hide deleted top-level comments that carry no replies — nothing
-   *  to preserve the thread context for, so the tombstone would be
-   *  pure noise. Matches the rule in the plan doc. */
-  const visibleThreads = useMemo(
-    () => threaded.filter((t) => !t.parent.deleted || t.replies.length > 0),
-    [threaded],
-  );
   const commentIds = useMemo(() => comments.map((c) => c.id), [comments]);
   const zapStats = useCommentZaps(
     market.marketId,
@@ -172,13 +206,13 @@ export function CommentsSection({ market }: { market: Market }) {
               Retry
             </button>
           </div>
-        ) : visibleThreads.length === 0 ? (
+        ) : threaded.length === 0 ? (
           <p className="py-6 text-center text-xs text-slate-500">
             No comments yet. Be the first to weigh in.
           </p>
         ) : (
           <ul className="divide-y divide-slate-800/80">
-            {visibleThreads.map(({ parent, replies }) => {
+            {threaded.map(({ parent, replies }) => {
               const parentStats = zapStatsFor(zapStats, parent.id);
               const parentReactions = reactionStatsFor(
                 reactionStats,

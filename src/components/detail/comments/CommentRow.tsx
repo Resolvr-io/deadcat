@@ -107,11 +107,15 @@ export function CommentRow({
     });
   };
 
-  // Tombstone variant — the comment has been deleted but has
-  // descendants we're still rendering, so we keep the slot in the
-  // thread with an anonymized "[deleted]" placeholder. Swallows all
-  // interactive actions (no profile click, no reply, no zap).
+  // Tombstone variant — always rendered in place when a kind:5
+  // targets the comment (or when the relay removed the parent
+  // entirely and we synthesize the slot). Preserves thread context
+  // without identifying the deleted author. Reddit-style: name and
+  // body both collapse to "[deleted]". Timestamp is hidden for
+  // synthetic tombstones (created_at == 0) because we have no
+  // source timestamp to show.
   if (comment.deleted) {
+    const hasTimestamp = comment.created_at > 0;
     return (
       <div className="flex items-start gap-3 py-3 opacity-60">
         <div
@@ -120,16 +124,16 @@ export function CommentRow({
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
-            <span className="text-sm font-semibold text-slate-500 italic">
+            <span className="text-sm font-semibold italic text-slate-500">
               [deleted]
             </span>
-            <span className="shrink-0 text-xs text-slate-600" title={tsIso}>
-              {tsRel}
-            </span>
+            {hasTimestamp && (
+              <span className="shrink-0 text-xs text-slate-600" title={tsIso}>
+                {tsRel}
+              </span>
+            )}
           </div>
-          <p className="mt-1 text-sm italic text-slate-600">
-            This comment was deleted by its author.
-          </p>
+          <p className="mt-1 text-sm italic text-slate-600">[deleted]</p>
         </div>
       </div>
     );

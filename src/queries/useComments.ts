@@ -32,8 +32,15 @@ export function useMarketComments(
     },
     enabled: !!(marketId && creatorPubkey),
     staleTime: 15_000,
+    // Relay indexing of kind:5 deletions lags; the next fetch can
+    // briefly bring the comment back un-deleted before the relay
+    // reflects our kind:5. Mark locally-deleted ids as tombstones so
+    // the thread slot stays preserved (Reddit-style) regardless of
+    // relay state.
     select: (data) =>
-      deletedIds.size > 0 ? data.filter((c) => !deletedIds.has(c.id)) : data,
+      deletedIds.size > 0
+        ? data.map((c) => (deletedIds.has(c.id) ? { ...c, deleted: true } : c))
+        : data,
   });
 }
 
@@ -115,14 +122,20 @@ export function useDeleteMarketComment(
     mutationFn: (commentEventIdHex: string) =>
       tauriApi.deleteMarketComment(commentEventIdHex),
     onSuccess: (_data, commentEventIdHex) => {
-      // Relay indexing of the kind:5 deletion lags, so refetches can
-      // briefly bring the comment back. Remember the deleted id for this
-      // session and filter it out wherever comments are read; drop it
-      // from the cache now so the UI updates immediately.
+      // Relay indexing of the kind:5 deletion lags, so a naive
+      // refetch could bring the comment back un-deleted before the
+      // relay reflects the deletion. Track the id for the session so
+      // `useMarketComments` keeps flipping it to `deleted: true` even
+      // if the relay round-trip is slow, and flip the cache now so
+      // the tombstone appears without waiting for the next fetch.
       useDeletedCommentIds.getState().add(commentEventIdHex);
       const key = keyFor(marketId, creatorPubkey);
       qc.setQueryData<MarketComment[]>(key, (prev) =>
-        prev ? prev.filter((c) => c.id !== commentEventIdHex) : prev,
+        prev
+          ? prev.map((c) =>
+              c.id === commentEventIdHex ? { ...c, deleted: true } : c,
+            )
+          : prev,
       );
       void qc.invalidateQueries({ queryKey: key, refetchType: "none" });
     },
