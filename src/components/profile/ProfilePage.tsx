@@ -126,6 +126,20 @@ function ProfilePageContent() {
 
   const avatarSrc = picture || generateAvatarDataUri(nostrNpub || "default");
 
+  // Disable Save until the user actually changes something. Treat
+  // missing (`undefined`) and empty string as equivalent so a
+  // profile with a never-set field compared against an empty input
+  // doesn't register as dirty.
+  const isDirty =
+    (nostrProfile?.name ?? "") !== name ||
+    (nostrProfile?.display_name ?? "") !== displayName ||
+    (nostrProfile?.picture ?? "") !== picture ||
+    (nostrProfile?.banner ?? "") !== banner ||
+    (nostrProfile?.about ?? "") !== about ||
+    (nostrProfile?.website ?? "") !== website ||
+    (nostrProfile?.nip05 ?? "") !== nip05 ||
+    (nostrProfile?.lud16 ?? "") !== lud16;
+
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
@@ -419,7 +433,8 @@ function ProfilePageContent() {
               <button
                 type="button"
                 onClick={handleSave}
-                disabled={saving}
+                disabled={saving || !isDirty}
+                title={!isDirty ? "No changes to save" : undefined}
                 className="w-full rounded-lg bg-emerald-400 px-4 py-3.5 font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {saving ? (
