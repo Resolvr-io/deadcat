@@ -1,4 +1,8 @@
 import { useMemo } from "react";
+import {
+  reactionStatsFor,
+  useCommentReactions,
+} from "../../../queries/useCommentReactions";
 import { useMarketComments } from "../../../queries/useComments";
 import { useCommentZaps, zapStatsFor } from "../../../queries/useCommentZaps";
 import { useStore } from "../../../store";
@@ -33,6 +37,11 @@ export function CommentsSection({ market }: { market: Market }) {
 
   const commentIds = useMemo(() => comments.map((c) => c.id), [comments]);
   const zapStats = useCommentZaps(
+    market.marketId,
+    market.creatorPubkey,
+    commentIds,
+  );
+  const reactionStats = useCommentReactions(
     market.marketId,
     market.creatorPubkey,
     commentIds,
@@ -111,6 +120,7 @@ export function CommentsSection({ market }: { market: Market }) {
           <ul className="divide-y divide-slate-800/80">
             {comments.map((c) => {
               const stats = zapStatsFor(zapStats, c.id);
+              const reactions = reactionStatsFor(reactionStats, c.id);
               return (
                 <li key={c.id}>
                   <CommentRow
@@ -119,6 +129,7 @@ export function CommentsSection({ market }: { market: Market }) {
                     creatorPubkey={market.creatorPubkey}
                     zapCount={stats.count}
                     zapSats={stats.totalSats}
+                    reactions={reactions}
                   />
                 </li>
               );
