@@ -575,3 +575,29 @@ button:focus-visible,
 .animate-notification-pulse {
   animation: deadcat-notification-pulse 2s ease-out both;
 }
+
+/* Trending carousel card content transition. Triggered by a `key`
+   change on the wrapping div so each new featured item remounts and
+   plays the keyframe. Combines a small translate with scale + fade
+   for a polished pop-in — matches the Radix / tw-animate-css nav
+   viewport style used in the resolvr-io sibling app. `both` applies
+   the start state before the animation runs so there's no
+   first-paint flash of the end state. */
+@keyframes deadcat-carousel-slide {
+  0% {
+    transform: translateX(80%);
+    opacity: 0.3;
+  }
+  100% {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+.animate-carousel-slide {
+  animation: deadcat-carousel-slide 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-carousel-slide {
+    animation: none;
+  }
+}
