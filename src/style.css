@@ -585,17 +585,16 @@ button:focus-visible,
    first-paint flash of the end state. */
 @keyframes deadcat-carousel-slide {
   0% {
-    transform: translateX(24px) scale(0.96);
-    opacity: 0;
+    transform: translateX(80%);
+    opacity: 0.3;
   }
   100% {
-    transform: translateX(0) scale(1);
+    transform: translateX(0);
     opacity: 1;
   }
 }
 .animate-carousel-slide {
-  transform-origin: center top;
-  animation: deadcat-carousel-slide 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: deadcat-carousel-slide 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 @media (prefers-reduced-motion: reduce) {
   .animate-carousel-slide {
