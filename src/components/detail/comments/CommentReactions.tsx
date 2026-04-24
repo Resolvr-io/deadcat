@@ -6,16 +6,14 @@ import {
 } from "../../../queries/useCommentReactions";
 import { useStore } from "../../../store";
 import { friendlyError } from "../../../utils-react/friendly-error";
+import { FullEmojiPicker } from "../../shared/FullEmojiPicker";
 import { showToast } from "../../shared/Toast";
 import { HeartIcon } from "./icons";
 
 /**
- * Deadcat-specific reaction roster. `QUICK` renders in the initial
- * 2×4 grid of the picker popover; `MORE` is revealed when the user
- * taps "More emojis" and the popover expands into a 4×4 grid
- * showing everything. Mix of cat character + market sentiment; full
- * roster is deliberately small (16) so we don't need a full emoji
- * search surface for MVP.
+ * Deadcat-curated quick reactions — cat character + market sentiment.
+ * Renders in the compact 2×4 grid of the popover. "More emojis"
+ * opens the full `emoji-picker-element` surface for the long tail.
  */
 const QUICK: readonly string[] = [
   "🐱",
@@ -27,15 +25,15 @@ const QUICK: readonly string[] = [
   "📉",
   "🎯",
 ];
-const MORE: readonly string[] = ["🔥", "❤️", "💀", "🎲", "🧨", "🏆", "💎", "👀"];
 
 /**
- * Reaction control rendered in the comment action row. Follows the
+ * Reaction control rendered in the comment action row. Matches the
  * zapcooking pattern: a single outline-heart trigger that shows the
  * total reaction count (or the viewer's own reaction emoji when
- * they've already reacted). Clicking opens a compact popover with
- * 8 curated emojis and a "More emojis" button that expands the grid
- * to 16.
+ * they've already reacted). Clicking opens a compact popover with 8
+ * curated emojis and a "More emojis" button that opens the full
+ * emoji picker (shared by primal-web-spark and zapcooking) for the
+ * full Unicode set.
  *
  * Per-emoji aggregated pills are deliberately NOT rendered on the
  * row — matching the convention in Primal / zapcooking. The full
@@ -57,8 +55,12 @@ export function CommentReactions({
   const del = useDeleteCommentReaction();
   const isOwn = sessionPubkey === commentAuthorPubkey;
   const [open, setOpen] = useState(false);
-  const [showAll, setShowAll] = useState(false);
+  const [fullPickerOpen, setFullPickerOpen] = useState(false);
+  const [fullPickerAnchor, setFullPickerAnchor] = useState<DOMRect | null>(
+    null,
+  );
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
 
   const total = useMemo(
     () => stats.reduce((sum, r) => sum + r.count, 0),
@@ -85,39 +87,42 @@ export function CommentReactions({
       ? "Sign in to react"
       : null;
 
-  // Close on outside click.
+  // Close on outside click. Skip while the full picker is open —
+  // its own portal handles dismiss.
   useEffect(() => {
-    if (!open) return;
+    if (!open || fullPickerOpen) return;
     const handler = (e: MouseEvent) => {
       if (
         wrapperRef.current &&
         !wrapperRef.current.contains(e.target as Node)
       ) {
         setOpen(false);
-        setShowAll(false);
       }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
+  }, [open, fullPickerOpen]);
 
-  // Close on Escape.
+  // Close on Escape. Full picker handles its own Escape.
   useEffect(() => {
-    if (!open) return;
+    if (!open || fullPickerOpen) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-        setShowAll(false);
-      }
+      if (e.key === "Escape") setOpen(false);
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [open]);
+  }, [open, fullPickerOpen]);
 
   const handleTriggerClick = () => {
     if (disabled) return;
     setOpen((v) => !v);
-    setShowAll(false);
+  };
+
+  const handleOpenFullPicker = () => {
+    const rect = moreButtonRef.current?.getBoundingClientRect() ?? null;
+    setFullPickerAnchor(rect);
+    setFullPickerOpen(true);
+    setOpen(false);
   };
 
   /** One reaction per user per comment. Clicking the emoji you
@@ -126,7 +131,7 @@ export function CommentReactions({
    *  can never carry two reactions from the same user. */
   const toggle = async (emoji: string) => {
     setOpen(false);
-    setShowAll(false);
+    setFullPickerOpen(false);
     const myReactions = stats.filter((r) => r.mine && r.myEventId);
     const clickedIsMine = myReactions.some((r) => r.emoji === emoji);
 
@@ -169,8 +174,6 @@ export function CommentReactions({
       ? "Change your reaction"
       : "Add a reaction";
 
-  const emojis = showAll ? [...QUICK, ...MORE] : QUICK;
-
   return (
     <div ref={wrapperRef} className="relative inline-flex">
       <button
@@ -201,7 +204,7 @@ export function CommentReactions({
           style={{ minWidth: "264px" }}
         >
           <div className="grid grid-cols-4 gap-2">
-            {emojis.map((emoji) => (
+            {QUICK.map((emoji) => (
               <button
                 key={emoji}
                 type="button"
@@ -224,31 +227,41 @@ export function CommentReactions({
               </button>
             ))}
           </div>
-          {!showAll && MORE.length > 0 && (
-            <div className="mt-3 border-t border-slate-800 pt-3">
-              <button
-                type="button"
-                onClick={() => setShowAll(true)}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg py-2 text-sm text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
+          <div className="mt-3 border-t border-slate-800 pt-3">
+            <button
+              ref={moreButtonRef}
+              type="button"
+              onClick={handleOpenFullPicker}
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg py-2 text-sm text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
+            >
+              <svg
+                aria-hidden="true"
+                className="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
               >
-                <svg
-                  aria-hidden="true"
-                  className="h-4 w-4"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="12" x2="12" y1="5" y2="19" />
-                  <line x1="5" x2="19" y1="12" y2="12" />
-                </svg>
-                More emojis
-              </button>
-            </div>
-          )}
+                <line x1="12" x2="12" y1="5" y2="19" />
+                <line x1="5" x2="19" y1="12" y2="12" />
+              </svg>
+              More emojis
+            </button>
+          </div>
         </div>
+      )}
+
+      {fullPickerOpen && (
+        <FullEmojiPicker
+          anchorRect={fullPickerAnchor}
+          onPick={(emoji) => {
+            setFullPickerOpen(false);
+            void toggle(emoji);
+          }}
+          onClose={() => setFullPickerOpen(false)}
+        />
       )}
     </div>
   );
