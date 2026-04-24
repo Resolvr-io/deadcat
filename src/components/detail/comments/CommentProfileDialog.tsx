@@ -67,7 +67,7 @@ export function CommentProfileDialog({
           {/* Banner */}
           <div className="relative h-40 bg-slate-900">
             <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-end px-4 py-3">
-              <CloseButton onClick={onClose} />
+              <CloseButton onClick={onClose} variant="overlay" />
             </div>
             {profile?.banner && (
               <img
