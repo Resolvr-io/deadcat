@@ -1219,9 +1219,7 @@ function NostrReplacePanel() {
           </svg>
           Back
         </button>
-        <CloseButton
-          onClick={() => useStore.setState({ settingsOpen: false })}
-        />
+        <CloseButton onClick={closeSettings} />
       </div>
       <div className="px-6 py-6 space-y-5">
         <div>
@@ -1310,6 +1308,22 @@ export function SettingsPanel() {
   return <SettingsPanelContent nostrReplacePanel={nostrReplacePanel} />;
 }
 
+/**
+ * Reset every settings sub-panel / scratch field on close. Without
+ * this, reopening Settings would drop the user back into whatever
+ * sub-panel they X-ed out of — reopening should always land on the
+ * main settings screen.
+ */
+function closeSettings() {
+  useStore.setState({
+    settingsOpen: false,
+    nostrReplacePanel: false,
+    nostrReplacePrompt: false,
+    nostrReplaceConfirm: "",
+    nostrImportNsec: "",
+  });
+}
+
 function SettingsPanelContent({
   nostrReplacePanel,
 }: {
@@ -1326,9 +1340,7 @@ function SettingsPanelContent({
           <>
             <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
               <h2 className="text-lg font-medium text-slate-100">Settings</h2>
-              <CloseButton
-                onClick={() => useStore.setState({ settingsOpen: false })}
-              />
+              <CloseButton onClick={closeSettings} />
             </div>
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-0">
               <SettingsAccordion sectionKey="nostr" title="Nostr Identity">
