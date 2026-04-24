@@ -209,8 +209,8 @@ export function WalletUnlocked({
     (assetId: string) => {
       const base =
         walletNetwork === "testnet"
-          ? "https://blockstream.info/liquidtestnet"
-          : "https://blockstream.info/liquid";
+          ? "https://liquid.network/testnet"
+          : "https://liquid.network";
       void openUrl(`${base}/asset/${assetId}`);
     },
     [walletNetwork],
