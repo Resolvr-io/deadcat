@@ -10,6 +10,7 @@ pub(crate) mod config;
 pub(crate) mod events;
 pub(crate) mod market;
 pub(crate) mod pool;
+pub(crate) mod reactions;
 pub(crate) mod service;
 pub(crate) mod store_trait;
 pub(crate) mod zaps;
@@ -85,6 +86,15 @@ pub use comments::{
     COMMENT_KIND, CommentParent, CommentRoot, MAX_COMMENT_LEN, MarketComment,
     build_comment_deletion_event, build_comment_event, build_comment_filter_for_market,
     fetch_comments as fetch_market_comments, parse_comment_event,
+};
+
+// ---------------------------------------------------------------------------
+// Re-exports: reactions (NIP-25)
+// ---------------------------------------------------------------------------
+
+pub use reactions::{
+    EventReactionSummary, REACTION_KIND, ReactionCount, build_reaction_deletion_event,
+    build_reaction_event, fetch_reaction_summaries_for_events,
 };
 
 // ---------------------------------------------------------------------------

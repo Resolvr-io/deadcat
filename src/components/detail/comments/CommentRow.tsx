@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import type { ReactionStats } from "../../../queries/useCommentReactions";
 import { useDeleteMarketComment } from "../../../queries/useComments";
 import { useNostrProfileByPubkey } from "../../../queries/useNostrProfileByPubkey";
 import { useStore } from "../../../store";
@@ -9,9 +10,10 @@ import { friendlyError } from "../../../utils-react/friendly-error";
 import { showToast } from "../../shared/Toast";
 import { CommentBody } from "./CommentBody";
 import { CommentProfileDialog } from "./CommentProfileDialog";
+import { CommentReactions } from "./CommentReactions";
 import { CommentRowMenu } from "./CommentRowMenu";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { HeartIcon, ReplyIcon, ZapIcon } from "./icons";
+import { ReplyIcon, ZapIcon } from "./icons";
 import { ZapDialog } from "./ZapDialog";
 
 function shortPubkey(hex: string): string {
@@ -47,6 +49,7 @@ export function CommentRow({
   creatorPubkey,
   zapCount,
   zapSats,
+  reactions,
 }: {
   comment: MarketComment;
   marketId: string;
@@ -55,6 +58,8 @@ export function CommentRow({
   zapCount: number;
   /** Total sats zapped across those receipts (floor of msats/1000). */
   zapSats: number;
+  /** NIP-25 reactions aggregated per emoji; empty when none seen. */
+  reactions: ReactionStats[];
 }) {
   const sessionPubkey = useStore((s) => s.nostrPubkey);
   const { data: profile } = useNostrProfileByPubkey(comment.author_pubkey);
@@ -122,9 +127,10 @@ export function CommentRow({
             icon={<ReplyIcon className="h-[18px] w-[18px]" />}
             title="Replies coming soon"
           />
-          <PlaceholderAction
-            icon={<HeartIcon className="h-[18px] w-[18px]" />}
-            title="Reactions coming soon"
+          <CommentReactions
+            commentEventId={comment.id}
+            commentAuthorPubkey={comment.author_pubkey}
+            stats={reactions}
           />
           {(() => {
             // Show total sats when zaps exist (matches Primal / Jumble
