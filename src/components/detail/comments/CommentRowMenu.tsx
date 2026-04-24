@@ -1,13 +1,20 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useEscapeKey } from "../../../hooks/useEscapeKey";
+import {
+  useIsMuted,
+  useMutePubkey,
+  useUnmutePubkey,
+} from "../../../queries/useMutes";
+import { useStore } from "../../../store";
 import { hexToNpub } from "../../../utils/crypto";
+import { friendlyError } from "../../../utils-react/friendly-error";
 import { showToast } from "../../shared/Toast";
 import { CopyIcon, MoreIcon, MuteIcon, TrashIcon } from "./icons";
 
 /**
  * Kebab "more actions" menu on a comment row. Always exposes Copy
- * text / Copy npub / Mute; shows Delete only when `isOwn`. Mute is a
- * disabled placeholder until NIP-51 publish lands in the backend.
+ * text / Copy npub; adds Mute / Unmute for signed-in viewers on
+ * other people's comments; shows Delete only when `isOwn`.
  */
 export function CommentRowMenu({
   commentBody,
@@ -24,6 +31,13 @@ export function CommentRowMenu({
 }) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  const sessionPubkey = useStore((s) => s.nostrPubkey);
+  const isMuted = useIsMuted(authorPubkeyHex);
+  const muteMutation = useMutePubkey();
+  const unmuteMutation = useUnmutePubkey();
+  const mutePending = muteMutation.isPending || unmuteMutation.isPending;
+  const canMute = !!sessionPubkey && !isOwn;
 
   useEscapeKey(open, () => setOpen(false));
 
@@ -60,6 +74,17 @@ export function CommentRowMenu({
     onDelete();
   };
 
+  const handleToggleMute = () => {
+    close();
+    const mutation = isMuted ? unmuteMutation : muteMutation;
+    mutation.mutate(authorPubkeyHex, {
+      onSuccess: () => {
+        showToast(isMuted ? "Unmuted" : "Muted", "success");
+      },
+      onError: (e) => showToast(friendlyError(String(e)), "error"),
+    });
+  };
+
   return (
     <div ref={wrapperRef} className="relative ml-auto">
       <button
@@ -88,12 +113,14 @@ export function CommentRowMenu({
             label="Copy author public key"
             onClick={handleCopyNpub}
           />
-          <MenuItem
-            icon={<MuteIcon className="h-4 w-4" />}
-            label="Mute author"
-            disabled
-            hint="Coming soon"
-          />
+          {canMute && (
+            <MenuItem
+              icon={<MuteIcon className="h-4 w-4" />}
+              label={isMuted ? "Unmute author" : "Mute author"}
+              onClick={handleToggleMute}
+              disabled={mutePending}
+            />
+          )}
           {isOwn && (
             <>
               <div className="h-px bg-slate-800" />
