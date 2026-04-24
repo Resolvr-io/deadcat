@@ -48,6 +48,7 @@ export default function TradingPanel({ market }: { market: Market }) {
   const tradeError = useStore((s) => s.tradeError);
   const showOrderbook = useStore((s) => s.showOrderbook);
   const walletStatus = useStore((s) => s.walletStatus);
+  const nostrPubkey = useStore((s) => s.nostrPubkey);
   const walletData = useStore((s) => s.walletData);
   const marketMakerMode = useStore((s) => s.marketMakerMode);
   const showAdvancedActions = useStore((s) => s.showAdvancedActions);
@@ -794,23 +795,43 @@ export default function TradingPanel({ market }: { market: Market }) {
             <div
               className={`${market.traderCount > 0 ? "" : "mt-4"} rounded-lg border border-slate-700 bg-slate-900/60 p-4 text-center`}
             >
+              {/* Branch the CTA on whether the user already has a
+                  Nostr identity. A signed-in user only needs to set
+                  up the wallet — calling them back through the full
+                  "Set up account" flow reads as if their identity is
+                  missing too, which it isn't. */}
               <p className="text-sm font-medium text-slate-300">
-                Create an account to trade
+                {nostrPubkey
+                  ? "Set up a wallet to trade"
+                  : "Create an account to trade"}
               </p>
               <p className="mt-1 text-xs text-slate-500">
                 Your quote will be preserved
               </p>
               <button
                 type="button"
-                onClick={() =>
-                  useStore.setState({
-                    setupModalOpen: true,
-                    onboardingStep: "nostr",
-                  })
-                }
+                onClick={() => {
+                  if (nostrPubkey) {
+                    // Signed in but no wallet — jump straight to the
+                    // wallet step with the indicator hidden.
+                    useStore.setState({
+                      setupRequires: "identity+wallet",
+                      onboardingStep: "wallet",
+                      onboardingNostrDone: true,
+                      onboardingWalletOnly: true,
+                      onboardingWalletMode: "create",
+                      setupModalOpen: true,
+                    });
+                  } else {
+                    useStore.setState({
+                      setupModalOpen: true,
+                      onboardingStep: "nostr",
+                    });
+                  }
+                }}
                 className="mt-3 w-full rounded-lg bg-emerald-400 px-4 py-2.5 font-semibold text-slate-950 transition hover:bg-emerald-300"
               >
-                Set up account
+                {nostrPubkey ? "Set up wallet" : "Set up account"}
               </button>
             </div>
           ) : walletStatus === "locked" ? (

@@ -50,6 +50,8 @@ export function CommentRow({
   zapCount,
   zapSats,
   reactions,
+  isReplyTarget = false,
+  onToggleReply,
 }: {
   comment: MarketComment;
   marketId: string;
@@ -60,9 +62,20 @@ export function CommentRow({
   zapSats: number;
   /** NIP-25 reactions aggregated per emoji; empty when none seen. */
   reactions: ReactionStats[];
+  /** True when this row is the active reply target (thread-level
+   *  state owned by CommentsSection). Drives the pressed styling on
+   *  the reply button. */
+  isReplyTarget?: boolean;
+  /** Toggle reply-target state for this row. The parent thread
+   *  renders a single composer at the reply-indent level regardless
+   *  of which row was clicked, so the form never visually nests
+   *  further than the rest of the thread. */
+  onToggleReply?: () => void;
 }) {
   const sessionPubkey = useStore((s) => s.nostrPubkey);
-  const { data: profile } = useNostrProfileByPubkey(comment.author_pubkey);
+  const { data: profile } = useNostrProfileByPubkey(
+    comment.deleted ? null : comment.author_pubkey,
+  );
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [zapOpen, setZapOpen] = useState(false);
@@ -79,8 +92,15 @@ export function CommentRow({
     shortPubkey(comment.author_pubkey);
 
   const isOwn = sessionPubkey === comment.author_pubkey;
+  // Optimistic entries carry a temp id until the signed event lands
+  // back from the relay. During that window (~1–2s) the real event
+  // id doesn't exist yet, so reactions / zaps / replies / delete
+  // would target a fake id and fail. Hide interactive affordances
+  // while pending — the row still shows the comment body + author
+  // so the user sees it went through.
+  const isPending = comment.id.startsWith("optimistic-");
   const tsIso = new Date(comment.created_at * 1000).toISOString();
-  const tsRel = formatTimeAgo(comment.created_at);
+  const tsRel = isPending ? "posting…" : formatTimeAgo(comment.created_at);
 
   const handleConfirmDelete = () => {
     setConfirmOpen(false);
@@ -90,6 +110,35 @@ export function CommentRow({
       },
     });
   };
+
+  // Tombstone variant — always rendered in place when a kind:5
+  // targets the comment (or when the relay removed the parent
+  // entirely and we synthesize the slot). Preserves thread context
+  // without identifying the deleted author. Reddit-style: name and
+  // body both collapse to "[deleted]". Timestamp is hidden for
+  // synthetic tombstones (created_at == 0) because we have no
+  // source timestamp to show.
+  if (comment.deleted) {
+    const hasTimestamp = comment.created_at > 0;
+    return (
+      <div className="flex items-center gap-3 py-3 opacity-60">
+        <div
+          aria-hidden="true"
+          className="h-8 w-8 shrink-0 rounded-full border border-slate-800 bg-slate-900"
+        />
+        <div className="flex min-w-0 flex-1 items-baseline gap-2">
+          <span className="text-sm font-semibold italic text-slate-500">
+            [deleted]
+          </span>
+          {hasTimestamp && (
+            <span className="shrink-0 text-xs text-slate-600" title={tsIso}>
+              {tsRel}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-start gap-3 py-3">
@@ -122,11 +171,35 @@ export function CommentRow({
         <div className="mt-1">
           <CommentBody text={comment.content} />
         </div>
-        <div className="mt-2 flex items-center gap-1 text-slate-500">
-          <PlaceholderAction
-            icon={<ReplyIcon className="h-[18px] w-[18px]" />}
-            title="Replies coming soon"
-          />
+        {/* Hide the whole action row while the optimistic entry is in
+            place — no real event id means reactions / zaps / replies
+            / delete would all fail against the relay. The row snaps
+            into full interactivity the moment the signed event lands
+            back in the cache (usually 1–2s). */}
+        <div
+          className={`mt-2 flex items-center gap-1 text-slate-500 ${isPending ? "invisible" : ""}`}
+          aria-hidden={isPending}
+        >
+          {sessionPubkey && onToggleReply ? (
+            <button
+              type="button"
+              onClick={onToggleReply}
+              title={isReplyTarget ? "Cancel reply" : "Reply"}
+              aria-pressed={isReplyTarget}
+              className={`flex items-center gap-1 rounded-full px-2 py-1.5 transition ${
+                isReplyTarget
+                  ? "bg-slate-800 text-slate-200"
+                  : "text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+              }`}
+            >
+              <ReplyIcon className="h-[18px] w-[18px]" />
+            </button>
+          ) : (
+            <PlaceholderAction
+              icon={<ReplyIcon className="h-[18px] w-[18px]" />}
+              title="Sign in to reply"
+            />
+          )}
           <CommentReactions
             commentEventId={comment.id}
             commentAuthorPubkey={comment.author_pubkey}

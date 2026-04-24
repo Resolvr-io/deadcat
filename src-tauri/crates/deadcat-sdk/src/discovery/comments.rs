@@ -46,6 +46,14 @@ pub struct MarketComment {
     /// Event id of the parent comment, if this is a reply.
     /// `None` for a top-level comment (parent is the market).
     pub parent_id: Option<String>,
+    /// True when the author published a kind:5 deletion request
+    /// against this comment. We still return the record (instead of
+    /// dropping it) so the frontend can render a tombstone when the
+    /// comment has replies, preserving thread context. Callers that
+    /// don't want tombstones should filter `deleted == true` on
+    /// leaves themselves.
+    #[serde(default)]
+    pub deleted: bool,
     /// Raw event JSON for clients that need access to additional tags.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nostr_event_json: Option<String>,
@@ -300,6 +308,7 @@ pub fn parse_comment_event(
         created_at: event.created_at.as_u64(),
         market_id,
         parent_id,
+        deleted: false,
         nostr_event_json: serde_json::to_string(event).ok(),
     })
 }
@@ -360,13 +369,18 @@ pub async fn fetch_comments(
         }
     }
 
+    // Keep deleted comments in the result and flag them so the
+    // frontend can render tombstones where the comment has replies
+    // (preserves thread context) while hiding isolated deletions.
     let mut out = Vec::new();
     for event in &comment_events {
-        if deleted.contains(&event.id.to_hex()) {
-            continue;
-        }
         match parse_comment_event(event, expected_network_tag) {
-            Ok(comment) => out.push(comment),
+            Ok(mut comment) => {
+                if deleted.contains(&comment.id) {
+                    comment.deleted = true;
+                }
+                out.push(comment);
+            }
             Err(e) => log::warn!("skipping unparseable comment {}: {e}", event.id),
         }
     }

@@ -1,16 +1,203 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
+  type ReactionStats,
   reactionStatsFor,
   useCommentReactions,
 } from "../../../queries/useCommentReactions";
 import { useMarketComments } from "../../../queries/useComments";
 import { useCommentZaps, zapStatsFor } from "../../../queries/useCommentZaps";
 import { useStore } from "../../../store";
-import type { Market } from "../../../types";
+import type { Market, MarketComment } from "../../../types";
 import { friendlyError } from "../../../utils-react/friendly-error";
 import { CommentForm } from "./CommentForm";
 import { CommentRow } from "./CommentRow";
 import { CommentRowSkeleton } from "./CommentRowSkeleton";
+
+/**
+ * Flatten nested replies into a single list keyed by the top-level
+ * ancestor. The backend's parent_id chain can go arbitrarily deep;
+ * for MVP we render replies-to-replies as siblings of the immediate
+ * reply rather than deeper indentation — keeps the thread readable
+ * on a narrow column and matches how prediction-market discussions
+ * actually flow. Matches the rule documented in
+ * docs/nostr-social-features-plan.md § C.
+ */
+type ThreadedComment = {
+  parent: MarketComment;
+  replies: MarketComment[];
+};
+
+function buildThread(comments: MarketComment[]): ThreadedComment[] {
+  // Synthesize tombstone placeholders for parents referenced by
+  // replies but missing from the result set — typically because the
+  // relay honored a kind:5 deletion and removed the event entirely.
+  // Without this, orphaned replies would float to the top-level list
+  // and appear as standalone comments, stripping them of their
+  // original thread context. Showing a "[deleted]" tombstone in the
+  // parent's slot preserves the flow ("someone said something; this
+  // was a reply to it") without identifying the deleted author.
+  const byId = new Map(comments.map((c) => [c.id, c]));
+  const marketId = comments[0]?.market_id ?? "";
+  const syntheticTombstones = new Map<string, MarketComment>();
+  for (const c of comments) {
+    if (!c.parent_id) continue;
+    if (byId.has(c.parent_id)) continue;
+    if (syntheticTombstones.has(c.parent_id)) continue;
+    syntheticTombstones.set(c.parent_id, {
+      id: c.parent_id,
+      author_pubkey: "",
+      content: "",
+      // 0 flags "synthetic tombstone — we have no source timestamp"
+      // so the row can hide the time-ago label.
+      created_at: 0,
+      market_id: marketId,
+      parent_id: null,
+      deleted: true,
+    });
+  }
+  const allComments: MarketComment[] = [
+    ...comments,
+    ...syntheticTombstones.values(),
+  ];
+  for (const t of syntheticTombstones.values()) byId.set(t.id, t);
+
+  const ancestorOf = (c: MarketComment): MarketComment => {
+    let cursor = c;
+    // Bounded walk — a runaway chain shouldn't loop forever.
+    for (let i = 0; i < 64 && cursor.parent_id; i += 1) {
+      const parent = byId.get(cursor.parent_id);
+      if (!parent) break;
+      cursor = parent;
+    }
+    return cursor;
+  };
+  const groups = new Map<string, ThreadedComment>();
+  for (const c of allComments) {
+    const ancestor = ancestorOf(c);
+    const entry =
+      groups.get(ancestor.id) ??
+      ({ parent: ancestor, replies: [] } as ThreadedComment);
+    if (ancestor.id !== c.id) entry.replies.push(c);
+    groups.set(ancestor.id, entry);
+  }
+
+  // Output order: real top-level parents keep their newest-first
+  // position from the source list; synthetic tombstones slot in at
+  // the bottom (their created_at is 0). Replies inside each thread
+  // are sorted oldest-first so the conversation reads forward.
+  const seen = new Set<string>();
+  const out: ThreadedComment[] = [];
+  for (const c of comments) {
+    if (c.parent_id) continue;
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    const entry = groups.get(c.id);
+    if (!entry) continue;
+    entry.replies.sort((a, b) => a.created_at - b.created_at);
+    out.push(entry);
+  }
+  for (const t of syntheticTombstones.values()) {
+    if (seen.has(t.id)) continue;
+    const entry = groups.get(t.id);
+    if (!entry) continue;
+    entry.replies.sort((a, b) => a.created_at - b.created_at);
+    out.push(entry);
+  }
+  return out;
+}
+
+/**
+ * Render a single top-level thread plus its flattened replies. Owns
+ * the reply-target state so the compose box always renders once per
+ * thread at the reply-indent level, regardless of which row the
+ * user clicked — matches the visual rule that replies-to-replies
+ * land as siblings of the first reply, not as a deeper indent.
+ */
+function Thread({
+  parent,
+  replies,
+  market,
+  marketEventId,
+  zapStats,
+  reactionStats,
+}: {
+  parent: MarketComment;
+  replies: MarketComment[];
+  market: Market;
+  marketEventId: string | null;
+  zapStats: Map<string, { count: number; totalSats: number }>;
+  reactionStats: Map<string, ReactionStats[]>;
+}) {
+  const sessionPubkey = useStore((s) => s.nostrPubkey);
+  const [replyTargetId, setReplyTargetId] = useState<string | null>(null);
+
+  const replyTarget = useMemo<MarketComment | null>(() => {
+    if (!replyTargetId) return null;
+    if (parent.id === replyTargetId) return parent;
+    return replies.find((r) => r.id === replyTargetId) ?? null;
+  }, [replyTargetId, parent, replies]);
+
+  const toggleReply = (commentId: string) => {
+    setReplyTargetId((cur) => (cur === commentId ? null : commentId));
+  };
+  const canReply = !!sessionPubkey && !!marketEventId && !parent.deleted;
+
+  const parentStats = zapStatsFor(zapStats, parent.id);
+  const parentReactions = reactionStatsFor(reactionStats, parent.id);
+
+  return (
+    <li>
+      <CommentRow
+        comment={parent}
+        marketId={market.marketId}
+        creatorPubkey={market.creatorPubkey}
+        zapCount={parentStats.count}
+        zapSats={parentStats.totalSats}
+        reactions={parentReactions}
+        isReplyTarget={replyTargetId === parent.id}
+        onToggleReply={canReply ? () => toggleReply(parent.id) : undefined}
+      />
+      {(replies.length > 0 || (replyTarget && marketEventId)) && (
+        <ul className="ml-11 border-l border-slate-800/60 pl-3">
+          {replies.map((r) => {
+            const rStats = zapStatsFor(zapStats, r.id);
+            const rReactions = reactionStatsFor(reactionStats, r.id);
+            return (
+              <li key={r.id}>
+                <CommentRow
+                  comment={r}
+                  marketId={market.marketId}
+                  creatorPubkey={market.creatorPubkey}
+                  zapCount={rStats.count}
+                  zapSats={rStats.totalSats}
+                  reactions={rReactions}
+                  isReplyTarget={replyTargetId === r.id}
+                  onToggleReply={
+                    canReply && !r.deleted ? () => toggleReply(r.id) : undefined
+                  }
+                />
+              </li>
+            );
+          })}
+          {replyTarget && marketEventId && (
+            <li className="py-3">
+              <CommentForm
+                marketId={market.marketId}
+                creatorPubkey={market.creatorPubkey}
+                marketEventId={marketEventId}
+                parentEventId={replyTarget.id}
+                parentAuthorPubkey={replyTarget.author_pubkey}
+                onCancel={() => setReplyTargetId(null)}
+                onPosted={() => setReplyTargetId(null)}
+                autoFocus
+              />
+            </li>
+          )}
+        </ul>
+      )}
+    </li>
+  );
+}
 
 /** Parse the raw market event JSON to recover the hex event id. */
 function extractMarketEventId(market: Market): string | null {
@@ -35,6 +222,7 @@ export function CommentsSection({ market }: { market: Market }) {
     refetch,
   } = useMarketComments(market.marketId, market.creatorPubkey);
 
+  const threaded = useMemo(() => buildThread(comments), [comments]);
   const commentIds = useMemo(() => comments.map((c) => c.id), [comments]);
   const zapStats = useCommentZaps(
     market.marketId,
@@ -112,28 +300,23 @@ export function CommentsSection({ market }: { market: Market }) {
               Retry
             </button>
           </div>
-        ) : comments.length === 0 ? (
+        ) : threaded.length === 0 ? (
           <p className="py-6 text-center text-xs text-slate-500">
             No comments yet. Be the first to weigh in.
           </p>
         ) : (
           <ul className="divide-y divide-slate-800/80">
-            {comments.map((c) => {
-              const stats = zapStatsFor(zapStats, c.id);
-              const reactions = reactionStatsFor(reactionStats, c.id);
-              return (
-                <li key={c.id}>
-                  <CommentRow
-                    comment={c}
-                    marketId={market.marketId}
-                    creatorPubkey={market.creatorPubkey}
-                    zapCount={stats.count}
-                    zapSats={stats.totalSats}
-                    reactions={reactions}
-                  />
-                </li>
-              );
-            })}
+            {threaded.map(({ parent, replies }) => (
+              <Thread
+                key={parent.id}
+                parent={parent}
+                replies={replies}
+                market={market}
+                marketEventId={marketEventId}
+                zapStats={zapStats}
+                reactionStats={reactionStats}
+              />
+            ))}
           </ul>
         )}
       </div>
