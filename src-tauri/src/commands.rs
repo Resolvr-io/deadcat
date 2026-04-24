@@ -1631,6 +1631,105 @@ pub async fn fetch_comment_zaps(
         .await
 }
 
+/// Publish a NIP-25 kind:7 reaction targeting a comment event.
+/// Returns the event id of the signed reaction so the UI can pair
+/// the optimistic "you reacted" state with a concrete id before the
+/// kind:7 propagates back through `fetch_comment_reactions`.
+#[tauri::command]
+pub async fn publish_comment_reaction(
+    comment_event_id_hex: String,
+    comment_author_pubkey_hex: String,
+    emoji: String,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let (signer, client) = get_signer_and_client(&app).await?;
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+    let unsigned = deadcat_sdk::build_reaction_event(
+        author,
+        &comment_event_id_hex,
+        &comment_author_pubkey_hex,
+        deadcat_sdk::COMMENT_KIND.as_u16(),
+        &emoji,
+    )?;
+    let signed = signer
+        .sign_event(unsigned)
+        .await
+        .map_err(|e| format!("sign_event failed: {e}"))?;
+    let event_id = signed.id.to_hex();
+    deadcat_sdk::publish_event(&client, signed).await?;
+    Ok(event_id)
+}
+
+/// Publish a NIP-09 kind:5 deletion request against a reaction we
+/// previously authored. Used when the user toggles an existing
+/// reaction off. Relays honour this only when the signing key
+/// matches the original reaction's author.
+#[tauri::command]
+pub async fn delete_comment_reaction(
+    reaction_event_id_hex: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let (signer, client) = get_signer_and_client(&app).await?;
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+    let unsigned = deadcat_sdk::build_reaction_deletion_event(author, &reaction_event_id_hex)?;
+    let signed = signer
+        .sign_event(unsigned)
+        .await
+        .map_err(|e| format!("sign_event failed: {e}"))?;
+    deadcat_sdk::publish_event(&client, signed).await?;
+    Ok(())
+}
+
+/// Fetch NIP-25 kind:7 reactions for a batch of comment event ids
+/// and aggregate per-emoji counts per event. Read-only, identity-
+/// optional: `viewer_pubkey_hex` is only used to flag `mine: true`
+/// on reactions the viewer authored (so the UI can render toggled
+/// state) — it's safe to omit for signed-out readers.
+#[tauri::command]
+pub async fn fetch_comment_reactions(
+    event_ids_hex: Vec<String>,
+    viewer_pubkey_hex: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<deadcat_sdk::EventReactionSummary>, String> {
+    if event_ids_hex.is_empty() {
+        return Ok(Vec::new());
+    }
+    let relays = {
+        let nostr_state = app.state::<NostrAppState>();
+        let list = nostr_state
+            .relay_list
+            .read()
+            .map_err(|_| "failed to read relay_list".to_string())?
+            .clone();
+        if list.is_empty() {
+            deadcat_sdk::DEFAULT_RELAYS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<Vec<_>>()
+        } else {
+            list
+        }
+    };
+    let client = nostr_sdk::Client::default();
+    for url in &relays {
+        let _ = client.add_relay(url.as_str()).await;
+    }
+    client.connect_with_timeout(Duration::from_secs(5)).await;
+    deadcat_sdk::fetch_reaction_summaries_for_events(
+        &client,
+        &event_ids_hex,
+        viewer_pubkey_hex.as_deref(),
+        Duration::from_secs(10),
+    )
+    .await
+}
+
 // =========================================================================
 // Contract discovery commands
 // =========================================================================
