@@ -69,8 +69,8 @@ function TransactionRow({
   const handleOpenExplorerTx = useCallback(() => {
     const base =
       walletNetwork === "testnet"
-        ? "https://blockstream.info/liquidtestnet"
-        : "https://blockstream.info/liquid";
+        ? "https://liquid.network/testnet"
+        : "https://liquid.network";
     void openUrl(`${base}/tx/${tx.txid}`);
   }, [tx.txid, walletNetwork]);
 
