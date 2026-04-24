@@ -195,8 +195,8 @@ function NostrSection() {
 
       <p className="text-xs text-slate-500">
         {isRemoteSigner
-          ? "Your keys are managed by an external signer via the NIP-46 protocol."
-          : "Your Nostr keypair is your unique identity, and is used to publish markets and sign attestations."}
+          ? "Your keys are managed by an external signer via the NIP-46 protocol. They sign everything you publish — markets, attestations, comments, zaps, and settings changes."
+          : "Your Nostr keypair is your unique identity. It signs everything you publish — markets, attestations, comments, zaps, and settings changes."}
       </p>
 
       {/* npub */}
