@@ -94,18 +94,16 @@ function NostrSection() {
   const nostrNpub = useStore((s) => s.nostrNpub);
   const nostrNsecRevealed = useStore((s) => s.nostrNsecRevealed);
   const walletStatus = useStore((s) => s.walletStatus);
-  const [nsecPasswordInput, setNsecPasswordInput] = useState("");
-  const [nsecPasswordPrompt, setNsecPasswordPrompt] = useState(false);
-  const [nsecPasswordError, setNsecPasswordError] = useState("");
   const [nip46Status, setNip46Status] = useState<Nip46Status | null>(null);
+  const [revealError, setRevealError] = useState<string | null>(null);
 
-  // Auto-hide nsec when wallet locks
+  // Auto-hide the revealed nsec when the wallet locks — locking the
+  // wallet is a "stepping away" signal and leaving the secret key
+  // visible after that would be a shoulder-surf risk.
   useEffect(() => {
     if (walletStatus !== "unlocked") {
       useStore.setState({ nostrNsecRevealed: null });
-      setNsecPasswordPrompt(false);
-      setNsecPasswordInput("");
-      setNsecPasswordError("");
+      setRevealError(null);
     }
   }, [walletStatus]);
 
@@ -130,49 +128,27 @@ function NostrSection() {
     if (nsec) {
       await navigator.clipboard.writeText(nsec);
       useStore.setState({ nostrNsecRevealed: null });
-      setNsecPasswordPrompt(false);
-      setNsecPasswordInput("");
       showToast("Copied secret key to clipboard");
     }
   }, []);
 
+  // Reveal is a simple click — no password gate. The previous
+  // wallet-password prompt was cosmetic (the key file is stored in
+  // plaintext on disk) and broke entirely when the wallet was
+  // deleted, leaving users unable to back up their nsec. Matches
+  // how Amethyst / Primal / Damus handle this on mobile: the
+  // device/OS is the auth boundary, not a separate per-app password.
   const handleRevealClick = useCallback(() => {
-    // If wallet is unlocked with a session password, use it directly
-    const sessionPw = useStore.getState().walletSessionPassword;
-    if (walletStatus === "unlocked" && sessionPw) {
-      void (async () => {
-        try {
-          // Verify the session password is valid
-          await invoke<string>("get_wallet_mnemonic", {
-            password: sessionPw,
-          });
-          const nsec = await invoke<string>("export_nostr_nsec");
-          useStore.setState({ nostrNsecRevealed: nsec });
-        } catch {
-          // Session password invalid or wallet issue — fall back to prompt
-          setNsecPasswordPrompt(true);
-          setNsecPasswordError("");
-        }
-      })();
-    } else {
-      setNsecPasswordPrompt(true);
-      setNsecPasswordError("");
-    }
-  }, [walletStatus]);
-
-  const handlePasswordSubmit = useCallback(async () => {
-    if (!nsecPasswordInput) return;
-    try {
-      await invoke<string>("get_wallet_mnemonic", {
-        password: nsecPasswordInput,
-      });
-      const nsec = await invoke<string>("export_nostr_nsec");
-      useStore.setState({ nostrNsecRevealed: nsec });
-      setNsecPasswordError("");
-    } catch {
-      setNsecPasswordError("Incorrect password");
-    }
-  }, [nsecPasswordInput]);
+    void (async () => {
+      try {
+        const nsec = await invoke<string>("export_nostr_nsec");
+        useStore.setState({ nostrNsecRevealed: nsec });
+        setRevealError(null);
+      } catch (e) {
+        setRevealError(String(e));
+      }
+    })();
+  }, []);
 
   return (
     <div className="space-y-4">
@@ -297,42 +273,6 @@ function NostrSection() {
                   </svg>
                 </button>
               </>
-            ) : nsecPasswordPrompt ? (
-              <div className="flex flex-col gap-1.5 w-full">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="password"
-                    value={nsecPasswordInput}
-                    onChange={(e) => setNsecPasswordInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") void handlePasswordSubmit();
-                    }}
-                    placeholder="Account password"
-                    className="h-7 flex-1 min-w-0 rounded border border-slate-700 bg-slate-900 px-2 text-xs outline-none ring-emerald-400 transition focus:ring-1"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void handlePasswordSubmit()}
-                    className="shrink-0 rounded border border-amber-700/40 px-2.5 py-1 text-xs text-amber-300 hover:bg-amber-900/20 transition"
-                  >
-                    Reveal
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNsecPasswordPrompt(false);
-                      setNsecPasswordInput("");
-                      setNsecPasswordError("");
-                    }}
-                    className="shrink-0 text-xs text-slate-500 hover:text-slate-300 transition"
-                  >
-                    Cancel
-                  </button>
-                </div>
-                {nsecPasswordError && (
-                  <p className="text-xs text-rose-300">{nsecPasswordError}</p>
-                )}
-              </div>
             ) : (
               <>
                 <p className="text-xs text-slate-600 italic">
@@ -348,6 +288,9 @@ function NostrSection() {
               </>
             )}
           </div>
+          {revealError && (
+            <p className="mt-1 text-xs text-rose-300">{revealError}</p>
+          )}
         </div>
       )}
 
