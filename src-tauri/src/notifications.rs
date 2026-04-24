@@ -58,8 +58,10 @@ pub struct NotificationRecord {
     /// so the frontend can link directly without another lookup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub market_creator_pubkey: Option<String>,
-    /// Event id of the comment that was reacted to / replied to /
-    /// zapped / mentioned. Absent for profile-targeted events.
+    /// Event id of the exact comment row the UI should focus. For
+    /// replies this is the reply event itself; for reactions / zaps
+    /// it's the target comment from the lowercase `e` tag. Absent
+    /// for profile-targeted events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment_id: Option<String>,
     /// Emoji payload for kind:7 reactions.
@@ -331,9 +333,11 @@ pub fn parse_notification_event(event: &Event, my_pubkey_hex: &str) -> Option<No
             if !lowercase_p_targets_me(event, my_pubkey_hex) {
                 return None;
             }
-            // The parent comment id (the event of ours that was
-            // replied to) lives in the lowercase `e` tag.
-            let comment_id = tag_value(event, "e").map(String::from);
+            // Deep-link notifications to the incoming reply row,
+            // not the parent comment being replied to. The parent
+            // still lives in the lowercase `e` tag, but the scroll
+            // target users expect is the reply event itself.
+            let comment_id = Some(event.id.to_hex());
             Some(NotificationRecord {
                 event_id: event.id.to_hex(),
                 kind: NotificationKind::Reply,
@@ -507,5 +511,41 @@ mod tests {
         assert_eq!(list.len(), MAX_NOTIFICATIONS);
         // Newest (highest created_at) stays; oldest drops.
         assert_eq!(list[0].event_id, format!("e{}", MAX_NOTIFICATIONS + 4));
+    }
+
+    #[test]
+    fn parse_reply_notification_uses_reply_event_id_for_focus() {
+        let viewer = Keys::generate();
+        let replier = Keys::generate();
+        let market_creator = Keys::generate();
+        let viewer_pubkey_hex = viewer.public_key().to_hex();
+        let market_creator_hex = market_creator.public_key().to_hex();
+        let parent_comment_id = "11".repeat(32);
+        let market_id = "22".repeat(32);
+        let event = EventBuilder::new(Kind::Custom(1111), "reply body")
+            .tags(vec![
+                Tag::parse(vec!["p".to_string(), viewer_pubkey_hex.clone()]).unwrap(),
+                Tag::parse(vec!["e".to_string(), parent_comment_id.clone()]).unwrap(),
+                Tag::parse(vec![
+                    "A".to_string(),
+                    format!("30078:{market_creator_hex}:{market_id}"),
+                ])
+                .unwrap(),
+            ])
+            .sign_with_keys(&replier)
+            .unwrap();
+
+        let parsed = parse_notification_event(&event, &viewer_pubkey_hex).unwrap();
+        let reply_event_id = event.id.to_hex();
+
+        assert_eq!(parsed.kind, NotificationKind::Reply);
+        assert_eq!(parsed.event_id.as_str(), reply_event_id.as_str());
+        assert_eq!(parsed.comment_id.as_deref(), Some(reply_event_id.as_str()));
+        assert_ne!(parsed.comment_id.as_deref(), Some(parent_comment_id.as_str()));
+        assert_eq!(parsed.market_id.as_deref(), Some(market_id.as_str()));
+        assert_eq!(
+            parsed.market_creator_pubkey.as_deref(),
+            Some(market_creator_hex.as_str())
+        );
     }
 }

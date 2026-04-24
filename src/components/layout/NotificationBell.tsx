@@ -1,5 +1,5 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
-import { useMarkets } from "../../queries/useMarkets";
 import { useNostrProfileByPubkey } from "../../queries/useNostrProfileByPubkey";
 import {
   useMarkAllNotificationsRead,
@@ -145,7 +145,7 @@ function shortPubkey(hex: string): string {
 function NotificationRow({ notification }: { notification: Notification }) {
   const markRead = useMarkNotificationRead();
   const { data: profile } = useNostrProfileByPubkey(notification.authorPubkey);
-  const { data: markets = [] } = useMarkets();
+  const queryClient = useQueryClient();
 
   const displayName =
     profile?.display_name?.trim() ||
@@ -169,20 +169,14 @@ function NotificationRow({ notification }: { notification: Notification }) {
 
   const handleClick = () => {
     if (!notification.read) markRead.mutate(notification.eventId);
-    // The notification's `marketId` is the hex market id parsed
-    // from the `A` tag, but `selectedMarketId` holds the Nostr
-    // event id (see `getMarketById` in utils-react/market.ts).
-    // Resolve one to the other via the current markets list so the
-    // detail page renders the correct market — and therefore the
-    // target comment is actually in its comments fetch.
-    const target = notification.marketId
-      ? markets.find((m) => m.marketId === notification.marketId)
-      : null;
+    if (notification.marketId) {
+      void queryClient.invalidateQueries({ queryKey: ["markets"] });
+    }
     useStore.setState({
       notificationsOpen: false,
-      ...(target
+      ...(notification.marketId
         ? {
-            selectedMarketId: target.id,
+            selectedMarketId: notification.marketId,
             view: "detail" as const,
             focusCommentId: notification.commentId ?? null,
           }

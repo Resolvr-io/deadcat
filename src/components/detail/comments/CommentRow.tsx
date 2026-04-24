@@ -36,17 +36,32 @@ function useFocusScroll(
   ref: React.RefObject<HTMLElement | null>,
 ) {
   const focusCommentId = useStore((s) => s.focusCommentId);
+  const pulseTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pulseTimeoutRef.current !== null) {
+        window.clearTimeout(pulseTimeoutRef.current);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (focusCommentId !== commentId) return;
     const el = ref.current;
     if (!el) return;
     el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.remove(PULSE_CLASS);
+    void el.offsetWidth;
     el.classList.add(PULSE_CLASS);
-    const clear = window.setTimeout(() => {
+    if (pulseTimeoutRef.current !== null) {
+      window.clearTimeout(pulseTimeoutRef.current);
+    }
+    pulseTimeoutRef.current = window.setTimeout(() => {
       el.classList.remove(PULSE_CLASS);
+      pulseTimeoutRef.current = null;
     }, PULSE_MS);
     useStore.setState({ focusCommentId: null });
-    return () => window.clearTimeout(clear);
   }, [focusCommentId, commentId, ref]);
 }
 

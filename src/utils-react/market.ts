@@ -47,7 +47,11 @@ export function getPathAvailability(market: Market): PathAvailability {
 }
 
 export function getMarketById(marketId: string, markets: Market[]): Market {
-  return markets.find((market) => market.id === marketId) ?? markets[0];
+  return (
+    markets.find(
+      (market) => market.id === marketId || market.marketId === marketId,
+    ) ?? markets[0]
+  );
 }
 
 function isSettled(market: Market): boolean {
