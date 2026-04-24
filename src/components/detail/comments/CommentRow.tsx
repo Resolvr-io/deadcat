@@ -9,6 +9,7 @@ import { formatTimeAgo } from "../../../utils-react/format";
 import { friendlyError } from "../../../utils-react/friendly-error";
 import { showToast } from "../../shared/Toast";
 import { CommentBody } from "./CommentBody";
+import { CommentForm } from "./CommentForm";
 import { CommentProfileDialog } from "./CommentProfileDialog";
 import { CommentReactions } from "./CommentReactions";
 import { CommentRowMenu } from "./CommentRowMenu";
@@ -47,6 +48,7 @@ export function CommentRow({
   comment,
   marketId,
   creatorPubkey,
+  marketEventId,
   zapCount,
   zapSats,
   reactions,
@@ -54,6 +56,10 @@ export function CommentRow({
   comment: MarketComment;
   marketId: string;
   creatorPubkey: string;
+  /** Event id of the market this comment is rooted at. Required to
+   *  build the NIP-22 root tags on a reply publish; passed through
+   *  from CommentsSection. */
+  marketEventId: string;
   /** Number of kind:9735 zap receipts seen for this comment. */
   zapCount: number;
   /** Total sats zapped across those receipts (floor of msats/1000). */
@@ -62,10 +68,13 @@ export function CommentRow({
   reactions: ReactionStats[];
 }) {
   const sessionPubkey = useStore((s) => s.nostrPubkey);
-  const { data: profile } = useNostrProfileByPubkey(comment.author_pubkey);
+  const { data: profile } = useNostrProfileByPubkey(
+    comment.deleted ? null : comment.author_pubkey,
+  );
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [zapOpen, setZapOpen] = useState(false);
+  const [replyOpen, setReplyOpen] = useState(false);
   const deleteMutation = useDeleteMarketComment(marketId, creatorPubkey);
 
   const avatarSrc = useMemo(
@@ -90,6 +99,34 @@ export function CommentRow({
       },
     });
   };
+
+  // Tombstone variant — the comment has been deleted but has
+  // descendants we're still rendering, so we keep the slot in the
+  // thread with an anonymized "[deleted]" placeholder. Swallows all
+  // interactive actions (no profile click, no reply, no zap).
+  if (comment.deleted) {
+    return (
+      <div className="flex items-start gap-3 py-3 opacity-60">
+        <div
+          aria-hidden="true"
+          className="h-8 w-8 shrink-0 rounded-full border border-slate-800 bg-slate-900"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="text-sm font-semibold text-slate-500 italic">
+              [deleted]
+            </span>
+            <span className="shrink-0 text-xs text-slate-600" title={tsIso}>
+              {tsRel}
+            </span>
+          </div>
+          <p className="mt-1 text-sm italic text-slate-600">
+            This comment was deleted by its author.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-start gap-3 py-3">
@@ -123,10 +160,26 @@ export function CommentRow({
           <CommentBody text={comment.content} />
         </div>
         <div className="mt-2 flex items-center gap-1 text-slate-500">
-          <PlaceholderAction
-            icon={<ReplyIcon className="h-[18px] w-[18px]" />}
-            title="Replies coming soon"
-          />
+          {sessionPubkey ? (
+            <button
+              type="button"
+              onClick={() => setReplyOpen((v) => !v)}
+              title={replyOpen ? "Cancel reply" : "Reply"}
+              aria-pressed={replyOpen}
+              className={`flex items-center gap-1 rounded-full px-2 py-1.5 transition ${
+                replyOpen
+                  ? "bg-slate-800 text-slate-200"
+                  : "text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+              }`}
+            >
+              <ReplyIcon className="h-[18px] w-[18px]" />
+            </button>
+          ) : (
+            <PlaceholderAction
+              icon={<ReplyIcon className="h-[18px] w-[18px]" />}
+              title="Sign in to reply"
+            />
+          )}
           <CommentReactions
             commentEventId={comment.id}
             commentAuthorPubkey={comment.author_pubkey}
@@ -185,6 +238,21 @@ export function CommentRow({
             deletePending={deleteMutation.isPending}
           />
         </div>
+        {replyOpen && sessionPubkey && (
+          <div className="mt-3">
+            <CommentForm
+              marketId={marketId}
+              creatorPubkey={creatorPubkey}
+              marketEventId={marketEventId}
+              parentEventId={comment.id}
+              parentAuthorPubkey={comment.author_pubkey}
+              parentAuthorName={displayName}
+              onCancel={() => setReplyOpen(false)}
+              onPosted={() => setReplyOpen(false)}
+              autoFocus
+            />
+          </div>
+        )}
       </div>
       <ConfirmDialog
         open={confirmOpen}

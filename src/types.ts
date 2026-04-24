@@ -157,6 +157,11 @@ export type MarketComment = {
   created_at: number;
   market_id: string;
   parent_id?: string | null;
+  /** True when a kind:5 deletion has been published against this
+   *  comment. Backend keeps the record so the UI can render a
+   *  tombstone when the comment has replies; leaves without replies
+   *  are hidden by the caller. */
+  deleted?: boolean;
   nostr_event_json?: string | null;
 };
 
