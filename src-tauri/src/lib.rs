@@ -421,7 +421,40 @@ async fn unlock_wallet(password: String, app: AppHandle) -> Result<AppState, Str
         mgr.touch_activity();
         mgr.bump_revision();
         let state = mgr.snapshot_with_balance(wb);
+        drop(mgr);
         emit_state(&bg_app, &state);
+
+        // Kick off a sync immediately instead of waiting up to 15s
+        // for the next tick of the background sync loop. Without
+        // this, a freshly restored wallet shows 0 sats in the UI
+        // until the loop fires — observed in testing where a user
+        // restored from a seed with known balance and saw 0 until
+        // they restarted the app (which ran through init_*_identity
+        // + unlock_wallet again on startup, hitting the wollet's
+        // on-disk state sooner via wollet_db reads after the first
+        // tick).
+        //
+        // `node.sync()` runs chain I/O internally via `with_sdk` on
+        // its own thread, and pushes a fresh snapshot through
+        // `snapshot_tx` on success — so the frontend's
+        // `wallet_snapshot` listener picks up the real balance as
+        // soon as the scan completes, not 15s after unlock.
+        let sync_node = node.clone();
+        let sync_app = bg_app.clone();
+        tauri::async_runtime::spawn(async move {
+            let sync_result = sync_node.sync().await;
+            if let Err(e) = &sync_result {
+                log::warn!("[restore-trace] post-unlock sync failed: {e}");
+            } else {
+                log::info!("[restore-trace] post-unlock sync completed");
+            }
+            // Emit the completion event either way so the frontend
+            // can drop its "syncing" indicator — even a failed sync
+            // shouldn't leave the balance pulsing indefinitely.
+            // `wallet_snapshot` carries the actual balance; this
+            // event is a pure UX signal.
+            let _ = sync_app.emit("wallet_sync_complete", &sync_result.is_ok());
+        });
     });
 
     // Return optimistic unlocked state immediately
