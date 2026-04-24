@@ -1747,6 +1747,431 @@ pub async fn fetch_comment_reactions(
 }
 
 // =========================================================================
+// Social graph — NIP-02 follows (kind:3) + NIP-51 mutes (kind:10000)
+// =========================================================================
+
+/// Confirm at least one relay reached a "connected" state before we
+/// attempt a fetch-then-publish write to kind:3 / kind:10000. Without
+/// this guard, a fully-offline write would publish an empty list —
+/// silently wiping every follow or mute the user had. The full read-
+/// before-write rule is enforced inside each mutation command.
+async fn ensure_relay_connectivity(client: &nostr_sdk::Client) -> Result<(), String> {
+    use nostr_sdk::RelayStatus;
+    let relays = client.relays().await;
+    if relays.is_empty() {
+        return Err(
+            "No relays configured — can't safely publish a list write without confirming current state."
+                .to_string(),
+        );
+    }
+    let has_connected = relays.values().any(|relay| {
+        matches!(
+            relay.status(),
+            RelayStatus::Connected | RelayStatus::Connecting
+        )
+    });
+    if !has_connected {
+        return Err(
+            "Not connected to any relay — can't confirm your current list state. Check your connection and try again.".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Returned by `follow_pubkey` / `unfollow_pubkey` so the UI can
+/// update cached state without refetching — the fresh list is the
+/// authoritative answer for "who am I following now."
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FollowListResult {
+    pub follows: Vec<String>,
+    pub created_at: u64,
+}
+
+/// Fetch the viewer's NIP-02 follow list. Read-only; used by the UI
+/// to hydrate follow-state buttons + Settings list views.
+#[tauri::command]
+pub async fn fetch_follow_list(app: tauri::AppHandle) -> Result<FollowListResult, String> {
+    let (signer, client) = get_signer_and_client(&app).await?;
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+    let existing =
+        deadcat_sdk::fetch_follow_list_event(&client, &author.to_hex(), Duration::from_secs(3))
+            .await?;
+    match existing {
+        Some(event) => {
+            let parsed = deadcat_sdk::parse_follow_list(&event);
+            Ok(FollowListResult {
+                follows: parsed.follows,
+                created_at: parsed.created_at,
+            })
+        }
+        None => Ok(FollowListResult {
+            follows: Vec::new(),
+            created_at: 0,
+        }),
+    }
+}
+
+/// Append a pubkey to the viewer's follow list. Idempotent — if the
+/// target is already followed, returns the current list without
+/// publishing. Preserves the legacy `content` (NIP-65 superseded but
+/// some clients still read it for relay hints) verbatim.
+#[tauri::command]
+pub async fn follow_pubkey(
+    target_pubkey_hex: String,
+    app: tauri::AppHandle,
+) -> Result<FollowListResult, String> {
+    // Validate the input first — a bad hex here would poison the
+    // list on publish.
+    PublicKey::from_hex(&target_pubkey_hex).map_err(|e| format!("invalid target pubkey: {e}"))?;
+
+    let (signer, client) = get_signer_and_client(&app).await?;
+    ensure_relay_connectivity(&client).await?;
+
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+
+    let existing =
+        deadcat_sdk::fetch_follow_list_event(&client, &author.to_hex(), Duration::from_secs(3))
+            .await?;
+    let (mut follows, legacy_content) = match existing {
+        Some(event) => {
+            let parsed = deadcat_sdk::parse_follow_list(&event);
+            (parsed.follows, parsed.legacy_content)
+        }
+        None => (Vec::new(), String::new()),
+    };
+
+    if follows.iter().any(|hex| hex == &target_pubkey_hex) {
+        return Ok(FollowListResult {
+            follows,
+            created_at: 0,
+        });
+    }
+
+    follows.push(target_pubkey_hex);
+    let unsigned = deadcat_sdk::build_follow_list_event(author, &follows, &legacy_content)?;
+    let signed = signer
+        .sign_event(unsigned)
+        .await
+        .map_err(|e| format!("sign_event failed: {e}"))?;
+    let created_at = signed.created_at.as_u64();
+    deadcat_sdk::publish_event(&client, signed).await?;
+    Ok(FollowListResult {
+        follows,
+        created_at,
+    })
+}
+
+/// Remove a pubkey from the viewer's follow list. Idempotent — if
+/// the target isn't in the list, returns the current list without
+/// publishing.
+#[tauri::command]
+pub async fn unfollow_pubkey(
+    target_pubkey_hex: String,
+    app: tauri::AppHandle,
+) -> Result<FollowListResult, String> {
+    let (signer, client) = get_signer_and_client(&app).await?;
+    ensure_relay_connectivity(&client).await?;
+
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+
+    let existing =
+        deadcat_sdk::fetch_follow_list_event(&client, &author.to_hex(), Duration::from_secs(3))
+            .await?;
+    let Some(event) = existing else {
+        // Nothing to unfollow from — treat as success.
+        return Ok(FollowListResult {
+            follows: Vec::new(),
+            created_at: 0,
+        });
+    };
+    let parsed = deadcat_sdk::parse_follow_list(&event);
+    if !parsed.follows.iter().any(|hex| hex == &target_pubkey_hex) {
+        return Ok(FollowListResult {
+            follows: parsed.follows,
+            created_at: parsed.created_at,
+        });
+    }
+    let next: Vec<String> = parsed
+        .follows
+        .into_iter()
+        .filter(|hex| hex != &target_pubkey_hex)
+        .collect();
+
+    let unsigned = deadcat_sdk::build_follow_list_event(author, &next, &parsed.legacy_content)?;
+    let signed = signer
+        .sign_event(unsigned)
+        .await
+        .map_err(|e| format!("sign_event failed: {e}"))?;
+    let created_at = signed.created_at.as_u64();
+    deadcat_sdk::publish_event(&client, signed).await?;
+    Ok(FollowListResult {
+        follows: next,
+        created_at,
+    })
+}
+
+/// What visibility the user's mute list currently uses. Surfaces in
+/// Settings as *"N muted · public list"* / *"· private list"* so the
+/// user knows whether their mutes are broadcast or encrypted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MuteVisibility {
+    /// No existing mute list on relays.
+    None,
+    /// All mutes live on the event's tags.
+    Public,
+    /// All mutes live NIP-44-encrypted in `content`.
+    Private,
+    /// Some of both — a list that was edited across clients with
+    /// different visibility defaults.
+    Mixed,
+}
+
+/// What gets returned to the UI — the public + private entries
+/// merged into one flat list, plus the visibility mode so Settings
+/// can render "X muted · public list" vs "private list."
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MuteListResult {
+    pub entries: Vec<deadcat_sdk::MuteEntry>,
+    pub visibility: MuteVisibility,
+    pub created_at: u64,
+}
+
+/// Decrypt the private-entries portion of a mute list event using the
+/// viewer's own key. Works for both local `Keys` and NIP-46 remote
+/// signers because both implement `NostrSigner::nip44_decrypt`.
+async fn decrypt_private_mutes(
+    signer: &std::sync::Arc<dyn NostrSigner>,
+    my_pubkey: &PublicKey,
+    ciphertext: &str,
+) -> Result<Vec<deadcat_sdk::MuteEntry>, String> {
+    if ciphertext.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let plaintext = signer
+        .nip44_decrypt(my_pubkey, ciphertext)
+        .await
+        .map_err(|e| format!("nip44_decrypt failed: {e}"))?;
+    Ok(deadcat_sdk::deserialize_private_mutes(&plaintext))
+}
+
+/// Encrypt a list of private mute entries back into NIP-44 ciphertext
+/// for the viewer's own key. Empty input returns an empty string —
+/// callers treat that as "no private section, set content to ''.
+async fn encrypt_private_mutes(
+    signer: &std::sync::Arc<dyn NostrSigner>,
+    my_pubkey: &PublicKey,
+    entries: &[deadcat_sdk::MuteEntry],
+) -> Result<String, String> {
+    if entries.is_empty() {
+        return Ok(String::new());
+    }
+    let json = deadcat_sdk::serialize_private_mutes(entries);
+    signer
+        .nip44_encrypt(my_pubkey, &json)
+        .await
+        .map_err(|e| format!("nip44_encrypt failed: {e}"))
+}
+
+fn mute_visibility(public_count: usize, private_count: usize) -> MuteVisibility {
+    match (public_count, private_count) {
+        (0, 0) => MuteVisibility::None,
+        (_, 0) => MuteVisibility::Public,
+        (0, _) => MuteVisibility::Private,
+        _ => MuteVisibility::Mixed,
+    }
+}
+
+/// Fetch the viewer's NIP-51 mute list and return public + private
+/// entries merged. Decryption errors are surfaced so the UI can show
+/// "Couldn't read private mutes" rather than silently rendering a
+/// partial list.
+#[tauri::command]
+pub async fn fetch_mute_list(app: tauri::AppHandle) -> Result<MuteListResult, String> {
+    let (signer, client) = get_signer_and_client(&app).await?;
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+    let existing =
+        deadcat_sdk::fetch_mute_list_event(&client, &author.to_hex(), Duration::from_secs(3))
+            .await?;
+    let Some(event) = existing else {
+        return Ok(MuteListResult {
+            entries: Vec::new(),
+            visibility: MuteVisibility::None,
+            created_at: 0,
+        });
+    };
+    let parsed = deadcat_sdk::parse_mute_list(&event);
+    let private = decrypt_private_mutes(&signer, &author, &parsed.private_ciphertext).await?;
+    let visibility = mute_visibility(parsed.public.len(), private.len());
+    let mut merged = parsed.public;
+    merged.extend(private);
+    Ok(MuteListResult {
+        entries: merged,
+        visibility,
+        created_at: parsed.created_at,
+    })
+}
+
+/// Publish a kind:10000 replacing the viewer's mute list. `private`
+/// controls which bucket a brand-new entry lands in:
+/// - `Some(true)` → private (encrypted) entries only
+/// - `Some(false)` → public (tag) entries only
+/// - `None` → mirror the bucket of the existing list (public if empty
+///   list, matches ecosystem default)
+///
+/// On every write we decrypt the existing private portion, remove any
+/// duplicate of the incoming entry from BOTH buckets, then append to
+/// the target bucket. This keeps the "one entry per mute" invariant
+/// even when the list was edited across clients with differing
+/// visibility policies.
+#[tauri::command]
+pub async fn mute_pubkey(
+    target_pubkey_hex: String,
+    private: Option<bool>,
+    app: tauri::AppHandle,
+) -> Result<MuteListResult, String> {
+    PublicKey::from_hex(&target_pubkey_hex).map_err(|e| format!("invalid target pubkey: {e}"))?;
+    mutate_mute_list(
+        app,
+        |public, private_entries, visibility, private_preference| {
+            let entry = deadcat_sdk::MuteEntry::Pubkey(target_pubkey_hex.clone());
+            apply_add_entry(
+                public,
+                private_entries,
+                entry,
+                visibility,
+                private_preference,
+            );
+        },
+        private,
+    )
+    .await
+}
+
+/// Remove a pubkey from the viewer's mute list across BOTH buckets.
+#[tauri::command]
+pub async fn unmute_pubkey(
+    target_pubkey_hex: String,
+    app: tauri::AppHandle,
+) -> Result<MuteListResult, String> {
+    mutate_mute_list(
+        app,
+        |public, private_entries, _visibility, _preference| {
+            public.retain(
+                |e| !matches!(e, deadcat_sdk::MuteEntry::Pubkey(hex) if hex == &target_pubkey_hex),
+            );
+            private_entries.retain(
+                |e| !matches!(e, deadcat_sdk::MuteEntry::Pubkey(hex) if hex == &target_pubkey_hex),
+            );
+        },
+        None,
+    )
+    .await
+}
+
+/// Append the entry to the target bucket after removing any
+/// existing copy from both buckets (dedup invariant).
+fn apply_add_entry(
+    public: &mut Vec<deadcat_sdk::MuteEntry>,
+    private_entries: &mut Vec<deadcat_sdk::MuteEntry>,
+    entry: deadcat_sdk::MuteEntry,
+    current_visibility: MuteVisibility,
+    private_preference: Option<bool>,
+) {
+    public.retain(|e| e != &entry);
+    private_entries.retain(|e| e != &entry);
+    let go_private = match private_preference {
+        Some(choice) => choice,
+        // No explicit caller preference — follow the existing list's
+        // bucket. Matches ecosystem default (Primal / Amethyst both
+        // default new mutes to public when no prior entries exist).
+        None => matches!(current_visibility, MuteVisibility::Private),
+    };
+    if go_private {
+        private_entries.push(entry);
+    } else {
+        public.push(entry);
+    }
+}
+
+/// Shared fetch-mutate-encrypt-publish pipeline for mute edits.
+/// `mutate` receives both buckets + visibility so specialized
+/// commands (mute / unmute / future mute-word) can update exactly
+/// what they need without re-doing the decrypt/encrypt dance.
+async fn mutate_mute_list<F>(
+    app: tauri::AppHandle,
+    mutate: F,
+    private_preference: Option<bool>,
+) -> Result<MuteListResult, String>
+where
+    F: FnOnce(
+        &mut Vec<deadcat_sdk::MuteEntry>,
+        &mut Vec<deadcat_sdk::MuteEntry>,
+        MuteVisibility,
+        Option<bool>,
+    ),
+{
+    let (signer, client) = get_signer_and_client(&app).await?;
+    ensure_relay_connectivity(&client).await?;
+
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+    let existing =
+        deadcat_sdk::fetch_mute_list_event(&client, &author.to_hex(), Duration::from_secs(3))
+            .await?;
+
+    let (mut public, mut private_entries) = match existing.as_ref() {
+        Some(event) => {
+            let parsed = deadcat_sdk::parse_mute_list(event);
+            let private =
+                decrypt_private_mutes(&signer, &author, &parsed.private_ciphertext).await?;
+            (parsed.public, private)
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+    let visibility_before = mute_visibility(public.len(), private_entries.len());
+
+    mutate(
+        &mut public,
+        &mut private_entries,
+        visibility_before,
+        private_preference,
+    );
+
+    let ciphertext = encrypt_private_mutes(&signer, &author, &private_entries).await?;
+    let unsigned = deadcat_sdk::build_mute_list_event(author, &public, &ciphertext);
+    let signed = signer
+        .sign_event(unsigned)
+        .await
+        .map_err(|e| format!("sign_event failed: {e}"))?;
+    let created_at = signed.created_at.as_u64();
+    deadcat_sdk::publish_event(&client, signed).await?;
+
+    let visibility_after = mute_visibility(public.len(), private_entries.len());
+    let mut merged = public;
+    merged.extend(private_entries);
+    Ok(MuteListResult {
+        entries: merged,
+        visibility: visibility_after,
+        created_at,
+    })
+}
+
+// =========================================================================
 // Contract discovery commands
 // =========================================================================
 
