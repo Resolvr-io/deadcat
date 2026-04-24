@@ -98,14 +98,20 @@ export function CommentProfileDialog({
                       since you can't follow or mute yourself. */}
                   {!isSelf && (
                     <div className="flex shrink-0 items-center gap-1.5">
+                      {/* Zap requires a session key to sign the
+                          NIP-57 zap request. When signed-out we keep
+                          the slot as a disabled placeholder so the
+                          header layout doesn't shift. */}
                       <button
                         type="button"
                         onClick={() => setZapOpen(true)}
-                        disabled={!profile?.lud16}
+                        disabled={!sessionPubkey || !profile?.lud16}
                         title={
-                          profile?.lud16
-                            ? "Send a zap"
-                            : "Recipient has no Lightning address"
+                          !sessionPubkey
+                            ? "Sign in to zap"
+                            : profile?.lud16
+                              ? "Send a zap"
+                              : "Recipient has no Lightning address"
                         }
                         className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-700 bg-slate-900/60 text-amber-300 transition hover:border-amber-400/40 hover:bg-amber-400/10 disabled:cursor-default disabled:text-slate-500 disabled:opacity-60"
                       >
@@ -258,11 +264,13 @@ export function CommentProfileDialog({
         </div>
       </div>
 
-      <ZapDialog
-        recipientPubkeyHex={pubkeyHex}
-        open={zapOpen}
-        onClose={() => setZapOpen(false)}
-      />
+      {sessionPubkey && (
+        <ZapDialog
+          recipientPubkeyHex={pubkeyHex}
+          open={zapOpen}
+          onClose={() => setZapOpen(false)}
+        />
+      )}
     </div>
   );
 }

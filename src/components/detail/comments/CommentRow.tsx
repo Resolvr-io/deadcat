@@ -136,13 +136,30 @@ export function CommentRow({
               zapCount > 0
                 ? `${zapSats.toLocaleString()} sats from ${zapCount} zap${zapCount === 1 ? "" : "s"}`
                 : "Send a zap";
-            return isOwn ? (
-              <PlaceholderAction
-                icon={<ZapIcon className="h-[18px] w-[18px]" />}
-                title="You can't zap your own comment"
-                trailing={trailing}
-              />
-            ) : (
+            if (isOwn) {
+              return (
+                <PlaceholderAction
+                  icon={<ZapIcon className="h-[18px] w-[18px]" />}
+                  title="You can't zap your own comment"
+                  trailing={trailing}
+                />
+              );
+            }
+            // NIP-57 requires a zap request signed by the sender's
+            // key — without an identity there's nothing to sign with.
+            // Render the count as a disabled placeholder so the
+            // visual slot stays consistent, and nudge toward sign-in
+            // via the hover title.
+            if (!sessionPubkey) {
+              return (
+                <PlaceholderAction
+                  icon={<ZapIcon className="h-[18px] w-[18px]" />}
+                  title="Sign in to zap"
+                  trailing={trailing}
+                />
+              );
+            }
+            return (
               <button
                 type="button"
                 onClick={() => setZapOpen(true)}
@@ -177,12 +194,14 @@ export function CommentRow({
         open={profileOpen}
         onClose={() => setProfileOpen(false)}
       />
-      <ZapDialog
-        recipientPubkeyHex={comment.author_pubkey}
-        eventIdHex={comment.id}
-        open={zapOpen}
-        onClose={() => setZapOpen(false)}
-      />
+      {sessionPubkey && (
+        <ZapDialog
+          recipientPubkeyHex={comment.author_pubkey}
+          eventIdHex={comment.id}
+          open={zapOpen}
+          onClose={() => setZapOpen(false)}
+        />
+      )}
     </div>
   );
 }
