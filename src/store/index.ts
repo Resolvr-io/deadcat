@@ -53,6 +53,13 @@ export interface NavigationSlice {
   searchOpen: boolean;
   helpOpen: boolean;
   settingsOpen: boolean;
+  /** Open-state for the notification bell's popover. */
+  notificationsOpen: boolean;
+  /** Comment event id the DetailPage should scroll into view + pulse
+   *  on next mount. Cleared by the consuming hook once applied. Set
+   *  when the user clicks a notification row that targets a specific
+   *  comment, so the deep-link lands on the exact comment. */
+  focusCommentId: string | null;
   settingsSection: Record<string, boolean>;
   logoutOpen: boolean;
   walletSessionPassword: string;
@@ -316,6 +323,8 @@ export const useStore = create<StoreState>()(() => ({
   searchOpen: false,
   helpOpen: false,
   settingsOpen: false,
+  notificationsOpen: false,
+  focusCommentId: null,
   settingsSection: {
     nostr: true,
     wallet: false,

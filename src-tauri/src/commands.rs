@@ -11,8 +11,9 @@ use crate::discovery::{
     self, ContractMetadata, CreateContractRequest, DiscoveredMarket, DiscoveredOrder,
     IdentityResponse,
 };
+use crate::notifications::{NotificationRecord, NotificationStore};
 use crate::state::AppStateManager;
-use crate::{NodeState, NostrAppState};
+use crate::{NodeState, NostrAppState, NotificationsState};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -318,6 +319,21 @@ async fn construct_and_store_node_with_signer(
         }
         log::info!("discovery event forwarding loop ended");
     }));
+
+    // Subscribe to inbound engagement events (kind:7 reactions,
+    // kind:9735 zap receipts, kind:1111 comments) where we're tagged
+    // via `p`, parse each into a NotificationRecord, and push through
+    // the shared NotificationStore. The store's Arc lives in
+    // NotificationsState so the Tauri commands (bell + list) see
+    // fresh inserts the moment they flush.
+    let notif_app = app.clone();
+    if let Some(node) = node_arc.clone() {
+        new_handles.push(tokio::spawn(async move {
+            if let Err(e) = run_notifications_subscription(notif_app, node).await {
+                log::warn!("notifications subscription exited: {e}");
+            }
+        }));
+    }
 
     // Forward wallet snapshot changes to the frontend, throttled to avoid
     // flooding the main thread with large serialized payloads during sync.
@@ -4008,4 +4024,137 @@ async fn get_pool_price_history_inner<R: tauri::Runtime>(
     };
 
     Ok(map_price_history_entries(entries))
+}
+
+// =========================================================================
+// Notifications (PR D)
+// =========================================================================
+
+/// Background task that subscribes to kind 7 / 9735 / 1111 events
+/// tagging the local pubkey, parses each into a notification, and
+/// inserts them into the shared store. Runs until the spawning
+/// `task_handles` bucket is drained on node replacement.
+async fn run_notifications_subscription(
+    app: tauri::AppHandle,
+    node: std::sync::Arc<deadcat_sdk::DeadcatNode<deadcat_store::DeadcatStore>>,
+) -> Result<(), String> {
+    let signer = node.signer().clone();
+    let my_pubkey = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("signer.get_public_key: {e}"))?;
+    let my_pubkey_hex = my_pubkey.to_hex();
+
+    let store = get_or_init_notification_store(&app).await?;
+    let resume_since = store.resume_since();
+
+    let client = node.discovery().client().clone();
+
+    let filter = nostr_sdk::Filter::new()
+        .kinds([
+            nostr_sdk::Kind::Custom(1111),
+            nostr_sdk::Kind::Custom(7),
+            nostr_sdk::Kind::Custom(9735),
+        ])
+        .pubkey(my_pubkey)
+        .since(nostr_sdk::Timestamp::from_secs(resume_since));
+
+    client
+        .subscribe(vec![filter], None)
+        .await
+        .map_err(|e| format!("subscribe: {e}"))?;
+    log::info!(
+        "notifications subscription started (since={resume_since}, me={})",
+        &my_pubkey_hex[..8]
+    );
+
+    // The relay pool pushes every matched event through the shared
+    // `notifications()` broadcast channel. Non-notification events
+    // (discovery, etc.) also flow through — our `parse_notification_event`
+    // returns None for anything that isn't kind 1111/7/9735 we care about.
+    let mut notifications = client.notifications();
+    while let Ok(notif) = notifications.recv().await {
+        let nostr_sdk::RelayPoolNotification::Event { event, .. } = notif else {
+            continue;
+        };
+        let Some(record) = crate::notifications::parse_notification_event(&event, &my_pubkey_hex)
+        else {
+            continue;
+        };
+        if store.insert(record) {
+            store.flush();
+            let _ = app.emit("notifications_updated", ());
+        }
+    }
+    log::info!("notifications subscription channel closed");
+    Ok(())
+}
+
+/// Return the live notification store, lazy-initializing it from the
+/// current network's JSON file on first use. Used by the four Tauri
+/// commands below and also shared with the background subscription
+/// task so both sides append / flush through the same instance.
+async fn get_or_init_notification_store(
+    app: &tauri::AppHandle,
+) -> Result<std::sync::Arc<NotificationStore>, String> {
+    let state = app.state::<NotificationsState>();
+    let mut guard = state.store.lock().await;
+    if let Some(store) = guard.as_ref() {
+        return Ok(store.clone());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+    let network_tag = current_network_tag(app)?;
+    let store = std::sync::Arc::new(NotificationStore::load(&app_data_dir, &network_tag));
+    *guard = Some(store.clone());
+    Ok(store)
+}
+
+/// Most-recent-first slice of the stored notifications, capped at
+/// `limit`. The frontend's bell popover typically asks for 30 at a
+/// time; anything beyond the retained 500 is already off the tail.
+#[tauri::command]
+pub async fn list_notifications(
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<NotificationRecord>, String> {
+    let store = get_or_init_notification_store(&app).await?;
+    Ok(store.list(limit))
+}
+
+/// Count of unread notifications. Drives the red dot on the bell
+/// icon. Invalidated whenever the `notifications_updated` event
+/// fires (new inbound arrival or local mark-read mutation).
+#[tauri::command]
+pub async fn unread_notification_count(app: tauri::AppHandle) -> Result<u32, String> {
+    let store = get_or_init_notification_store(&app).await?;
+    Ok(store.unread_count())
+}
+
+/// Flip a single notification to read. Flushes to disk and emits
+/// `notifications_updated` so any mounted bell / list view can
+/// re-fetch. No-ops when the id isn't present or was already read.
+#[tauri::command]
+pub async fn mark_notification_read(event_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let store = get_or_init_notification_store(&app).await?;
+    if store.mark_read(&event_id) {
+        store.flush();
+        let _ = app.emit("notifications_updated", ());
+    }
+    Ok(())
+}
+
+/// Flip every unread entry to read. Same flush + emit semantics as
+/// single-mark. Called from the bell popover's "Mark all as read"
+/// action.
+#[tauri::command]
+pub async fn mark_all_notifications_read(app: tauri::AppHandle) -> Result<(), String> {
+    let store = get_or_init_notification_store(&app).await?;
+    if store.mark_all_read() {
+        store.flush();
+        let _ = app.emit("notifications_updated", ());
+    }
+    Ok(())
 }

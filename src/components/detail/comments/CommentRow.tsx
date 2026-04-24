@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactionStats } from "../../../queries/useCommentReactions";
 import { useDeleteMarketComment } from "../../../queries/useComments";
 import { useNostrProfileByPubkey } from "../../../queries/useNostrProfileByPubkey";
@@ -19,6 +19,50 @@ import { ZapDialog } from "./ZapDialog";
 function shortPubkey(hex: string): string {
   if (hex.length <= 14) return hex;
   return `${hex.slice(0, 8)}…${hex.slice(-6)}`;
+}
+
+const PULSE_MS = 2000;
+const PULSE_CLASS = "animate-notification-pulse";
+
+/**
+ * Row-level scroll-into-view for notification deep-links. The row
+ * owns its DOM, so when `focusCommentId` matches this comment's id
+ * we can scroll ourselves the moment we mount — no coordination
+ * needed with the section-level loading state, which is what made
+ * the prior section-level effect race against React Query.
+ */
+function useFocusScroll(
+  commentId: string,
+  ref: React.RefObject<HTMLElement | null>,
+) {
+  const focusCommentId = useStore((s) => s.focusCommentId);
+  const pulseTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pulseTimeoutRef.current !== null) {
+        window.clearTimeout(pulseTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (focusCommentId !== commentId) return;
+    const el = ref.current;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.remove(PULSE_CLASS);
+    void el.offsetWidth;
+    el.classList.add(PULSE_CLASS);
+    if (pulseTimeoutRef.current !== null) {
+      window.clearTimeout(pulseTimeoutRef.current);
+    }
+    pulseTimeoutRef.current = window.setTimeout(() => {
+      el.classList.remove(PULSE_CLASS);
+      pulseTimeoutRef.current = null;
+    }, PULSE_MS);
+    useStore.setState({ focusCommentId: null });
+  }, [focusCommentId, commentId, ref]);
 }
 
 function PlaceholderAction({
@@ -80,6 +124,8 @@ export function CommentRow({
   const [profileOpen, setProfileOpen] = useState(false);
   const [zapOpen, setZapOpen] = useState(false);
   const deleteMutation = useDeleteMarketComment(marketId, creatorPubkey);
+  const rowRef = useRef<HTMLDivElement>(null);
+  useFocusScroll(comment.id, rowRef);
 
   const avatarSrc = useMemo(
     () => profile?.picture || generateAvatarDataUri(comment.author_pubkey),
@@ -121,7 +167,11 @@ export function CommentRow({
   if (comment.deleted) {
     const hasTimestamp = comment.created_at > 0;
     return (
-      <div className="flex items-center gap-3 py-3 opacity-60">
+      <div
+        ref={rowRef}
+        data-comment-id={comment.id}
+        className="flex items-center gap-3 py-3 opacity-60 rounded-md transition"
+      >
         <div
           aria-hidden="true"
           className="h-8 w-8 shrink-0 rounded-full border border-slate-800 bg-slate-900"
@@ -141,7 +191,11 @@ export function CommentRow({
   }
 
   return (
-    <div className="flex items-start gap-3 py-3">
+    <div
+      ref={rowRef}
+      data-comment-id={comment.id}
+      className="flex items-start gap-3 py-3 rounded-md transition"
+    >
       <button
         type="button"
         onClick={() => setProfileOpen(true)}

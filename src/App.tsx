@@ -18,6 +18,7 @@ import { useActivityTracking } from "./hooks/useActivityTracking";
 import { useBootstrap } from "./hooks/useBootstrap";
 import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useTauriEvents } from "./hooks/useTauriEvents";
+import { useNotificationsEventListener } from "./queries/useNotifications";
 import { useStore } from "./store";
 
 /**
@@ -93,6 +94,7 @@ export default function App() {
   useBootstrap();
   useTauriEvents();
   useActivityTracking();
+  useNotificationsEventListener();
 
   // Tag <html> with the host OS so CSS can key off it (e.g. reserve space
   // for macOS traffic lights without affecting other platforms).
