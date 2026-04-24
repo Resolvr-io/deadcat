@@ -126,6 +126,14 @@ export type ZapResult = {
    *  internal provider; false when the user had to confirm via the
    *  fallback payment modal. */
   paidViaProvider: boolean;
+  /** True when the payment modal closed without a definitive
+   *  paid/cancelled signal — e.g. the user closed the QR-flow modal
+   *  after paying externally. BC has no callback for external
+   *  payments, so we can't distinguish "cancelled" from "paid in
+   *  another wallet". The caller should treat this as a non-error
+   *  outcome, surface a non-committal message, and rely on
+   *  kind:9735 receipt aggregation to confirm the zap landed. */
+  pending?: boolean;
 };
 
 /**
@@ -192,14 +200,21 @@ export async function sendZap(args: {
     };
     return { preimage: result?.preimage, paidViaProvider: true };
   } catch {
-    return new Promise<ZapResult>((resolve, reject) => {
+    return new Promise<ZapResult>((resolve) => {
       const { setPaid } = launchPaymentModal({
         invoice: pr,
         onPaid: ({ preimage }) => {
           resolve({ preimage, paidViaProvider: false });
         },
+        // BC's `onCancelled` fires both when the user truly cancels
+        // AND when they close the modal after paying in an external
+        // wallet — BC has no way to detect off-device settlement.
+        // Resolve with `pending: true` instead of rejecting so the
+        // caller can surface a non-committal "if you paid, it'll
+        // appear shortly" message and rely on kind:9735 aggregation
+        // to confirm.
         onCancelled: () => {
-          reject(new Error("Payment cancelled"));
+          resolve({ paidViaProvider: false, pending: true });
         },
       });
       // Keep setPaid around for callers that want to finalize the
