@@ -6,6 +6,7 @@ import {
 } from "../../../queries/useCommentReactions";
 import { useMarketComments } from "../../../queries/useComments";
 import { useCommentZaps, zapStatsFor } from "../../../queries/useCommentZaps";
+import { useMutedPubkeys } from "../../../queries/useMutes";
 import { useStore } from "../../../store";
 import type { MarketComment } from "../../../types";
 import { friendlyError } from "../../../utils-react/friendly-error";
@@ -219,12 +220,27 @@ export function CommentsSection({ market }: { market: CommentableMarket }) {
   const marketEventId = useMemo(() => extractMarketEventId(market), [market]);
 
   const {
-    data: comments = [],
+    data: rawComments = [],
     isLoading,
     isError,
     error,
     refetch,
   } = useMarketComments(market.marketId, market.creatorPubkey);
+
+  // Client-side mute filter. Relays don't honour kind:10000 — it's a
+  // per-viewer preference — so we drop muted authors locally. A
+  // muted author's reply still gets its parent shown as a tombstone
+  // by `buildThread` below, preserving thread context ("someone
+  // replied here, you've muted them"). We keep deleted tombstones
+  // for the same reason.
+  const mutedPubkeys = useMutedPubkeys();
+  const comments = useMemo(() => {
+    if (mutedPubkeys.size === 0) return rawComments;
+    return rawComments.filter(
+      (c) => c.deleted || !mutedPubkeys.has(c.author_pubkey),
+    );
+  }, [rawComments, mutedPubkeys]);
+  const mutedHiddenCount = rawComments.length - comments.length;
 
   const threaded = useMemo(() => buildThread(comments), [comments]);
   const commentIds = useMemo(() => comments.map((c) => c.id), [comments]);
@@ -247,6 +263,11 @@ export function CommentsSection({ market }: { market: CommentableMarket }) {
         <h3 className="text-base font-semibold text-slate-100">
           Comments <span className="text-slate-500">({comments.length})</span>
         </h3>
+        {mutedHiddenCount > 0 && (
+          <span className="text-xs text-slate-500">
+            {mutedHiddenCount} hidden by mute
+          </span>
+        )}
       </div>
 
       {nostrPubkey ? (

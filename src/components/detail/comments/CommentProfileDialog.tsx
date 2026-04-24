@@ -7,6 +7,12 @@ import {
   useIsFollowing,
   useUnfollowPubkey,
 } from "../../../queries/useFollows";
+import {
+  useIsMuted,
+  useMutePubkey,
+  useUnmutePubkey,
+} from "../../../queries/useMutes";
+import { useNip05Verification } from "../../../queries/useNip05Verification";
 import { useNostrProfileByPubkey } from "../../../queries/useNostrProfileByPubkey";
 import { useStore } from "../../../store";
 import { hexToNpub } from "../../../utils/crypto";
@@ -56,8 +62,28 @@ export function CommentProfileDialog({
     });
   };
 
+  const isMuted = useIsMuted(pubkeyHex);
+  const muteMutation = useMutePubkey();
+  const unmuteMutation = useUnmutePubkey();
+  const mutePending = muteMutation.isPending || unmuteMutation.isPending;
+  const handleToggleMute = () => {
+    if (!sessionPubkey || !pubkeyHex) return;
+    const target = pubkeyHex;
+    const mutation = isMuted ? unmuteMutation : muteMutation;
+    mutation.mutate(target, {
+      onSuccess: () => {
+        showToast(isMuted ? "Unmuted" : "Muted", "success");
+      },
+      onError: (e) => showToast(friendlyError(String(e)), "error"),
+    });
+  };
+
   const { data: profile, isLoading } = useNostrProfileByPubkey(
     open ? pubkeyHex : null,
+  );
+  const { data: nip05Verified } = useNip05Verification(
+    open ? pubkeyHex : null,
+    profile?.nip05,
   );
 
   const npub = useMemo(
@@ -180,9 +206,21 @@ export function CommentProfileDialog({
                       </button>
                       <button
                         type="button"
-                        disabled
-                        title="Mute coming soon"
-                        className="flex h-8 w-8 cursor-default items-center justify-center rounded-full border border-slate-700 bg-slate-900/60 text-slate-400 opacity-60"
+                        onClick={handleToggleMute}
+                        disabled={!sessionPubkey || mutePending}
+                        title={
+                          !sessionPubkey
+                            ? "Sign in to mute"
+                            : isMuted
+                              ? "Unmute"
+                              : "Mute"
+                        }
+                        aria-pressed={isMuted}
+                        className={`flex h-8 w-8 items-center justify-center rounded-full border transition disabled:cursor-default disabled:opacity-60 ${
+                          isMuted
+                            ? "border-rose-400/40 bg-rose-400/15 text-rose-300 hover:border-rose-400/60 hover:bg-rose-400/20"
+                            : "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-rose-400/40 hover:bg-rose-400/10 hover:text-rose-300"
+                        }`}
                       >
                         <svg
                           aria-hidden="true"
@@ -203,14 +241,27 @@ export function CommentProfileDialog({
                   )}
                 </div>
                 {profile?.nip05 && (
-                  <p className="mt-1.5 flex items-center gap-1.5 truncate text-sm text-slate-300">
+                  <p
+                    className={`mt-1.5 flex items-center gap-1.5 truncate text-sm ${nip05Verified === true ? "text-slate-300" : "text-slate-500"}`}
+                    title={
+                      nip05Verified === true
+                        ? "NIP-05 verified"
+                        : nip05Verified === false
+                          ? "NIP-05 check did not match this key"
+                          : "NIP-05 verification unavailable"
+                    }
+                  >
                     <svg
                       aria-hidden="true"
                       className="h-4 w-4 shrink-0"
                       viewBox="0 0 122.88 116.87"
                     >
                       <polygon
-                        fill="#a855f7"
+                        // Verified → purple check badge (NIP-05 conventional
+                        // colour). Unverified / unknown → neutral grey so
+                        // transient CORS/network errors don't surface as a
+                        // scary warning.
+                        fill={nip05Verified === true ? "#a855f7" : "#475569"}
                         fillRule="evenodd"
                         points="61.37 8.24 80.43 0 90.88 17.79 111.15 22.32 109.15 42.85 122.88 58.43 109.2 73.87 111.15 94.55 91 99 80.43 116.87 61.51 108.62 42.45 116.87 32 99.08 11.73 94.55 13.73 74.01 0 58.43 13.68 42.99 11.73 22.32 31.88 17.87 42.45 0 61.37 8.24"
                       />
