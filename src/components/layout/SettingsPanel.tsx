@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { baseCurrencyOptions } from "../../constants";
@@ -123,6 +124,26 @@ function NostrSection() {
 
   const isRemoteSigner = nip46Status?.connected === true;
 
+  // Where the local nsec is stored. Re-fetches when the wallet
+  // transitions (same trigger as the NIP-46 status) so the label
+  // stays correct after a user migrates, locks / unlocks, etc.
+  const { data: keyStorage, isFetching: keyStorageFetching } = useQuery<
+    "keychain" | "legacy_file" | "unavailable" | "remote_signer" | "none"
+  >({
+    queryKey: ["nostrKeyStorage", walletStatus],
+    queryFn: () => invoke("get_nostr_key_storage"),
+    staleTime: 30_000,
+  });
+  const handleRetryKeychain = useCallback(() => {
+    // Re-invalidating the identity query re-runs `init_nostr_identity`
+    // on the Rust side, which re-calls `load_keys` — and that in turn
+    // re-triggers the platform auth prompt (Keychain, Credential
+    // Manager, or libsecret unlock). Works on every platform
+    // `keyring` supports without needing a dedicated retry command.
+    void queryClient.invalidateQueries({ queryKey: ["identity"] });
+    void queryClient.invalidateQueries({ queryKey: ["nostrKeyStorage"] });
+  }, []);
+
   const copyNpub = useCallback(async () => {
     const npub = useStore.getState().nostrNpub;
     if (npub) {
@@ -160,9 +181,12 @@ function NostrSection() {
 
   return (
     <div className="space-y-4">
-      {/* Signer type badge */}
+      {/* Signer type badge + inline storage indicator. Same row so
+          the "where is my nsec kept?" answer reads at a glance;
+          flex-wrap lets the warning variants (with Retry) drop to a
+          second line on narrow viewports. */}
       {nostrNpub && (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
           <span
             className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium ${
               isRemoteSigner
@@ -175,6 +199,78 @@ function NostrSection() {
             />
             {isRemoteSigner ? "Remote Signer (NIP-46)" : "Local Keys"}
           </span>
+          {!isRemoteSigner && keyStorage === "keychain" && (
+            <span className="flex items-center gap-1.5 text-[11px] text-slate-500">
+              <svg
+                aria-hidden="true"
+                className="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+              Stored in OS keychain
+            </span>
+          )}
+          {!isRemoteSigner && keyStorage === "legacy_file" && (
+            <span className="flex items-center gap-1.5 text-[11px] text-amber-300">
+              <svg
+                aria-hidden="true"
+                className="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                <path d="M12 9v4" />
+                <path d="M12 17h.01" />
+              </svg>
+              Key is on disk unencrypted — retry to migrate to keychain
+              <button
+                type="button"
+                onClick={handleRetryKeychain}
+                disabled={keyStorageFetching}
+                className="ml-1 rounded-md border border-amber-400/40 px-2 py-0.5 text-[10px] text-amber-200 transition hover:bg-amber-400/10 disabled:opacity-60"
+              >
+                Retry
+              </button>
+            </span>
+          )}
+          {!isRemoteSigner && keyStorage === "unavailable" && (
+            <span className="flex items-center gap-1.5 text-[11px] text-rose-300">
+              <svg
+                aria-hidden="true"
+                className="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <line x1="15" x2="9" y1="9" y2="15" />
+                <line x1="9" x2="15" y1="9" y2="15" />
+              </svg>
+              Keychain access denied — retry to re-prompt
+              <button
+                type="button"
+                onClick={handleRetryKeychain}
+                disabled={keyStorageFetching}
+                className="ml-1 rounded-md border border-rose-400/40 px-2 py-0.5 text-[10px] text-rose-200 transition hover:bg-rose-400/10 disabled:opacity-60"
+              >
+                Retry
+              </button>
+            </span>
+          )}
         </div>
       )}
 

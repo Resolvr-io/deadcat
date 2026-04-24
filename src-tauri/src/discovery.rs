@@ -475,31 +475,190 @@ pub async fn publish_profile(
 // Identity persistence (app-layer concern)
 // ---------------------------------------------------------------------------
 
-/// Load an existing Nostr keypair from disk. Returns `None` if no key file exists.
-pub fn load_keys(app_data_dir: &std::path::Path) -> Result<Option<Keys>, String> {
-    let key_path = app_data_dir.join("nostr_identity.key");
+// ---------------------------------------------------------------------------
+// Nostr identity key storage (OS keychain)
+// ---------------------------------------------------------------------------
+//
+// The Nostr secret key is stored in the platform keychain (macOS
+// Keychain, Windows Credential Manager, libsecret on Linux) rather
+// than as plaintext on disk. The keyring crate abstracts the three
+// backends behind one interface.
+//
+// Older builds stored the key at `<app_data_dir>/nostr_identity.key`
+// in plaintext hex. `load_keys` performs a one-shot migration of that
+// file into the keychain on the first read after upgrade: read file →
+// write to keychain → delete file. After migration there's no
+// plaintext on disk.
 
-    if key_path.exists() {
-        let hex_str = std::fs::read_to_string(&key_path)
-            .map_err(|e| format!("failed to read key file: {e}"))?;
-        let secret_key = SecretKey::from_hex(hex_str.trim())
-            .map_err(|e| format!("failed to parse secret key: {e}"))?;
-        Ok(Some(Keys::new(secret_key)))
-    } else {
-        Ok(None)
-    }
+const KEYRING_SERVICE: &str = "deadcat.live/nostr-identity";
+const KEYRING_ACCOUNT: &str = "default";
+const LEGACY_KEY_FILE: &str = "nostr_identity.key";
+
+fn keyring_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .map_err(|e| format!("failed to open keychain entry: {e}"))
 }
 
-/// Generate a new Nostr keypair, persist to disk, and return it.
-pub fn generate_keys(app_data_dir: &std::path::Path) -> Result<Keys, String> {
-    let key_path = app_data_dir.join("nostr_identity.key");
-    let keys = Keys::generate();
-    let secret_hex = keys.secret_key().to_secret_hex();
-    if let Some(parent) = key_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create data dir: {e}"))?;
+fn keys_from_hex(hex: &str) -> Result<Keys, String> {
+    let secret_key =
+        SecretKey::from_hex(hex.trim()).map_err(|e| format!("failed to parse secret key: {e}"))?;
+    Ok(Keys::new(secret_key))
+}
+
+/// Read the Nostr keypair from the OS keychain, falling back to a
+/// one-shot migration of the legacy plaintext file if present.
+///
+/// Returns `None` when no identity exists in either location —
+/// callers treat that as "no local identity yet." Migration errors
+/// are treated as "no identity" (returns `None`) rather than bubbled
+/// up, because an unreadable legacy file shouldn't block users from
+/// creating a fresh identity. The legacy file IS still deleted on
+/// successful keychain write so we don't try to migrate again on the
+/// next launch.
+pub fn load_keys(app_data_dir: &std::path::Path) -> Result<Option<Keys>, String> {
+    let entry = keyring_entry()?;
+    match entry.get_password() {
+        Ok(hex) => return Ok(Some(keys_from_hex(&hex)?)),
+        Err(keyring::Error::NoEntry) => {
+            // Fall through to legacy-file migration below.
+        }
+        Err(e) => return Err(format!("failed to read keychain: {e}")),
     }
-    std::fs::write(&key_path, secret_hex).map_err(|e| format!("failed to write key file: {e}"))?;
+
+    // Legacy plaintext migration (one-shot). Only reached when the
+    // keychain has no entry yet — never overwrites an existing
+    // keychain value, which means a user who imports a fresh
+    // identity on a device with a stale legacy file isn't silently
+    // downgraded back to the old key.
+    let legacy_path = app_data_dir.join(LEGACY_KEY_FILE);
+    if !legacy_path.exists() {
+        return Ok(None);
+    }
+    let hex_str = match std::fs::read_to_string(&legacy_path) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("legacy key file exists but can't be read: {e}");
+            return Ok(None);
+        }
+    };
+    let keys = match keys_from_hex(&hex_str) {
+        Ok(k) => k,
+        Err(e) => {
+            log::warn!("legacy key file is unparseable, ignoring: {e}");
+            return Ok(None);
+        }
+    };
+    // Commit to keychain before deleting the legacy file — if the
+    // keychain write fails we leave the legacy file alone so the
+    // user's identity isn't lost on a flaky first migration.
+    entry
+        .set_password(hex_str.trim())
+        .map_err(|e| format!("failed to migrate key into keychain: {e}"))?;
+    if let Err(e) = std::fs::remove_file(&legacy_path) {
+        log::warn!("migrated nostr key to keychain but failed to delete legacy file: {e}");
+    } else {
+        log::info!("migrated nostr_identity.key from plaintext file to OS keychain");
+    }
+    Ok(Some(keys))
+}
+
+/// Persist a pre-constructed `Keys` into the keychain. Used by the
+/// import path (nsec / backup restore) where the secret comes from
+/// user input rather than a fresh generation.
+pub fn save_keys(keys: &Keys) -> Result<(), String> {
+    let entry = keyring_entry()?;
+    entry
+        .set_password(&keys.secret_key().to_secret_hex())
+        .map_err(|e| format!("failed to write keychain entry: {e}"))
+}
+
+/// Generate a new Nostr keypair, store it in the keychain, and
+/// return it. `app_data_dir` is retained in the signature for
+/// symmetry with `load_keys` / `delete_keys` and because we may want
+/// to wipe any residual legacy file defensively in the future.
+pub fn generate_keys(_app_data_dir: &std::path::Path) -> Result<Keys, String> {
+    let keys = Keys::generate();
+    save_keys(&keys)?;
     Ok(keys)
+}
+
+/// Where the local Nostr secret is currently stored. Surfaces to the
+/// Settings UI so an upgrading user can see the migration actually
+/// moved their key off disk. `RemoteSigner` is filled in by the
+/// command-layer wrapper when a NIP-46 connection owns the identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NostrKeyStorage {
+    /// Key is in the platform keychain and readable.
+    Keychain,
+    /// Legacy plaintext file still on disk — normally only seen
+    /// when the keychain write failed during migration. The UI
+    /// should flag this as insecure.
+    LegacyFile,
+    /// A keychain entry exists but we couldn't read it — user
+    /// denied the access prompt, the keyring daemon is locked, or
+    /// platform auth was cancelled. Recoverable: the UI can offer
+    /// a retry that re-invokes `init_nostr_identity`, which will
+    /// re-trigger the platform prompt.
+    Unavailable,
+    /// No local identity — either a brand-new install or the
+    /// identity lives with a remote NIP-46 signer (the command
+    /// wrapper distinguishes those two).
+    None,
+}
+
+/// Determine whether the local Nostr secret lives in the keychain,
+/// in the legacy plaintext file, is blocked by platform auth, or
+/// doesn't exist at all. Never errors — any keychain-call failure is
+/// mapped to a status variant so callers can render a label instead
+/// of handling a `Result`.
+pub fn nostr_key_storage(app_data_dir: &std::path::Path) -> NostrKeyStorage {
+    let entry = match keyring_entry() {
+        Ok(e) => e,
+        Err(e) => {
+            // Can't even construct an entry (platform binding broken?).
+            // Treat the same as an access failure so the UI can surface
+            // a retry affordance instead of silently reporting "none".
+            log::warn!("keychain entry creation failed: {e}");
+            return NostrKeyStorage::Unavailable;
+        }
+    };
+    match entry.get_password() {
+        Ok(_) => return NostrKeyStorage::Keychain,
+        Err(keyring::Error::NoEntry) => {
+            // Fall through to legacy-file + none handling.
+        }
+        Err(e) => {
+            // Every other keyring::Error variant indicates the entry
+            // *may* exist but we can't read it — platform auth, locked
+            // daemon, ambiguous entry match, etc. Report as unavailable
+            // so the UI can offer retry.
+            log::warn!("keychain read failed: {e}");
+            return NostrKeyStorage::Unavailable;
+        }
+    }
+    if app_data_dir.join(LEGACY_KEY_FILE).exists() {
+        return NostrKeyStorage::LegacyFile;
+    }
+    NostrKeyStorage::None
+}
+
+/// Remove the stored Nostr keypair from the keychain and wipe any
+/// lingering legacy plaintext file. Idempotent — missing entries
+/// aren't treated as errors because delete is often best-effort
+/// cleanup (e.g. logout, identity switch).
+pub fn delete_keys(app_data_dir: &std::path::Path) -> Result<(), String> {
+    match keyring_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(e) => return Err(format!("failed to remove keychain entry: {e}")),
+    }
+    let legacy_path = app_data_dir.join(LEGACY_KEY_FILE);
+    if legacy_path.exists() {
+        if let Err(e) = std::fs::remove_file(&legacy_path) {
+            log::warn!("failed to remove legacy nostr key file: {e}");
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
