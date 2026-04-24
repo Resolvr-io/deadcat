@@ -235,6 +235,19 @@ export default function WalletSetupStep({
   const nostrNpub = useStore((s) => s.nostrNpub);
   const queryClient = useQueryClient();
 
+  // Clear any leftover password state every time this step mounts.
+  // The modal's close handler already wipes these, but certain paths
+  // (backdrop dismiss, race with wallet-state transitions, stale
+  // zustand entries) have left a previous session's confirm value
+  // in place, producing a spurious "Passwords don't match" on a
+  // fresh open. Belt-and-suspenders: zero-out on every mount.
+  useEffect(() => {
+    useStore.setState({
+      onboardingWalletPassword: "",
+      onboardingWalletPasswordConfirm: "",
+    });
+  }, []);
+
   // Wallet choice inside the bunker setup screen: create a new wallet
   // or restore an existing one from its recovery phrase. Mirrors the
   // same toggle in the nsec-restore flow for UX parity.
