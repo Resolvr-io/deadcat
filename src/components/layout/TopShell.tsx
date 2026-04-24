@@ -847,6 +847,14 @@ export function TopShell() {
               className="flex shrink-0 items-center gap-2 pb-[5px]"
               onMouseDown={onDragMouseDown}
             >
+              {/* Order: wallet → positions → notifications → user
+                  menu. Wallet leads for maximum visibility — it's
+                  the most frequent interaction on a trading surface
+                  and needs to anchor the right side of the shell.
+                  Remaining slots read as escalating frequency:
+                  positions (click-in), notifications (glance for
+                  count), then the identity/settings pivot. */}
+              <WalletButton />
               {nostrPubkey && (
                 <button
                   type="button"
@@ -875,7 +883,6 @@ export function TopShell() {
                   </svg>
                 </button>
               )}
-              <WalletButton />
               {nostrPubkey && <NotificationBell />}
               {nostrPubkey && <UserMenu />}
             </div>
