@@ -307,13 +307,43 @@ fn zap_receipt_sender(event: &Event) -> Option<(String, Option<String>)> {
 
 /// Turn a raw inbound Nostr event into a notification record. Returns
 /// `None` when the event isn't notification-worthy — either it's the
-/// viewer's own event, it doesn't actually target them, or its shape
-/// doesn't match a supported kind.
-pub fn parse_notification_event(event: &Event, my_pubkey_hex: &str) -> Option<NotificationRecord> {
+/// viewer's own event, it doesn't actually target them, its shape
+/// doesn't match a supported kind, or it targets an event the viewer
+/// didn't author through Deadcat.
+///
+/// `own_deadcat_event_ids` is the set of event IDs the viewer has
+/// published from this app (kind:1111 comments, kind:30078 markets,
+/// etc., all carrying the NIP-89 client tag). Notifications targeting
+/// any other event are dropped — keeps the bell from filling up with
+/// reactions/zaps the user got on their non-Deadcat Nostr activity.
+/// Pass an empty set to disable filtering (only useful while still
+/// building the tracker on cold start).
+pub fn parse_notification_event(
+    event: &Event,
+    my_pubkey_hex: &str,
+    own_deadcat_event_ids: &std::collections::HashSet<String>,
+) -> Option<NotificationRecord> {
     // Self-authored events never generate notifications — you don't
     // need to be told about your own reply / reaction / zap receipt.
     if event.pubkey.to_hex().eq_ignore_ascii_case(my_pubkey_hex) {
         return None;
+    }
+
+    /// Does this notification target an event the viewer authored
+    /// through Deadcat? Empty `own_set` opts out of filtering — used
+    /// while the tracker is still hydrating on cold start so
+    /// notifications aren't silently dropped.
+    fn targets_deadcat_event(
+        target: Option<&str>,
+        own_set: &std::collections::HashSet<String>,
+    ) -> bool {
+        if own_set.is_empty() {
+            return true;
+        }
+        match target {
+            Some(id) => own_set.contains(id),
+            None => false,
+        }
     }
 
     let market = tag_value(event, "A")
@@ -331,6 +361,13 @@ pub fn parse_notification_event(event: &Event, my_pubkey_hex: &str) -> Option<No
             // don't notify on every comment on markets we created.
             // Mention-in-body detection is a follow-up.
             if !lowercase_p_targets_me(event, my_pubkey_hex) {
+                return None;
+            }
+            // The lowercase `e` tag is the parent comment we
+            // authored; if it isn't in our deadcat-published set,
+            // this is a reply to a non-Deadcat comment of ours and
+            // the user doesn't want it surfaced here.
+            if !targets_deadcat_event(tag_value(event, "e"), own_deadcat_event_ids) {
                 return None;
             }
             // Deep-link notifications to the incoming reply row,
@@ -355,6 +392,12 @@ pub fn parse_notification_event(event: &Event, my_pubkey_hex: &str) -> Option<No
         7 => {
             // NIP-25: target event in lowercase `e`, emoji in content.
             let comment_id = tag_value(event, "e").map(String::from)?;
+            // Reactions on non-Deadcat content are out of scope for
+            // the bell; the user can see those in their Nostr client
+            // of choice.
+            if !targets_deadcat_event(Some(&comment_id), own_deadcat_event_ids) {
+                return None;
+            }
             let emoji = event.content.trim();
             if emoji.is_empty() {
                 return None;
@@ -378,6 +421,15 @@ pub fn parse_notification_event(event: &Event, my_pubkey_hex: &str) -> Option<No
             // request's `pubkey` field, not the receipt's author
             // (which is the recipient's LNURL provider).
             let comment_id = tag_value(event, "e").map(String::from);
+            // Profile-level zaps (no `e` tag) come through whatever
+            // their target — they target the user directly, not a
+            // specific comment, so it's fine to keep them. Event-
+            // level zaps must hit one of our Deadcat events.
+            if comment_id.is_some()
+                && !targets_deadcat_event(comment_id.as_deref(), own_deadcat_event_ids)
+            {
+                return None;
+            }
             let amount_msats = zap_receipt_amount_msats(event);
             let (sender_pubkey, zap_message) =
                 zap_receipt_sender(event).unwrap_or((event.pubkey.to_hex(), None));
@@ -535,7 +587,11 @@ mod tests {
             .sign_with_keys(&replier)
             .unwrap();
 
-        let parsed = parse_notification_event(&event, &viewer_pubkey_hex).unwrap();
+        // Treat the parent comment as one we authored through Deadcat
+        // so the new own-events filter keeps the reply.
+        let mut own_set = std::collections::HashSet::new();
+        own_set.insert(parent_comment_id.clone());
+        let parsed = parse_notification_event(&event, &viewer_pubkey_hex, &own_set).unwrap();
         let reply_event_id = event.id.to_hex();
 
         assert_eq!(parsed.kind, NotificationKind::Reply);

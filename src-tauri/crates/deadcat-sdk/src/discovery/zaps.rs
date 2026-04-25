@@ -78,6 +78,7 @@ pub fn build_zap_request_event(
     if let Some(coord) = req.event_coordinate {
         tags.push(Tag::custom(TagKind::custom("a"), vec![coord.to_string()]));
     }
+    tags.push(super::client_tag());
 
     Ok(EventBuilder::new(ZAP_REQUEST_KIND, req.content)
         .tags(tags)

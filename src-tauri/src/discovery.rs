@@ -195,6 +195,7 @@ pub fn build_wallet_backup_event(
         Tag::identifier(d_tag),
         Tag::custom(TagKind::custom("encrypted"), vec!["true".to_string()]),
         Tag::custom(TagKind::custom("encryption"), vec!["nip44".to_string()]),
+        deadcat_sdk::client_tag(),
     ];
 
     EventBuilder::new(APP_EVENT_KIND, encrypted_content)
@@ -258,6 +259,7 @@ pub fn build_backup_empty_replacement(keys: &Keys) -> Result<Event, String> {
     let tags = vec![
         Tag::identifier(WALLET_BACKUP_D_TAG),
         Tag::custom(TagKind::custom("deleted"), vec!["true".to_string()]),
+        deadcat_sdk::client_tag(),
     ];
 
     EventBuilder::new(APP_EVENT_KIND, "")
@@ -274,7 +276,10 @@ pub fn build_backup_deletion_event(keys: &Keys) -> Result<Event, String> {
         keys.public_key(),
         WALLET_BACKUP_D_TAG,
     );
-    let tags = vec![Tag::custom(TagKind::custom("a"), vec![coordinate])];
+    let tags = vec![
+        Tag::custom(TagKind::custom("a"), vec![coordinate]),
+        deadcat_sdk::client_tag(),
+    ];
 
     EventBuilder::new(Kind::Custom(5), "delete wallet backup")
         .tags(tags)
@@ -291,10 +296,11 @@ pub const RELAY_LIST_KIND: Kind = Kind::Custom(10002);
 
 /// Build a kind 10002 event with relay `r` tags.
 pub fn build_relay_list_event(keys: &Keys, relays: &[String]) -> Result<Event, String> {
-    let tags: Vec<Tag> = relays
+    let mut tags: Vec<Tag> = relays
         .iter()
         .map(|url| Tag::custom(TagKind::custom("r"), vec![url.clone()]))
         .collect();
+    tags.push(deadcat_sdk::client_tag());
 
     EventBuilder::new(RELAY_LIST_KIND, "")
         .tags(tags)
@@ -461,6 +467,7 @@ pub async fn publish_profile(
 
     let content = meta.to_string();
     let event = EventBuilder::new(Kind::Metadata, content)
+        .tags(vec![deadcat_sdk::client_tag()])
         .sign(keys)
         .await
         .map_err(|e| format!("failed to sign profile event: {e}"))?;

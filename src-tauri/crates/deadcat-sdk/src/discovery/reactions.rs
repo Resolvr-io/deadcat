@@ -71,6 +71,7 @@ pub fn build_reaction_event(
         Tag::event(event_id),
         Tag::public_key(target_author),
         Tag::custom(TagKind::custom("k"), vec![target_kind.to_string()]),
+        super::client_tag(),
     ];
 
     Ok(EventBuilder::new(REACTION_KIND, trimmed)
@@ -93,6 +94,7 @@ pub fn build_reaction_deletion_event(
             TagKind::custom("k"),
             vec![REACTION_KIND.as_u16().to_string()],
         ),
+        super::client_tag(),
     ];
     Ok(EventBuilder::new(Kind::Custom(5), "delete reaction")
         .tags(tags)
