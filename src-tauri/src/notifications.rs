@@ -26,6 +26,80 @@ use serde::{Deserialize, Serialize};
 /// across.
 const NOTIFICATIONS_FILE: &str = "notifications.json";
 
+/// Sibling file holding the set of event ids the viewer has
+/// authored through Deadcat. Populated as own-events stream in;
+/// persisted across restarts so the cold-start window doesn't drop
+/// notifications targeting events whose own-record hasn't replayed
+/// yet.
+const OWN_EVENTS_FILE: &str = "own_deadcat_events.json";
+
+/// Disk-backed set of own deadcat-authored event IDs. Sibling to
+/// `NotificationStore` — same loading conventions, persisted as a
+/// JSON array. The bell's notification filter consults this set to
+/// decide whether each inbound reaction / zap / reply targets
+/// content the user produced through Deadcat.
+pub struct OwnEventsStore {
+    path: PathBuf,
+    entries: Mutex<std::collections::HashSet<String>>,
+}
+
+impl OwnEventsStore {
+    pub fn load(app_data_dir: &Path, network: &str) -> Self {
+        let path = app_data_dir.join(network).join(OWN_EVENTS_FILE);
+        let entries: std::collections::HashSet<String> = match fs::read_to_string(&path) {
+            Ok(raw) => serde_json::from_str::<Vec<String>>(&raw)
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+            Err(_) => std::collections::HashSet::new(),
+        };
+        Self {
+            path,
+            entries: Mutex::new(entries),
+        }
+    }
+
+    /// Snapshot the current set. Cheap clone of a `HashSet<String>`;
+    /// callers feed this into `parse_notification_event` per inbound
+    /// notification candidate.
+    pub fn snapshot(&self) -> std::collections::HashSet<String> {
+        self.entries.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// Insert an event id. Returns true if newly added so the caller
+    /// can decide whether to flush.
+    pub fn insert(&self, event_id: String) -> bool {
+        match self.entries.lock() {
+            Ok(mut g) => g.insert(event_id),
+            Err(_) => false,
+        }
+    }
+
+    /// Persist the in-memory set to disk. Best-effort — a transient
+    /// IO failure just means the next cold start may see a slightly
+    /// stale set, which the live subscription will rebuild.
+    pub fn flush(&self) {
+        let entries: Vec<String> = match self.entries.lock() {
+            Ok(g) => g.iter().cloned().collect(),
+            Err(_) => return,
+        };
+        if let Some(parent) = self.path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                log::warn!("own_events: failed to mkdir {:?}: {e}", parent);
+                return;
+            }
+        }
+        match serde_json::to_string(&entries) {
+            Ok(raw) => {
+                if let Err(e) = fs::write(&self.path, raw) {
+                    log::warn!("own_events: failed to write {:?}: {e}", self.path);
+                }
+            }
+            Err(e) => log::warn!("own_events: failed to serialize: {e}"),
+        }
+    }
+}
+
 /// Hard cap on retained notifications. Beyond this the oldest are
 /// pruned. 500 covers weeks of normal use; preventing an unbounded
 /// file is more important than perfect fidelity.
@@ -141,6 +215,31 @@ impl NotificationStore {
             Err(_) => return 0,
         };
         entries.iter().filter(|e| !e.read).count() as u32
+    }
+
+    /// Drop every persisted notification that doesn't target an
+    /// event in the supplied own-deadcat-events set. Returns `true`
+    /// when any record was removed so the caller can decide to
+    /// flush + emit an event. Called whenever the own-events set
+    /// grows, so a notification's target id that arrives late on
+    /// the replay can still rescue an existing record from the
+    /// pruning sweep — the prune only drops records the set already
+    /// knows aren't Deadcat-authored.
+    ///
+    /// Profile-level zap entries (no `comment_id`) are dropped too:
+    /// they're pubkey-scoped and indistinguishable from non-Deadcat
+    /// activity, matching the live filter in `parse_notification_event`.
+    pub fn prune_to_deadcat_targets(&self, own_set: &std::collections::HashSet<String>) -> bool {
+        let mut entries = match self.entries.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        let before = entries.len();
+        entries.retain(|record| match &record.comment_id {
+            Some(id) => own_set.contains(id),
+            None => false,
+        });
+        before != entries.len()
     }
 
     /// Flip a single entry to read. Returns `true` when something
@@ -330,16 +429,17 @@ pub fn parse_notification_event(
     }
 
     /// Does this notification target an event the viewer authored
-    /// through Deadcat? Empty `own_set` opts out of filtering — used
-    /// while the tracker is still hydrating on cold start so
-    /// notifications aren't silently dropped.
+    /// through Deadcat? Strict — an empty tracker means "never
+    /// published anything from Deadcat," which is the correct
+    /// behaviour for a user who brought an existing Nostr identity
+    /// over and just wants the bell to be empty until they
+    /// participate. The earlier "empty set disables filtering"
+    /// version let the entire pre-existing notification history
+    /// through on cold start before the own-events stream hydrated.
     fn targets_deadcat_event(
         target: Option<&str>,
         own_set: &std::collections::HashSet<String>,
     ) -> bool {
-        if own_set.is_empty() {
-            return true;
-        }
         match target {
             Some(id) => own_set.contains(id),
             None => false,
@@ -421,13 +521,13 @@ pub fn parse_notification_event(
             // request's `pubkey` field, not the receipt's author
             // (which is the recipient's LNURL provider).
             let comment_id = tag_value(event, "e").map(String::from);
-            // Profile-level zaps (no `e` tag) come through whatever
-            // their target — they target the user directly, not a
-            // specific comment, so it's fine to keep them. Event-
-            // level zaps must hit one of our Deadcat events.
-            if comment_id.is_some()
-                && !targets_deadcat_event(comment_id.as_deref(), own_deadcat_event_ids)
-            {
+            // Both event-level zaps (e-tag present) and profile-
+            // level zaps (no e-tag) must target a Deadcat-authored
+            // event to count. Profile zaps are pubkey-scoped and
+            // could be initiated from any client — without an e-tag
+            // we can't tell whether the user wanted to see them in
+            // the Deadcat bell. Strict scoping drops them.
+            if !targets_deadcat_event(comment_id.as_deref(), own_deadcat_event_ids) {
                 return None;
             }
             let amount_msats = zap_receipt_amount_msats(event);

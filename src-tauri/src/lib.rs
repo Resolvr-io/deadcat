@@ -89,12 +89,20 @@ pub struct NostrAppState {
 /// task that appends to it.
 pub struct NotificationsState {
     pub store: tokio::sync::Mutex<Option<std::sync::Arc<notifications::NotificationStore>>>,
+    /// Persistent set of event IDs the viewer has authored through
+    /// Deadcat. Populated by the subscription task as own-events
+    /// arrive; consumed by the same task to filter inbound
+    /// notifications. Persisted so cold starts don't reset to empty
+    /// (which would let the entire pre-existing notification history
+    /// through during the brief hydration window).
+    pub own_events: tokio::sync::Mutex<Option<std::sync::Arc<notifications::OwnEventsStore>>>,
 }
 
 impl Default for NotificationsState {
     fn default() -> Self {
         Self {
             store: tokio::sync::Mutex::new(None),
+            own_events: tokio::sync::Mutex::new(None),
         }
     }
 }
