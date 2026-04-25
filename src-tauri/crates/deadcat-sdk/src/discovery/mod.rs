@@ -62,6 +62,20 @@ pub const DEFAULT_RELAYS: &[&str] = &[
 pub const DEFAULT_SOURCE_NPUB: &str =
     "npub1deadcat0qanhns8rxp7tqz8h0vptf2a8d7cvkfjfnkwcflrkh8nq0p9tyj";
 
+/// NIP-89 client name applied to every deadcat-authored event so
+/// other Nostr clients can show "posted via Deadcat.live" and so
+/// we can identify our own events on relays via a `#client` filter
+/// (used by the notifications-filter cold-start backfill).
+pub const CLIENT_NAME: &str = "Deadcat.live";
+
+/// NIP-89 client tag for every event published by the app.
+/// Two-element form (no kind:31990 handler coordinate) — accepted
+/// universally and avoids tying us to a specific handler event we
+/// haven't published yet.
+pub fn client_tag() -> Tag {
+    Tag::custom(TagKind::custom("client"), vec![CLIENT_NAME.to_string()])
+}
+
 // ---------------------------------------------------------------------------
 // Re-exports: market
 // ---------------------------------------------------------------------------
@@ -239,6 +253,7 @@ fn build_order_tags(
             vec!["true".to_string()],
         ));
     }
+    tags.push(client_tag());
     tags
 }
 
@@ -466,6 +481,7 @@ pub fn build_order_deletion_request_event(
         Tag::hashtag(ORDER_DELETE_TAG),
         Tag::hashtag(market_id),
         Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
+        client_tag(),
     ];
 
     Ok(EventBuilder::new(Kind::Custom(5), "delete limit order announcement").tags(tags))

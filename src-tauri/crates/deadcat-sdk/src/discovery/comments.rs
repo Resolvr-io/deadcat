@@ -176,14 +176,9 @@ fn build_comment_tags(
         vec![network_tag.to_string()],
     ));
 
-    // NIP-89 client tag — lets other Nostr clients show "posted via
-    // Deadcat.live" on the comment. Handler coordinate + relay hint
-    // are intentionally omitted until we publish a kind:31990
-    // handler; the plain two-element form is accepted everywhere.
-    tags.push(Tag::custom(
-        TagKind::custom("client"),
-        vec!["Deadcat.live".to_string()],
-    ));
+    // NIP-89 client tag — universal across every deadcat-authored
+    // event, see `super::client_tag` for rationale.
+    tags.push(super::client_tag());
 
     Ok(tags)
 }
@@ -233,6 +228,7 @@ pub fn build_comment_deletion_event(
             TagKind::custom("k"),
             vec![COMMENT_KIND.as_u16().to_string()],
         ),
+        super::client_tag(),
     ];
     Ok(EventBuilder::new(Kind::Custom(5), "delete comment")
         .tags(tags)

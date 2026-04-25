@@ -4498,11 +4498,22 @@ async fn run_notifications_subscription(
     let my_pubkey_hex = my_pubkey.to_hex();
 
     let store = get_or_init_notification_store(&app).await?;
+    let own_events_store = get_or_init_own_events_store(&app).await?;
     let resume_since = store.resume_since();
 
     let client = node.discovery().client().clone();
 
-    let filter = nostr_sdk::Filter::new()
+    // Two filters in one subscribe call so both streams arrive on
+    // the shared `notifications()` channel:
+    //   1. Inbound notification candidates (kinds 7/9735/1111
+    //      p-tagging us).
+    //   2. Our own authored events — any kind. We post-filter to
+    //      Deadcat-tagged ones in the channel handler because
+    //      nostr-sdk 0.38's `custom_tag` only takes single-letter
+    //      tag keys, and the NIP-89 `client` tag isn't single-letter.
+    //      Authoring our own events doesn't generate a lot of
+    //      traffic so the post-filter cost is negligible.
+    let inbound = nostr_sdk::Filter::new()
         .kinds([
             nostr_sdk::Kind::Custom(1111),
             nostr_sdk::Kind::Custom(7),
@@ -4510,9 +4521,10 @@ async fn run_notifications_subscription(
         ])
         .pubkey(my_pubkey)
         .since(nostr_sdk::Timestamp::from_secs(resume_since));
+    let own_events = nostr_sdk::Filter::new().author(my_pubkey);
 
     client
-        .subscribe(vec![filter], None)
+        .subscribe(vec![inbound, own_events], None)
         .await
         .map_err(|e| format!("subscribe: {e}"))?;
     log::info!(
@@ -4520,17 +4532,63 @@ async fn run_notifications_subscription(
         &my_pubkey_hex[..8]
     );
 
+    // Hydrate from persisted set so the cold-start window doesn't
+    // let the entire pre-existing notification history through
+    // before the live subscription has finished replaying our own
+    // events. New ids appended by the subscription loop below.
+    let mut own_deadcat_event_ids: std::collections::HashSet<String> = own_events_store.snapshot();
+
+    // One-shot prune of the persisted notifications store, scheduled
+    // once historical replay should be complete. Closes the migration
+    // gap where notifications inserted during a prior session's
+    // empty-set bypass would otherwise stay visible until manually
+    // cleared. Running AFTER a delay (rather than per-event) avoids
+    // over-pruning before all our own deadcat-authored events have
+    // replayed.
+    {
+        let prune_store = store.clone();
+        let prune_own = own_events_store.clone();
+        let prune_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            let set = prune_own.snapshot();
+            if prune_store.prune_to_deadcat_targets(&set) {
+                prune_store.flush();
+                let _ = prune_app.emit("notifications_updated", ());
+                log::info!("notifications: pruned legacy entries to Deadcat-authored targets");
+            }
+        });
+    }
+
     // The relay pool pushes every matched event through the shared
-    // `notifications()` broadcast channel. Non-notification events
-    // (discovery, etc.) also flow through — our `parse_notification_event`
-    // returns None for anything that isn't kind 1111/7/9735 we care about.
+    // `notifications()` broadcast channel. Discovery events also
+    // flow through — `parse_notification_event` returns None for
+    // anything that isn't kind 1111/7/9735 we care about.
     let mut notifications = client.notifications();
     while let Ok(notif) = notifications.recv().await {
         let nostr_sdk::RelayPoolNotification::Event { event, .. } = notif else {
             continue;
         };
-        let Some(record) = crate::notifications::parse_notification_event(&event, &my_pubkey_hex)
-        else {
+
+        // Track our own deadcat-authored events so we can filter
+        // notifications targeting non-Deadcat content. The relay
+        // returns historical own-events on subscribe, so the set
+        // populates quickly without requiring a separate fetch.
+        // Persist on every new id so the next launch starts with a
+        // hydrated set.
+        if event.pubkey == my_pubkey && event_has_deadcat_client_tag(&event) {
+            let id = event.id.to_hex();
+            if own_deadcat_event_ids.insert(id.clone()) && own_events_store.insert(id) {
+                own_events_store.flush();
+            }
+            continue;
+        }
+
+        let Some(record) = crate::notifications::parse_notification_event(
+            &event,
+            &my_pubkey_hex,
+            &own_deadcat_event_ids,
+        ) else {
             continue;
         };
         if store.insert(record) {
@@ -4540,6 +4598,17 @@ async fn run_notifications_subscription(
     }
     log::info!("notifications subscription channel closed");
     Ok(())
+}
+
+/// True when the event carries the NIP-89 `client = "Deadcat.live"`
+/// tag we add to every outgoing event.
+fn event_has_deadcat_client_tag(event: &nostr_sdk::Event) -> bool {
+    event.tags.iter().any(|tag| {
+        let fields = tag.as_slice();
+        fields.len() >= 2
+            && fields[0] == "client"
+            && fields[1].eq_ignore_ascii_case(deadcat_sdk::CLIENT_NAME)
+    })
 }
 
 /// Return the live notification store, lazy-initializing it from the
@@ -4560,6 +4629,30 @@ async fn get_or_init_notification_store(
         .map_err(|e| format!("failed to get app data dir: {e}"))?;
     let network_tag = current_network_tag(app)?;
     let store = std::sync::Arc::new(NotificationStore::load(&app_data_dir, &network_tag));
+    *guard = Some(store.clone());
+    Ok(store)
+}
+
+/// Persistent set of own-deadcat-authored event IDs. Lazy-init on
+/// first use, scoped per network so testnet and mainnet can't
+/// cross-contaminate. Same pattern as `get_or_init_notification_store`.
+async fn get_or_init_own_events_store(
+    app: &tauri::AppHandle,
+) -> Result<std::sync::Arc<crate::notifications::OwnEventsStore>, String> {
+    let state = app.state::<NotificationsState>();
+    let mut guard = state.own_events.lock().await;
+    if let Some(store) = guard.as_ref() {
+        return Ok(store.clone());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to get app data dir: {e}"))?;
+    let network_tag = current_network_tag(app)?;
+    let store = std::sync::Arc::new(crate::notifications::OwnEventsStore::load(
+        &app_data_dir,
+        &network_tag,
+    ));
     *guard = Some(store.clone());
     Ok(store)
 }

@@ -105,6 +105,7 @@ pub fn build_announcement_event(
         Tag::hashtag(CONTRACT_TAG),
         Tag::hashtag(&category_lower),
         Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
+        super::client_tag(),
     ];
 
     Ok(EventBuilder::new(APP_EVENT_KIND, &content).tags(tags))
