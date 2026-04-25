@@ -576,6 +576,23 @@ button:focus-visible,
   animation: deadcat-notification-pulse 2s ease-out both;
 }
 
+/* Right-edge fade indicator for the horizontally-scrolling category
+   row. The buttons themselves get clipped flush against the
+   container edge when the viewport is too narrow to show all of
+   them; the fade is a visual hint that there's more content to
+   scroll to. Pointer-events:none lets clicks pass through to the
+   button underneath. */
+.category-bar-scroll::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 32px;
+  pointer-events: none;
+  background: linear-gradient(to right, rgba(2, 6, 23, 0), #020617);
+}
+
 /* Trending carousel card content transition. Triggered by a `key`
    change on the wrapping div so each new featured item remounts and
    plays the keyframe. Combines a small translate with scale + fade

@@ -581,33 +581,40 @@ function CategoryBar() {
   return (
     <div>
       <div className="phi-container py-2">
-        <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap">
-          {filteredCategories.map((category) => {
-            const active = activeCategory === category;
-            const icon = categoryIcon(category);
-            return (
-              <button
-                type="button"
-                key={category}
-                onClick={() =>
-                  useStore.setState({
-                    activeCategory: category as NavCategory,
-                    view: "home",
-                    selectedMarketId: "",
-                  })
-                }
-                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-normal transition ${
-                  active
-                    ? "bg-slate-800/80 text-slate-100"
-                    : "text-slate-500 hover:text-slate-300"
-                }`}
-              >
-                {icon}
-                {category === "Ending Soon" ? "Ending" : category}
-              </button>
-            );
-          })}
-          {/* Help button — hidden until content is ready */}
+        {/* Outer wrap establishes a positioning context for the
+            right-edge fade pseudo-element. The inner row scrolls
+            horizontally; the fade is a hint that there's more
+            content beyond the cut-off when the viewport is too
+            narrow to show every category at once. */}
+        <div className="category-bar-scroll relative">
+          <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {filteredCategories.map((category) => {
+              const active = activeCategory === category;
+              const icon = categoryIcon(category);
+              return (
+                <button
+                  type="button"
+                  key={category}
+                  onClick={() =>
+                    useStore.setState({
+                      activeCategory: category as NavCategory,
+                      view: "home",
+                      selectedMarketId: "",
+                    })
+                  }
+                  className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-normal transition ${
+                    active
+                      ? "bg-slate-800/80 text-slate-100"
+                      : "text-slate-500 hover:text-slate-300"
+                  }`}
+                >
+                  {icon}
+                  {category === "Ending Soon" ? "Ending" : category}
+                </button>
+              );
+            })}
+            {/* Help button — hidden until content is ready */}
+          </div>
         </div>
       </div>
     </div>
