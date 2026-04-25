@@ -595,23 +595,22 @@ button:focus-visible,
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 48px;
+  /* 24px is enough to read as "fade" without bleeding into the
+     content of an adjacent pill. Earlier 48px overlapped active
+     pills near either edge (Trending / New) far enough that they
+     looked dimmed even when fully visible. */
+  width: 24px;
   pointer-events: none;
   opacity: 0;
   transition: opacity 150ms ease;
 }
 .category-bar-scroll::before {
   left: 0;
-  /* Stops at 0.6 alpha (not solid) so an active pill that lands
-     under the gradient — e.g. Trending while the user has scrolled
-     right — keeps its highlighted background readable through the
-     fade. The hint is still visible; the pill no longer reads as
-     "broken / disabled". */
-  background: linear-gradient(to left, rgba(2, 6, 23, 0), rgba(2, 6, 23, 0.6));
+  background: linear-gradient(to left, rgba(2, 6, 23, 0), #020617);
 }
 .category-bar-scroll::after {
   right: 0;
-  background: linear-gradient(to right, rgba(2, 6, 23, 0), rgba(2, 6, 23, 0.6));
+  background: linear-gradient(to right, rgba(2, 6, 23, 0), #020617);
 }
 .category-bar-scroll[data-overflow-left="true"]::before {
   opacity: 1;
