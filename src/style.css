@@ -602,11 +602,16 @@ button:focus-visible,
 }
 .category-bar-scroll::before {
   left: 0;
-  background: linear-gradient(to left, rgba(2, 6, 23, 0), #020617);
+  /* Stops at 0.6 alpha (not solid) so an active pill that lands
+     under the gradient — e.g. Trending while the user has scrolled
+     right — keeps its highlighted background readable through the
+     fade. The hint is still visible; the pill no longer reads as
+     "broken / disabled". */
+  background: linear-gradient(to left, rgba(2, 6, 23, 0), rgba(2, 6, 23, 0.6));
 }
 .category-bar-scroll::after {
   right: 0;
-  background: linear-gradient(to right, rgba(2, 6, 23, 0), #020617);
+  background: linear-gradient(to right, rgba(2, 6, 23, 0), rgba(2, 6, 23, 0.6));
 }
 .category-bar-scroll[data-overflow-left="true"]::before {
   opacity: 1;
