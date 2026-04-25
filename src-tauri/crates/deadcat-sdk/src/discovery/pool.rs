@@ -306,6 +306,7 @@ pub fn build_pool_event(
         Tag::hashtag(POOL_TAG),
         Tag::hashtag(&canonical_market_id),
         Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
+        super::client_tag(),
     ];
 
     Ok(EventBuilder::new(APP_EVENT_KIND, &content).tags(tags))

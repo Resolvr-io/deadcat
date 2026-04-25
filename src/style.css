@@ -576,6 +576,49 @@ button:focus-visible,
   animation: deadcat-notification-pulse 2s ease-out both;
 }
 
+/* Edge-fade indicators for the horizontally-scrolling category row.
+   Two pseudo-elements (`::before` for the left, `::after` for the
+   right) are toggled by `data-overflow-left` / `data-overflow-right`
+   on the wrapper so each only paints when there's actually more
+   content past that edge. Without the data-driven hide, the user
+   sees a phantom "more this way" hint when they're already
+   scrolled all the way over.
+   The gradient width is intentionally larger than the original 32px
+   pass — the fade alone reads as "the page just stops" at small
+   sizes, while a wider fade gradient suggests motion. Combined with
+   the active-pill auto-scroll-into-view in CategoryBar.tsx, the
+   user gets a clear "there's more, you can scroll" cue without
+   needing arrow buttons or a hamburger. */
+.category-bar-scroll::before,
+.category-bar-scroll::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* 24px is enough to read as "fade" without bleeding into the
+     content of an adjacent pill. Earlier 48px overlapped active
+     pills near either edge (Trending / New) far enough that they
+     looked dimmed even when fully visible. */
+  width: 24px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.category-bar-scroll::before {
+  left: 0;
+  background: linear-gradient(to left, rgba(2, 6, 23, 0), #020617);
+}
+.category-bar-scroll::after {
+  right: 0;
+  background: linear-gradient(to right, rgba(2, 6, 23, 0), #020617);
+}
+.category-bar-scroll[data-overflow-left="true"]::before {
+  opacity: 1;
+}
+.category-bar-scroll[data-overflow-right="true"]::after {
+  opacity: 1;
+}
+
 /* Trending carousel card content transition. Triggered by a `key`
    change on the wrapping div so each new featured item remounts and
    plays the keyframe. Combines a small translate with scale + fade

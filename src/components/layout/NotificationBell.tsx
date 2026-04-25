@@ -60,8 +60,11 @@ export function NotificationBell() {
       <button
         type="button"
         onClick={() =>
+          // Mutually exclusive with the user menu — opening either
+          // closes the other to avoid cross-popover overlap.
           useStore.setState((s) => ({
             notificationsOpen: !s.notificationsOpen,
+            userMenuOpen: false,
           }))
         }
         title="Notifications"
@@ -119,7 +122,7 @@ function NotificationPopover() {
         {isLoading ? (
           <p className="py-6 text-center text-xs text-slate-500">Loading…</p>
         ) : items.length === 0 ? (
-          <p className="py-10 text-center text-xs text-slate-500">
+          <p className="mx-auto max-w-[280px] px-6 py-10 text-center text-xs leading-relaxed text-slate-500">
             Nothing new yet. Replies, reactions, and zaps on your comments show
             up here.
           </p>

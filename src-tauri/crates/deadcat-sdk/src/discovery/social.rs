@@ -199,7 +199,7 @@ pub fn build_follow_list_event(
     follows: &[String],
     legacy_content: &str,
 ) -> Result<UnsignedEvent, String> {
-    let mut tags = Vec::with_capacity(follows.len());
+    let mut tags = Vec::with_capacity(follows.len() + 1);
     for hex in follows {
         // Validate each pubkey so we never persist a malformed tag
         // — a single bad tag can make some relays reject the whole
@@ -207,6 +207,7 @@ pub fn build_follow_list_event(
         PublicKey::from_hex(hex).map_err(|e| format!("invalid follow pubkey {hex}: {e}"))?;
         tags.push(Tag::custom(TagKind::p(), vec![hex.clone()]));
     }
+    tags.push(super::client_tag());
     Ok(EventBuilder::new(FOLLOW_LIST_KIND, legacy_content)
         .tags(tags)
         .build(author))
@@ -219,7 +220,8 @@ pub fn build_mute_list_event(
     public: &[MuteEntry],
     encrypted_content: &str,
 ) -> UnsignedEvent {
-    let tags: Vec<Tag> = public.iter().map(|entry| entry.tag()).collect();
+    let mut tags: Vec<Tag> = public.iter().map(|entry| entry.tag()).collect();
+    tags.push(super::client_tag());
     EventBuilder::new(MUTE_LIST_KIND, encrypted_content)
         .tags(tags)
         .build(author)

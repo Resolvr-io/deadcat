@@ -59,6 +59,7 @@ pub fn build_attestation_event(
         ),
         Tag::custom(TagKind::custom("outcome"), vec![outcome_str.to_string()]),
         Tag::custom(TagKind::custom("network"), vec![network_tag.to_string()]),
+        super::client_tag(),
     ];
 
     Ok(EventBuilder::new(APP_EVENT_KIND, &content).tags(tags))

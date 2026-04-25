@@ -104,6 +104,7 @@ pub use discovery::{
     // Types
     AttestationContent,
     AttestationResult,
+    CLIENT_NAME,
     COMMENT_KIND,
     CONTRACT_TAG,
     CommentParent,
@@ -158,6 +159,7 @@ pub use discovery::{
     build_reaction_deletion_event,
     build_reaction_event,
     build_zap_request_event,
+    client_tag,
     connect_client,
     deserialize_private_mutes,
     discovered_market_to_contract_params,

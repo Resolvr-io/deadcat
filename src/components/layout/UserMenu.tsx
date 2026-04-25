@@ -19,7 +19,13 @@ export function UserMenu() {
   }, [userMenuOpen]);
 
   const toggleMenu = useCallback(() => {
-    useStore.setState((s) => ({ userMenuOpen: !s.userMenuOpen }));
+    // Mutually exclusive with the notifications popover — opening
+    // either closes the other so we never get the cross-popover
+    // overlap (avatar dropdown lapping the bell dropdown).
+    useStore.setState((s) => ({
+      userMenuOpen: !s.userMenuOpen,
+      notificationsOpen: false,
+    }));
   }, []);
 
   const copyNpub = useCallback(async () => {
