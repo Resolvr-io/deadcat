@@ -576,21 +576,43 @@ button:focus-visible,
   animation: deadcat-notification-pulse 2s ease-out both;
 }
 
-/* Right-edge fade indicator for the horizontally-scrolling category
-   row. The buttons themselves get clipped flush against the
-   container edge when the viewport is too narrow to show all of
-   them; the fade is a visual hint that there's more content to
-   scroll to. Pointer-events:none lets clicks pass through to the
-   button underneath. */
+/* Edge-fade indicators for the horizontally-scrolling category row.
+   Two pseudo-elements (`::before` for the left, `::after` for the
+   right) are toggled by `data-overflow-left` / `data-overflow-right`
+   on the wrapper so each only paints when there's actually more
+   content past that edge. Without the data-driven hide, the user
+   sees a phantom "more this way" hint when they're already
+   scrolled all the way over.
+   The gradient width is intentionally larger than the original 32px
+   pass — the fade alone reads as "the page just stops" at small
+   sizes, while a wider fade gradient suggests motion. Combined with
+   the active-pill auto-scroll-into-view in CategoryBar.tsx, the
+   user gets a clear "there's more, you can scroll" cue without
+   needing arrow buttons or a hamburger. */
+.category-bar-scroll::before,
 .category-bar-scroll::after {
   content: "";
   position: absolute;
   top: 0;
-  right: 0;
   bottom: 0;
-  width: 32px;
+  width: 48px;
   pointer-events: none;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.category-bar-scroll::before {
+  left: 0;
+  background: linear-gradient(to left, rgba(2, 6, 23, 0), #020617);
+}
+.category-bar-scroll::after {
+  right: 0;
   background: linear-gradient(to right, rgba(2, 6, 23, 0), #020617);
+}
+.category-bar-scroll[data-overflow-left="true"]::before {
+  opacity: 1;
+}
+.category-bar-scroll[data-overflow-right="true"]::after {
+  opacity: 1;
 }
 
 /* Trending carousel card content transition. Triggered by a `key`

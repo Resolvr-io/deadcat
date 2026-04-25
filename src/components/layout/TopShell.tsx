@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { categories } from "../../constants";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { setWalletNeedsBackup } from "../../hooks/useWalletNeedsBackup";
@@ -578,16 +578,71 @@ function CategoryBar() {
       (category !== "My Markets" || (nostrPubkey && marketMakerMode)),
   );
 
+  // Track which edges of the scroll row have hidden content so the
+  // fade gradients only render where they're actually informative
+  // (no fake "more content this way" hint when the row already shows
+  // everything or is scrolled flush against an end). Recomputed on
+  // scroll, viewport resize, and category-list changes — the last
+  // because filteredCategories can grow or shrink with sign-in /
+  // marketMakerMode toggles.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [overflowLeft, setOverflowLeft] = useState(false);
+  const [overflowRight, setOverflowRight] = useState(false);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: filteredCategories.length re-runs the measure when the list changes
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const measure = () => {
+      // 1px slack for sub-pixel rounding so the right fade doesn't
+      // flicker on / off as the user scrolls to the very end.
+      setOverflowLeft(el.scrollLeft > 0);
+      setOverflowRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+    };
+    measure();
+    el.addEventListener("scroll", measure, { passive: true });
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener("scroll", measure);
+      observer.disconnect();
+    };
+  }, [filteredCategories.length]);
+
+  // Auto-scroll the active pill into view when the category changes
+  // — important when the active category sits in the clipped portion
+  // of the row (e.g. user clicks a deep link or the category list
+  // grows after sign-in). The body reads the active pill via DOM
+  // selector rather than from the React tree, so biome's exhaustive-
+  // deps lint flags `activeCategory` as unused; it's actually the
+  // re-run trigger.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeCategory triggers the scroll-into-view re-measure
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const active = el.querySelector<HTMLElement>('[data-active="true"]');
+    active?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeCategory]);
+
   return (
     <div>
       <div className="phi-container py-2">
         {/* Outer wrap establishes a positioning context for the
-            right-edge fade pseudo-element. The inner row scrolls
-            horizontally; the fade is a hint that there's more
-            content beyond the cut-off when the viewport is too
-            narrow to show every category at once. */}
-        <div className="category-bar-scroll relative">
-          <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            edge-fade gradients. Each fade is a separate pseudo on
+            the wrapper and is conditionally rendered via a data
+            attribute — it only appears when the row actually has
+            more content past that edge, so users don't see a
+            phantom "more this way" hint when they're already at an
+            extreme. */}
+        <div
+          className="category-bar-scroll relative"
+          data-overflow-left={overflowLeft ? "true" : "false"}
+          data-overflow-right={overflowRight ? "true" : "false"}
+        >
+          <div
+            ref={scrollRef}
+            className="flex items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
             {filteredCategories.map((category) => {
               const active = activeCategory === category;
               const icon = categoryIcon(category);
@@ -595,6 +650,7 @@ function CategoryBar() {
                 <button
                   type="button"
                   key={category}
+                  data-active={active ? "true" : "false"}
                   onClick={() =>
                     useStore.setState({
                       activeCategory: category as NavCategory,
