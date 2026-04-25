@@ -60,8 +60,11 @@ export function NotificationBell() {
       <button
         type="button"
         onClick={() =>
+          // Mutually exclusive with the user menu — opening either
+          // closes the other to avoid cross-popover overlap.
           useStore.setState((s) => ({
             notificationsOpen: !s.notificationsOpen,
+            userMenuOpen: false,
           }))
         }
         title="Notifications"
