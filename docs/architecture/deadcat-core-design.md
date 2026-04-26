@@ -1917,7 +1917,7 @@ pub enum InvariantViolationKind {
 See [Confidential Transaction Blinding](#confidential-transaction-blinding) for the full design and rationale. Summarized here for type reference:
 
 ```rust
-/// Returned by the 5 market builders that involve reissuance token outputs.
+/// Returned by builders that involve reissuance token outputs.
 /// Private fields prevent extracting the PSET without going through a blinding method.
 pub struct UnblindedPset { /* private: pset, rt_blinding_factors, input_secrets, output_classification */ }
 
@@ -2364,7 +2364,7 @@ When `process_transaction` is called (internally by `step`):
 2. Check which tracked contracts own any of those outpoints (via `ContractMatch`)
 3. For each affected contract, identify new outputs using a per-type strategy:
    - **Markets/orders**: match outputs against expected covenant scripts from the store's persisted script index
-   - **Pools**: identify the contiguous 3-slot reserve output window by asset ID, derive the new s_index from explicit reserve values via the LMSR table (see [LMSR Pools](#lmsr-pools) below)
+   - **Pools**: use witness-based path and s_index extraction via `RedeemNode::decode`, then identify the contiguous 3-slot reserve output window by asset ID and read reserve values from the explicit outputs (see [LMSR Pools](#lmsr-pools) below)
 4. Derive transition details from the current state, new state, and output values
 5. Compute external output roles for non-covenant outputs
 6. Durably persist the state updates
@@ -2392,7 +2392,7 @@ Core requires the caller to feed transactions in chain order. As long as this gu
 
 Core determines transitions primarily through the current contract state, script pubkey matching (against the store's persisted script index), and explicit output values. This works because the covenant design encodes state into the script pubkey — different states produce different addresses — so the new state is usually identifiable from the transaction's outputs alone.
 
-Two specific transitions produce no new covenant outputs, making the spend path indistinguishable from outputs alone. For these cases, the engine uses lightweight Simplicity witness path detection — see [Detection Strategy and Robustness](#detection-strategy-and-robustness).
+Two specific transition classes produce no new covenant continuation outputs, making the spend path indistinguishable from continuation outputs alone. For these cases, the engine uses lightweight Simplicity witness path detection — see [Detection Strategy and Robustness](#detection-strategy-and-robustness).
 
 #### Prediction Markets
 
@@ -2405,7 +2405,7 @@ The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [S
 - **Redemption** (ResolvedYes/ResolvedNo/Expired with outstanding_pairs decremented, terminal when reaching 0): No new covenant outputs. `payout_sats` is derived from the old collateral value. `side` from which token burn outputs are present. `RedemptionKind` is `PostResolution` if old state was Resolved*, `Expiry` if Expired.
 - **Cancellation** (Trading → Trading with fewer pairs): New outputs match Unresolved or Dormant slots. `pairs_burned` and `collateral_returned` from the value differences.
 - **Expiry** (Trading with >0 pairs → Expired): New output matches `ExpiredCollateral` script.
-- **Dormant terminal paths** (Trading with 0 pairs → ResolvedYes/ResolvedNo/Expired with 0 pairs): Both RT outpoints consumed, no new covenant outputs. Output-only detection can't disambiguate — all three paths produce identical observable outputs. Engine uses witness-based path detection via `RedeemNode::decode`.
+- **Dormant terminal paths** (Trading with 0 pairs → ResolvedYes/ResolvedNo/Expired with 0 pairs): Both RT outpoints consumed, RT burn outputs produced, and no new covenant continuation outputs. Output-only detection can't disambiguate — all three paths produce identical observable burn/continuation shape. Engine uses witness-based path detection via `RedeemNode::decode`.
 
 **Multi-outcome markets** (5N+2 slots, detection rules analogous but scaled):
 
@@ -2414,7 +2414,7 @@ The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [S
 - **Resolution** (Trading → Resolved(k)): new output matches one of the N `ResolvedCollateral(k)` scripts (one per possible winning outcome). The matched slot identifies `winning_outcome`.
 - **Redemption**: no new covenant outputs; token burn outputs identify which `(outcome, side)` was redeemed; payout derived from the old resolved-collateral value.
 - **Expiry**: new output matches `ExpiredCollateral` script (single script, not outcome-indexed since expiry is pre-resolution and doesn't pick an outcome).
-- **Dormant terminal paths** (all 2N Dormant RTs → Resolved(k) or Expired, no continuation): analogous to binary. Witness-based path detection identifies which of the `N + 1` terminal paths was taken.
+- **Dormant terminal paths** (all 2N Dormant RTs → Resolved(k) or Expired, RT burn outputs and no continuation): analogous to binary. Witness-based path detection identifies which of the `N + 1` terminal paths was taken.
 
 **Scaling implications for multi-outcome detection**: the engine makes **one `RedeemNode::decode` call per transaction per multi-outcome market transition** (same as binary — just with a richer set of possible paths). Cost remains negligible (~<1ms). The N outcome-pair slot scripts per phase are pre-stored in the script index during ingestion, so slot-match lookups remain O(1).
 
@@ -2429,7 +2429,7 @@ The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [S
 | Partial cancellation | Unresolved inputs → Unresolved outputs, collateral decreased | Yes — value direction distinguishes from issuance |
 | Full cancellation | Unresolved inputs → Dormant output scripts | Yes — unique scripts |
 | Expiry (non-dormant) | Unresolved inputs → ExpiredCollateral output script | Yes — unique script for slot 7 |
-| Dormant terminal | Dormant RT inputs → no covenant outputs, witness path detection | Yes — witness is ground truth |
+| Dormant terminal | Dormant RT inputs → RT burn outputs + no covenant continuation outputs, witness path detection | Yes — witness is ground truth |
 
 **Detection strategy summary (multi-outcome)**:
 
@@ -2440,7 +2440,7 @@ The internal `CovenantPhase` maps to a unique set of slot script pubkeys (see [S
 | Resolution (non-dormant, outcome k) | Unresolved inputs → ResolvedCollateral(k) script (1 of N possible) | Yes — unique scripts |
 | Redemption | Resolved(k)/Expired inputs → no covenant outputs, token burn outputs identify (outcome, side) | Yes — old state + burn outputs disambiguate |
 | Expiry (non-dormant) | Unresolved inputs → ExpiredCollateral script | Yes — unique script |
-| Dormant terminal | All 2N Dormant RT inputs → no covenant outputs, witness path detection (N+1 possible paths: Resolved for each outcome + Expired) | Yes — witness is ground truth |
+| Dormant terminal | All 2N Dormant RT inputs → RT burn outputs + no covenant continuation outputs, witness path detection (N+1 possible paths: Resolved for each outcome + Expired) | Yes — witness is ground truth |
 
 #### LMSR Pools
 
@@ -2492,11 +2492,11 @@ Each contract type uses the detection method best suited to its structural chara
 | Contract type | Key characteristic | Detection method | Why this is the right tool |
 |---|---|---|---|
 | Markets (non-dormant) | 8 bounded, pre-storable scripts | Script pubkey matching | Each phase has unique scripts — byte comparison is O(1) and trivially airtight |
-| Markets (dormant terminal) | No covenant outputs produced | Witness path detection | No scripts to match against — spend path only exists in the witness |
+| Markets (dormant terminal) | No covenant continuation outputs produced | Witness path detection | No continuation scripts to match against — spend path only exists in the witness |
 | Orders | Two spend types at taproot level | Taproot structural check | Witness element count (1 vs 3) is the simplest possible distinguisher |
 | Pools (all transitions) | Unbounded s_index, need s_index value on every transition | Witness-based | s_index only in witness; scripts can't be pre-stored; reserve-based derivation is fragile after admin adjustments |
 
-**The underlying principle**: Simplicity covenants encode state into the script pubkey — each unique state produces a unique script. For markets and orders, this enables output-based detection (script matching, structural checks). For pools, the unbounded s_index makes script enumeration impractical, and the engine needs the s_index value on every transition, so witness-based extraction is the natural fit. For dormant market terminals, no covenant outputs are produced, leaving no scripts to match — the witness is the only source of truth.
+**The underlying principle**: Simplicity covenants encode state into the script pubkey — each unique state produces a unique script. For markets and orders, this enables output-based detection (script matching, structural checks). For pools, the unbounded s_index makes script enumeration impractical, and the engine needs the s_index value on every transition, so witness-based extraction is the natural fit. For dormant market terminals, no covenant continuation outputs are produced, leaving no continuation scripts to match — the witness is the only source of truth.
 
 **Witness-based detection uses `RedeemNode::decode`** from the `simplicity_lang` crate. Key properties:
 
@@ -2895,7 +2895,7 @@ Canonical builder signatures are in [View Types § Market](#market) (common to b
 - **Redemption**: `build_redemption_pset(outcome, side, tokens_to_redeem, funding)` handles both post-resolution and post-expiry redemption; the view determines which from the cached state. Post-resolution: for binary markets the engine validates `side` matches the winning side; for multi-outcome it validates either `(outcome == winning_outcome, side == Yes)` (winning YES_k) or `(outcome != winning_outcome, side == No)` (winning NO_j). Post-expiry: any `(outcome, side)` combination is valid at the fractional rate.
 - **Split/merge YES (multi-outcome)**: atomically mints or burns one of each `YES_k` for the market's N outcomes, with collateral flow of `sets × collateral_per_pair`. The `destinations: &[Script]` slice on `build_split_yes_pset` has length `outcome_count`; `destinations[k]` receives `sets` units of `YES_k`.
 - **Split/merge NO (multi-outcome)**: same pattern but for NO tokens; collateral flow is `sets × (N-1) × collateral_per_pair`.
-- **Cross-outcome arb** (multi-outcome): single atomic transaction that co-spends the market contract's split-YES (or merge-YES) path with each outcome's binary LMSR pool public path (`old_s_index != new_s_index`). Closes cross-outcome price coherence gaps (`Σ p_YES_k ≠ 1`) in one tx. The engine constructs the full multi-contract PSET internally.
+- **Cross-outcome arb** (multi-outcome): single atomic transaction that co-spends the market contract's split-YES (or merge-YES) path with each outcome's binary LMSR pool public path (`old_s_index != new_s_index`). Closes cross-outcome price coherence gaps (`Σ p_YES_k ≠ 1`) in one tx. The v1 engine does not construct this aggregate PSET internally; external tooling can build it directly against the covenant spec, and core ingests the resulting per-contract transitions. First-class quote/build support is deferred to v2.
 - **Creation builders**: return the full derived params (`BinaryMarketParams` / `MultiOutcomeMarketParams`) alongside the PSET so the caller can `ingest_market` after the creation transaction confirms. `build_binary_market_creation_pset` selects 2 defining inputs; `build_multi_outcome_market_creation_pset` selects 2N defining inputs and compiles the N-specific generated `.simf` covenant.
 
 **OP_RETURN recovery hints**: Both `build_binary_market_creation_pset` and `build_multi_outcome_market_creation_pset` include a **37-byte** zero-value OP_RETURN hint (69 bytes with exotic collateral). Binary and multi-outcome markets share the same layout, distinguished by the hint's type tag byte. For multi-outcome markets, `outcome_count` is **not stored** — it is derived at recovery time from the creation tx's new-issuance count (2N issuances → N outcomes), with a defensive filter on `AssetIssuance` records (both `amount` and `inflation_keys` non-null) to rule out asymmetric issuances. The covenant script is the authoritative binding between N and the tx shape; a wrong derived N produces a script mismatch at ingestion, which is a loud failure. All 4N asset IDs for multi-outcome markets are derivable from the creation transaction's issuance entropy — the hint doesn't scale with N. See [chain-only-recovery.md](../protocol/chain-only-recovery.md) and [multi-outcome-market-contract.md](../contracts/multi-outcome/multi-outcome-market-contract.md).
@@ -3219,7 +3219,7 @@ Core contains the `.simf` Simplicity contract source code and the compiler integ
 
 This is necessary for both PSET construction (building covenant outputs with correct scripts) and state advancement (matching output scripts to determine new state).
 
-**Compilation model**: The Simplicity source templates are parsed once (process-wide `OnceLock` cache). Per-contract instantiation (binding parameters to the template) and commitment are performed on demand — there is no in-memory compiled contract cache. During ingestion, the engine compiles the contract, passes pre-computed scripts and asset IDs to the store as `DerivedContractData` for indexing, and discards the compiled result. PSET builders recompile from stored params on each call — the cost is moderate (~10-100ms, dominated by instantiation + commitment; template parsing is already cached). `process_transaction` and `interpret_transaction` do not need compiled contracts — they determine transitions from script pubkey matching (using the store's persisted script index) and output values, without witness decoding. `ContractEngine::new` is O(1) — it does not iterate existing contracts or compile anything at construction time.
+**Compilation model**: The Simplicity source templates are parsed once (process-wide `OnceLock` cache). Per-contract instantiation (binding parameters to the template) and commitment are performed on demand — there is no in-memory compiled contract cache. During ingestion, the engine compiles the contract, passes pre-computed scripts and asset IDs to the store as `DerivedContractData` for indexing, and discards the compiled result. PSET builders recompile from stored params on each call — the cost is moderate (~10-100ms, dominated by instantiation + commitment; template parsing is already cached). `process_transaction` and `interpret_transaction` do not need compiled contracts: most transitions are determined from script pubkey matching (using the store's persisted script index) and output values, while pools and dormant market terminals use selective `RedeemNode::decode` over raw witness bytes for path and s_index disambiguation. `ContractEngine::new` is O(1) — it does not iterate existing contracts or compile anything at construction time.
 
 **Why no compiled contract cache**: The only operation requiring a compiled contract is PSET construction (specifically, witness encoding for spending covenant inputs). The simplicityhl library's `CompiledProgram` type is opaque with no serialization API, so compiled contracts cannot be persisted to disk. An in-memory cache would only save recompilation across multiple PSET builds for the same contract within a single engine lifetime — a rare scenario that doesn't justify the cache's complexity (eviction during rollback, interior mutability for `&self` methods). If simplicityhl adds `CompiledProgram` serialization in the future, persisting compiled contracts at ingestion time would eliminate recompilation entirely — a transparent internal optimization with no API change. See [simplicityhl-compiled-program-serialization.md](../upstream-simplicity/simplicityhl-compiled-program-serialization.md) for the upstream request.
 
@@ -4124,7 +4124,7 @@ This is the same pattern used elsewhere in the codebase: keep per-kind semantic 
 
 **Chosen**: Use the detection method best suited to each contract type's structural characteristics. Markets: script pubkey matching (8 bounded, pre-storable scripts). Orders: taproot structural check (key-spend vs script-spend element count). Pools: witness-based path and s_index extraction via `RedeemNode::decode` for all transitions. Dormant market terminals: witness-based path detection for the three-way ambiguity.
 **Rejected**: (a) Pattern-match transaction structure (input/output counts). (b) Uniform witness decoding on all transitions for all contract types. (c) Output-only detection for all transitions (no witness inspection). (d) Reserve-based s_index derivation for pool public/admin transitions.
-**Why**: Each contract type has a naturally fitting detection method. Markets have 8 bounded phase scripts — byte comparison is O(1) and trivially airtight for all non-dormant transitions. Orders have a taproot-level key-spend/script-spend split — element count is the simplest possible check. Pools have unbounded s_index (scripts can't be pre-stored), and the engine needs the s_index value on every transition — the witness is the only reliable source, since reserve-based derivation (option d) is fragile after admin adjustments (reserves change without moving along the LMSR curve). Dormant market terminals produce no covenant outputs, creating a three-way ambiguity (resolution YES/NO vs expiry) only resolvable from the witness. Uniform witness decoding (option b) was rejected because markets and orders have simpler, equally correct methods — adding `RedeemNode::decode` overhead to script matching or element counting would be strictly worse. Pure output-based detection (option c) was rejected because pool s_index derivation from reserves is unreliable and dormant terminal ambiguities produce wrong state variants (e.g., `Expired` when the market actually resolved YES). `RedeemNode::decode` takes raw bytes from the transaction — no `CompiledProgram` or compilation needed, no storage needed. See [Detection Strategy and Robustness](#detection-strategy-and-robustness) for the full analysis.
+**Why**: Each contract type has a naturally fitting detection method. Markets have 8 bounded phase scripts — byte comparison is O(1) and trivially airtight for all non-dormant transitions. Orders have a taproot-level key-spend/script-spend split — element count is the simplest possible check. Pools have unbounded s_index (scripts can't be pre-stored), and the engine needs the s_index value on every transition — the witness is the only reliable source, since reserve-based derivation (option d) is fragile after admin adjustments (reserves change without moving along the LMSR curve). Dormant market terminals produce no covenant continuation outputs, creating a three-way ambiguity (resolution YES/NO vs expiry) only resolvable from the witness. Uniform witness decoding (option b) was rejected because markets and orders have simpler, equally correct methods — adding `RedeemNode::decode` overhead to script matching or element counting would be strictly worse. Pure output-based detection (option c) was rejected because pool s_index derivation from reserves is unreliable and dormant terminal ambiguities produce wrong state variants (e.g., `Expired` when the market actually resolved YES). `RedeemNode::decode` takes raw bytes from the transaction — no `CompiledProgram` or compilation needed, no storage needed. See [Detection Strategy and Robustness](#detection-strategy-and-robustness) for the full analysis.
 
 ### Output Identification via Script Pubkey Matching
 

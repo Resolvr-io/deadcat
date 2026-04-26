@@ -101,7 +101,7 @@ Maker order UTXOs are at covenant addresses — standard wallet rescan cannot fi
    - For **multi-outcome** markets with `MultiOutcomeMarketParams { outcome_count: N, .. }`, iterate `OutcomeIndex::new(k)` for `k in 0..N` — up to N candidates.
    - Call `derive_order_params(deadcat_xprv, market_params, outcome, order_index, side, direction, price, min_fill_lots, min_remainder_lots)` to reconstruct candidate `MakerOrderParams`.
    - Compile the covenant and check whether the script matches a creation tx output. First match wins.
-7. `ingest_order`
+7. `ingest_persistent_order` with the recovered params and creation transaction
 
 Without the OP_RETURN, recovery requires brute-forcing `order_index x outcome x market x price x direction x min_fill x min_remainder` — each candidate requiring Simplicity compilation (~10-100ms). With the hint, up to `outcome_count` compilations per order to verify. See [Recovering without a hint](#recovering-without-a-hint-non-standard) for the non-standard fallback.
 
@@ -119,7 +119,7 @@ Pool reserve UTXOs are at covenant addresses — standard wallet rescan cannot f
    - For **multi-outcome** markets with `MultiOutcomeMarketParams { outcome_count: N, .. }`, iterate `OutcomeIndex::new(k)` for `k in 0..N` — up to N candidates.
    - Call `derive_pool_params(deadcat_xprv, market_params, outcome, pool_index, max_loss_sats, half_payout_sats, fee_bps, initial_s_index)` to reconstruct candidate `LmsrPoolParams`. `initial_s_index` is passed directly from the hint — no inverse conversion.
    - Compile the covenant for `initial_s_index` and check whether the script matches a creation tx output. First match wins.
-7. `ingest_pool`
+7. `ingest_pool` with `PoolSnapshot::Creation`
 
 ### Recovering without a hint (non-standard)
 

@@ -80,9 +80,9 @@ Each slot has a unique script pubkey derived from the contract params + slot ide
 | Redemption (post-NO) | 6 | none | Token burn | NO tokens burned, collateral released at full value |
 | Redemption (expired) | 7 | none | Token burn | Any tokens burned, collateral released at half value |
 | Expiry | 2, 3, 4 | 7 | Timelock >= expiry_time | No signature required; RT burn outputs verified at unspendable script with correct commitment; sibling UTXO check |
-| Dormant resolution (YES) | 0, 1 | none | Oracle BIP-340 signature | Both RTs consumed, no outputs |
-| Dormant resolution (NO) | 0, 1 | none | Oracle BIP-340 signature | Both RTs consumed, no outputs |
-| Dormant expiry | 0, 1 | none | Timelock >= expiry_time | Both RTs consumed, no outputs |
+| Dormant resolution (YES) | 0, 1 | none | Oracle BIP-340 signature | Both RTs consumed; RT burn outputs verified at unspendable script; no covenant continuation outputs |
+| Dormant resolution (NO) | 0, 1 | none | Oracle BIP-340 signature | Both RTs consumed; RT burn outputs verified at unspendable script; no covenant continuation outputs |
+| Dormant expiry | 0, 1 | none | Timelock >= expiry_time | Both RTs consumed; RT burn outputs verified at unspendable script; no covenant continuation outputs |
 
 **Sibling UTXO check**: All transitions that co-spend RTs and collateral verify that the three covenant inputs were created in the same transaction (`input_prev_outpoint` txid match across all three). This prevents collateral substitution — an attacker cannot create a fake collateral UTXO at the covenant script address and swap it in for the real one, because the fake UTXO's `prev_txid` won't match the RTs'. See [enforcement-layers.md](../architecture/enforcement-layers.md) for the full attack analysis.
 
@@ -101,7 +101,7 @@ See [oracle-bip340-tagged-hash.md](../protocol/oracle-bip340-tagged-hash.md).
 
 ### Witness Data
 
-For **dormant terminal paths** (resolution/expiry from 0 outstanding pairs): both RT inputs are spent with no covenant outputs. The three-way ambiguity (YES/NO/Expired) is resolved via `RedeemNode::decode` on the witness — the spend path identifies which transition occurred.
+For **dormant terminal paths** (resolution/expiry from 0 outstanding pairs): both RT inputs are spent, RT burn outputs are produced, and no covenant continuation outputs are produced. The three-way ambiguity (YES/NO/Expired) is resolved via `RedeemNode::decode` on the witness — the spend path identifies which transition occurred.
 
 All other transitions are detectable from script pubkey matching alone (8 unique scripts).
 
@@ -270,8 +270,8 @@ pub struct MakerOrderParams {
     pub base_asset_id: AssetId,             // YES or NO token from parent market
     pub quote_asset_id: AssetId,            // collateral asset from parent market
     pub price: u64,                         // quote units per base unit (convention: <= 0xFFFFFF = u24 max)
-    pub min_fill_lots: u64,                 // minimum base units per fill (convention: 1-255)
-    pub min_remainder_lots: u64,            // minimum base units remaining after partial fill (convention: 1-255)
+    pub min_fill_lots: u8,                  // minimum base units per fill (convention: 1-255)
+    pub min_remainder_lots: u8,             // minimum base units remaining after partial fill (convention: 1-255)
     pub direction: OrderDirection,
     pub maker_receive_spk_hash: [u8; 32],   // SHA256 of maker's P2TR receive scriptPubKey
     pub maker_pubkey: XOnlyPublicKey,       // maker's x-only pubkey (taproot internal key for cancel)

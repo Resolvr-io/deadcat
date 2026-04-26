@@ -49,7 +49,7 @@ fn main() {
 // After
 fn main() {
     let i: u32 = jet::current_index();
-    let i_rem: u32 = safe_add_32(i, 1);
+    let i_rem: u32 = witness::REMAINDER_IDX;
     let out_spk_hash: u256 = get_output_script_hash(i);
     assert!(jet::eq_256(out_spk_hash, param::MAKER_RECEIVE_SPK_HASH));
     match param::DIRECTION {

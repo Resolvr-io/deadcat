@@ -266,8 +266,8 @@ Under this design, **cross-outcome swap is a single-transaction primitive use of
 | Redemption (expired, YES_i) | Expired | — | YES_i burn | YES_i tokens burned; collateral released at yes_expiry_rate (see below) |
 | Redemption (expired, NO_i) | Expired | — | NO_i burn | NO_i tokens burned; collateral released at no_expiry_rate (see below) |
 | Expiry (from Unresolved) | All 2N Unresolved RTs, collateral | Expired | Timelock ≥ `expiry_time` | All 2N RTs burned; collateral preserved at Expired script |
-| Dormant resolution (outcome k) | All 2N Dormant RTs | — | Oracle BIP-340 signature | All 2N RTs consumed, no covenant outputs |
-| Dormant expiry | All 2N Dormant RTs | — | Timelock ≥ `expiry_time` | All 2N RTs consumed, no covenant outputs |
+| Dormant resolution (outcome k) | All 2N Dormant RTs | — | Oracle BIP-340 signature | All 2N RTs consumed; RT burn outputs verified; no covenant continuation outputs |
+| Dormant expiry | All 2N Dormant RTs | — | Timelock ≥ `expiry_time` | All 2N RTs consumed; RT burn outputs verified; no covenant continuation outputs |
 
 **Sibling UTXO check**: every transition in the Unresolved phase co-spends all 2N+1 covenant inputs and verifies they share the same `prev_txid`. This prevents collateral substitution attacks. See [enforcement-layers.md](../../architecture/enforcement-layers.md).
 

@@ -44,7 +44,7 @@ fn main() {
 // After (reflects both script-cancel removal and cosigner removal per maker-order-remove-cosigner.md)
 fn main() {
     let i: u32 = jet::current_index();
-    let i_rem: u32 = safe_add_32(i, 1);
+    let i_rem: u32 = witness::REMAINDER_IDX;
     let out_spk_hash: u256 = get_output_script_hash(i);
     assert!(jet::eq_256(out_spk_hash, param::MAKER_RECEIVE_SPK_HASH));
     match param::DIRECTION {
@@ -58,6 +58,8 @@ The following can also be removed:
 - `check_cancel` function (lines 90-97)
 - `witness::MAKER_CANCEL_SIGNATURE` witness declaration
 - `witness::PATH` witness declaration (no longer needed — only one path)
+
+The fill path keeps the witness-provided `REMAINDER_IDX` introduced by the transaction-composability model; remainders are no longer forced to `current_index() + 1`.
 
 ## Impact on deadcat-core
 

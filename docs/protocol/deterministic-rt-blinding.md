@@ -192,7 +192,7 @@ The `BlindingQuad` type `(in_abf, in_vbf, out_abf, out_vbf)` shrinks. Output bli
 
 These transitions use `ensure_blinded_reissuance_burn_output`, which verifies the output commitment matches the expected RT asset (same `verify_token_commitment` pattern) AND verifies the output script is the burn script. This is security-critical: deterministic blinding makes ABFs public, so the traditional Elements safeguard (ABF secrecy prevents unauthorized reissuance) is absent. Without covenant-enforced burns, a malicious transaction builder could redirect RT tokens to a wallet address and use the Elements consensus-level reissuance mechanism to mint unbacked tokens — bypassing the Simplicity covenant entirely.
 
-**Dormant terminal transitions** (resolution/expiry from zero outstanding pairs) consume both DormantRT slots with no outputs. These are specified in [market-dormant-terminal-paths.md](../contracts/prediction-market/market-dormant-terminal-paths.md) and will also require burn output enforcement — to be added when those paths are implemented.
+**Dormant terminal transitions** (resolution/expiry from zero outstanding pairs) consume both DormantRT slots with no covenant continuation outputs. They still require covenant-enforced RT burn outputs at the unspendable burn script, for the same reason as non-dormant resolution and expiry. These are specified in [market-dormant-terminal-paths.md](../contracts/prediction-market/market-dormant-terminal-paths.md).
 
 ### What the Covenant Does NOT Enforce
 

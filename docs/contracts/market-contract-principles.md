@@ -67,7 +67,7 @@ The taproot internal key is a NUMS point ("nothing up my sleeve" — a curve poi
 
 Markets must be able to reach a terminal state (Resolved_k or Expired) regardless of outstanding token supply. In particular, the zero-liquidity case — a market that was created and never used, or fully unwound back to zero outstanding — must be resolvable by the oracle and expirable by timelock.
 
-Concretely: the Dormant phase (zero outstanding tokens, only RT UTXOs on-chain, no collateral locked) exposes oracle-resolution and timelock-expiry spend paths. Both consume all RT UTXOs with no covenant continuation, immediately transitioning to Resolved_k or Expired with zero outstanding tokens (terminal).
+Concretely: the Dormant phase (zero outstanding tokens, only RT UTXOs on-chain, no collateral locked) exposes oracle-resolution and timelock-expiry spend paths. Both consume all RT UTXOs, verify RT burn outputs, and produce no covenant continuation, immediately transitioning to Resolved_k or Expired with zero outstanding tokens (terminal).
 
 Without this, an abandoned market's RT UTXOs would sit on-chain indefinitely, and a market with no traders could never be cleaned up — not a security bug, but a lifecycle completeness defect.
 
