@@ -93,8 +93,7 @@ V1 includes:
 - LMSR pools.
 - Maker orders.
 - Trade routing across pools and maker orders.
-- Existing-pool market-assisted routes, subject to the final RT-blinding API
-  shape.
+- Existing-pool market-assisted routes via `build_trade_pset -> PreBlindedPset`.
 - Chain-only recovery using canonical OP_RETURN hints.
 - Strict-canonical tracking policy.
 - Store compliance requirements sufficient for atomic multi-contract state
@@ -132,18 +131,10 @@ If an implementation agent finds a contradiction:
 
 Resolve these before treating the docs as fully implementation-ready:
 
-- `build_trade_pset` return type for market-assisted routes involving RT
-  outputs.
-- Same-script duplicate contract policy.
-- Dormant terminal wording: distinguish "no covenant continuation outputs" from
-  required RT burn outputs.
-- Witness-decoding requirement for pools and dormant terminal markets.
-- Multi-outcome public types: avoid stale `[T; N]` pseudocode unless explicitly
-  marked non-normative.
-- Maker order `min_fill_lots` / `min_remainder_lots` type and unit convention.
-- Stale references to `ingest_order`.
-- Stale maker-order snippets using positional remainder outputs.
-- Stale plain-SHA256 oracle text.
+- Multi-outcome public params Rust representation for runtime `outcome_count`.
+- Exact LMSR admin/close signature preimages and domain strings.
+- Whether `half_payout_sats` is intentionally independent from the parent
+  market denomination, or should be constrained by it.
 
 ## Document Status Labels
 

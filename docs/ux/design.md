@@ -17,7 +17,7 @@ The primary design goal: make covenant-based prediction markets feel as intuitiv
 
 ### 1. Protocol Complexity is an Implementation Detail
 
-The user's mental model is: "I think YES is likely, so I buy YES tokens." They should never encounter terms like `CovenantPhase`, `SlotType`, `UnblindedPset`, or `s_index`. The UI translates protocol concepts into trading concepts:
+The user's mental model is: "I think YES is likely, so I buy YES tokens." They should never encounter terms like `CovenantPhase`, `SlotType`, `PreBlindedPset`, or `s_index`. The UI translates protocol concepts into trading concepts:
 
 | Protocol concept | User-facing concept |
 | --- | --- |

@@ -33,7 +33,7 @@ Personas covered: **Trader (Taker)** and **Token Holder (Recovery)**. See [ux-de
 - Detail view shows a trade composer with YES/NO toggle and amount input
 - Selecting a side and entering an amount triggers `quote_trade(market_id, TradeSpec { side, direction: Buy, amount: ExactInput(sats) }, fee_rate)`
 - Quote response displays: effective price (as probability %), tokens received (`total_output`), total cost (`total_input`), estimated fee
-- "Confirm" button calls `build_trade_pset(quote, funding)` → sign → broadcast
+- "Confirm" button calls `build_trade_pset(quote, funding)` → prepare/blind → sign → broadcast
 - On `CoreError::StaleQuote`: auto re-quote, flash "Price updated" indicator, show new quote
 - On `CoreError::InsufficientFunds { shortfalls }`: display each shortfall ("Need X more sats")
 - On `CoreError::NoLiquidity`: display "No liquidity available" and disable the confirm button

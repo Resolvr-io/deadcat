@@ -286,7 +286,7 @@ Shown when `trending.length === 0` on the Trending view. Icon + "No markets yet"
 └─────────────────────────────────────┘
 ```
 
-**State flow**: Amount input → `useQuoteTrade` mutation → quote stored in `tradeQuoteSnapshot` → "Buy YES" → `QuoteModal` opens → user confirms → `useExecuteTrade` mutation → `invoke("build_trade_pset")` → sign → broadcast → success toast + query invalidation.
+**State flow**: Input change → debounce 300ms → `quote_trade` → display quote → user clicks Buy → confirm modal → `build_trade_pset` → prepare/blind → sign → broadcast → pending toast → `step` confirms → success toast.
 
 ### Quote Confirm Modal (`QuoteModal.tsx`)
 
@@ -297,10 +297,16 @@ Shown when `trending.length === 0` on the Trending view. Icon + "No markets yet"
 | Tokens | `TradeQuote.total_output` (formatted) |
 | Price | `TradeQuote.effective_price` as probability % |
 | Fee | `TradeQuote.estimated_fee` (with "estimate" disclaimer) |
+<<<<<<< HEAD
 | Timer | 30-second countdown on quote validity. On expiry: auto-re-quote + "Price updated" flash |
 | Route legs | `TradeQuote.legs` — advanced mode toggle |
 | Confirm button | Triggers `useExecuteTrade` mutation |
 | Cancel button | Closes modal, clears `tradeQuoteSnapshot` |
+=======
+| Route legs | `TradeQuote.legs` — shown only in advanced mode |
+| Confirm button | Triggers `build_trade_pset` + prepare/blind + sign + broadcast |
+| Cancel button | Dismisses modal |
+>>>>>>> 4ee5c77 (docs: resolve trade pset pre-blinding API)
 
 ### Oracle Resolution Panel
 
@@ -335,7 +341,7 @@ Calls `useMarketOps` mutation (oracle attest + execute resolution).
 | Collateral per pair | Constrained dropdown (1-2-5 table) | Must be valid denomination | `MarketCreationParams.collateral_per_pair` |
 | Settlement date | `SettlementPicker` (calendar + time) | Must be in the future | `MarketCreationParams.expiry_time` (rounded up to 60-block boundary) |
 
-**Submit flow**: Validate → `build_binary_market_creation_pset(params, funding)` → sign `UnblindedPset` → broadcast → await confirmation → `ingest_market` → publish Nostr event → redirect to detail view.
+**Submit flow**: Validate → `build_binary_market_creation_pset(params, funding)` → prepare/blind `PreBlindedPset` → sign → broadcast → await confirmation → `ingest_market` → publish Nostr event → redirect to detail view.
 
 ---
 

@@ -11,8 +11,8 @@ Personas covered: **Market Creator** and **Oracle**. See [ux-design.md](../desig
 **Acceptance criteria**:
 - Create form collects: question text, description, category, resolution source, oracle pubkey (defaults to own Nostr pubkey), collateral asset (L-BTC default), collateral per pair (constrained to the 16-value 1-2-5 denomination table per convention), settlement date/time
 - Settlement date input rounds up to the next 60-block boundary (matching the `expiry_time` covenant convention)
-- On submit: constructs `MarketCreationParams { oracle_public_key, collateral_asset_id, collateral_per_pair, expiry_time }` → `build_binary_market_creation_pset` → sign → broadcast
-- `build_binary_market_creation_pset` returns `(UnblindedPset, BinaryMarketParams)` — the UI stores the returned full params for ingestion after confirmation
+- On submit: constructs `MarketCreationParams { oracle_public_key, collateral_asset_id, collateral_per_pair, expiry_time }` → `build_binary_market_creation_pset` → prepare/blind → sign → broadcast
+- `build_binary_market_creation_pset` returns `(PreBlindedPset, BinaryMarketParams)` — the UI stores the returned full params for ingestion after confirmation
 - After confirmation: `ingest_market(params, creation_tx)` to begin tracking, then publishes a Nostr announcement event for discovery
 - On `CoreError::InvalidParams`: display specific validation error (e.g., "Collateral per pair must be one of: 1000, 2000, 5000, 10000...")
 - Convention violations caught by the builder (defense in depth) surface as user-friendly messages
@@ -33,15 +33,15 @@ Personas covered: **Market Creator** and **Oracle**. See [ux-design.md](../desig
 
 **Acceptance criteria**:
 - Issue tab (on detail view, only visible for markets the user created) shows: pairs to issue input, collateral required (`pairs * collateral_per_pair`), current outstanding pairs
-- Calls `build_issuance_pset(contract_id, pairs, yes_dest, no_dest, funding)` — returns `UnblindedPset`
-- The UI calls `unblinded.prepare(wallet_blinding_pubkey)` then `pset.blind_last()` then sign (RT blinding is handled transparently)
+- Calls `build_issuance_pset(contract_id, pairs, yes_dest, no_dest, funding)` — returns `PreBlindedPset`
+- The UI calls `pre_blinded.prepare(wallet_blinding_pubkey)` then `pset.blind_last()` then sign (RT blinding is handled transparently)
 - After confirmation via `step`: wallet shows new YES and NO token balances
 - `yes_dest` and `no_dest` default to the wallet's own addresses (the user typically keeps both sides initially)
 
 **Interaction design**:
 - **Pairs input**: Numeric input with real-time cost calculation: "Issue 100 pairs = lock 500,000 sats as collateral. You'll receive 100 YES + 100 NO tokens."
 - **Destination choice**: By default, both token types go to the user's wallet. Advanced option (collapsed) to specify separate destinations (e.g., send NO tokens directly to a pool).
-- **Blinding transparency**: The `UnblindedPset` → `prepare` → `blind_last` → sign flow is invisible to the user. They click "Issue" and see a success message. The RT blinding complexity is an implementation detail per Design Principle 1.
+- **Blinding transparency**: The `PreBlindedPset` → `prepare` → `blind_last` → sign flow is invisible to the user. They click "Issue" and see a success message. The RT blinding complexity is an implementation detail per Design Principle 1.
 
 ---
 
@@ -51,7 +51,7 @@ Personas covered: **Market Creator** and **Oracle**. See [ux-design.md](../desig
 
 **Acceptance criteria**:
 - Cancel tab shows: pairs to burn input (max = min of YES and NO token balances), collateral to reclaim (`pairs * collateral_per_pair`)
-- `build_cancellation_pset(contract_id, Some(pairs), funding)` or `None` for max cancellation
+- `build_cancellation_pset(contract_id, Some(pairs), funding)` or `None` for max cancellation → prepare/blind → sign → broadcast
 - Requires equal YES and NO token balances — if the user sold some of one side, they can only cancel pairs up to the lesser balance
 - After confirmation: wallet shows reduced token balances and increased L-BTC balance
 
@@ -70,7 +70,7 @@ Personas covered: **Market Creator** and **Oracle**. See [ux-design.md](../desig
 - Two buttons: "Resolve YES" and "Resolve NO"
 - Clicking either triggers: `oracle_attestation_spec(contract_id, outcome_yes)` → returns `OracleAttestationSpec { message, oracle_pubkey }`
 - The app signs the message with the user's Nostr key (BIP-340 Schnorr signature)
-- Then: `build_oracle_resolve_pset(contract_id, signature, funding)` → sign → broadcast
+- Then: `build_oracle_resolve_pset(contract_id, signature, funding)` → prepare/blind → sign → broadcast
 - Also publishes the attestation as a Nostr event for public verifiability
 - After confirmation: market state transitions to `ResolvedYes` or `ResolvedNo`
 
@@ -88,7 +88,7 @@ Personas covered: **Market Creator** and **Oracle**. See [ux-design.md](../desig
 
 **Acceptance criteria**:
 - Expire button appears when `current_block_height >= market.expiry_height` AND market state is `Trading`
-- Calls `build_expire_transition_pset(contract_id, funding)` → sign → broadcast
+- Calls `build_expire_transition_pset(contract_id, funding)` → prepare/blind → sign → broadcast
 - After confirmation: market state transitions to `Expired`
 - Any user can trigger expiry (not oracle-restricted) — the covenant enforces the timelock
 

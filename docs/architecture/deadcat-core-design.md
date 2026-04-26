@@ -209,13 +209,13 @@ impl<S: ContractStore> ContractEngine<S> {
         &self,
         params: &BinaryMarketCreationParams,
         funding: &WalletFunding,
-    ) -> Result<(UnblindedPset, BinaryMarketParams), CoreError<S::Error>>;
+    ) -> Result<(PreBlindedPset, BinaryMarketParams), CoreError<S::Error>>;
 
     pub fn build_multi_outcome_market_creation_pset(
         &self,
         params: &MultiOutcomeMarketCreationParams,
         funding: &WalletFunding,
-    ) -> Result<(UnblindedPset, MultiOutcomeMarketParams), CoreError<S::Error>>;
+    ) -> Result<(PreBlindedPset, MultiOutcomeMarketParams), CoreError<S::Error>>;
 
     pub fn build_lmsr_bootstrap_pset(
         &self,
@@ -250,7 +250,7 @@ impl<S: ContractStore> ContractEngine<S> {
         &self,
         quote: &TradeQuote,
         funding: &WalletFunding,
-    ) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+    ) -> Result<PreBlindedPset, CoreError<S::Error>>;
 }
 
 // ---- Standalone pure functions (no engine needed) ----
@@ -1912,21 +1912,22 @@ pub enum InvariantViolationKind {
 
 **Why generic over the store error**: The engine is already generic over `S: ContractStore`, so `CoreError<S::Error>` adds no new generic parameters. Store error types are preserved — consumers can match on `CoreError::Store(e)` and handle their specific store error without downcasting. Store implementors define their own error type independently via an associated type on the trait.
 
-### UnblindedPset and PreparedPset
+### PreBlindedPset and PreparedPset
 
 See [Confidential Transaction Blinding](#confidential-transaction-blinding) for the full design and rationale. Summarized here for type reference:
 
 ```rust
-/// Returned by builders that involve reissuance token outputs.
-/// Private fields prevent extracting the PSET without going through a blinding method.
-pub struct UnblindedPset { /* private: pset, rt_blinding_factors, input_secrets, output_classification */ }
+/// Returned by builders whose output commitments may require Deadcat-managed
+/// finalization before signing: RT-capable market builders and routed trades.
+/// Private fields prevent extracting the PSET before `prepare` or `finalize`.
+pub struct PreBlindedPset { /* private: pset, rt_blinding_plan, input_secrets, output_classification */ }
 
-impl UnblindedPset {
+impl PreBlindedPset {
     pub fn prepare(self, wallet_blinding_pubkey: &PublicKey) -> Result<PreparedPset, BlindingError>;
     pub fn finalize(self) -> Result<PartiallySignedTransaction, BlindingError>;
 }
 
-/// Returned by UnblindedPset::prepare(). The caller must call
+/// Returned by PreBlindedPset::prepare(). The caller must call
 /// pset.blind_last(rng, secp, &input_secrets) before signing.
 pub struct PreparedPset {
     pub pset: PartiallySignedTransaction,
@@ -1934,7 +1935,7 @@ pub struct PreparedPset {
 }
 ```
 
-`BlindingError` is a simple error type for cryptographic failures during blinding (proof generation, commitment construction). It is separate from `CoreError` — blinding is a post-builder step decoupled from the engine's store generic. The builder returns `Result<UnblindedPset, CoreError<S::Error>>`; the blinding methods return `Result<_, BlindingError>`.
+`BlindingError` is a simple error type for cryptographic failures during blinding (proof generation, commitment construction). It is separate from `CoreError` — blinding is a post-builder step decoupled from the engine's store generic. Builders that return `PreBlindedPset` return `Result<PreBlindedPset, CoreError<S::Error>>`; the blinding methods return `Result<_, BlindingError>`.
 
 ## View Types
 
@@ -1988,7 +1989,7 @@ impl<'a, S: ContractStore> Market<'a, S> {
         yes_dest: &Script,
         no_dest: &Script,
         funding: &WalletFunding,
-    ) -> Result<UnblindedPset, CoreError<S::Error>>;
+    ) -> Result<PreBlindedPset, CoreError<S::Error>>;
 
     /// Burn `pairs_to_burn` YES + NO pairs for the given outcome; releases collateral.
     /// `pairs_to_burn: None` means "burn all outstanding pairs for this outcome" (full cancellation).
@@ -1997,7 +1998,7 @@ impl<'a, S: ContractStore> Market<'a, S> {
         outcome: OutcomeIndex,
         pairs_to_burn: Option<u64>,
         funding: &WalletFunding,
-    ) -> Result<UnblindedPset, CoreError<S::Error>>;
+    ) -> Result<PreBlindedPset, CoreError<S::Error>>;
 
     /// Resolve the market via an oracle attestation. For binary: single signature
     /// over (market_id || outcome_byte) where outcome_byte ∈ {0x00, 0x01}. For multi-outcome:
@@ -2007,7 +2008,7 @@ impl<'a, S: ContractStore> Market<'a, S> {
         &self,
         attestation: &schnorr::Signature,
         funding: &WalletFunding,
-    ) -> Result<UnblindedPset, CoreError<S::Error>>;
+    ) -> Result<PreBlindedPset, CoreError<S::Error>>;
 
     /// Redeem winning tokens (post-resolution) or any tokens (post-expiry) for collateral.
     /// For binary post-resolution: `side` must match the winning side; for expired markets,
@@ -2027,7 +2028,7 @@ impl<'a, S: ContractStore> Market<'a, S> {
     pub fn build_expire_transition_pset(
         &self,
         funding: &WalletFunding,
-    ) -> Result<UnblindedPset, CoreError<S::Error>>;
+    ) -> Result<PreBlindedPset, CoreError<S::Error>>;
 
     // ---- Oracle helpers ----
 
@@ -2140,14 +2141,14 @@ impl<'a, S: ContractStore> MultiOutcomeMarket<'a, S> {
         sets: u64,
         destinations: &[Script],
         funding: &WalletFunding,
-    ) -> Result<UnblindedPset, CoreError<S::Error>>;
+    ) -> Result<PreBlindedPset, CoreError<S::Error>>;
 
     /// Burn a complete YES set for `sets × collateral_per_pair` collateral released.
     pub fn build_merge_yes_pset(
         &self,
         sets: u64,
         funding: &WalletFunding,
-    ) -> Result<UnblindedPset, CoreError<S::Error>>;
+    ) -> Result<PreBlindedPset, CoreError<S::Error>>;
 
     /// Mint a complete NO set (1 of each outcome's NO) for `sets × (N-1) × collateral_per_pair` collateral.
     pub fn build_split_no_pset(
@@ -2155,14 +2156,14 @@ impl<'a, S: ContractStore> MultiOutcomeMarket<'a, S> {
         sets: u64,
         destinations: &[Script],
         funding: &WalletFunding,
-    ) -> Result<UnblindedPset, CoreError<S::Error>>;
+    ) -> Result<PreBlindedPset, CoreError<S::Error>>;
 
     /// Burn a complete NO set for `sets × (N-1) × collateral_per_pair` collateral released.
     pub fn build_merge_no_pset(
         &self,
         sets: u64,
         funding: &WalletFunding,
-    ) -> Result<UnblindedPset, CoreError<S::Error>>;
+    ) -> Result<PreBlindedPset, CoreError<S::Error>>;
 
     // ---- Probability aggregates ----
 
@@ -2215,7 +2216,7 @@ The LMSR F-value runtime is specifically exposed as `pub` in v1 (not `pub(crate)
 **Deferred API surface** (names reserved; signatures to be finalized before v2):
 
 - `MultiOutcomeMarket::quote_cross_outcome_arb(...) -> Result<Option<ArbQuote<'a>>, _>` — quote the best available arb direction.
-- `MultiOutcomeMarket::build_cross_outcome_arb_pset(quote, funding, fee_rate) -> Result<UnblindedPset, _>` — build the atomic PSET.
+- `MultiOutcomeMarket::build_cross_outcome_arb_pset(quote, funding, fee_rate) -> Result<PreBlindedPset, _>` — build the atomic PSET.
 - `InterpretedTransaction::as_cross_outcome_arb() -> Option<&CrossOutcomeArb>` — classify an observed arb tx.
 - Types: `ArbQuote`, `ArbDirection`, `ArbPoolLeg`, `CrossOutcomeArb` (observed-tx form).
 
@@ -2582,8 +2583,10 @@ The caller never manages scripts, outpoints, subscriptions, or per-contract sync
 **Trading** (same as before — unrelated to sync):
 ```rust
 let quote = engine.quote_trade(&market_id, spec, fee_rate)?;
-let pset = engine.build_trade_pset(&quote, &funding)?;
-let signed = signer.sign(pset)?;
+let pre_blinded = engine.build_trade_pset(&quote, &funding)?;
+let mut prepared = pre_blinded.prepare(&wallet_blinding_pubkey)?;
+prepared.pset.blind_last(&mut rng, &secp, &prepared.input_secrets)?;
+let signed = signer.sign(prepared.pset)?;
 chain.broadcast(signed)?;
 // interpret_transaction for pending UX; step processes on confirmation
 ```
@@ -2827,7 +2830,7 @@ The `Transition.external_outputs` bridges the gap — core identifies which outp
 
 ## PSET Construction
 
-All PSET builders are engine methods — no wallet access, no chain queries, no signing. The caller provides operation-specific arguments and a `WalletFunding` struct. The engine handles Simplicity contract compilation, script derivation, taproot tree construction, coin selection, and fee computation internally. Builders that involve reissuance token (RT) outputs return `UnblindedPset` — a newtype that enforces covenant blinding before the caller can sign (see [Confidential Transaction Blinding](#confidential-transaction-blinding)). All other builders return `PartiallySignedTransaction` directly.
+All PSET builders are engine methods — no wallet access, no chain queries, no signing. The caller provides operation-specific arguments and a `WalletFunding` struct. The engine handles Simplicity contract compilation, script derivation, taproot tree construction, coin selection, and fee computation internally. Builders that can require Deadcat-managed output blinding return `PreBlindedPset` — a newtype that enforces final output-commitment setup before the caller can sign (see [Confidential Transaction Blinding](#confidential-transaction-blinding)). This includes RT-capable market builders and `build_trade_pset`, whose accepted quote may or may not use market assistance. Pure non-RT builders return `PartiallySignedTransaction` directly.
 
 **Simplicity is fully encapsulated**: Consumers never see compiled contracts (`CompiledPredictionMarket`, `CompiledLmsrPool`, `CompiledMakerOrder`), Commitment Merkle Roots (CMRs), taproot trees, or witness encoding. These are internal to the engine. Consumers provide contract params (plain data: oracle keys, asset IDs, prices, expiry times) and receive PSETs back. The word "Simplicity" need not appear in consumer code.
 
@@ -2968,10 +2971,12 @@ pub fn build_trade_pset(
     &self,
     quote: &TradeQuote,
     funding: &WalletFunding,
-) -> Result<PartiallySignedTransaction, CoreError<S::Error>>;
+) -> Result<PreBlindedPset, CoreError<S::Error>>;
 ```
 
 Takes the accepted quote and the caller's wallet funding. The engine validates that `funding.fee_rate` matches the fee rate used during quoting — if they differ, it returns `CoreError::InvalidParams` because the route was optimized for the quote's fee rate (a different rate could make the route suboptimal; the caller should re-quote with the current rate). The engine recompiles contracts from stored params, selects the needed UTXOs, computes the actual fee from the real transaction weight, and builds the PSET. The actual fee may differ from `TradeQuote.estimated_fee` because the quote's weight model assumes a single wallet input, while coin selection may add more — display the quote's fee as an estimate, not a guarantee.
+
+The returned `PreBlindedPset` gives all routed trades the same wallet integration flow. Plain pool/order routes have an empty RT-blinding plan, so `prepare` / `finalize` perform no Deadcat RT work beyond the normal wallet-output handling chosen by the caller. Assisted routes may co-spend the parent market for `IssuePairs` or `CancelPairs`, producing RT continuation outputs that must be deterministically blinded before signing. The wrapper makes that route-dependent requirement impossible to skip without exposing a `TradePset` enum or separate plain/assisted builders.
 
 **Input and output layout**: the trade PSET arranges inputs and outputs using a deterministic contract-window ordering to satisfy each covenant's introspection rules simultaneously: witness-parameterized pool windows, an optional witness-parameterized parent-market window for one assisted pool leg, positional maker receives, and witness-specified order remainders. The full layout algorithm — including output-index assignment, witness `in_base` / `out_base` / `remainder_idx` construction, and the aliasing-prevention invariants the builder must uphold — is specified in [transaction-composability-model.md § Output Layout for Multi-Covenant Transactions](transaction-composability-model.md#output-layout-for-multi-covenant-transactions). Implementers of `build_trade_pset` should consult that doc as the authoritative layout spec.
 
@@ -2993,17 +2998,18 @@ See [Trade Types](#trade-types) and [TradeQuote](#tradequote-and-related-types) 
 
 On Liquid, transaction outputs can be **explicit** (asset and value visible) or **confidential** (hidden behind Pedersen commitments with range and surjection proofs). The three Deadcat covenants require all covenant outputs (collateral, reserves, order locked value) to be **explicit** — the Simplicity programs use `unwrap_right()` on output introspection jets, which fails on confidential outputs. The one exception is reissuance token (RT) outputs, which Elements requires to be blinded for reissuance mechanics to work.
 
-**Which builders need RT blinding**: The 6 prediction market builders that involve RT outputs (`build_binary_market_creation_pset`, `build_multi_outcome_market_creation_pset`, `build_issuance_pset`, `build_cancellation_pset`, `build_oracle_resolve_pset`, `build_expire_transition_pset`). The remaining builders have no RT involvement — their covenant outputs are all explicit and require no blinding by core.
+**Which builders need pre-blinding**: The prediction-market builders that always involve RT outputs (`build_binary_market_creation_pset`, `build_multi_outcome_market_creation_pset`, `build_issuance_pset`, `build_cancellation_pset`, `build_oracle_resolve_pset`, `build_expire_transition_pset`, plus the multi-outcome split/merge builders) return `PreBlindedPset`. `build_trade_pset` also returns `PreBlindedPset` because the accepted quote may be plain or market-assisted; the return type cannot vary by route. The remaining pure non-RT builders have only explicit covenant outputs and return `PartiallySignedTransaction` directly.
 
 **Deterministic RT blinding**: RT blinding factors are derived deterministically from public on-chain data (see [deterministic-rt-blinding.md](../protocol/deterministic-rt-blinding.md)), not generated randomly. This is essential for core's architecture: the engine internally manages RT outpoints and must reconstruct blinding factors when building future PSETs that spend those outpoints. With deterministic derivation, the engine recomputes the factors on demand without needing to persist blinding secrets.
 
-**`UnblindedPset` newtype**: The 6 RT-involving builders return `UnblindedPset` — an opaque type whose private fields capture the explicit PSET, deterministic RT blinding factors, and all input secrets (both covenant inputs with zero blinding factors and wallet inputs with real blinding factors from `UnblindedUtxo`). The type enforces that the caller cannot extract a `PartiallySignedTransaction` without going through a blinding method, making "forgot to blind" unrepresentable at the type level.
+**`PreBlindedPset` newtype**: RT-capable market builders and `build_trade_pset` return `PreBlindedPset` — an opaque type whose private fields capture the explicit PSET, an optional deterministic RT blinding plan, the input secrets (both covenant inputs with zero blinding factors and wallet inputs with real blinding factors from `UnblindedUtxo`), and output classification. Plain routed trades have an empty RT plan; assisted routed trades carry the required RT output plan. The type enforces that the caller cannot extract a `PartiallySignedTransaction` without going through `prepare` or `finalize`, making "forgot to run Deadcat pre-blinding" unrepresentable at the type level.
 
 ```rust
-pub struct UnblindedPset { /* private */ }
+pub struct PreBlindedPset { /* private */ }
 
-impl UnblindedPset {
-    /// Blind covenant RT outputs, mark wallet outputs for confidential blinding.
+impl PreBlindedPset {
+    /// Apply any required deterministic RT blinding and mark eligible wallet
+    /// outputs for confidential blinding.
     /// Returns a PreparedPset. Caller must then call
     /// `pset.blind_last(rng, secp, &input_secrets)` to blind wallet outputs,
     /// then sign.
@@ -3012,8 +3018,8 @@ impl UnblindedPset {
         wallet_blinding_pubkey: &PublicKey,
     ) -> Result<PreparedPset, BlindingError>;
 
-    /// Blind covenant RT outputs with VBF balancing. Wallet outputs remain
-    /// explicit (unblinded). Returns a ready-to-sign PSET.
+    /// Apply any required deterministic RT blinding with VBF balancing. Wallet
+    /// outputs remain explicit (unblinded). Returns a ready-to-sign PSET.
     /// **Precondition**: All wallet inputs must be explicit (zero blinding factors).
     /// The CBF pass-through self-balances the RT portion, but wallet inputs with
     /// non-zero blinding factors would unbalance the equation. Naturally satisfied
@@ -3029,7 +3035,7 @@ pub struct PreparedPset {
 }
 ```
 
-**`prepare` vs `finalize`**: Both methods blind the RT outputs identically using deterministic factors. The difference is a **privacy decision** about wallet outputs:
+**`prepare` vs `finalize`**: Both methods apply the same deterministic RT blinding plan when one exists. For plain routed trades, that plan is empty and the methods simply follow the caller's wallet-output privacy choice. The difference is a **privacy decision** about wallet outputs:
 
 - **`prepare(pubkey)`**: For callers who want confidential wallet outputs (the common case on Liquid mainnet). Blinds RT outputs using non-last semantics (pushes VBF delta to `global.scalars` for later balancing). Marks wallet outputs with the provided blinding public key. Returns `PreparedPset` with the PSET and complete input secrets map. The caller then calls `pset.blind_last(rng, secp, &input_secrets)` which blinds the wallet outputs and balances VBFs. After `blind_last`, the PSET is ready to sign.
 
@@ -3039,21 +3045,21 @@ pub struct PreparedPset {
 
 **Implementation**: Core implements deterministic RT blinding using public APIs from `elements` (PSET output fields: `amount_comm`, `asset_comm`, `value_rangeproof`, `asset_surjection_proof`, etc.) and `secp256k1-zkp` (Pedersen commitments, range proof generation, surjection proof generation). The `global.scalars` field (used for VBF delta tracking in the `prepare` path) is a serialized PSET field that survives cross-process serialization/deserialization. No fork of the `elements` crate is needed.
 
-**Non-RT builders**: The 7 builders without RT involvement (`build_redemption_pset`, all pool builders, all order builders, `build_trade_pset`) return `PartiallySignedTransaction` directly with all outputs explicit. If the caller wants confidential wallet outputs, they handle blinding using their standard Elements wallet workflow — this is a general Liquid concern, not deadcat-specific.
+**Pure non-RT builders**: `build_redemption_pset`, all pool builders, and all order builders return `PartiallySignedTransaction` directly with all outputs explicit. If the caller wants confidential wallet outputs, they handle blinding using their standard Elements wallet workflow — this is a general Liquid concern, not deadcat-specific. `build_trade_pset` is intentionally excluded from this group even though many quotes are plain, because assisted quotes require route-dependent RT pre-blinding.
 
-**Caller flow — RT builders** (on `Market` view):
+**Caller flow — pre-blinded builders** (market builders and routed trades):
 ```rust
 let market = engine.market(&id)?.expect("market tracked");
 
 // Confidential wallet outputs (Liquid mainnet)
-let unblinded = market.build_issuance_pset(OutcomeIndex::BINARY, pairs, &yes, &no, &funding)?;
-let prepared = unblinded.prepare(&wallet_blinding_pubkey)?;
+let pre_blinded = market.build_issuance_pset(OutcomeIndex::BINARY, pairs, &yes, &no, &funding)?;
+let mut prepared = pre_blinded.prepare(&wallet_blinding_pubkey)?;
 prepared.pset.blind_last(&mut rng, &secp, &prepared.input_secrets)?;
 signer.sign(&mut prepared.pset)?;
 
 // Explicit wallet outputs (regtest / testing — all wallet inputs must be explicit)
-let unblinded = market.build_issuance_pset(OutcomeIndex::BINARY, pairs, &yes, &no, &funding)?;
-let mut pset = unblinded.finalize()?;
+let pre_blinded = market.build_issuance_pset(OutcomeIndex::BINARY, pairs, &yes, &no, &funding)?;
+let mut pset = pre_blinded.finalize()?;
 signer.sign(&mut pset)?;
 ```
 
@@ -3643,8 +3649,10 @@ if user_confirms(&quote) {
         fee_rate,
         return_script: &aqua_wallet.next_return_script(),
     };
-    let pset = engine.build_trade_pset(&quote, &funding)?;
-    let signed = aqua_signer.sign(pset)?;
+    let pre_blinded = engine.build_trade_pset(&quote, &funding)?;
+    let mut prepared = pre_blinded.prepare(&aqua_wallet.blinding_pubkey())?;
+    prepared.pset.blind_last(&mut rng, &secp, &prepared.input_secrets)?;
+    let signed = aqua_signer.sign(prepared.pset)?;
     aqua_chain.broadcast(signed)?;
 }
 
@@ -3657,14 +3665,14 @@ let funding = WalletFunding {
     return_script: &aqua_wallet.next_return_script(),
 };
 let market = engine.market(&market_id)?.expect("market tracked");
-let unblinded = market.build_issuance_pset(
+let pre_blinded = market.build_issuance_pset(
     OutcomeIndex::BINARY,
     100,
     &token_dest,
     &token_dest,
     &funding,
 )?;
-let prepared = unblinded.prepare(&aqua_wallet.blinding_pubkey())?;
+let mut prepared = pre_blinded.prepare(&aqua_wallet.blinding_pubkey())?;
 prepared.pset.blind_last(&mut rng, &secp, &prepared.input_secrets)?;
 let signed = aqua_signer.sign(prepared.pset)?;
 aqua_chain.broadcast(signed)?;
@@ -3704,7 +3712,7 @@ aqua_chain.broadcast(signed)?;
 
 **What**: Structural correctness of built PSETs — output scripts, values, OP_RETURN encoding, coin selection, fee computation, RT blinding, error cases.
 
-**How**: Build PSETs from mock `WalletFunding` inputs and inspect the resulting PSET structure. No broadcasting, no signing, no chain. Verify: correct covenant script pubkeys on outputs, correct collateral/reserve amounts, OP_RETURN present with decodable content, coin selection chose appropriate UTXOs, fee matches `weight × rate`, `UnblindedPset` → `prepare()`/`finalize()` produces valid PSET structure.
+**How**: Build PSETs from mock `WalletFunding` inputs and inspect the resulting PSET structure. No broadcasting, no signing, no chain. Verify: correct covenant script pubkeys on outputs, correct collateral/reserve amounts, OP_RETURN present with decodable content, coin selection chose appropriate UTXOs, fee matches `weight × rate`, `PreBlindedPset` → `prepare()`/`finalize()` produces valid PSET structure.
 
 **Error case coverage**: `InsufficientFunds` (with correct `shortfalls`), `InvalidParams` (non-encodable params, out-of-range values), `InvalidContractState` (wrong state for operation), `StaleQuote` (outpoints changed), fee rate mismatch on `build_trade_pset`.
 
@@ -4198,11 +4206,11 @@ This is the same pattern used elsewhere in the codebase: keep per-kind semantic 
 **Rejected**: Random blinding factors for RT outputs, requiring an anchor (blinding factors) to be shared via Nostr.
 **Why**: The Elements protocol requires reissuance token outputs to be blinded (ABF != 0) for reissuance to work. Traditionally, random ABFs are used as an authorization mechanism — only someone who knows the ABF can reissue. With Simplicity covenants, authorization is enforced by the covenant itself, not by ABF secrecy. Using deterministic ABFs derived from public data (defining outpoints via tagged hash) satisfies the protocol requirement while eliminating the need for anchor distribution. This simplifies the ingestion API (no anchor parameter), the Nostr announcement format, and removes the "lost anchor" failure mode. See [Deterministic RT Blinding](../protocol/deterministic-rt-blinding.md) for the derivation spec.
 
-### UnblindedPset Newtype for RT-Involving Builders
+### PreBlindedPset for RT-Capable Builders and Trades
 
-**Chosen**: The 6 prediction market builders that involve reissuance token outputs return `UnblindedPset` — an opaque newtype with `prepare(pubkey)` and `finalize()` methods. The 7 remaining builders return `PartiallySignedTransaction` directly.
-**Rejected**: (a) All 12 builders return `UnblindedPset` (uniform but unnecessary wrapping for RT-free builders). (b) All builders return raw `PartiallySignedTransaction` (no enforcement). (c) Builders take blinding parameters and handle all blinding internally (conflates construction with wallet-level blinding, requires RNG/secp context parameters). (d) Two builder functions per RT-involving transaction type — one fully-blinded, one partially-blinded (doubles API surface, the fully-blinded variant has a hidden precondition about wallet input confidentiality).
-**Why**: RT blinding is deadcat-specific, non-standard, and easy to forget — the newtype makes "forgot to blind" a compile error. Wallet output blinding for RT-free builders is standard Elements wallet behavior that every integrator already handles — wrapping it adds ceremony without preventing a novel mistake. The `prepare`/`finalize` choice is a simple privacy decision (confidential vs explicit wallet outputs), not a technical one about input types. The `UnblindedPset` captures all needed state at build time (PSET, deterministic RT factors, input secrets from `WalletFunding`), so neither method requires additional crypto parameters from the caller. Core implements deterministic blinding using public `elements`/`secp256k1-zkp` APIs — no fork needed.
+**Chosen**: RT-capable market builders and `build_trade_pset` return `PreBlindedPset` — an opaque newtype with `prepare(pubkey)` and `finalize()` methods. Pure non-RT builders return `PartiallySignedTransaction` directly.
+**Rejected**: (a) A `TradePset` enum with `Plain(PartiallySignedTransaction)` and `RequiresRtBlinding(PreBlindedPset)` variants (semantically precise but forces every wallet integration to branch on route internals). (b) Separate plain and assisted trade builders (leaks router policy into the public API and makes the caller choose a route category after accepting a quote). (c) All builders return `PreBlindedPset` (uniform but unnecessary wrapping for pure non-RT single-contract builders). (d) All builders return raw `PartiallySignedTransaction` (no enforcement). (e) Builders take blinding parameters and handle all blinding internally (conflates construction with wallet-level blinding, requires RNG/secp context parameters). (f) Two builder functions per RT-involving transaction type — one fully-blinded, one partially-blinded (doubles API surface, the fully-blinded variant has a hidden precondition about wallet input confidentiality).
+**Why**: RT blinding is deadcat-specific, non-standard, and easy to forget — the newtype makes "forgot to run Deadcat pre-blinding" a compile error. `build_trade_pset` needs the same wrapper because a `TradeQuote` may use market-assisted issuance/cancellation, and a Rust return type cannot depend on the route selected inside the quote. Plain routed trades carry an empty RT-blinding plan, so the wrapper adds a uniform wallet flow without route-specific branching. Wallet output blinding for pure non-RT builders is standard Elements wallet behavior that every integrator already handles — wrapping those builders adds ceremony without preventing a novel mistake. The `prepare`/`finalize` choice is a privacy decision (confidential vs explicit wallet outputs), not a branch on whether RT outputs exist. `PreBlindedPset` captures all needed state at build time (PSET, optional deterministic RT plan, input secrets from `WalletFunding`, output classification), so neither method requires additional crypto parameters from the caller. Core implements deterministic blinding using public `elements`/`secp256k1-zkp` APIs — no fork needed.
 
 ### Store Returns Typed Results for Listing Methods
 
@@ -4528,7 +4536,7 @@ The `derive_order_params` function derives a unique nonce for each order from `d
 
 ### MarketCreationParams for Market Creation Builder
 
-**Chosen**: `build_binary_market_creation_pset` takes `&MarketCreationParams` (4 non-derivable fields) and returns `(UnblindedPset, BinaryMarketParams)`. The builder derives the 4 token/RT asset IDs from the selected defining inputs.
+**Chosen**: `build_binary_market_creation_pset` takes `&MarketCreationParams` (4 non-derivable fields) and returns `(PreBlindedPset, BinaryMarketParams)`. The builder derives the 4 token/RT asset IDs from the selected defining inputs.
 **Rejected**: (a) Builder takes full `&BinaryMarketParams` (caller can't fill in the 4 derivable asset ID fields because they depend on coin selection, which happens inside the builder). (b) Caller pre-selects defining inputs (breaks the "pass all UTXOs, builder selects" pattern).
 **Why**: The 4 asset IDs are derived from issuance entropy = `hash(defining_outpoint || contract_hash)`. The defining outpoints are UTXOs selected by the builder during coin selection. Since coin selection happens inside the builder, the caller can't know the asset IDs beforehand. `MarketCreationParams` makes the API honest about what data flows in which direction — the caller provides what they know, the builder returns what it computed.
 
