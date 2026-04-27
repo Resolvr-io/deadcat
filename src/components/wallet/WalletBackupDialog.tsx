@@ -47,7 +47,7 @@ export function WalletBackupDialog({
   const [passwordError, setPasswordError] = useState("");
   const [revealing, setRevealing] = useState(false);
 
-  useLockScroll();
+  useLockScroll(open);
   useEscapeKey(open, onClose);
 
   // Auto-reveal when the session password is known (user is unlocked).
