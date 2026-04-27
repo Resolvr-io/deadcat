@@ -56,11 +56,11 @@ function CopyableField({
 }
 
 export function NostrEventModal() {
-  useLockScroll();
   const nostrEventModal = useStore((s) => s.nostrEventModal);
   const nostrEventJson = useStore((s) => s.nostrEventJson);
   const nostrEventNevent = useStore((s) => s.nostrEventNevent);
   const relays = useStore((s) => s.relays);
+  useLockScroll(nostrEventModal);
 
   const handleClose = useCallback(() => {
     useStore.setState({
