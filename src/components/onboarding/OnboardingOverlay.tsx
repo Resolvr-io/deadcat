@@ -12,7 +12,7 @@ export default function OnboardingOverlay() {
   const onboardingNostrDone = useStore((s) => s.onboardingNostrDone);
   const onboardingWalletOnly = useStore((s) => s.onboardingWalletOnly);
   const backupFileContent = useStore((s) => s.onboardingBackupFileContent);
-  useLockScroll();
+  useLockScroll(setupModalOpen);
 
   // Reset every onboarding-specific field back to its initial store
   // value. Without this, any sub-step the user navigated into (profile

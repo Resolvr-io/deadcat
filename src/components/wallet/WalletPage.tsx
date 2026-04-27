@@ -36,7 +36,7 @@ export function WalletPage() {
     [close],
   );
 
-  useLockScroll();
+  useLockScroll(walletOpen);
   useEscapeKey(walletOpen, close);
 
   // Wallet setup runs exclusively through the onboarding overlay
