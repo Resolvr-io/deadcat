@@ -576,6 +576,23 @@ button:focus-visible,
   animation: deadcat-notification-pulse 2s ease-out both;
 }
 
+/* Sticky chrome that pins to viewport top with its background
+   extended up into the macOS traffic-light strip. The element pins
+   at `top: 0` (so the bar's bg covers the entire strip) and gets
+   `padding-top: calc(32px + 0.5rem)` on macOS only — 32px to
+   clear the close/min/max buttons + overlay gradient, plus the
+   matching 0.5rem inner padding the non-macOS variant uses on
+   top. Padding is owned entirely by this class to avoid a
+   shorthand-vs-longhand cascade fight with Tailwind's `py-*`. */
+.sticky-overlay-safe-top {
+  top: 0;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+:root[data-os="macos"] .sticky-overlay-safe-top {
+  padding-top: calc(32px + 0.5rem);
+}
+
 /* Edge-fade indicators for the horizontally-scrolling category row.
    Two pseudo-elements (`::before` for the left, `::after` for the
    right) are toggled by `data-overflow-left` / `data-overflow-right`
