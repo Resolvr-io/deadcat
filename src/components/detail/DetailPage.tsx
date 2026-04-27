@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import {
   useRedeemExpiredTokens,
   useRedeemTokens,
@@ -18,7 +18,12 @@ import {
 import { generateMockPriceHistory } from "../../utils-react/mock-price-history";
 import MarketChart from "../chart/MarketChart";
 import { CommentsSection } from "./comments/CommentsSection";
-import { MarketHeaderBottom, MarketHeaderTop } from "./MarketHeader";
+import {
+  MarketHeaderBottom,
+  MarketHeaderTop,
+  StickyMarketHeader,
+  useIsInView,
+} from "./MarketHeader";
 import TradingPanel from "./TradingPanel";
 
 export default function DetailPage() {
@@ -76,6 +81,19 @@ export default function DetailPage() {
     [market],
   );
 
+  // Hooks must run on every render path; declared before the
+  // not-found early-return so React's hook order stays stable.
+  // `titleVisibility.ref` attaches to the wrapper around
+  // MarketHeaderTop so the sticky minimized bar appears once the
+  // full-size H1 starts intruding into the bar's reserved area
+  // at the top of the viewport (negative top rootMargin covers
+  // the macOS strip + bar height). `leftColumnRef` gives the
+  // fixed-positioned bar a column-width to track.
+  const titleVisibility = useIsInView<HTMLDivElement>({
+    rootMargin: "-80px 0px 0px 0px",
+  });
+  const leftColumnRef = useRef<HTMLElement>(null);
+
   if (!market) {
     return (
       <div className="phi-container py-16 text-center">
@@ -120,13 +138,18 @@ export default function DetailPage() {
         </div>
       )}
 
-      {/* Header above grid — matches group market layout so trading panel
-          aligns with the chart rather than the top of the title block */}
-      <MarketHeaderTop market={market} />
+      {/* Header above grid — matches group market layout so trading
+          panel aligns with the chart rather than the top of the
+          title block. The ref/observer feeds the sticky bar's
+          visibility below; the bar mounts only when this wrapper
+          has scrolled out of view. */}
+      <div ref={titleVisibility.ref}>
+        <MarketHeaderTop market={market} />
+      </div>
 
       <div className="grid gap-8 lg:grid-cols-[1.618fr_0.8fr]">
         {/* Left column */}
-        <section className="min-w-0 space-y-6">
+        <section ref={leftColumnRef} className="min-w-0 space-y-6">
           <MarketChart
             market={market}
             priceHistory={priceHistory}
@@ -217,6 +240,16 @@ export default function DetailPage() {
           <TradingPanel market={market} />
         </div>
       </div>
+
+      {/* Fixed-positioned, so its location in the tree doesn't
+          affect layout. Mounted only when the full-size H1 has
+          scrolled out of view; column-rect tracking keeps the
+          bar's left+width aligned with the left content column. */}
+      <StickyMarketHeader
+        market={market}
+        visible={!titleVisibility.inView}
+        columnRef={leftColumnRef}
+      />
     </div>
   );
 }

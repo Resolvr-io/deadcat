@@ -258,7 +258,7 @@ export function CommentProfileDialog({
                     >
                       <polygon
                         // Verified → purple check badge (NIP-05 conventional
-                        // colour). Unverified / unknown → neutral grey so
+                        // color). Unverified / unknown → neutral grey so
                         // transient CORS/network errors don't surface as a
                         // scary warning.
                         fill={nip05Verified === true ? "#a855f7" : "#475569"}

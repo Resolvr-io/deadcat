@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useStore } from "../../store";
 import type { MarketGroup, MarketGroupOutcome } from "../../types";
 import {
@@ -13,6 +13,7 @@ import {
 } from "../../utils-react/mock-groups";
 import { CommentsSection } from "../detail/comments/CommentsSection";
 import { MarketActionsMenu } from "../detail/MarketActionsMenu";
+import { StickyGroupHeader, useIsInView } from "../detail/MarketHeader";
 import { categoryIcon } from "../layout/TopShell";
 import GroupChart, { OUTCOME_COLORS } from "./GroupChart";
 
@@ -602,6 +603,16 @@ export default function GroupDetailPage() {
     [group, selectedOutcomeId],
   );
 
+  // Hooks must run on every render path; declared before the
+  // not-found early-return so React's hook order stays stable.
+  // Negative top rootMargin trips the observer as soon as the
+  // title block enters the bar's reserved area, not just after
+  // it's fully scrolled past — see DetailPage for rationale.
+  const titleVisibility = useIsInView<HTMLDivElement>({
+    rootMargin: "-80px 0px 0px 0px",
+  });
+  const leftColumnRef = useRef<HTMLElement>(null);
+
   if (!group) {
     return (
       <div className="phi-container py-16 text-center">
@@ -657,30 +668,33 @@ export default function GroupDetailPage() {
         </div>
       </div>
 
-      {/* Title + stats */}
-      <h1 className="mb-2 text-2xl font-semibold leading-tight text-slate-100 lg:text-3xl">
-        {group.title}
-      </h1>
-      <div className="mb-8 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-500">
-        <span>
-          <span className="text-slate-300">
-            {group.traderCount.toLocaleString()}
-          </span>{" "}
-          traders
-        </span>
-        <span className="text-slate-700">·</span>
-        <span>
-          Closes{" "}
-          <span className={closesColor}>
-            {blocksLeft > 0 ? formatTimeRemaining(blocksLeft) : "Expired"}
+      {/* Title + stats — wrapped so the observer fires when this
+          block scrolls past, mounting the minimized sticky bar. */}
+      <div ref={titleVisibility.ref}>
+        <h1 className="mb-2 text-2xl font-semibold leading-tight text-slate-100 lg:text-3xl">
+          {group.title}
+        </h1>
+        <div className="mb-8 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-500">
+          <span>
+            <span className="text-slate-300">
+              {group.traderCount.toLocaleString()}
+            </span>{" "}
+            traders
           </span>
-        </span>
+          <span className="text-slate-700">·</span>
+          <span>
+            Closes{" "}
+            <span className={closesColor}>
+              {blocksLeft > 0 ? formatTimeRemaining(blocksLeft) : "Expired"}
+            </span>
+          </span>
+        </div>
       </div>
 
       {/* Two-column layout */}
       <div className="grid gap-8 lg:grid-cols-[1.618fr_0.8fr]">
         {/* Left: chart + outcome list + description */}
-        <section className="min-w-0 space-y-6">
+        <section ref={leftColumnRef} className="min-w-0 space-y-6">
           <GroupChart group={group} highlightedOutcomeId={selectedOutcomeId} />
 
           {/* Search */}
@@ -797,6 +811,14 @@ export default function GroupDetailPage() {
           })()}
         </aside>
       </div>
+
+      {/* Fixed-positioned, see StickyMarketHeader for layout rationale. */}
+      <StickyGroupHeader
+        group={group}
+        selectedOutcomeId={selectedOutcomeId}
+        visible={!titleVisibility.inView}
+        columnRef={leftColumnRef}
+      />
     </div>
   );
 }
