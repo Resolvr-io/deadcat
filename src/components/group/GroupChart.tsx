@@ -10,7 +10,7 @@ import {
 } from "../../utils-react/chart-series";
 import { formatVolumeBtc } from "../../utils-react/format";
 
-// ── Palette — 14 perceptually distinct colours ───────────────────────
+// ── Palette — 14 perceptually distinct colors ───────────────────────
 export const OUTCOME_COLORS = [
   "#34d399", // emerald-400
   "#60a5fa", // blue-400
