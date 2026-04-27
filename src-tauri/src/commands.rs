@@ -1390,7 +1390,11 @@ pub async fn publish_nostr_profile(
     lud16: Option<String>,
     banner: Option<String>,
 ) -> Result<(), String> {
-    let (keys, client) = get_keys_and_client(&app).await?;
+    // Use the signer-trait path so both local nsec users and NIP-46
+    // remote signers can update kind:0 — `get_keys_and_client`
+    // would have errored out for remote signers because the signer
+    // backend isn't `Keys`.
+    let (signer, client) = get_signer_and_client(&app).await?;
     let profile = discovery::NostrProfile {
         picture,
         banner,
@@ -1401,25 +1405,35 @@ pub async fn publish_nostr_profile(
         nip05,
         lud16,
     };
-    discovery::publish_profile(&keys, &client, &profile).await
+    discovery::publish_profile(&signer, &client, &profile).await
 }
 
-/// Create a NIP-98 HTTP Auth header (kind 27235) for authenticated uploads.
+/// Create a NIP-98 HTTP Auth header (kind 27235) for authenticated
+/// uploads. Goes through the `NostrSigner` trait so remote-signer
+/// users can also authenticate uploads — image hosts like
+/// blossom.primal.net use NIP-98 to verify the uploader, and
+/// hardcoding to local keys would break that flow for NIP-46 users.
 #[tauri::command]
 pub async fn create_nip98_auth(
     app: tauri::AppHandle,
     url: String,
     method: String,
 ) -> Result<String, String> {
-    let (keys, _client) = get_keys_and_client(&app).await?;
+    let (signer, _client) = get_signer_and_client(&app).await?;
     use nostr_sdk::prelude::*;
-    let event = EventBuilder::new(Kind::Custom(27235), "")
+    let author = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+    let unsigned = EventBuilder::new(Kind::Custom(27235), "")
         .tags(vec![
             Tag::parse(vec!["u".to_string(), url]).map_err(|e| format!("tag error: {e}"))?,
             Tag::parse(vec!["method".to_string(), method.to_uppercase()])
                 .map_err(|e| format!("tag error: {e}"))?,
         ])
-        .sign(&keys)
+        .build(author);
+    let event = signer
+        .sign_event(unsigned)
         .await
         .map_err(|e| format!("sign error: {e}"))?;
     let json = event.as_json();

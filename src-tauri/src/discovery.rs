@@ -1,5 +1,6 @@
 use nostr_sdk::{
-    Client, Event, EventBuilder, Filter, Keys, Kind, PublicKey, SecretKey, Tag, TagKind,
+    Client, Event, EventBuilder, Filter, Keys, Kind, NostrSigner, PublicKey, SecretKey, Tag,
+    TagKind,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -403,9 +404,11 @@ pub async fn fetch_profile(
 }
 
 /// Publish a kind 0 metadata event with profile fields.
-/// Fetches the existing kind 0 first and merges to avoid clobbering unset fields.
+/// Fetches the existing kind 0 first and merges to avoid clobbering
+/// unset fields. Signs through the `NostrSigner` trait so both local
+/// keys and NIP-46 remote signers work without branching.
 pub async fn publish_profile(
-    keys: &Keys,
+    signer: &std::sync::Arc<dyn NostrSigner>,
     client: &Client,
     profile: &NostrProfile,
 ) -> Result<(), String> {
@@ -414,11 +417,16 @@ pub async fn publish_profile(
         .as_deref()
         .ok_or_else(|| "profile name is required".to_string())?;
 
+    let author_pubkey = signer
+        .get_public_key()
+        .await
+        .map_err(|e| format!("get_public_key failed: {e}"))?;
+
     // Fetch existing kind 0 to merge with
     let mut meta = {
         let filter = Filter::new()
             .kind(Kind::Metadata)
-            .author(keys.public_key())
+            .author(author_pubkey)
             .limit(1);
         let events = client
             .fetch_events(vec![filter], Duration::from_secs(5))
@@ -466,9 +474,11 @@ pub async fn publish_profile(
     }
 
     let content = meta.to_string();
-    let event = EventBuilder::new(Kind::Metadata, content)
+    let unsigned = EventBuilder::new(Kind::Metadata, content)
         .tags(vec![deadcat_sdk::client_tag()])
-        .sign(keys)
+        .build(author_pubkey);
+    let event = signer
+        .sign_event(unsigned)
         .await
         .map_err(|e| format!("failed to sign profile event: {e}"))?;
     client
