@@ -854,9 +854,9 @@ function CategoryPageView({
         </section>
 
         {/* Right sidebar */}
-        <aside className="space-y-8 xl:content-start">
-          <section>
-            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
+        <aside className="space-y-4 xl:content-start">
+          <section className="rounded-xl bg-slate-950/45 p-4">
+            <h3 className="mb-3 border-b border-slate-800/60 pb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
               Live contracts
             </h3>
             <div className="divide-y divide-slate-800/60">
@@ -887,56 +887,85 @@ function CategoryPageView({
             </div>
           </section>
 
-          <section>
-            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
+          <section className="rounded-xl bg-slate-950/45 p-4">
+            <h3 className="mb-3 border-b border-slate-800/60 pb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
               Highest liquidity
             </h3>
             <div className="divide-y divide-slate-800/60">
-              {highestLiquidity.map((market, idx) => (
-                <button
-                  type="button"
-                  key={market.id}
-                  onClick={() => openMarket(market)}
-                  className="flex w-full items-start justify-between gap-2 py-2.5 text-left"
-                >
-                  <p className="text-sm text-slate-300">
-                    {idx + 1}. {market.question}
-                  </p>
-                  <p className="text-sm font-normal text-emerald-300">
-                    {formatVolumeBtc(market.liquidityBtc)}
-                  </p>
-                </button>
-              ))}
+              {highestLiquidity.length ? (
+                highestLiquidity.map((market) => {
+                  const [amount, unit] = formatVolumeBtc(
+                    market.liquidityBtc,
+                  ).split(" ");
+                  return (
+                    <button
+                      type="button"
+                      key={market.id}
+                      onClick={() => openMarket(market)}
+                      className="flex w-full items-baseline justify-between gap-3 py-2.5 text-left"
+                    >
+                      <p className="text-sm text-slate-300">
+                        {market.question}
+                      </p>
+                      <span className="shrink-0 whitespace-nowrap rounded-md bg-slate-800/70 px-2 py-0.5 text-sm font-medium tabular-nums text-slate-200">
+                        {amount}
+                        <span className="ml-1 text-slate-500">{unit}</span>
+                      </span>
+                    </button>
+                  );
+                })
+              ) : (
+                <p className="py-2.5 text-sm text-slate-500">
+                  No liquidity in this category yet.
+                </p>
+              )}
             </div>
           </section>
 
-          <section>
-            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Market states
-            </h3>
-            <div className="divide-y divide-slate-800/60 text-sm text-slate-300">
-              <p className="flex items-center justify-between py-2">
-                <span className="text-slate-400">Dormant</span>
-                <span>{stateMix[0]}</span>
-              </p>
-              <p className="flex items-center justify-between py-2">
-                <span className="text-emerald-400">Live</span>
-                <span>{stateMix[1]}</span>
-              </p>
-              <p className="flex items-center justify-between py-2">
-                <span className="text-slate-400">Resolved YES</span>
-                <span>{stateMix[2]}</span>
-              </p>
-              <p className="flex items-center justify-between py-2">
-                <span className="text-slate-400">Resolved NO</span>
-                <span>{stateMix[3]}</span>
-              </p>
-              <p className="flex items-center justify-between py-2">
-                <span className="text-amber-400">Expired</span>
-                <span>{stateMix[4]}</span>
-              </p>
-            </div>
-          </section>
+          {(() => {
+            const stateRows = [
+              {
+                label: "Dormant",
+                color: "text-slate-400",
+                count: stateMix[0],
+              },
+              { label: "Live", color: "text-emerald-400", count: stateMix[1] },
+              {
+                label: "Resolved YES",
+                color: "text-slate-400",
+                count: stateMix[2],
+              },
+              {
+                label: "Resolved NO",
+                color: "text-slate-400",
+                count: stateMix[3],
+              },
+              {
+                label: "Expired",
+                color: "text-amber-400",
+                count: stateMix[4],
+              },
+            ].filter((row) => row.count > 0);
+            if (stateRows.length === 0) return null;
+            return (
+              <section className="rounded-xl bg-slate-950/45 p-4">
+                <h3 className="mb-3 border-b border-slate-800/60 pb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Market states
+                </h3>
+                <div className="divide-y divide-slate-800/60 text-sm text-slate-300">
+                  {stateRows.map((row) => (
+                    <p
+                      key={row.label}
+                      className="flex items-center justify-between py-2"
+                    >
+                      <span className={row.color}>{row.label}</span>
+                      <span className="tabular-nums">{row.count}</span>
+                    </p>
+                  ))}
+                </div>
+              </section>
+            );
+          })()}
         </aside>
       </div>
     </div>
