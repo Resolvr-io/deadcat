@@ -1050,6 +1050,7 @@ function TrendingHomeView({ markets }: { markets: Market[] }) {
     const id = window.setTimeout(() => {
       useStore.setState((s) => ({
         trendingIndex: (s.trendingIndex + 1) % total,
+        trendingDirection: "next",
       }));
     }, delay);
     return () => clearTimeout(id);

@@ -122,6 +122,7 @@ export default function FeaturedMarket({
   totalItems: number;
 }) {
   const trendingIndex = useStore((s) => s.trendingIndex);
+  const trendingDirection = useStore((s) => s.trendingDirection);
   const { data: rawPriceHistory } = usePriceHistory(market.marketId);
   const priceHistory =
     rawPriceHistory && rawPriceHistory.length > 0
@@ -138,6 +139,7 @@ export default function FeaturedMarket({
   const handlePrev = useCallback(() => {
     useStore.setState({
       trendingIndex: (trendingIndex - 1 + totalItems) % totalItems,
+      trendingDirection: "prev",
       trendingAutoAdvancePausedUntil: Date.now() + MANUAL_ADVANCE_PAUSE_MS,
     });
   }, [trendingIndex, totalItems]);
@@ -145,6 +147,7 @@ export default function FeaturedMarket({
   const handleNext = useCallback(() => {
     useStore.setState({
       trendingIndex: (trendingIndex + 1) % totalItems,
+      trendingDirection: "next",
       trendingAutoAdvancePausedUntil: Date.now() + MANUAL_ADVANCE_PAUSE_MS,
     });
   }, [trendingIndex, totalItems]);
@@ -198,7 +201,7 @@ export default function FeaturedMarket({
           place so the nav arrows never jump. */}
       <div
         key={market.marketId}
-        className="animate-carousel-slide flex min-h-0 flex-1 flex-col"
+        className={`${trendingDirection === "prev" ? "animate-carousel-slide-reverse" : "animate-carousel-slide"} flex min-h-0 flex-1 flex-col`}
       >
         <button
           type="button"
@@ -256,6 +259,7 @@ export function FeaturedGroupCard({
   totalItems: number;
 }) {
   const trendingIndex = useStore((s) => s.trendingIndex);
+  const trendingDirection = useStore((s) => s.trendingDirection);
 
   const blocksLeft = group.expiryHeight - group.currentHeight;
   const timeLeft = blocksLeft > 0 ? formatTimeRemaining(blocksLeft) : "Expired";
@@ -267,6 +271,7 @@ export function FeaturedGroupCard({
   const handlePrev = useCallback(() => {
     useStore.setState({
       trendingIndex: (trendingIndex - 1 + totalItems) % totalItems,
+      trendingDirection: "prev",
       trendingAutoAdvancePausedUntil: Date.now() + MANUAL_ADVANCE_PAUSE_MS,
     });
   }, [trendingIndex, totalItems]);
@@ -274,6 +279,7 @@ export function FeaturedGroupCard({
   const handleNext = useCallback(() => {
     useStore.setState({
       trendingIndex: (trendingIndex + 1) % totalItems,
+      trendingDirection: "next",
       trendingAutoAdvancePausedUntil: Date.now() + MANUAL_ADVANCE_PAUSE_MS,
     });
   }, [trendingIndex, totalItems]);
@@ -309,7 +315,7 @@ export function FeaturedGroupCard({
       {/* Sliding body — see FeaturedMarket for the same pattern. */}
       <div
         key={group.id}
-        className="animate-carousel-slide flex min-h-0 flex-1 flex-col"
+        className={`${trendingDirection === "prev" ? "animate-carousel-slide-reverse" : "animate-carousel-slide"} flex min-h-0 flex-1 flex-col`}
       >
         {/* Title */}
         <button
