@@ -49,6 +49,11 @@ export interface NavigationSlice {
   categoryFilter: "all" | "live" | "ending-soon";
   search: string;
   trendingIndex: number;
+  /** Direction of the most recent trending-carousel advance. Drives
+   *  the slide animation: "next" enters from the right, "prev" from
+   *  the left. Auto-advance and the right arrow set "next"; the
+   *  left arrow sets "prev". */
+  trendingDirection: "next" | "prev";
   /** Unix ms. While `Date.now()` is below this value the trending-
    *  carousel auto-advance skips its tick. Set whenever the user
    *  clicks the prev/next arrows so manual browsing isn't yanked
@@ -332,6 +337,7 @@ export const useStore = create<StoreState>()(() => ({
   categoryFilter: "all",
   search: "",
   trendingIndex: 0,
+  trendingDirection: "next",
   trendingAutoAdvancePausedUntil: 0,
   userMenuOpen: false,
   searchOpen: false,
