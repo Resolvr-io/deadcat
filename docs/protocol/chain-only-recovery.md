@@ -11,20 +11,54 @@ This is achieved through three mechanisms:
 
 ### Design Principle: Covenants Are Permissive, Builders Are Opinionated
 
-The Simplicity covenants accept wide parameter ranges (u64 for prices, fees, collateral amounts). The `deadcat-core` PSET builders enforce tighter constraints — only parameter values that can be losslessly round-tripped through the OP_RETURN encoding are accepted. Non-conforming values produce `CoreError::InvalidParams`. This ensures every contract created through `deadcat-core` has a decodable recovery hint.
+The Simplicity covenants accept wide parameter ranges (u64 for prices, fees, collateral amounts). The `deadcat-core` APIs enforce tighter constraints — only parameter values that can be losslessly round-tripped through the canonical v1 OP_RETURN encoding are accepted. Non-conforming values surface as `ConventionError` in the pure derive helpers and `CoreError::ConventionViolation` in builders / ingestion. This keeps the supported contract surface aligned with the published recovery format.
+
+`deadcat-core` uses a **strict-canonical tracking policy**: if the engine creates or agrees to track a contract, the supplied params must conform to the documented recovery conventions. This avoids a mixed universe of "tracked but foreign" contracts whose mnemonic-recovery story depends on out-of-band assumptions. The one remaining caveat is non-initial pool/order ingestion via `Current` snapshots: those variants intentionally omit the creation transaction, so they cannot prove the historical hint was present on-chain. They still reject non-conforming supplied params and require a canonical parent market.
 
 Convention compliance is enforced at three layers:
 - **Derive functions** (`derive_order_params`, `derive_pool_params`): first line — catches convention violations at param construction time with the clearest error context
 - **PSET builders** (all three creation builders): defense in depth — catches violations for manually-constructed params that bypass derive functions
-- **Market ingestion** (`ingest_market`): protects all downstream users — rejects non-conforming markets, since non-conforming markets break the recovery chain for any child contracts (orders, pools) and any token holder tracing back to the market
+- **Ingestion** (`ingest_market`, `ingest_pool`, `ingest_persistent_order`, `ingest_ephemeral_order`): strict-canonical tracking boundary — rejects non-conforming supplied params before the engine agrees to track the contract
 
 | Contract | Creation enforcement | Ingestion enforcement | Why |
 |---|---|---|---|
-| Market | Builder rejects | `ingest_market` rejects | Non-conforming markets break all downstream users (token holders, orders, pools) |
-| Order | `derive_order_params` + builder reject | No convention check | Only the creator needs recovery; takers just fill |
-| Pool | `derive_pool_params` + builder reject | No convention check | Only the operator needs recovery; traders just swap |
+| Market | Builder rejects | `ingest_market` rejects and verifies the creation tx | Non-conforming markets break all downstream users (token holders, orders, pools) |
+| Order | `derive_order_params` + builder reject | All order ingestion paths reject non-conforming supplied params; `Creation` additionally verifies the creation tx | Strict-canonical tracking keeps the engine's supported order universe aligned with mnemonic recovery and canonical UX assumptions |
+| Pool | `derive_pool_params` + builder reject | All pool ingestion paths reject non-conforming supplied params; `Creation` additionally verifies the creation tx | Same: one canonical tracked-pool class is easier to reason about than "tracked but foreign" liquidity |
 
-Pool and order ingestion validates the parent market relationship (transitively ensuring the parent market is conforming) but does not enforce pool/order-specific conventions — a non-conforming pool or order is still fully functional for trading.
+For `PoolSnapshot::Current` and `OrderSnapshot::Current`, the caller intentionally omits the creation transaction. Those paths therefore cannot prove the historical OP_RETURN hint existed on-chain; they enforce only canonical param shape plus canonical-parent-market membership. This is the existing fast-start trust trade-off of non-initial ingestion, not a second-class convention policy.
+
+## Integration Contract
+
+Correct chain-only recovery depends on the wallet integrator providing specific inputs to `deadcat-core`. This section enumerates every precondition, the failure mode if violated, and what the engine verifies on its own.
+
+### Preconditions the integrator must satisfy
+
+| Precondition | Failure mode if violated |
+|---|---|
+| **Deadcat xprv derived at `m/86'/1145258324'`** (see [HD Paths](#hd-paths)). The integrator is responsible for performing the derivation before passing the key to `derive_*_params` or engine construction. | Silent. Derive functions produce different keys, reconstructed covenant scripts do not match on-chain UTXOs, recovery reports "no matches" instead of an error. |
+| **Complete wallet rescan.** The caller must present every wallet-funded transaction on the target network, from the wallet's first use through the current tip. Incremental rescans must not skip block ranges. | Silent. Orders and pools whose creation txs were missed are simply absent from the recovered state. The engine has no way to know about txs it was never given. |
+| **Authoritative, tip-synced `ChainSource`.** Backends must return complete, current state — not filtered or stale results. | Latent. Stale tip produces stale state. Missing txs in `transactions_in_block` or equivalent queries produce the same silent gap as incomplete rescan. |
+| **`ChainSource::issuance_transaction(asset_id)` returns the first-issuance transaction**, not a subsequent reissuance. Esplora's `/asset/:asset_id` endpoint and Electrs's asset index both return this directly. | Loud. `ingest_market` re-derivation fails the script-pubkey match and returns `CoreError::InvalidCreationTx`. The error does not obviously point at the integrator's `ChainSource` implementation — integrators should treat this error as a signal to verify their issuance lookup is returning the genesis tx. |
+| **Correct `Network` at engine construction.** The well-known collateral asset index (see [Well-Known Collateral Asset Index](#well-known-collateral-asset-index-4-bits)) resolves against network-specific asset IDs — mainnet L-BTC ≠ testnet L-BTC ≠ regtest L-BTC, and the v1 well-known USDt entry exists only on Liquid mainnet. | Silent. Decoded collateral asset IDs resolve to the wrong chain's policy asset or treat a mainnet-only USDt index as valid on the wrong network; downstream operations fail with "unknown asset" rather than an explicit network-mismatch error. |
+
+### What `deadcat-core` verifies
+
+- **Creation tx / OP_RETURN authenticity** — ingestion re-derives the covenant script pubkey from the parsed params and requires it match the creation tx's output script. Spoofed hints or wrong creation txs are rejected with `CoreError::InvalidCreationTx`.
+- **Asset identity on ingestion** — `identify_asset` cross-checks asset IDs against registered market params. Unknown asset IDs are reported, not silently accepted.
+- **Covenant state transitions** — every tx presented to `step` / `interpret_transaction` is validated against the expected covenant spend paths; invalid transitions are rejected.
+
+### What `deadcat-core` does not verify
+
+- **Completeness of the transaction set the caller provided.** The engine cannot detect "you forgot to give me tx X." Integrators must independently guarantee rescan completeness.
+- **Freshness of the chain tip.** The engine processes what it is given in the order it is given; a stale backend produces stale state with no warning.
+- **Derivation path of the passed xprv.** The engine trusts the caller to have derived at `m/86'/1145258324'`. A wrong-path xprv produces usable-looking derived keys that silently fail to match on-chain data.
+
+### Recommendation for integrators
+
+After recovery, sanity-check the engine's state against an independent source before exposing it to the user. At minimum, query the `ChainSource` for the current chain height and confirm the wallet's latest processed height matches — this does not catch missing historical txs but catches obviously-stale backends.
+
+A `verify_integration(xprv, chain_source)` helper is under consideration for a future release. It would exercise a known derivation + lookup path to convert several silent-failure integration bugs into fail-fast at construction time. Not committed for v1.
 
 ## Recovery Flows by User Type
 
@@ -32,12 +66,12 @@ Pool and order ingestion validates the parent market relationship (transitively 
 
 Token recovery is automatic — YES and NO tokens are standard Elements confidential assets at wallet addresses. Standard mnemonic-based rescan finds them.
 
-**Labeling and redemption** require the market's `PredictionMarketParams`. The recovery path:
+**Labeling and redemption** require the market's `MarketParams` (binary or multi-outcome umbrella). The recovery path:
 
 1. Wallet rescan finds YES/NO token UTXOs with asset IDs
 2. For each unknown asset ID: query `ChainSource::issuance_transaction(asset_id)`
 3. The returned transaction IS the market creation tx (the asset was first issued there)
-4. Read the market OP_RETURN hint → reconstruct `PredictionMarketParams`
+4. Read the market OP_RETURN hint → reconstruct `MarketParams` (binary or multi-outcome, per the hint's type tag)
 5. `ingest_market` with the reconstructed params + creation tx
 6. `identify_asset` labels the tokens; `build_redemption_pset` enables redemption
 
@@ -50,7 +84,7 @@ One chain query per unique asset ID. Works despite blinded reissuance token outp
 Markets have no on-chain "owner" (taproot internal key is NUMS), but the creation transaction is wallet-funded. Recovery:
 
 1. Wallet rescan finds the wallet-funded market creation tx
-2. Read the market OP_RETURN → reconstruct `PredictionMarketParams` (non-derivable fields from hint + derivable asset IDs from the tx's issuance entropy)
+2. Read the market OP_RETURN → reconstruct `MarketParams` (non-derivable fields from hint + derivable asset IDs from the tx's issuance entropy; umbrella variant determined by the hint's type tag — binary or multi-outcome)
 3. `ingest_market`
 
 ### Order Creators (Makers)
@@ -61,12 +95,15 @@ Maker order UTXOs are at covenant addresses — standard wallet rescan cannot fi
 2. Read the order OP_RETURN → extract `masked_index`, `market_creation_txid`, `price`, `side`, `direction`, `min_fill_lots`, `min_remainder_lots`
 3. Derive mask: `HMAC(deadcat_secret_key, "deadcat/order_mask" || context)[0..2]` (context = all fields from step 2 except masked_index)
 4. Unmask: `order_index = masked_index ^ mask`
-5. Fetch the market creation tx by `market_creation_txid` → read market OP_RETURN → reconstruct `PredictionMarketParams`
-6. Call `derive_order_params(deadcat_xprv, market_params, order_index, side, direction, price, min_fill_lots, min_remainder_lots)` to reconstruct full `MakerOrderParams` (derives maker pubkey, nonce, and everything else internally)
-7. Compile the covenant, verify the script matches a creation tx output
-8. `ingest_order`
+5. Fetch the market creation tx by `market_creation_txid` → read market OP_RETURN → reconstruct `MarketParams` (binary or multi-outcome, determined by the market hint's type tag)
+6. For each candidate `outcome` in the market's valid `OutcomeIndex` range:
+   - For **binary** markets, the only valid index is `OutcomeIndex::BINARY` — a single candidate.
+   - For **multi-outcome** markets with `MultiOutcomeMarketParams { outcome_count: N, .. }`, iterate `OutcomeIndex::new(k)` for `k in 0..N` — up to N candidates.
+   - Call `derive_order_params(deadcat_xprv, market_params, outcome, order_index, side, direction, price, min_fill_lots, min_remainder_lots)` to reconstruct candidate `MakerOrderParams`.
+   - Compile the covenant and check whether the script matches a creation tx output. First match wins.
+7. `ingest_persistent_order` with the recovered params and creation transaction
 
-Without the OP_RETURN, recovery requires brute-forcing `order_index x market x price x direction x min_fill x min_remainder` — each candidate requiring Simplicity compilation (~10-100ms). With the hint, one compilation per order to verify.
+Without the OP_RETURN, recovery requires brute-forcing `order_index x outcome x market x price x direction x min_fill x min_remainder` — each candidate requiring Simplicity compilation (~10-100ms). With the hint, up to `outcome_count` compilations per order to verify. See [Recovering without a hint](#recovering-without-a-hint-non-standard) for the non-standard fallback.
 
 ### Pool Operators
 
@@ -76,10 +113,19 @@ Pool reserve UTXOs are at covenant addresses — standard wallet rescan cannot f
 2. Read the pool OP_RETURN → extract `masked_index`, `market_creation_txid`, `max_loss_sats`, `half_payout_sats`, `fee_bps`, `initial_s_index`
 3. Derive mask: `HMAC(deadcat_secret_key, "deadcat/pool_mask" || context)[0..2]` (context = all fields from step 2 except masked_index)
 4. Unmask: `pool_index = masked_index ^ mask`
-5. Fetch market creation tx → reconstruct market params
-6. Call `derive_pool_params(deadcat_xprv, market_params, pool_index, max_loss_sats, half_payout_sats, fee_bps, starting_price_bps)` to reconstruct full `LmsrPoolParams` (derives admin pubkey, Merkle root, and everything else internally). The `starting_price_bps` is derived from `initial_s_index` (extracted in step 2) via the inverse logistic function.
-7. Compile the covenant for `initial_s_index`, verify the script matches a creation tx output
-8. `ingest_pool`
+5. Fetch market creation tx → reconstruct market params (binary or multi-outcome)
+6. For each candidate `outcome` in the market's valid `OutcomeIndex` range:
+   - For **binary** markets, the only valid index is `OutcomeIndex::BINARY` — a single candidate.
+   - For **multi-outcome** markets with `MultiOutcomeMarketParams { outcome_count: N, .. }`, iterate `OutcomeIndex::new(k)` for `k in 0..N` — up to N candidates.
+   - Call `derive_pool_params(deadcat_xprv, market_params, outcome, pool_index, max_loss_sats, half_payout_sats, fee_bps, initial_s_index)` to reconstruct candidate `LmsrPoolParams`. `initial_s_index` is passed directly from the hint — no inverse conversion.
+   - Compile the covenant for `initial_s_index` and check whether the script matches a creation tx output. First match wins.
+7. `ingest_pool` with `PoolSnapshot::Creation`
+
+### Recovering without a hint (non-standard)
+
+The hint-based flows above assume every deadcat contract carries a parseable `deadcat-core`-format OP_RETURN. A creation transaction without such a hint — non-conforming contract built with custom tooling, format mismatch between recovery code and hint version, or pathological on-chain data loss — cannot be recovered via the fast path. The only fallback is brute-force index scanning: for each candidate `index` in `[0, 65535]` (and, for multi-outcome markets, each candidate `outcome`), derive the contract params with those values, compile the covenant, and check the script pubkey against known covenant-address UTXOs. At ~10-100 ms per Simplicity compilation, a full sweep costs 10-100 minutes per orphaned UTXO per outcome.
+
+This path is **not supported** by `deadcat-core` v1. Integrators who need it can implement it against the public `derive_order_params` / `derive_pool_params` functions; it is a thin loop over indices and outcomes that compares compiled covenant scripts against the target UTXO set. Adding a shipped helper is non-breaking and can happen in a future release if real-world demand emerges. In practice, `deadcat-core`-built contracts always carry a hint, and convention enforcement at creation / creation-based ingestion rejects non-conforming ones — so this fallback is relevant only when the contract was built by a tool that bypassed `deadcat-core`, or when a caller chooses a `Current` snapshot path that omits creation-time verification. In those cases the authoring / ingesting tool is responsible for the missing proof.
 
 ## ChainSource Addition
 
@@ -98,17 +144,21 @@ This works despite blinded reissuance token outputs because the `AssetIssuance` 
 
 ### HD Paths
 
-Recovery requires deterministic derivation of keys and secrets from the mnemonic. The wallet derives the deadcat xprv at `m/purpose'/deadcat'` and passes it to `deadcat-core`'s derive functions, which handle all child derivations internally. The internal structure:
+Recovery requires deterministic derivation of keys and secrets from the mnemonic. The wallet derives the deadcat xprv at `m/86'/1145258324'` and passes it to `deadcat-core`'s derive functions, which handle all child derivations internally. The internal structure:
 
 | Path | Derives | Used for |
 |---|---|---|
-| `m/purpose'/deadcat'/secret'` | `deadcat_secret_key` | Order nonce derivation + index masking (both orders and pools) |
-| `m/purpose'/deadcat'/orders'/i` | Maker keypair at index `i` | `maker_pubkey` (covenant param) + cancel signing |
-| `m/purpose'/deadcat'/pools'/i` | Admin keypair at index `i` | `admin_pubkey` (covenant) + admin/close signing |
+| `m/86'/1145258324'/secret'` | `deadcat_secret_key` | Order nonce derivation + index masking (both orders and pools) |
+| `m/86'/1145258324'/orders'/i` | Maker keypair at index `i` | `maker_pubkey` (covenant param) + cancel signing |
+| `m/86'/1145258324'/pools'/i` | Admin keypair at index `i` | `admin_pubkey` (covenant) + admin/close signing |
 
 A single `deadcat_secret_key` is used for all HMAC operations across both contract types. Different HMAC tags (`"deadcat/order_nonce"`, `"deadcat/order_mask"`, `"deadcat/pool_mask"`) provide full cryptographic domain separation — the outputs are independent PRF evaluations even with the same key.
 
-The exact `purpose'` value is TBD (BIP-43 registration or application-specific constant). All paths use hardened derivation — compromising the deadcat xprv cannot affect non-deadcat wallet keys.
+**Path constants**. The `purpose'` value `86'` follows BIP-86 (single-key taproot) — deadcat covenants are taproot-based. The `coin_type'` value `1145258324'` is `0x44434154` = ASCII `"DCAT"`, self-documenting and within the hardened-index range (`< 2^31 - 1`). This follows the same pattern used by RGB-on-Liquid and other non-wallet protocols: claim a SLIP-0044 `coin_type` slot under a standard BIP purpose rather than introducing a new `purpose'` value. A SLIP-0044 registration PR for this coin_type is tracked as a pre-v1-ship action item.
+
+**Migration from deadcat-sdk**. The existing `deadcat-sdk` code uses `m/84'/1776'/...` for maker-order and pool-admin key derivation. That path is superseded by this specification. Since `deadcat-core` is pre-implementation and no on-chain contracts use the new path yet, this is a clean break with no migration.
+
+All paths use hardened derivation — compromising the deadcat xprv cannot affect non-deadcat wallet keys.
 
 **Interoperability**: This derivation spec is the public interoperability standard for cross-wallet recovery. Any wallet implementing Deadcat must follow these paths. `deadcat-core` provides convenience functions (`derive_order_params`, `derive_pool_params`) that accept the deadcat xprv and handle all child derivations internally — Rust integrators can use these directly. Cross-language implementations (JavaScript, Swift) must implement the derivation independently from this spec.
 
@@ -159,17 +209,17 @@ fee_bps               (2 bytes, u16 big-endian)
 initial_s_index       (2 bytes, u16 big-endian)
 ```
 
-At recovery time, the decoder reads the OP_RETURN, decodes each field to its raw value (e.g., 9-bit mantissa×exponent → u64 for `max_loss_sats`), then serializes in this format for the HMAC. The context length does not affect on-chain size — only the 2-byte mask output appears in the OP_RETURN.
+At recovery time, the decoder reads the OP_RETURN, decodes each field to its raw value (e.g., 4-bit 1-2-5 table index → u64 for `max_loss_sats`), then serializes in this format for the HMAC. The context length does not affect on-chain size — only the 2-byte mask output appears in the OP_RETURN.
 
 Including contract-specific params in the context ensures different contracts get different masks. The recovery code recomputes the same mask from the decoded OP_RETURN data.
 
-**Known property**: Two orders with completely identical params on the same market share the same mask (leaking the XOR of their indices). This is a negligible concern — identical params already imply a CMR collision scenario the spec warns against, and the leaked information (index difference, not absolute values) requires the observer to already have linked the two transactions to the same wallet.
+**Known property**: Two orders with identical non-index params on the same market share the same mask (leaking the XOR of their order indices). This is a negligible concern — distinct `order_index` values produce distinct `maker_pubkey` and `order_nonce` values (see [Key Derivation](#key-derivation) and [Order Nonce Derivation](#order-nonce-derivation)), so CMR collision is structurally prevented regardless of mask overlap. The leaked information (index XOR, not absolute indices) additionally requires the observer to have already linked both transactions to the same wallet.
 
 ## Standard Denomination Convention
 
 ### Market Denomination: 1-2-5 Table (4 bits)
 
-`collateral_per_pair` is constrained to 16 values in the 1-2-5 series:
+`base_payout` — the primary covenant denomination, representing the per-outcome YES-expiry payout unit — is constrained to 16 values in the 1-2-5 series:
 
 | Index | Value (sats) | Index | Value (sats) |
 |---|---|---|---|
@@ -182,34 +232,32 @@ Including contract-specific params in the context ensures different contracts ge
 | 6 | 10,000 | 14 | 5,000,000 |
 | 7 | 20,000 | 15 | 10,000,000 |
 
-This determines order price resolution: `PRICE` is an integer bounded by `collateral_per_pair`, so the number of distinct expressible probability values equals `collateral_per_pair`. At 100: 1% increments (coarse). At 10,000: 0.01% increments (fine). Markets below 1,000 have limited price resolution for limit orders but work fine for LMSR pool trading (pools use their own pricing curve).
+Binary markets derive `cp = base_payout × 2`. Multi-outcome markets derive `cp = base_payout × N`. This pair-cost is the total collateral backing one `(YES_i + NO_i)` pair. Parameterizing on `base_payout` rather than `cp` makes expiry-redemption rates exact integers by construction: a YES token always pays `base_payout`; a NO token always pays `base_payout × (N-1)` at expiry. No covenant-level divisibility check is needed, and every denomination-table index is usable for every supported N. See [multi-outcome-market-contract.md § Denomination model](../contracts/multi-outcome/multi-outcome-market-contract.md#denomination-model) for the full rationale.
 
-### Pool Denomination: 26-Value Mantissa x 10^Exponent (9 bits)
+This determines order price resolution: order `PRICE` is an integer bounded by `cp = base_payout × N`, so the number of distinct expressible probability values equals `cp`. For a binary market at `base_payout = 100` (`cp = 200`): 0.5% increments. At `base_payout = 10,000` (`cp = 20,000`): 0.005% increments. Markets with low `cp` have limited price resolution for limit orders but work fine for LMSR pool trading (pools use their own pricing curve).
 
-`max_loss_sats` and `half_payout_sats` use a two-significant-digit encoding:
+### Pool Denomination: 1-2-5 Table (4 bits each)
 
-**26 mantissa values** (5 bits):
-```
-10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
-25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95
-```
+Both `max_loss_sats` and `half_payout_sats` share the same 16-value 1-2-5 table used for market `base_payout`, encoded as a 4-bit index into the table above (see [Market Denomination](#market-denomination-1-2-5-table-4-bits)).
 
-Fine granularity at the low end (10-20: ~5-10% steps), medium in the middle (25-50: ~10-20% steps), adequate at the high end (50-95: ~5-17% steps). 6 unused 5-bit slots reserved for future expansion.
+This gives 16 × 16 = 256 `(max_loss_sats, half_payout_sats)` combinations, encoded in 8 bits total (vs. 18 bits under the previous 26-mantissa × 16-exponent scheme). Value range: 100 to 10,000,000 sats per param.
 
-**4-bit exponent** (0-15): `value = mantissa x 10^exponent`. The 4-bit exponent (not 3-bit) is necessary because non-L-BTC assets (USDT on Liquid = 10^8 units per dollar) need exponent 8+ for moderate pool sizes.
+**Why this range**: pools on L-BTC-denominated markets with `base_payout ≤ 10^7` sats and subsidies in the same range fit cleanly. Pools on larger-denomination markets (e.g., USDT with `base_payout = 10^8` or larger) would need an expanded table. Expanding the table in a future release is non-breaking: each new `(max_loss_sats, half_payout_sats)` combo gets its own Merkle root, and existing pools are unaffected by new table entries.
 
-Range: 10 x 10^0 = 10 through 95 x 10^15. Covers all practical pool parameters for any collateral asset.
+**Why not a separate table with wider range for pools**: consistency with the market encoding reduces the number of distinct denomination conventions in the protocol, simplifies decoders, and keeps the committed Merkle root set (one per combo) small. The 10^7 cap is a pragmatic v1 constraint, not a structural one.
 
 ### Well-Known Collateral Asset Index (4 bits)
 
-```
-0 = L-BTC (mainnet)
-1 = USDt (Liquid)
-2-14 = reserved for future well-known assets
-15 = escape: full 32-byte asset ID follows
-```
+The v1 mapping is keyed by network:
 
-The lookup table is network-specific — L-BTC has different asset IDs on mainnet, testnet, and regtest. The engine knows the network from construction time.
+| Index | Liquid mainnet | Liquid testnet | Liquid regtest |
+|---|---|---|---|
+| `0` | L-BTC policy asset `6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d` | Policy asset `144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49` | Default regtest policy asset `5ac9f65c0efcc4775e0baec4ec03abdde22473cd3cf33c0419ca290e0751b225` |
+| `1` | Liquid mainnet USDt `ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2` | **Unassigned in v1** — use escape `15` for non-policy collateral | **Unassigned in v1** — use escape `15` for non-policy collateral |
+| `2-14` | Reserved for future well-known assets | Reserved for future well-known assets | Reserved for future well-known assets |
+| `15` | Escape: full 32-byte asset ID follows | Escape: full 32-byte asset ID follows | Escape: full 32-byte asset ID follows |
+
+Index `0` always means the selected network's policy asset. Index `1` is intentionally **Liquid-mainnet-only** in v1; builders on Liquid testnet and Liquid regtest must encode every non-policy collateral asset via escape `15`, and decoders should reject index `1` on those networks.
 
 ## OP_RETURN Encoding Specification
 
@@ -217,22 +265,30 @@ All recovery hints use zero-value OP_RETURN outputs. Data must be whole bytes (p
 
 ### Type Tag
 
-The first byte of every hint. It identifies:
-1. Whether this is a deadcat hint (vs other protocols' OP_RETURNs)
-2. Which contract type (market, pool, order)
-3. Format version
-4. For orders: side and direction flags in the low bits
+V1 uses exact class-nibble assignments:
+
+| Hint | `type_tag` | Meaning |
+|---|---|---|
+| Binary market | `0x10` | Market hint for the binary market contract family. Low nibble reserved, must be zero. |
+| Multi-outcome market | `0x20` | Market hint for the multi-outcome contract family. Low nibble reserved, must be zero. |
+| Pool | `0x30` | Pool hint. Low nibble reserved, must be zero. |
+| Order: YES / SellBase | `0x40` | Order hint with class nibble `0x4`, side bit `0`, direction bit `0`, reserved bits `00`. |
+| Order: YES / SellQuote | `0x44` | Order hint with class nibble `0x4`, side bit `0`, direction bit `1`, reserved bits `00`. |
+| Order: NO / SellBase | `0x48` | Order hint with class nibble `0x4`, side bit `1`, direction bit `0`, reserved bits `00`. |
+| Order: NO / SellQuote | `0x4C` | Order hint with class nibble `0x4`, side bit `1`, direction bit `1`, reserved bits `00`. |
+
+The high nibble identifies the hint family. For market and pool hints, the low nibble is reserved and must be zero in v1. For order hints, the low nibble is structured as `[side(1)][direction(1)][reserved(2)]`, where `side = 0` means YES, `side = 1` means NO, `direction = 0` means SellBase, and `direction = 1` means SellQuote. All other byte values are reserved in v1.
 
 The type tag is a **first-pass filter**, not a guarantee. Roughly 1 in 256 random OP_RETURNs match any given type tag value. Full verification (decode all fields, compile covenant, match script) is what confirms a hint is genuine.
 
 ### Market Hint
 
-**37 bytes** (known collateral asset) / **69 bytes** (exotic collateral with escape code):
+Binary and multi-outcome market hints share the same **37-byte** layout (69 bytes with exotic collateral). They are distinguished by the `type_tag` byte: `0x10` for binary markets and `0x20` for multi-outcome markets. The rest of the layout is identical:
 
 ```
 Byte  0:     type_tag                                  --  8 bits
 Bytes 1-32:  oracle_public_key                         -- 256 bits
-Byte  33:    [collateral_asset(4)][collateral_per_pair(4)]  --  8 bits
+Byte  33:    [collateral_asset(4)][base_payout(4)]          --  8 bits
 Bytes 34-36: expiry_time (u24, big-endian)             -- 24 bits
                                                  Total: 296 bits = 37 bytes
 ```
@@ -245,19 +301,43 @@ If `collateral_asset` index = 15 (escape): 32 additional bytes of raw `collatera
 |---|---|---|---|
 | `oracle_public_key` | Yes | 32 bytes | Not derivable — chosen by market creator |
 | `collateral_asset_id` | Yes (indexed) | 4 bits | Not derivable — well-known index, escape for exotic |
-| `collateral_per_pair` | Yes (indexed) | 4 bits | Not derivable — 1-2-5 convention, 16 values |
+| `base_payout` | Yes (indexed) | 4 bits | Not derivable — 1-2-5 convention, 16 values. Binary markets derive `cp = base_payout × 2`; multi-outcome markets derive `cp = base_payout × outcome_count`, with `outcome_count` recovered from the creation tx (see below). |
 | `expiry_time` | Yes (absolute) | 3 bytes | Not derivable — u24 absolute encoding (see below) |
-| `yes_token_asset_id` | No | — | Derivable from creation tx issuance entropy |
-| `no_token_asset_id` | No | — | Derivable from creation tx issuance entropy |
-| `yes_reissuance_token_id` | No | — | Derivable from creation tx issuance entropy |
-| `no_reissuance_token_id` | No | — | Derivable from creation tx issuance entropy |
+| `outcome_count` | **No** | — | **Derivable from creation tx issuance count** (multi-outcome only; binary is implicitly N=2) |
+| `yes_token_asset_id(s)` | No | — | Derivable from creation tx issuance entropy |
+| `no_token_asset_id(s)` | No | — | Derivable from creation tx issuance entropy |
+| `yes_reissuance_token_id(s)` | No | — | Derivable from creation tx issuance entropy |
+| `no_reissuance_token_id(s)` | No | — | Derivable from creation tx issuance entropy |
 
-**Expiry time encoding** (u24): `encoded = expiry_time / 60` stored as 3 bytes big-endian. Recovery: `expiry_time = encoded × 60`. The PSET builder **snaps** `expiry_time` to the nearest 60-block boundary (the covenant uses the snapped value, making the encoding lossless). At Liquid's target rate of 1 block per minute, each unit represents approximately 1 hour. The u24 range (0 to 2^24 - 1 = 16,777,215) covers block heights from the Liquid genesis block (mined September 26, 2018) to approximately the year 3931, providing 1-hour granularity with ~1,900 years of headroom. This absolute encoding was chosen over a creation-block-relative delta because the creation block height is unknown at PSET build time (the transaction hasn't been broadcast yet), making delta-based recovery produce incorrect values due to confirmation drift.
+**Expiry time encoding** (u24): `encoded = expiry_time / 60` stored as 3 bytes big-endian. Recovery: `expiry_time = encoded × 60`. The PSET builder accepts any future height and **rounds `expiry_time` up to the next 60-block boundary** before constructing the covenant params; the covenant and returned params use that rounded value, making the encoding lossless. At Liquid's target rate of 1 block per minute, each unit represents approximately 1 hour. The u24 range (0 to 2^24 - 1 = 16,777,215) covers block heights from the Liquid genesis block (mined September 26, 2018) to approximately the year 3931, providing 1-hour granularity with ~1,900 years of headroom. This absolute encoding was chosen over a creation-block-relative delta because the creation block height is unknown at PSET build time (the transaction hasn't been broadcast yet), making delta-based recovery produce incorrect values due to confirmation drift.
+
+**Deriving `outcome_count` for multi-outcome markets.** The creation tx mints 2N token pairs (one `AssetIssuance` per outcome's YES or NO leg), so `outcome_count = issuance_count / 2` where the count is over **new-issuance** `AssetIssuance` structures with both `amount` and `inflation_keys` non-null:
+
+```rust
+let issuance_count = creation_tx.input.iter()
+    .filter(|inp| {
+        inp.has_issuance()
+        && inp.asset_issuance.asset_blinding_nonce == ZERO_TWEAK
+        && !inp.asset_issuance.amount.is_null()
+        && !inp.asset_issuance.inflation_keys.is_null()
+    })
+    .count();
+let outcome_count = (issuance_count / 2) as u8;
+```
+
+The filter components:
+- `has_issuance()` — returns true iff the input carries a non-null `AssetIssuance` record. Peg-ins use a separate bit on the prevout and are correctly excluded.
+- `asset_blinding_nonce == ZERO_TWEAK` — selects *new* issuances. Reissuances (nonzero nonce) are excluded; same for any unrelated issuances that a non-conforming tx might carry.
+- `amount` and `inflation_keys` both non-null — defensive filter that rules out asymmetric ("half-issuance") records. Elements consensus permits an `AssetIssuance` with one of the two null and the other set; the deadcat convention is that every market-creation issuance mints both an asset and its reissuance token. Asymmetric records would not be produced by `build_multi_outcome_market_creation_pset` and would fail covenant-script verification downstream, but the filter rejects them at count time for a clearer error.
+
+The covenant script is the authoritative binding between N and the creation tx: if the derived `outcome_count` is wrong, the compiled covenant won't match any tx output and ingestion fails loudly. This makes the count-based derivation equivalent in correctness to storing `outcome_count` in the hint, but saves 1 byte and keeps binary and multi-outcome hint layouts unified.
+
+**v1 support note**: the binary market remains a separate contract family. The multi-outcome contract supports `outcome_count ∈ {3, 4}` in v1; expansion to additional outcome counts later is non-breaking because each supported count gets its own generated contract artifact.
 
 ### Order Hint (40 bytes)
 
 ```
-Byte  0:     [format(4)][side(1)][direction(1)][reserved(2)]  --  8 bits
+Byte  0:     [class=0x4][side(1)][direction(1)][reserved(2)] --  8 bits
 Bytes 1-2:   masked_order_index (u16)                          -- 16 bits
 Bytes 3-34:  market_creation_txid                              -- 256 bits
 Bytes 35-37: price (u24, big-endian)                           -- 24 bits
@@ -274,7 +354,7 @@ Byte  39:    min_remainder_lots (u8)                           --  8 bits
 | `direction` | Yes (in type_tag) | 1 bit | Not derivable — SellBase or SellQuote |
 | `order_index` | Yes (masked) | 2 bytes | Needed for key derivation; XOR-masked for privacy |
 | `market_creation_txid` | Yes | 32 bytes | Chain-only recovery of market params |
-| `price` | Yes | 3 bytes | Not derivable — u24, max ~16.8M; bounded by `collateral_per_pair` for rational orders |
+| `price` | Yes | 3 bytes | Not derivable — u24, max ~16.8M; bounded by `cp = base_payout × N` for rational orders |
 | `min_fill_lots` | Yes | 1 byte | Not derivable — u8, range 1-255; baked into covenant script |
 | `min_remainder_lots` | Yes | 1 byte | Not derivable — u8, range 1-255; baked into covenant script |
 | `base_asset_id` | No | — | Derivable: `side` + market params → YES or NO asset ID |
@@ -282,45 +362,48 @@ Byte  39:    min_remainder_lots (u8)                           --  8 bits
 | `maker_receive_spk_hash` | No | — | Derivable: mnemonic → nonce → tweak → P_order → hash |
 | `maker_pubkey` | No | — | Derivable: mnemonic at `order_index` |
 
-**Builder validation** (returns `CoreError::InvalidParams` if violated):
+**Builder validation** (builder returns `CoreError::ConventionViolation`; the pure derive helper returns `ConventionError` for the same class earlier in the flow):
 - `price <= 0xFFFFFF` (16,777,215)
 - `min_fill_lots` in range 1-255
 - `min_remainder_lots` in range 1-255
 - `order_index <= 65535`
 - Parent market conforms to market conventions
 
-### Pool Hint (41 bytes)
+### Pool Hint (40 bytes)
 
 ```
-Byte  0:      type_tag                                          --  8 bits
-Bytes 1-32:   market_creation_txid                              -- 256 bits
-Bits 264-272: max_loss_sats (9 bits: 5 mantissa + 4 exponent)   \
-Bits 273-281: half_payout_sats (9 bits: 5 mantissa + 4 exponent) |-- 64 bits = 8 bytes
-Bits 282-293: fee_bps (u12)                                      |   (exact bit-level packing
-Bits 294-309: initial_s_index (u16)                              |    across bytes is an
-Bits 310-325: masked_pool_index (u16)                            |    implementation detail)
-Bits 326-327: reserved (must be zero)                            /
-                                                          Total: 328 bits = 41 bytes
+Byte  0:      type_tag (`0x30`)                                  --  8 bits
+Bytes 1-32:   market_creation_txid                               -- 256 bits
+Byte  33:     [max_loss_idx(4)][half_payout_idx(4)]              --  8 bits
+Byte  34:     fee_bps[11:4]                                      --  8 bits
+Byte  35:     [fee_bps[3:0]][initial_s_index[15:12]]             --  8 bits
+Byte  36:     initial_s_index[11:4]                              --  8 bits
+Byte  37:     [initial_s_index[3:0]][masked_pool_index[15:12]]   --  8 bits
+Byte  38:     masked_pool_index[11:4]                            --  8 bits
+Byte  39:     [masked_pool_index[3:0]][reserved=0]               --  8 bits
+                                                           Total: 320 bits = 40 bytes
 ```
+
+Within each bracketed byte, the first nibble is the high nibble and the second nibble is the low nibble.
 
 **Per-field justification:**
 
 | Field | In hint | Size | Justification |
 |---|---|---|---|
 | `market_creation_txid` | Yes | 32 bytes | Chain-only recovery of market params |
-| `max_loss_sats` | Yes (encoded) | 9 bits | Not derivable — 26-value mantissa x 10^exp |
-| `half_payout_sats` | Yes (encoded) | 9 bits | Not derivable — same encoding |
+| `max_loss_sats` | Yes (indexed) | 4 bits | Not derivable — 16-value 1-2-5 table (shared with market `base_payout` encoding) |
+| `half_payout_sats` | Yes (indexed) | 4 bits | Not derivable — same 1-2-5 table |
 | `fee_bps` | Yes | 12 bits | Not derivable — u12, 0.01% granularity, max 40.95% |
 | `initial_s_index` | Yes | 16 bits | Not derivable without brute-force script matching (EC scalar mul per candidate); enables direct script verification during creation-tx ingestion |
 | `pool_index` | Yes (masked) | 16 bits | Needed for admin key derivation; XOR-masked |
 | `yes/no/collateral_asset_id` | No | — | Derivable from parent market params |
-| `lmsr_table_root` | No | — | Derivable via deterministic table generation from `max_loss_sats` + `half_payout_sats` |
+| `lmsr_table_root` | No | — | Derivable via deterministic table generation from `max_loss_sats` + `half_payout_sats` (see [lmsr-deterministic-table-spec.md](../contracts/lmsr-pool/lmsr-deterministic-table-spec.md)) |
 | `q_step_lots` | No | — | Derivable from `b` and `half_payout_sats` |
 | `admin_pubkey` | No | — | Derivable from mnemonic at `pool_index` |
 | Protocol constants | No | — | `TABLE_DEPTH`, `S_BIAS`, `S_MAX_INDEX`, `MIN_POOL_RESERVE` are fixed in the `.simf` |
 
-**Builder validation:**
-- `max_loss_sats` and `half_payout_sats` must be in the 26-value mantissa x exponent set
+**Builder validation** (builder returns `CoreError::ConventionViolation`; the pure derive helper returns `ConventionError` for the same class earlier in the flow):
+- `max_loss_sats` and `half_payout_sats` must be valid indices into the 16-value 1-2-5 table
 - `fee_bps <= 4095` (40.95%)
 - `initial_s_index <= 65535`
 - `pool_index <= 65535`

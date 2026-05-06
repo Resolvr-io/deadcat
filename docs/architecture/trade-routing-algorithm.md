@@ -2,19 +2,41 @@
 
 ## Overview
 
-The `quote_trade` engine method computes the optimal route for a trade across all available LMSR pools and limit orders for a market. The algorithm minimizes total cost to the taker, including transaction fees — which depend on how many liquidity sources are included in the route.
+The `quote_trade` engine method computes the optimal route for a trade across all available LMSR pools and limit orders for a **specific `(market, outcome, side)` combination**. The algorithm minimizes total cost to the taker, including transaction fees — which depend on how many liquidity sources are included in the route.
 
-The external interface is simple: `TradeSpec` in, `TradeQuote` out. This document specifies the internal routing algorithm.
+The external interface is simple: `TradeSpec { outcome, side, direction, amount }` in, `TradeQuote` out. This document specifies the internal routing algorithm.
+
+**Scoping**: routing operates on a single outcome's YES/NO pair at a time. For binary markets, there is only one outcome (`OutcomeIndex::BINARY`), so the `outcome` axis is trivial. For multi-outcome markets composed via Option C (N independent binary LMSR pools per market, one per outcome's YES/NO pair — see [`amm-scoring-rule-tradeoffs.md`](../contracts/multi-outcome/amm-scoring-rule-tradeoffs.md)), each trade targets one outcome's liquidity: the pools and maker orders for that outcome's YES_k / NO_k assets. The algorithm is identical per-outcome — this document is "the algorithm for one outcome's liquidity" with no special multi-outcome semantics at the routing layer itself.
+
+**Multi-outcome operations that don't route through this algorithm**: basket trades (minting or burning complete YES/NO sets) are direct primitives on `MultiOutcomeMarket`. See [`deadcat-core-design.md § MultiOutcomeMarket`](deadcat-core-design.md#multioutcomemarket) for details. Cross-outcome arbitrage (closing `Σ p_YES_k ≠ 1` gaps by atomically composing the market's split-YES/merge-YES primitive with per-outcome pool swaps) will get its own quote/build flow on `MultiOutcomeMarket` in v2; v1 treats externally-broadcast arb txs as ordinary multi-contract transactions (per-contract transitions preserved, no aggregate arb classification). See [`deadcat-core-design.md § Future: Cross-Outcome Arb API (v2)`](deadcat-core-design.md#future-cross-outcome-arb-api-v2). Neither case is routed through `quote_trade`, which handles only single-outcome trades.
 
 ## Algorithm Structure
 
-The router uses **pool-subset enumeration × fee-aware greedy order selection**:
+The router uses **pool-subset enumeration × fee-aware greedy order selection**, scoped to the trade's target outcome:
 
-1. **Pre-select candidate pools**: Rank all active pools by estimated average fill price for the requested amount (one LMSR computation per pool). Take the top N (N = 5).
-2. **Enumerate pool subsets**: For each subset of the N candidate pools (including the empty set — no pools), run the fee-aware greedy order selection.
+1. **Pre-select candidate pools**: Rank all active pools for the target outcome by the best currently fillable variant they can offer (plain or assisted), using both the pool's current `s_index` and its live reserves. Take the top N (N = 5).
+2. **Enumerate pool subsets**: For each subset of the N candidate pools (including the empty set — no pools), run the fee-aware greedy order selection. Within a subset, each pool can still be evaluated as a plain or assisted variant.
 3. **Pick the best result**: The subset that produces the lowest total cost (fill cost + transaction fee) wins.
 
 Pool subset enumeration ensures the pool inclusion decision is optimal — no greedy heuristic for whether to activate a pool. Order selection within each subset is greedy, which is near-optimal for fixed-price sources with independent per-source costs.
+
+### Assisted Pool Variants
+
+For an **existing** pool, the router may evaluate up to two variants of the same pool leg:
+
+- **Plain**: ordinary pool swap, no parent-market co-spend.
+- **Assisted**: co-spend the parent market on the same outcome to add or remove equal YES/NO pairs while executing the pool trade.
+
+The assisted variant rules are fixed in v1:
+
+- Buys may use `IssuePairs`.
+- Sells may use `CancelPairs`.
+- The parent market must still support the required issuance/cancellation path.
+- At most one assisted pool leg may appear in a route.
+- Degenerate fixed-`s_index` pair-only public rebalances are covenant-valid but are not emitted by `quote_trade`.
+- If a plain and assisted route tie on taker outcome, the plain route wins.
+
+The assisted variant's fill cost is the taker's **net** cost/output for the combined market+pool action, not just the pool-side collateral movement.
 
 ## Fee-Aware Greedy Order Selection
 
@@ -31,6 +53,7 @@ Where:
 
 The marginal weight captures the fixed cost of activating each source:
 - **Pool (first use)**: ~1000 vbytes (3 reserve inputs + 3 reserve outputs + Simplicity witnesses)
+- **Assisted pool leg**: pool weight plus the parent market window weight for the same outcome (binary markets add one 3-slot market window; multi-outcome markets add one 2N+1-slot market window)
 - **Pool (already in route)**: 0 vbytes (inputs/outputs already accounted for — additional volume is free)
 - **Limit order**: ~400 vbytes (1 order input + 1-2 outputs + witness)
 
@@ -47,15 +70,15 @@ A partial fill (filled_amount < requested_amount) is returned to the caller via 
 
 ## Pool Pre-Selection
 
-With P active pools for a market, full subset enumeration costs 2^P. To bound this:
+With P active pools for the trade's target outcome, full subset enumeration costs 2^P. To bound this:
 
-1. For each pool, compute the **estimated average fill price** for the full requested amount using point evaluation of the LMSR cost function. This is one computation per pool — O(1), ~1-16μs.
+1. For each pool serving the target outcome, compute the pool's best **currently fillable variant** (plain and, if eligible, assisted) and the associated **fillable amount** and **estimated average fill price** for `min(requested_amount, pool_fillable_now)`. Pools that cannot fill any positive amount under either variant are discarded up front. This is O(1) per pool assuming the combo's table is cached (see [Integer Precision and Caching](#integer-precision-and-caching) for the bignum caching strategy; first-use per combo incurs a ~5-10s table generation cost).
 2. Rank pools by this estimate (lower = better).
 3. Take the top N pools (N = 5 constant). Discard the rest.
 
-Ranking by average fill price (not spot price) ensures deep pools with slightly worse spot prices are preferred over shallow pools with great spot prices for large trades. A shallow pool at 50.00 that slips to 55.00 over 1000 tokens ranks below a deep pool at 50.50 that barely moves.
+Ranking by average fill price (not spot price) ensures deep pools with slightly worse spot prices are preferred over shallow pools with great spot prices for large trades. A shallow pool at 50.00 that slips to 55.00 over 1000 tokens ranks below a deep pool at 50.50 that barely moves. Current reserves matter just as much as the curve here: two pools with identical `(max_loss_sats, half_payout_sats, fee_bps, s_index)` can have different current fillability because admin adjustments or custom bootstrap reserves changed their inventories. The router follows the actual reserves, not a hard-coded "useful band" cap.
 
-**Pool flooding defense**: An attacker creating 100 pools to slow routing only causes 100 LMSR lookups in the pre-selection step (microseconds). The top-5 filter bounds the enumeration at 2^5 = 32 regardless of total pool count.
+**Pool flooding defense**: An attacker creating 100 pools for a single outcome to slow routing only causes 100 LMSR lookups in the pre-selection step (microseconds). The top-5 filter bounds the enumeration at 2^5 = 32 regardless of total pool count. For multi-outcome markets, the attacker can't flood "all outcomes at once" to amplify the attack — routing scopes to one outcome's pool set, so flooding other outcomes' pool sets has no effect on this trade's routing cost.
 
 ## Order Constraints
 
@@ -64,7 +87,7 @@ Ranking by average fill price (not spot price) ensures deep pools with slightly 
 Each maker order has `min_fill_lots` (minimum per fill) and `min_remainder_lots` (minimum remaining after a partial fill). The greedy computes the **actual fillable amount** before evaluating an order's fee-adjusted price:
 
 ```
-available = order.remaining_locked
+available = order.offered_amount - order.total_filled
 desired = min(remaining_request, available)
 
 if desired < order.min_fill_lots:
@@ -100,6 +123,19 @@ min_remaining = ORDER_MARGINAL_WEIGHT × fee_rate × DUST_MULTIPLIER
 
 Where `DUST_MULTIPLIER` is a constant (e.g., 2-3×) ensuring the order's depth meaningfully exceeds its activation cost. This filters dust orders at the store level, preventing an attacker from filling the top-K query slots with tiny orders that crowd out legitimate liquidity.
 
+## Quote Staleness
+
+A `TradeQuote` captures snapshots of every contract the route touches at quote time: pool legs, order legs, and the parent market window for any assisted pool leg. `build_trade_pset` verifies these snapshots are still current against the store's tracked outpoints; if any have changed, it returns `CoreError::StaleQuote` and the caller re-quotes. Causes:
+
+- **Pool swap**: another trade advanced the pool's s_index and produced new reserve outpoints.
+- **Pool admin adjust**: the operator changed reserves without changing s_index — the pricing curve is unchanged, but new outpoints are still produced, so the quote goes stale even though the LMSR math would be identical. This is a subtle case: a taker with a stale quote might expect it to still be valid because "nothing about the price changed," but the outpoint-level snapshot is what the freshness check uses.
+- **Assisted parent-market transition**: if the quote uses `IssuePairs` or `CancelPairs`, the quote also snapshots the co-spent market window. Any issuance/cancellation/resolution/expiry that changes those outpoints makes the quote stale.
+- **Order fill**: another taker filled the order leg, either partially (new active outpoint) or fully (outpoint consumed).
+- **Order cancel**: the maker cancelled, outpoint consumed.
+- **Parent market resolution on a plain quote**: this doesn't directly invalidate the quote — `deadcat-core` doesn't gate post-resolution trading. The pool/order outpoints themselves only change if the pool/order has also transitioned (e.g., an admin close following resolution). Assisted variants simply disappear on re-quote once the market no longer supports issuance/cancellation. Note that the non-gating is an architectural consequence (covenant-level enforcement would require co-spending the market on every pool swap, doubling every swap's weight), not a policy oversight. See [`deadcat-core-design.md § Pool and Order Lifecycle at Market Resolution`](deadcat-core-design.md#pool-and-order-lifecycle-at-market-resolution) and [`lmsr-pool-design.md § Why the pool covenant can't feasibly gate post-resolution trading`](../contracts/lmsr-pool/lmsr-pool-design.md#why-the-pool-covenant-cant-feasibly-gate-post-resolution-trading).
+
+A stale quote is not an error in the usual sense — it's an information-integrity signal that the world changed. Wallet UX is standard "re-quote and re-confirm."
+
 ## Transaction Weight Model
 
 The router tracks cumulative transaction weight to compute fees and enforce the weight cap:
@@ -108,9 +144,10 @@ The router tracks cumulative transaction weight to compute fees and enforce the 
 |---|---|
 | Base (wallet input + confidential change + fee output) | ~4,500 vbytes |
 | Per pool (3 reserve inputs + 3 reserve outputs + witnesses) | ~1,000 vbytes |
+| Per assisted market window | market-kind dependent (binary: one 3-slot window; multi-outcome: one 2N+1-slot window) |
 | Per limit order fill (order input + maker receive output + witness) | ~400 vbytes |
 
-Marginal weight is the incremental weight from adding a source to an existing route. A pool's marginal weight is ~1,000 vbytes on first activation, 0 on subsequent fills (already in the transaction). An order's marginal weight is always ~400 vbytes.
+Marginal weight is the incremental weight from adding a source to an existing route. A pool's marginal weight is ~1,000 vbytes on first activation, 0 on subsequent fills (already in the transaction). An assisted pool variant adds the plain pool weight plus the parent market window weight. An order's marginal weight is always ~400 vbytes.
 
 ### Weight cap
 
@@ -118,27 +155,55 @@ A hard ceiling on transaction weight (e.g., 100,000 vbytes) prevents pathologica
 
 In practice, the fee-aware pricing limits leg count long before the weight cap — each additional leg must provide enough price improvement to justify its weight. The cap is a safety bound, not a typical constraint.
 
-## Integer Precision
+## Integer Precision and Caching
 
-All fill amounts and costs computed by the router must use the **exact same deterministic integer-only LMSR algorithm** that the covenant verifies on-chain. The router uses **point evaluation** — computing `F(s_index)` at specific points using the same integer algorithm as the full table generator, without materializing all 65K entries. This produces bit-identical values to a table lookup at ~1μs per evaluation (~16μs for a binary search), compared to ~80ms to generate the full table. The full table is only needed later by `build_trade_pset` for Merkle proof construction. If the router uses floating-point approximations or independent LMSR reimplementations, the quoted amounts may differ from what the covenant enforces, causing on-chain transaction failure.
+All fill amounts and costs computed by the router must use the **exact same deterministic LMSR algorithm** that the covenant verifies on-chain — the arbitrary-precision bignum algorithm specified in [lmsr-deterministic-table-spec.md](../contracts/lmsr-pool/lmsr-deterministic-table-spec.md). If the router uses floating-point approximations or independent LMSR reimplementations, the quoted amounts may differ from what the covenant enforces, causing on-chain transaction failure.
 
-This applies to:
-- **Pool fill computation**: tokens received for a given input amount (point evaluation of `F(new_s) - F(old_s)`)
-- **Crossover binary search**: finding the s_index where a pool's marginal price exceeds the next alternative (binary search over s_index range using point evaluation at each candidate)
+**Caching strategy at bignum speeds**: Individual F-value computations are ms-scale at arbitrary precision, so on-demand point evaluation during routing would be prohibitively slow when multiple candidate pools need evaluation. `deadcat-core` maintains an in-memory cache of full F-value tables keyed by `(max_loss_sats, half_payout_sats)` combos; the router serves all lookups from the cache. First-use cost per combo is ~5-10s (full table generation); subsequent operations — pool pre-selection, fee-aware greedy evaluation, Merkle proof generation at build time — are O(1) cache hits. The 256-combo v1 param space means the full cache stabilizes quickly under typical wallet usage.
+
+A fixed-point Taylor runtime (deferred to v2 — see [implementation plan § deferred items](deadcat-core-implementation-plan.md#deferred--out-of-scope-items)) would restore microsecond-scale point evaluation and enable truly uncached quoting. Committed Merkle roots are the cross-implementation conformance set, so that switch is non-breaking.
+
+**Reserve-aware fillability**: Cached tables answer "what would the curve charge for this `s_index` movement?" They do **not** by themselves answer "is that movement currently possible?" The router must combine the cached table with the pool's live reserves. A pool fill stops at the first of:
+- requested amount satisfied
+- crossover against the next-best alternative
+- reserve floor would be violated on the next step
+- table boundary reached
+
+For pools bootstrapped with the canonical default reserves, the reserve-floor stop will usually occur near the inward-snapped useful-band bounds. Explicit over-funding can push the fillable region further out; the routing algorithm automatically honors that because it follows actual reserves rather than a builder-policy default.
+
+Caching applies to:
+- **Pool fill computation**: tokens received for a given input amount (lookup of `F(new_s) - F(old_s)` from cached table)
+- **Crossover binary search**: finding the s_index where a pool's marginal price exceeds the next alternative (binary search over s_index range using cached lookups at each candidate)
 
 ## Full Algorithm
 
 ```
 function quote_trade(market_id, spec, fee_rate):
-    // 1. Load candidates
-    all_pools = store.pools_for_market(market_id, ActiveOnly)
-    orders = store.best_orders_for_market(market_id, spec.side, matching_direction, ascending, min_remaining, K=50)
-    // orders are filtered by side + direction, sorted by (price, creation_position) — FIFO within same price
+    // spec = TradeSpec { outcome, side, direction, amount }
+    // For binary markets, spec.outcome == OutcomeIndex::BINARY.
+    // For multi-outcome markets, spec.outcome picks which outcome's liquidity to route against.
+    matching_direction = if spec.direction == Buy then SellBase else SellQuote
+    order_ascending = (spec.direction == Buy)  // buyers prefer lower price; sellers prefer higher
+    requested_amount = requested_amount_from(spec.amount)
 
-    // 2. Pre-select top-N pools by average fill price (point evaluation, ~1-16μs per pool)
+    // 1. Load candidates — scoped to the trade's target outcome
+    all_pools = store.pools_for_market(market_id, spec.outcome, ActiveOnly, Pagination::all())
+    orders = store.best_orders_for_market(
+        market_id, spec.outcome, spec.side, matching_direction,
+        order_ascending, min_remaining, K=50,
+    )
+    // orders are filtered by (outcome, side, direction), sorted by (price, creation_position)
+    // — FIFO within same price
+
+    // 2. Pre-select top-N pools by their best reserve-aware variant
+    viable_pools = []
     for each pool in all_pools:
-        pool.estimated_cost = lmsr_point_eval_exact_input(pool, requested_amount)
-    candidate_pools = top_n_by_estimated_cost(all_pools, N=5)
+        best_variant = best_pool_variant_for_preselection(pool, spec, requested_amount, fee_rate)
+        if best_variant.fillable_amount == 0:
+            continue
+        pool.preselection_estimate = best_variant
+        viable_pools.push(pool)
+    candidate_pools = top_n_by_avg_price_then_depth(viable_pools, N=5)
 
     // 3. Enumerate pool subsets × fee-aware greedy
     best_result = None
@@ -157,6 +222,7 @@ function quote_trade(market_id, spec, fee_rate):
 function fee_aware_greedy(pools, orders, requested_amount, fee_rate):
     remaining = requested_amount
     weight = BASE_TX_WEIGHT
+    assisted_pool_used = false
     legs = []
     total_cost = 0
     order_cursor = 0  // index into price-sorted orders
@@ -167,19 +233,23 @@ function fee_aware_greedy(pools, orders, requested_amount, fee_rate):
         // Evaluate each pool
         for each pool in pools:
             if pool is exhausted: continue
-            marginal_w = if pool already in legs { 0 } else { POOL_WEIGHT }
-            if weight + marginal_w > MAX_TX_WEIGHT: continue
+            for each variant in [plain_variant(pool), assisted_variant_if_available(pool, spec, assisted_pool_used)]:
+                if variant is unavailable: continue
+                marginal_w = variant.marginal_weight_if_activated(weight, assisted_pool_used)
+                if weight + marginal_w > MAX_TX_WEIGHT: continue
 
-            // Use exact LMSR point evaluation: fill pool up to crossover point
-            // Crossover = s_index where pool marginal price exceeds next best alternative
-            // Binary search over s_index range using point evaluation (~16μs)
-            next_best_price = best_alternative_price(orders, order_cursor, fee_rate)
-            (fill_amt, fill_cost) = lmsr_point_eval_fill_to_crossover(pool, remaining, next_best_price)
-            if fill_amt == 0: continue
+                // Use cached LMSR F-value lookups plus live reserves: fill this variant up to
+                // crossover point, reserve-floor exhaustion, or table boundary.
+                // Crossover compares against the best remaining alternative source.
+                next_best_price = best_alternative_price(pools, orders, variant, order_cursor, fee_rate)
+                (fill_amt, fill_cost) = fill_variant_to_crossover(variant, remaining, next_best_price)
+                if fill_amt == 0: continue
 
-            eff_price = (fill_cost + marginal_w × fee_rate) / fill_amt
-            if eff_price < best.eff_price:
-                best = (pool, fill_amt, fill_cost, marginal_w)
+                // For assisted variants, fill_cost is the taker's net cost/output for the
+                // combined market+pool action, and marginal_w already includes the market window.
+                eff_price = (fill_cost + marginal_w × fee_rate) / fill_amt
+                if best is None or eff_price < best.eff_price or (eff_price == best.eff_price and variant.is_plain_pool()):
+                    best = (variant, fill_amt, fill_cost, marginal_w)
 
         // Evaluate next order
         while order_cursor < orders.len():
@@ -193,11 +263,11 @@ function fee_aware_greedy(pools, orders, requested_amount, fee_rate):
 
             fill_cost = actual_fill × order.price
             eff_price = (fill_cost + ORDER_WEIGHT × fee_rate) / actual_fill
-            if eff_price < best.eff_price:
+            if best is None or eff_price < best.eff_price:
                 best = (order, actual_fill, fill_cost, ORDER_WEIGHT)
             break  // only evaluate the top unconsumed order
 
-        if best is None: break  // no viable sources
+        if best is None: break  // no viable sources or all remaining sources are exhausted
 
         // Execute best fill
         legs.append(best)
@@ -205,6 +275,7 @@ function fee_aware_greedy(pools, orders, requested_amount, fee_rate):
         total_cost += best.fill_cost
         weight += best.marginal_weight
         if best.source is order: order_cursor += 1
+        if best.source is assisted pool variant: assisted_pool_used = true
 
         if remaining == 0: break
 
@@ -218,9 +289,9 @@ function fee_aware_greedy(pools, orders, requested_amount, fee_rate):
 - N = candidate pool cap (5) → 2^N = 32 subset iterations
 - K = candidate order limit (50) → greedy loop iterations
 - P = pools in subset (≤5) → per-iteration pool evaluations
-- log S = LMSR point evaluation binary search depth (~16 for 16-bit s_index range)
+- log S = binary-search depth over the 16-bit s_index range (~16)
 
-For typical values: 32 × 50 × (5 + 16) ≈ 33,600 point evaluations at ~1μs each ≈ ~34ms worst case, typically sub-millisecond (most greedy iterations terminate early).
+For typical values with warm caches: 32 × 50 × (5 + 16) ≈ 33,600 cache lookups ≈ sub-millisecond worst case, typically much faster (most greedy iterations terminate early). Cold-start (first use of a given `(max_loss_sats, half_payout_sats)` combo) incurs a ~5-10s full-table generation; this is a one-time cost per combo amortized across all subsequent quotes.
 
 **Space**: O(K + P) for the candidate lists.
 
@@ -228,5 +299,7 @@ For typical values: 32 × 50 × (5 + 16) ≈ 33,600 point evaluations at ~1μs e
 
 ## Key Files
 
-- `src-tauri/crates/deadcat-sdk/src/amm_pool/math.rs` — LMSR math functions (will move to `deadcat-core`)
-- `docs/architecture/deadcat-core-design.md` — `ContractStore` trait with `best_orders_for_market`, `quote_trade` API
+- `crates/deadcat-core/src/lmsr_pool/math.rs` — LMSR math functions; binary LMSR is the only scoring rule, used per-outcome for multi-outcome markets under Option C composition
+- `docs/architecture/deadcat-core-design.md` — `ContractStore` trait (outcome-scoped `pools_for_market` / `best_orders_for_market`), `quote_trade` engine API, `TradeSpec` / `TradeQuote` types
+- `docs/contracts/multi-outcome/amm-scoring-rule-tradeoffs.md` — pool design decision (binary LMSR + Option C composition for multi-outcome)
+- `docs/contracts/multi-outcome/multi-outcome-market-contract.md` — market contract providing the cross-outcome primitives (split/merge YES/NO) that basket trades and future v2 arb compose with

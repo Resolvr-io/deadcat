@@ -446,7 +446,7 @@ async fn setup_node(keys: Keys) -> Arc<DeadcatNode<NoopStore>> {
         ..Default::default()
     };
 
-    let (node, _rx) = DeadcatNode::new(keys, Network::LiquidTestnet, config);
+    let (node, _rx) = DeadcatNode::new(Arc::new(keys), Network::LiquidTestnet, config);
     let node = Arc::new(node);
 
     // Unlock wallet

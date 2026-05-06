@@ -10,16 +10,17 @@ Personas covered: **Pool Operator** and **Order Maker**. See [ux-design.md](../d
 
 **Acceptance criteria**:
 - Pool creation form (accessible from market detail in maker mode) collects: max loss (sats), half payout (sats), fee (bps), starting price (bps)
-- `estimate_bootstrap(max_loss_sats, half_payout_sats, starting_price_bps)` shows required capital: initial YES reserve, initial NO reserve, initial collateral reserve
-- `derive_pool_params(xprv, market_params, pool_index, max_loss_sats, half_payout_sats, fee_bps, starting_price_bps)` generates params + masked index
-- On `ConventionError`: display which constraint was violated (e.g., "max_loss_sats must fit the 26-value mantissa encoding")
-- `build_lmsr_bootstrap_pset(params, starting_price_bps, masked_index, funding)` → sign → broadcast
+- `estimate_bootstrap(max_loss_sats, half_payout_sats, starting_price_bps)` shows the canonical default bootstrap: initial YES reserve, initial NO reserve, initial collateral reserve — and returns the `initial_s_index` corresponding to the chosen `starting_price_bps`
+- `derive_pool_params(xprv, market_params, outcome, pool_index, max_loss_sats, half_payout_sats, fee_bps, initial_s_index)` generates params + masked index. For binary markets, pass `OutcomeIndex::BINARY`; for multi-outcome, pass the outcome this pool serves.
+- On `ConventionError`: display which constraint was violated (e.g., "max_loss_sats must be one of the 16 values in the 1-2-5 table")
+- Pool creation lets the operator accept that default or override it with explicit `initial_reserves`
+- `build_lmsr_bootstrap_pset(params, initial_s_index, initial_reserves, masked_index, funding)` → sign → broadcast
 - After confirmation: `ingest_pool(params, PoolSnapshot::Creation(creation_tx))` to begin tracking with full history
 
 **Interaction design**:
-- **Capital preview**: Before creating, `estimate_bootstrap` shows a breakdown: "To start a pool at 50% YES price with 100k sats max loss, you need: 50 YES tokens, 50 NO tokens, 95,000 sats collateral. Total capital: ~195,000 sats." This helps the operator plan capital acquisition (they may need to issue token pairs first).
-- **Parameter constraints**: All inputs are constrained to convention-valid values. Max loss and half payout use dropdowns or validated inputs matching the 26-value mantissa set. Fee uses a slider (0-40.95%, 0.01% steps). Starting price uses a slider (1-99%).
-- **Risk disclosure**: Show max loss prominently: "Your maximum possible loss from this pool is X sats. This occurs if the price moves from Y% to 0% or 100%."
+- **Capital preview**: Before creating, `estimate_bootstrap` shows a breakdown of the canonical default bootstrap and labels it clearly as a recommendation, not a hard requirement. Example: "Default bootstrap (useful 0.1%-99.9% band): X YES tokens, Y NO tokens, Z sats collateral." This helps the operator plan capital acquisition while still allowing explicit over-funding or under-funding.
+- **Parameter constraints**: All inputs are constrained to convention-valid values. Max loss and half payout use dropdowns constrained to the 16-value 1-2-5 table (shared with market `base_payout` encoding). Fee uses a slider (0-40.95%, 0.01% steps). Starting price uses a slider (1-99%).
+- **Risk disclosure**: Show both the curve parameter and the funded band clearly: "Full-curve LMSR loss parameter: X sats. Default bootstrap funds the useful 0.1%-99.9% band; adding more reserves extends capacity, removing reserves narrows it."
 
 ---
 
@@ -45,7 +46,7 @@ Personas covered: **Pool Operator** and **Order Maker**. See [ux-design.md](../d
 
 **Acceptance criteria**:
 - Adjust form on pool detail shows current reserves and allows delta inputs
-- `build_lmsr_adjust_pset(contract_id, pair_delta, collateral_delta, funding)` — pair_delta applied equally to YES and NO reserves
+- `pool.build_adjust_pset(pair_delta, collateral_delta, funding)` — pair_delta applied equally to YES and NO reserves
 - The UI presents absolute target inputs and computes deltas internally: "Set YES/NO reserves to X" → `pair_delta = X - current`
 - On `CoreError::InvalidParams` (zero deltas or below minimum reserve floor): show specific error
 - After confirmation: reserves update in pool detail
@@ -63,7 +64,7 @@ Personas covered: **Pool Operator** and **Order Maker**. See [ux-design.md](../d
 
 **Acceptance criteria**:
 - Close button on pool detail (only for Active pools)
-- `build_lmsr_close_pset(contract_id, funding)` → sign → broadcast
+- `pool.build_close_pset(funding)` → sign → broadcast
 - All three reserve UTXOs reclaimed atomically to `funding.return_script`
 - After confirmation: pool state transitions to `Closed`
 
@@ -98,7 +99,7 @@ Personas covered: **Pool Operator** and **Order Maker**. See [ux-design.md](../d
 **Acceptance criteria**:
 - "My Orders" list shows all orders from `fetchOwnOrders`: market, direction, price, offered amount, fill status, order state
 - Fill progress: `OrderState::Active { offered_amount, total_filled }` → progress bar showing "X of Y sats filled"
-- Cancel button calls `build_cancel_order_pset(contract_id, funding)` → sign → broadcast
+- Cancel button calls `order.build_cancel_pset(funding)` → sign → broadcast
 - After cancellation: `OrderState::Cancelled { total_filled }` — show "Cancelled (X of Y filled before cancellation)"
 - Consumed orders (`OrderState::Consumed`): show "Fully filled" with green check
 

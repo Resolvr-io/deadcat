@@ -1,31 +1,53 @@
 # Contract Specification
 
-This document specifies the three Deadcat covenant contracts from the perspective of a `deadcat-core` implementor: planned parameter types, covenant structure, spend paths, and witness data. It consolidates information from the `.simf` source files and multiple satellite refactor docs into a single reference.
+This document specifies the Deadcat covenant contracts from the perspective of a `deadcat-core` implementor: planned parameter types, covenant structure, spend paths, and witness data. It consolidates information from the `.simf` source files and multiple satellite refactor docs into a single reference.
 
-**This document describes the planned end state** — after all pending refactors are applied. The current SDK source may differ. See [Pending Refactors](#pending-refactors) for the delta.
+**This document is the implementation target.** Some legacy `deadcat-sdk` covenant/source files still differ; the checklist below tracks that legacy-source alignment work. It does not indicate unresolved protocol behavior in this spec.
 
-## Prediction Market
+## Contract Types at a Glance
+
+Deadcat has **two prediction market contracts** plus two supporting contracts:
+
+| Contract | Purpose | Use when |
+|---|---|---|
+| **Prediction Market (binary)** | YES/NO on a single event | Outcomes are binary, or the set of outcomes can change over time (composed at the app layer with oracle-discipline-enforced inter-market coherence) |
+| **Multi-Outcome Market** | N mutually exclusive, exhaustive outcomes with per-outcome YES/NO tokens. Provides atomic cross-outcome primitives (split-YES, split-NO, cross-outcome swap) for efficient arb, LP rotation, and basket operations. | Outcome set is fixed and known at creation (e.g., Fed rate decision: raise/flat/lower/other, sports brackets, Oscar categories) |
+| **LMSR Pool** | Binary automated market maker. Serves binary markets directly and per-outcome YES/NO pairs within multi-outcome markets via **Option C composition** (N binary LMSR pools per multi-outcome market). | Providing liquidity on any market — single pool contract type for both binary and multi-outcome |
+| **Maker Order** | Limit order against a binary market's token | Fills at a fixed price, cancellable by the maker |
+
+The two prediction market contracts **coexist by design**. Creators pick by event characteristics:
+
+- **Known, exhaustive outcome set** → multi-outcome market contract. Gets atomic cross-outcome primitives, stronger oracle containment, single shared collateral UTXO.
+- **Dynamic or non-exhaustive outcomes** (candidates dropping out, open-ended questions) → composed binary market contracts at the app layer.
+
+Regardless of which market contract is used, **AMM liquidity is always provided via binary LMSR pools**. For multi-outcome markets, N binary LMSR pools are composed (one per outcome's YES/NO pair) and cross-outcome AMM coherence (`Σ p_YES_k = 1`) is arb-enforced. The multi-outcome market contract's cross-outcome primitives make that arb atomic (single-transaction closure of coherence gaps). See [multi-outcome/multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md) for the full spec and [multi-outcome/amm-scoring-rule-tradeoffs.md](multi-outcome/amm-scoring-rule-tradeoffs.md) for the pool design decision.
+
+Both market contracts uphold the same set of covenant-enforced principles (permissionlessness within the solvency invariant, narrow oracle authority, terminal-path completeness, RT destruction, sibling UTXO check, witness-parameterized indices, etc.). These are specified once in [market-contract-principles.md](market-contract-principles.md) and implemented by each contract. The per-contract specs below describe what is specific to each — token model, spend paths, parameters — and inherit the shared principles by reference.
+
+## Prediction Market (Binary)
 
 ### Parameters
 
 ```rust
-pub struct PredictionMarketParams {
+pub struct BinaryMarketParams {
     pub oracle_public_key: XOnlyPublicKey,      // BIP-340 Schnorr pubkey for oracle attestation
     pub collateral_asset_id: AssetId,           // L-BTC, USDt, or other Elements asset
     pub yes_token_asset_id: AssetId,            // derivable from creation tx issuance entropy
     pub no_token_asset_id: AssetId,             // derivable from creation tx issuance entropy
     pub yes_reissuance_token_id: AssetId,       // derivable from creation tx issuance entropy
     pub no_reissuance_token_id: AssetId,        // derivable from creation tx issuance entropy
-    pub collateral_per_pair: u64,               // total collateral for one YES+NO pair (convention: 1-2-5 table)
-    pub expiry_time: u32,                       // block height deadline (convention: snapped to 60-block boundary)
+    pub base_payout: u64,                       // primary denomination (1-2-5 table); cp = base_payout × 2 is the pair cost
+    pub expiry_time: u32,                       // block height deadline (convention: rounded up to next 60-block boundary)
 }
 ```
 
 4 of 8 fields are derivable from the creation transaction's issuance entropy. The remaining 4 are stored in the OP_RETURN recovery hint. See [chain-only-recovery.md](../protocol/chain-only-recovery.md).
 
-**Unit convention**: All amounts (`collateral_per_pair`, `max_loss_sats`, `half_payout_sats`, token counts, reserve values) are denominated in the **smallest indivisible unit** of the respective asset — satoshis for L-BTC (10^-8 BTC), 10^-8 for USDt on Liquid, etc. The `_sats` suffix on some fields reflects the L-BTC-as-canonical-example convention, not an L-BTC-only restriction. Protocol constants like `MIN_POOL_RESERVE = 1,000` are in smallest units regardless of asset.
+**Denomination model**: The primary covenant param is `base_payout` — the per-outcome YES-expiry payout unit. Binary markets derive `cp = base_payout × 2`. Multi-outcome markets derive `cp = base_payout × outcome_count`. This keeps the two market kinds on one denomination model without conflating the binary API's single outcome with the binary settlement multiplier of 2. See [multi-outcome-market-contract.md § Denomination model](multi-outcome/multi-outcome-market-contract.md#denomination-model) for the rationale.
 
-Builder validates: `collateral_per_pair` in 1-2-5 table, `expiry_time` on 60-block boundary, `collateral_asset_id` in well-known set or exotic-escape-compatible.
+**Unit convention**: All amounts (`base_payout`, `max_loss_sats`, `half_payout_sats`, token counts, reserve values) are denominated in the **smallest indivisible unit** of the respective asset — satoshis for L-BTC (10^-8 BTC), 10^-8 for USDt on Liquid, etc. The `_sats` suffix on some fields reflects the L-BTC-as-canonical-example convention, not an L-BTC-only restriction. Protocol constants like `MIN_POOL_RESERVE = 1,000` are in smallest units regardless of asset.
+
+Builder validates: `base_payout` in the 1-2-5 table, accepts any future `expiry_time`, rounds it up to the next 60-block boundary, and validates the rounded value against the recovery conventions. `collateral_asset_id` must be in the well-known set or exotic-escape-compatible.
 
 ### Covenant Structure
 
@@ -48,8 +70,8 @@ Each slot has a unique script pubkey derived from the contract params + slot ide
 
 | Transition | From slots | To slots | Authorization | Covenant enforces |
 |---|---|---|---|---|
-| Initial issuance | 0, 1 | 2, 3, 4 | RT spend | Collateral = pairs x collateral_per_pair |
-| Subsequent issuance | 2, 3, 4 | 2, 3, 4 | RT spend | Collateral increased by pairs x collateral_per_pair; sibling UTXO check |
+| Initial issuance | 0, 1 | 2, 3, 4 | RT spend | Collateral = pairs × cp, where cp = base_payout × 2 |
+| Subsequent issuance | 2, 3, 4 | 2, 3, 4 | RT spend | Collateral increased by pairs × cp; sibling UTXO check |
 | Partial cancellation | 2, 3, 4 | 2, 3, 4 | RT spend + token burn | Collateral decreased, tokens burned; sibling UTXO check |
 | Full cancellation | 2, 3, 4 | 0, 1 | RT spend + token burn | All collateral returned, all tokens burned; sibling UTXO check |
 | Resolution (YES) | 2, 3, 4 | 5 | Oracle BIP-340 signature | Oracle signs tagged hash of market_id + outcome; RT burn outputs verified at unspendable script with correct commitment; sibling UTXO check |
@@ -58,9 +80,9 @@ Each slot has a unique script pubkey derived from the contract params + slot ide
 | Redemption (post-NO) | 6 | none | Token burn | NO tokens burned, collateral released at full value |
 | Redemption (expired) | 7 | none | Token burn | Any tokens burned, collateral released at half value |
 | Expiry | 2, 3, 4 | 7 | Timelock >= expiry_time | No signature required; RT burn outputs verified at unspendable script with correct commitment; sibling UTXO check |
-| Dormant resolution (YES) | 0, 1 | none | Oracle BIP-340 signature | Both RTs consumed, no outputs |
-| Dormant resolution (NO) | 0, 1 | none | Oracle BIP-340 signature | Both RTs consumed, no outputs |
-| Dormant expiry | 0, 1 | none | Timelock >= expiry_time | Both RTs consumed, no outputs |
+| Dormant resolution (YES) | 0, 1 | none | Oracle BIP-340 signature | Both RTs consumed; RT burn outputs verified at unspendable script; no covenant continuation outputs |
+| Dormant resolution (NO) | 0, 1 | none | Oracle BIP-340 signature | Both RTs consumed; RT burn outputs verified at unspendable script; no covenant continuation outputs |
+| Dormant expiry | 0, 1 | none | Timelock >= expiry_time | Both RTs consumed; RT burn outputs verified at unspendable script; no covenant continuation outputs |
 
 **Sibling UTXO check**: All transitions that co-spend RTs and collateral verify that the three covenant inputs were created in the same transaction (`input_prev_outpoint` txid match across all three). This prevents collateral substitution — an attacker cannot create a fake collateral UTXO at the covenant script address and swap it in for the real one, because the fake UTXO's `prev_txid` won't match the RTs'. See [enforcement-layers.md](../architecture/enforcement-layers.md) for the full attack analysis.
 
@@ -79,11 +101,102 @@ See [oracle-bip340-tagged-hash.md](../protocol/oracle-bip340-tagged-hash.md).
 
 ### Witness Data
 
-For **dormant terminal paths** (resolution/expiry from 0 outstanding pairs): both RT inputs are spent with no covenant outputs. The three-way ambiguity (YES/NO/Expired) is resolved via `RedeemNode::decode` on the witness — the spend path identifies which transition occurred.
+For **dormant terminal paths** (resolution/expiry from 0 outstanding pairs): both RT inputs are spent, RT burn outputs are produced, and no covenant continuation outputs are produced. The three-way ambiguity (YES/NO/Expired) is resolved via `RedeemNode::decode` on the witness — the spend path identifies which transition occurred.
 
 All other transitions are detectable from script pubkey matching alone (8 unique scripts).
 
+## Multi-Outcome Market
+
+Generalizes the binary market to N mutually exclusive, exhaustive outcomes with **per-outcome YES/NO tokens** (2N tokens total). This contract is appropriate when the outcome set is fixed and known at creation time. Its primary value is the **atomic cross-outcome primitives** (split-YES, split-NO, cross-outcome swap), which enable efficient arb, LP rotation, and basket operations that composed binary markets cannot provide atomically.
+
+**AMM liquidity** for a multi-outcome market comes from **Option C composition**: N binary LMSR pools, one per outcome's YES/NO pair. Cross-outcome AMM coherence (`Σ p_YES_k = 1`) is arb-enforced, with arbitrageurs using the market contract's cross-outcome primitives to close gaps in a single atomic transaction.
+
+For the full spec, design rationale, and alternatives considered, see [multi-outcome/multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md).
+
+### Parameters
+
+```rust
+pub struct MultiOutcomeMarketParams {
+    pub oracle_public_key: XOnlyPublicKey,
+    pub collateral_asset_id: AssetId,
+    pub yes_token_asset_ids: [AssetId; N],       // derivable from creation tx
+    pub no_token_asset_ids: [AssetId; N],        // derivable from creation tx
+    pub yes_rt_asset_ids: [AssetId; N],          // derivable from creation tx
+    pub no_rt_asset_ids: [AssetId; N],           // derivable from creation tx
+    pub base_payout: u64,                        // primary denomination (1-2-5 table); cp = base_payout × N is the pair cost
+    pub expiry_time: u32,                        // 60-block boundary
+    pub outcome_count: u8,                       // N
+}
+```
+
+Builder validates: `N` in supported range (**v1: N ∈ {3, 4}**), `base_payout` in 1-2-5 table, `expiry_time` on 60-block boundary. Expiry-redemption divisibility is structural under this model (`cp = base_payout × N` is trivially divisible by N), so no `cp mod N == 0` check is required at builder or covenant level.
+
+### Covenant Structure
+
+**5N + 2 slots**:
+- 2N Dormant RTs (YES_i and NO_i, one per outcome)
+- 2N Unresolved RTs (YES_i and NO_i)
+- 1 Unresolved collateral
+- N Resolved_k collateral slots (one per winning outcome)
+- 1 Expired collateral
+
+| N | Slot count |
+|---|---|
+| 3 | 17 |
+| 5 | 27 |
+| 8 | 42 |
+| 10 | 52 |
+
+### Token Model and Solvency Invariant
+
+For outcome k winning, `YES_k` and `NO_j` (for all j ≠ k) each redeem for `cp = base_payout × N`. Pre-resolution, the contract maintains an outcome-independent quantity `Q = y_k + sum_{j≠k} n_j` (same value for every k), with collateral `C = cp × Q`. All supported operations preserve outcome-independence of Q.
+
+### Spend Paths (summary)
+
+Formulas below use these canonical derivation shorthands:
+
+- `cp := base_payout × N`
+- `cp_yes_basket := cp`
+- `cp_no_basket := (N - 1) × cp`
+- `cp_cross_swap := (N - 2) × cp`
+
+Per-outcome operations:
+- **Issue pair (outcome i)**: mint `sets` of YES_i and sets of NO_i, lock `sets × cp`.
+- **Cancel pair (outcome i)**: burn sets of YES_i and sets of NO_i, release `sets × cp`.
+
+Cross-outcome operations:
+- **Split YES** / **Merge YES**: mint/burn `sets` of each YES_i, for `sets × cp_yes_basket`.
+- **Split NO** / **Merge NO**: mint/burn `sets` of each NO_i, for `sets × cp_no_basket`.
+- **Cross-outcome swap** (`YES_i → {NO_j : j ≠ i}`): burn `sets` of `YES_i`, mint `sets` of each `NO_j` for `j ≠ i`, and lock `sets × cp_cross_swap`.
+
+Resolution/redemption:
+- **Resolution (outcome k)**: oracle signs u8 outcome_index; all 2N RTs burned; collateral moves to Resolved_k slot.
+- **Redemption**: YES_k and NO_j (j ≠ k) each redeem for `cp = base_payout × N`.
+- **Expiry redemption**: YES_i redeems for `base_payout`; NO_i redeems for `base_payout × (N-1)`. Both are exact integers by construction. Uniform 1/N outcome probability assumption keeps the rate solvency-preserving.
+
+All Unresolved-phase transitions co-spend all **2N+1 covenant inputs** (all RTs + collateral) to maintain the sibling UTXO check.
+
+### Oracle Attestation
+
+```
+message = tagged_hash("deadcat/oracle_attestation", market_id || outcome_index)
+market_id = SHA256(yes_token_asset_ids[0] || no_token_asset_ids[0] || ... || yes_token_asset_ids[N-1] || no_token_asset_ids[N-1])
+outcome_index = u8 in [0, N-1]
+```
+
+Tag string matches the binary market. Domain separation is via `market_id`.
+
+### Code Generation
+
+Each supported N has its own `.simf` file generated from a template by `deadcat-codegen` at **dev time**. The generated `.simf` sources are **committed to the repo** under `crates/deadcat-core/contracts/multi_outcome/`, and the compiled Simplicity artifacts (`src/artifacts/*.rs`, produced by `simplex build`) are also committed. Runtime reads these via `include_bytes!` and imports the typed artifact modules directly — no template instantiation or compilation happens at `cargo build` time. Regeneration is triggered explicitly by developers via `just generate-simf` + `just regenerate-artifacts` when an intentional change is being committed; drift tests catch stale committed outputs on every `cargo test`. **v1 supports N ∈ {3, 4}**. Expansion to larger N is non-breaking (new N → new template instantiation → new committed `.simf` + artifacts → new contract; existing contracts unaffected). Above N=10, transaction weight from the 2N+1-way covenant co-spend becomes uncomfortable; large-N events should use hierarchical composition (markets-of-markets) or binary-market composition with arbitrage-based coherency.
+
+**The binary market stays separate from the multi-outcome template.** `prediction_market.simf` is the canonical binary contract and is not regenerated from the multi-outcome template. The template serves markets with 3 or more outcomes only in v1. See [multi-outcome-market-contract.md](multi-outcome/multi-outcome-market-contract.md).
+
 ## LMSR Pool
+
+**The single AMM pool contract in deadcat.** One binary LMSR pool serves both single-event binary markets and per-outcome YES/NO pairs within multi-outcome markets (via Option C composition — N pools per multi-outcome market, one per outcome). The pool contract doesn't know or care which market contract type underlies its YES/NO tokens. See [multi-outcome/amm-scoring-rule-tradeoffs.md](multi-outcome/amm-scoring-rule-tradeoffs.md) for the pool design decision.
+
+**Liquidity model**: admin-operated, permissionless creation. Each pool has a single operator who chooses parameters, provides subsidy, can adjust reserves and close via admin-signed spend paths, earns fees, and bears impermanent loss. Anyone can deploy a pool on any market with any parameters; multiple competing pools per market are expected. LP-tokenized pools are deferred to v2.
 
 ### Parameters
 
@@ -94,10 +207,10 @@ pub struct LmsrPoolParams {
     pub collateral_asset_id: AssetId,       // from parent market
     pub lmsr_table_root: [u8; 32],          // derived: Merkle root of F-value table
     pub q_step_lots: u64,                   // derived from b and half_payout_sats
-    pub half_payout_sats: u64,              // creator-specified (convention: 26-value mantissa x 10^exp)
-    pub fee_bps: u64,                       // creator-specified (u64 for Simplicity; validated < 10,000; convention: <= 4,095)
+    pub half_payout_sats: u64,              // creator-specified (convention: 16-value 1-2-5 table, shared with market base_payout encoding)
+    pub fee_bps: u16,                       // creator-specified public API type (convention: <= 4,095; widened internally for Simplicity arithmetic)
     pub admin_pubkey: XOnlyPublicKey,       // from mnemonic at pool_index
-    pub max_loss_sats: u64,                 // NOT a covenant param — needed for off-chain LMSR math (b derivation, point evaluation, table generation)
+    pub max_loss_sats: u64,                 // NOT a covenant param — needed for off-chain LMSR math (b derivation, cached-table quoting, table generation)
 }
 ```
 
@@ -117,28 +230,31 @@ pub struct LmsrPoolParams {
 
 3 reserve UTXOs (YES, NO, Collateral) sharing a script pubkey that encodes the current `s_index`. The taproot internal key is NUMS (key-spend unspendable). The taproot tree has constant Simplicity program leaves (same CMR regardless of `s_index`) and a variable `tapdata_leaf = TaggedHash("TapData", s_index.to_be_bytes())`. When `s_index` changes (swap), only the tapdata leaf changes — the Simplicity programs and their CMRs are constant for given pool params. This means computing a pool's script pubkey for a given `s_index` requires one Simplicity compilation (to get the constant program CMRs) plus lightweight hashing and an EC scalar multiplication (for the taproot tweak).
 
-Swap and admin paths produce three consecutive reserve outputs in fixed order, as enforced by the covenant: YES (index N), NO (index N+1), Collateral (index N+2), all sharing the same script pubkey encoding the current/new `s_index`.
+Public and admin-adjust paths produce three consecutive reserve outputs in fixed order, as enforced by the covenant: YES (index N), NO (index N+1), Collateral (index N+2), all sharing the same script pubkey encoding the current/new `s_index`.
 
 ### Spend Paths
 
 | Path | Authorization | s_index | Covenant enforces |
 |---|---|---|---|
-| Swap | Permissionless | Changes | Merkle proofs for F(old_s) and F(new_s), collateral conservation with fee inequality, reserve minimums, correct trade direction |
+| Public | Permissionless | Changes or Frozen | Merkle proofs for F(old_s) and F(new_s), reserve deltas decompose into one valid LMSR movement plus one equal YES/NO pair delta, collateral conservation with fee inequality for the LMSR component, reserve minimums, correct trade direction when `s_index` changes |
 | Admin adjust | Admin key signature | Frozen | YES and NO deltas must be equal, reserve minimums maintained |
 | Close | Admin key signature | N/A | All 3 reserve UTXOs consumed atomically, no new covenant outputs |
 
 See [lmsr-pool-close-path.md](lmsr-pool/lmsr-pool-close-path.md) for the close path specification.
 
+The **public** path is the covenant-level superset used for ordinary swaps, swap+market-assist composition with the parent market, and degenerate fixed-`s_index` pair rebalances. v1 `build_trade_pset` emits only ordinary swaps and swap+market-assist routes; pure pair-only public rebalances remain covenant-valid for future composition.
+
 ### Witness Data
 
 All pool transitions use **witness-based detection** via `RedeemNode::decode`:
-- **Swap vs Admin**: Distinguished by spend path in the witness. s_index change confirmed by witness (swap: old != new, admin: old == new).
+- **Public vs Admin**: Distinguished by spend path in the witness, not by whether `s_index` changed. On the public path, `old_s_index != new_s_index` is an ordinary or assisted swap-like movement; `old_s_index == new_s_index` is a degenerate paired rebalance. On the admin path, `old_s_index == new_s_index` is operator-managed reserve adjustment.
 - **Close**: Spend path confirmed as close by the witness. No covenant outputs.
 - **s_index extraction**: The witness contains the authoritative `old_s_index` and `new_s_index`. This is ground truth — reserve-based reverse lookup is fragile after admin adjustments.
+- **Paired delta derivation**: Any equal YES/NO paired reserve delta is derived from the reserve vector change itself; the witness does not supply an independent `pair_delta` scalar.
 
-### LMSR Math: Point Evaluation
+### LMSR Math: Cached Tables
 
-The quoting hot path (`quote_trade`) does NOT need the full 65K-entry F-value table. It uses direct cost function evaluation at specific points (~1us per evaluation, ~16us for a binary search). The full table is only needed for Merkle proof generation (`build_trade_pset`, `build_lmsr_bootstrap_pset`) and pool ingestion verification (~80ms, infrequent operations). See [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md).
+The v1 implementation uses the deterministic full-table output everywhere — quoting, proof generation, and ingestion verification. `deadcat-core` caches full F-value tables keyed by `(max_loss_sats, half_payout_sats)`: the first use of a combo incurs the bignum cold-start cost, and subsequent operations are O(1) lookups against the cached table. Routing still remains reserve-aware: the cached table determines curve pricing, while live reserves determine currently fillable volume. See [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md).
 
 ## Maker Order
 
@@ -153,9 +269,9 @@ pub enum OrderDirection {
 pub struct MakerOrderParams {
     pub base_asset_id: AssetId,             // YES or NO token from parent market
     pub quote_asset_id: AssetId,            // collateral asset from parent market
-    pub price: u64,                         // quote units per base unit (convention: <= 2^24)
-    pub min_fill_lots: u64,                 // minimum base units per fill (convention: 1-255)
-    pub min_remainder_lots: u64,            // minimum base units remaining after partial fill (convention: 1-255)
+    pub price: u64,                         // quote units per base unit (convention: <= 0xFFFFFF = u24 max)
+    pub min_fill_lots: u8,                  // minimum base units per fill (convention: 1-255)
+    pub min_remainder_lots: u8,             // minimum base units remaining after partial fill (convention: 1-255)
     pub direction: OrderDirection,
     pub maker_receive_spk_hash: [u8; 32],   // SHA256 of maker's P2TR receive scriptPubKey
     pub maker_pubkey: XOnlyPublicKey,       // maker's x-only pubkey (taproot internal key for cancel)
@@ -199,33 +315,32 @@ Order detection uses **taproot structural checks**, not Simplicity witness decod
 
 **NUMS key**: "Nothing Up My Sleeve" — a point on the secp256k1 curve with no known discrete logarithm, derived by hashing a fixed string to a curve point. This is the standard NUMS point used across the Bitcoin/Liquid ecosystem (same value used by BIP-341 for the unspendable internal key). Key-spend with this internal key is cryptographically infeasible, forcing all spends through the script path (Simplicity covenant). Maker orders use the maker's real public key instead — key-spend is their cancellation mechanism.
 
-## Pending Refactors
+## Legacy Source Alignment Checklist
 
-These changes are specified in satellite docs but not yet applied to the `.simf` source files:
+These items track legacy covenant/source updates needed so the older `deadcat-sdk` sources match this spec:
 
 | Refactor | Satellite doc | Status | Blocks |
 |---|---|---|---|
-| `collateral_per_token` → `collateral_per_pair` | [collateral-per-pair-refactor.md](prediction-market/collateral-per-pair-refactor.md) | Pending | Market contract, market params |
+| `collateral_per_token` → `base_payout` (primary denomination; `cp = base_payout × N` derived) | [collateral-per-pair-refactor.md](prediction-market/collateral-per-pair-refactor.md) | Pending | Market contract, market params (binary and multi-outcome). Supersedes the intermediate `collateral_per_pair` rename — going directly to `base_payout` unifies binary and multi-outcome denomination and makes expiry-redemption divisibility structural. |
 | Oracle BIP-340 tagged hash | [oracle-bip340-tagged-hash.md](../protocol/oracle-bip340-tagged-hash.md) | Pending | Market contract, oracle attestation |
 | Remove cosigner from order fill path | [maker-order-remove-cosigner.md](maker-order/maker-order-remove-cosigner.md) | Pending | Order contract, order params |
 | Rename pool `COSIGNER_PUBKEY` → `ADMIN_PUBKEY` | [maker-order-remove-cosigner.md](maker-order/maker-order-remove-cosigner.md) | Pending | Pool contract, pool params |
 | Remove order script-cancel path | [maker-order-remove-script-cancel.md](maker-order/maker-order-remove-script-cancel.md) | Pending | Order contract |
 | Add pool close script path | [lmsr-pool-close-path.md](lmsr-pool/lmsr-pool-close-path.md) | Pending | Pool contract |
 | Pool params → protocol constants | [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md) | Pending | Pool contract |
-| Deterministic integer table generation | [lmsr-pool-design.md](lmsr-pool/lmsr-pool-design.md) | Pending — requires formal specification document (exact constants, algorithms, Merkle format, test vectors) | Pool math |
+| Deterministic F-value computation (bignum runtime + committed reference Merkle roots) | [lmsr-deterministic-table-spec.md](lmsr-pool/lmsr-deterministic-table-spec.md) | Specified — see the deterministic LMSR runtime decision in the design docs. Runtime implementation in `deadcat-core` uses `num-bigint` + `num-rational` at arbitrary precision; reference generator and committed fixtures live in `deadcat-codegen`. | Pool math |
+| Pool denomination: 26-mantissa × 16-exponent → 16-value 1-2-5 table (shared with market encoding) | [chain-only-recovery.md § Pool Denomination](../protocol/chain-only-recovery.md#pool-denomination-1-2-5-table-4-bits-each) | Specified | Pool params, OP_RETURN hint (41 → 40 bytes) |
 | Covenant-enforced deterministic RT blinding | [deterministic-rt-blinding.md](../protocol/deterministic-rt-blinding.md) | Pending | Market contract (ABF enforcement, CBF pass-through, `verify_token_commitment` refactor) |
 | Dormant terminal paths (resolution + expiry from zero pairs) | [market-dormant-terminal-paths.md](prediction-market/market-dormant-terminal-paths.md) | Pending | Market contract (DormantYesRt and DormantNoRt slot programs) |
 | Order remainder witness-parameterization | [transaction-composability-model.md](../architecture/transaction-composability-model.md) | Pending | Order contract (`remainder_idx` from witness instead of `current_index() + 1`) |
 | Sibling UTXO check + partial cancellation RT co-spend | [enforcement-layers.md](../architecture/enforcement-layers.md) | Pending | Market contract (add `prev_txid` match on all RT+collateral co-spend paths; partial cancellation must co-spend RTs to maintain sibling invariant) |
 | Burn script: P2WSH → OP_RETURN | [enforcement-layers.md](../architecture/enforcement-layers.md) | Pending | Market contract (`ensure_blinded_reissuance_burn_output` checks bare OP_RETURN script hash instead of P2WSH hash). Rationale: consensus-level unspendability, UTXO set pruning. Blinded OP_RETURN confirmed supported on Elements. |
 
-**Implementation order**: The `.simf` refactors should be applied before implementing `deadcat-core`. The core implementation is specified against the planned end state.
+**Implementation order**: The legacy covenant/source alignment work above should be applied before implementing `deadcat-core`. The core implementation is specified against the end state described in this document.
 
 ## Key Files
 
-- `src-tauri/crates/deadcat-sdk/contract/prediction_market.simf` — market covenant source
-- `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — pool covenant source
-- `src-tauri/crates/deadcat-sdk/contract/maker_order.simf` — order covenant source
-- `src-tauri/crates/deadcat-sdk/src/prediction_market/params.rs` — current market params (pre-refactor)
-- `src-tauri/crates/deadcat-sdk/src/lmsr_pool/params.rs` — current pool params (pre-refactor)
-- `src-tauri/crates/deadcat-sdk/src/maker_order/params.rs` — current order params (pre-refactor)
+- `crates/deadcat-core/contracts/prediction_market.simf` — binary market covenant implementation target
+- `crates/deadcat-core/contracts/lmsr_pool.simf` — pool covenant implementation target
+- `crates/deadcat-core/contracts/maker_order.simf` — order covenant implementation target
+- `crates/deadcat-core/contracts/multi_outcome/` — generated multi-outcome covenant implementation targets

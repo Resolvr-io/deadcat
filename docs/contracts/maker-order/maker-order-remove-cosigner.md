@@ -49,7 +49,7 @@ fn main() {
 // After
 fn main() {
     let i: u32 = jet::current_index();
-    let i_rem: u32 = safe_add_32(i, 1);
+    let i_rem: u32 = witness::REMAINDER_IDX;
     let out_spk_hash: u256 = get_output_script_hash(i);
     assert!(jet::eq_256(out_spk_hash, param::MAKER_RECEIVE_SPK_HASH));
     match param::DIRECTION {
@@ -74,7 +74,7 @@ The following can be removed:
 ## Problem 2: Misleading "Cosigner" Name for Pool Admin Key
 
 The LMSR pool covenant uses `COSIGNER_PUBKEY` for the key that authorizes admin operations (adjust, close). This is misleading:
-- The swap path is permissionless — no "co-signing" happens.
+- The public pool path is permissionless — no "co-signing" happens.
 - The admin/close paths use this key as the **sole** authorization, not a co-signature.
 - The pool operator controls the key themselves — no second party involved.
 
@@ -90,7 +90,9 @@ This aligns with the existing "admin path" / "admin adjust" terminology used in 
 
 The pool's close path uses the same authorization model — see [lmsr-pool-close-path.md](../lmsr-pool/lmsr-pool-close-path.md).
 
-## Key Files
+## Legacy Source Touchpoints
+
+These are the current `deadcat-sdk` files where this legacy-source delta exists today. The `deadcat-core` implementation should realize the same behavior in its new order and pool contract modules.
 
 - `src-tauri/crates/deadcat-sdk/contract/maker_order.simf` — remove cosigner check, `COSIGNER_PUBKEY` param, `COSIGNER_SIGNATURE` witness
 - `src-tauri/crates/deadcat-sdk/src/maker_order/params.rs` — remove `cosigner_pubkey` field

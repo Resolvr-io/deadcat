@@ -1,5 +1,11 @@
 # Future Enhancement: Atomic Issuance + LMSR Pool Bootstrap
 
+## Scope Note
+
+This document is about **brand-new pool bootstrap** only: creating the pool and issuing its starting YES/NO inventory in one transaction.
+
+It is **not** about existing-pool assisted trading. In the v1 design, `quote_trade` / `build_trade_pset` may already co-spend the parent market to issue or cancel pairs for an **existing** pool when that improves fillability. That existing-pool composition does not require bootstrap-specific covenant changes. See [transaction-composability-model.md](../../architecture/transaction-composability-model.md) and [trade-routing-algorithm.md](../../architecture/trade-routing-algorithm.md).
+
 ## Current Limitation
 
 Pool creation requires pre-existing YES, NO, and L-BTC tokens. The user must issue token pairs via the market covenant in a separate transaction before creating an LMSR pool. This adds an extra on-chain step, increases fees, and complicates the UX.

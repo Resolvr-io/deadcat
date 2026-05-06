@@ -286,7 +286,7 @@ Shown when `trending.length === 0` on the Trending view. Icon + "No markets yet"
 └─────────────────────────────────────┘
 ```
 
-**State flow**: Amount input → `useQuoteTrade` mutation → quote stored in `tradeQuoteSnapshot` → "Buy YES" → `QuoteModal` opens → user confirms → `useExecuteTrade` mutation → `invoke("build_trade_pset")` → sign → broadcast → success toast + query invalidation.
+**State flow**: Input change → debounce 300ms → `quote_trade` → display quote → user clicks Buy → confirm modal → `build_trade_pset` → prepare/blind → sign → broadcast → pending toast → `step` confirms → success toast.
 
 ### Quote Confirm Modal (`QuoteModal.tsx`)
 
@@ -333,9 +333,9 @@ Calls `useMarketOps` mutation (oracle attest + execute resolution).
 | Category | `CategoryDropdown` | Required | Nostr event tag |
 | Resolution source | Text input | Optional | Nostr event content |
 | Collateral per pair | Constrained dropdown (1-2-5 table) | Must be valid denomination | `MarketCreationParams.collateral_per_pair` |
-| Settlement date | `SettlementPicker` (calendar + time) | Must be in the future | `MarketCreationParams.expiry_time` (snapped to 60-block boundary) |
+| Settlement date | `SettlementPicker` (calendar + time) | Must be in the future | `MarketCreationParams.expiry_time` (rounded up to 60-block boundary) |
 
-**Submit flow**: Validate → `useCreateMarket` mutation → `invoke("build_creation_pset")` → sign → broadcast → `ingest_market` → publish Nostr event → navigate to detail view.
+**Submit flow**: Validate → `build_binary_market_creation_pset(params, funding)` → prepare/blind `PreBlindedPset` → sign → broadcast → await confirmation → `ingest_market` → publish Nostr event → redirect to detail view.
 
 ---
 

@@ -290,7 +290,10 @@ mod tests {
     #[test]
     fn build_follow_list_event_preserves_legacy_content_and_rewrites_p_tags() {
         let author = Keys::generate().public_key();
-        let follows = vec![hex::encode([0xaa; 32]), hex::encode([0xbb; 32])];
+        let follows = vec![
+            Keys::generate().public_key().to_hex(),
+            Keys::generate().public_key().to_hex(),
+        ];
         let legacy = r#"{"wss://relay.example":{"read":true}}"#;
         let unsigned = build_follow_list_event(author, &follows, legacy).unwrap();
         assert_eq!(unsigned.kind, FOLLOW_LIST_KIND);
@@ -374,6 +377,9 @@ mod tests {
             .iter()
             .filter_map(|tag| tag.as_slice().first().cloned())
             .collect();
-        assert_eq!(tag_kinds, vec!["p".to_string(), "t".to_string()]);
+        assert_eq!(
+            tag_kinds,
+            vec!["p".to_string(), "t".to_string(), "client".to_string()]
+        );
     }
 }

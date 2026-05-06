@@ -1,6 +1,6 @@
 # LMSR Deterministic Table Specification
 
-**Status**: Skeleton — defines what needs to be specified. The exact algorithm, constants, and test vectors are to be filled in during implementation.
+**Status**: Specified — runtime algorithm is arbitrary-precision bignum computation of the closed-form F-value expression, with committed reference Merkle roots as regression fixtures in `deadcat-codegen`. No fixed-point precision tuning, no Taylor-series term-count bound, no precomputed transcendental constants are needed.
 
 ## Overview
 
@@ -18,6 +18,27 @@ The `LMSR_TABLE_ROOT` is a compile-time parameter baked into the Simplicity prog
 
 The swap witness provides six values: `old_s_index`, `new_s_index`, `f_old`, `f_new`, `old_proof`, `new_proof`. The covenant:
 
+#### Public-path quote definitions
+
+The LMSR public path uses these exact integer definitions:
+
+- `FEE_DENOM = 10_000`
+- `fee_c = FEE_DENOM - fee_bps`
+- `L = traded_lots × half_payout_sats`
+- `base_notional` is the signed-safe pre-fee quote computed from `L`, `f_old`, and `f_new`
+
+Signed-safe `base_notional` construction:
+
+- If `f_new >= f_old`, let `d = f_new - f_old`
+  - buy path: `base_notional = L + d`
+  - sell path: `base_notional = L - d`
+- If `f_old > f_new`, let `d = f_old - f_new`
+  - buy path: `base_notional = L - d`
+  - sell path: `base_notional = L + d`
+- Any subtraction underflow (`L < d`) makes the transition invalid.
+
+`base_cost` is the buy-path interpretation of `base_notional`. `base_rebate` is the sell-path interpretation of `base_notional`.
+
 1. **Verifies two Merkle proofs** — confirms that `(old_s_index, f_old)` and `(new_s_index, f_new)` are committed leaves under `LMSR_TABLE_ROOT`:
    ```
    leaf = SHA256(0x00 || "LMSR_TBL_V1" || be64(index) || be64(value))
@@ -25,12 +46,12 @@ The swap witness provides six values: `old_s_index`, `new_s_index`, `f_old`, `f_
    ```
    Each proof is a list of `(sibling_hash, is_right)` pairs, folded from leaf to root. The covenant asserts the computed root equals `LMSR_TABLE_ROOT` and the proof depth equals `TABLE_DEPTH`.
 
-2. **Uses f_old and f_new in the conservation equation** — the swap path computes `base_notional` from `f_old`, `f_new`, `traded_lots`, and `half_payout_sats`, then enforces fee-adjusted pricing via 128-bit integer inequality:
+2. **Uses f_old and f_new in the conservation equation** — the public path's LMSR movement computes `base_notional` from `f_old`, `f_new`, `traded_lots`, and `half_payout_sats`, then enforces fee-adjusted pricing via 128-bit integer inequality:
    ```
-   buy:  delta_in  × fee_c    ≥ base_notional × FEE_DENOM
-   sell: delta_out × FEE_DENOM ≤ base_notional × fee_c
+   buy:  delta_in  × fee_c    ≥ base_cost   × FEE_DENOM
+   sell: delta_out × FEE_DENOM ≤ base_rebate × fee_c
    ```
-   where `fee_c = FEE_DENOM - FEE_BPS` and all arithmetic is integer-only.
+   where `base_cost` / `base_rebate` are the buy/sell interpretations of `base_notional`, `fee_c = FEE_DENOM - fee_bps`, and all arithmetic is integer-only.
 
 3. **Verifies trade direction** — `new_s_index > old_s_index` for buys, `<` for sells.
 
@@ -105,9 +126,7 @@ assert current == LMSR_TABLE_ROOT
 
 ## F-Value Computation Algorithm
 
-**NOT YET SPECIFIED** — this is the section that requires implementation work.
-
-### The mathematical definition
+### Mathematical definition
 
 ```
 F(i) = floor(b × ln(exp(q_yes(i)/b) + exp(q_no(i)/b)))
@@ -119,60 +138,49 @@ where:
     S_BIAS = 32,768  (protocol constant)
 ```
 
-Since `q_no = -q_yes`, this simplifies to:
-```
-F(i) = floor(b × ln(exp(s/b) + exp(-s/b)))
-     = floor(b × ln(2 × cosh(s/b)))
-     = floor(b × (ln(2) + ln(cosh(s/b))))
-     = floor(max_loss_sats + b × ln(cosh(s/b)))
+Since `q_no = -q_yes`, this simplifies (via `exp(x) + exp(-x) = 2 × cosh(x)` and `b × ln(2) = max_loss_sats`) to:
 
+```
+F(i) = max_loss_sats + floor(b × ln(cosh(s/b)))
 where s = q_yes(i)
 ```
 
-At `i = S_BIAS`: `s = 0`, `cosh(0) = 1`, `ln(1) = 0`, so `F(S_BIAS) = floor(max_loss_sats)` = the minimum F-value (the pool's maximum loss).
+At `i = S_BIAS`: `s = 0`, `cosh(0) = 1`, `ln(1) = 0`, so `F(S_BIAS) = max_loss_sats` (the minimum F-value, representing the pool's maximum loss).
 
-### What the algorithm must define
+The per-index range of `s/b` is bounded by construction of `q_step_lots`: `|s/b| ≤ ln(999)/2 ≈ 3.45`. This bounds the working range of the transcendental evaluation.
 
-Each of the following must be specified with exact precision, rounding mode, and intermediate representation:
+### Runtime algorithm: arbitrary-precision bignum
 
-1. **Computation of `b` from `max_loss_sats`**
-   - Mathematical: `b = max_loss_sats / ln(2)`
-   - Requires: exact rational approximation of `1/ln(2)` (or `ln(2)` for division)
-   - Output: `b` as a fixed-point value with defined precision
-   - Rounding: specified (e.g., round-to-nearest, truncate)
+The runtime algorithm is direct arbitrary-precision evaluation of the closed-form expression above. Specifically:
 
-2. **Computation of `q_step_lots` from `b` and `half_payout_sats`**
-   - Mathematical: `q_step_lots = max(1, ceil(ln(999) × b / (65536 × half_payout_sats)))`
-   - Equivalent: `q_step_lots = max(1, ceil(ln(999) × max_loss_sats / (65536 × ln(2) × half_payout_sats)))`
-   - Output: u64
-   - Rounding: ceiling, floored at 1
-   - `ln(999) ≈ 6.9078` is a **protocol-fixed derivation constant** encoding the 0.1%-99.9% price range target. The table's edge indices (`i = 0` and `i = S_MAX_INDEX`) correspond to implied YES prices of approximately 0.1% and 99.9% when `q_step_lots` equals this formula's result. The exact rational approximation of `ln(999)` is part of the deterministic integer algorithm specification.
-   - For most practical pool parameters, `q_step_lots = 1`. The formula only produces values > 1 for very deep pools (approximately `max_loss_sats > 6,583 × half_payout_sats`).
+1. **Dependencies**: `num-bigint` for arbitrary-precision integer arithmetic and `num-rational` for exact rational arithmetic. For transcendental evaluation (`cosh`, `ln`), compute to sufficient working precision (nominally 200+ bits) via any deterministic method — Taylor series at high precision, continued fractions, or a deterministic MPFR-backed implementation are all acceptable choices. The reference implementation in `deadcat-codegen` picks one method; other implementations must match the reference's F-values byte-for-byte.
 
-3. **Evaluation of `F(i)` for each `i` in `[0, 2^TABLE_DEPTH)`**
-   - Mathematical: `F(i) = floor(b × ln(exp(s/b) + exp(-s/b)))` where `s = (i - S_BIAS) × q_step_lots × half_payout_sats`
-   - Requires: deterministic evaluation of `exp` and `ln` (or `cosh` and `ln`) at sufficient precision
-   - All intermediates must use defined-precision integer/fixed-point arithmetic
-   - No `f64` — IEEE 754 does not guarantee deterministic `exp`/`ln` across platforms
-   - Output: u64 (the `floor()` of the high-precision result)
+2. **Precision budget**: working precision must be sufficient that the final `floor()` to u64 is correct across the entire param space. For `max_loss_sats ≤ 10^16` and `|s/b| ≤ 3.45`, 200 bits of working precision in rational/high-precision floating intermediate yields `floor()` correctness with ~50 bits of margin. No fixed-point analysis required.
 
-4. **Point evaluation (same algorithm, single index)**
-   - Used by `quote_trade` for quoting (~1μs per evaluation)
-   - Must produce bit-identical results to the table generation path
-   - Performance target: ~16 evaluations in ~16μs (binary search over s_index range)
+3. **Derivation chain** (see [Derivation Chain Summary](#derivation-chain-summary) for the full pipeline):
+   - `b = max_loss_sats / ln(2)` — stored as a high-precision rational or arbitrary-precision float.
+   - `q_step_lots = max(1, ceil(ln(999) × b / (65536 × half_payout_sats)))` — output is u64; ceiling rounding.
+   - For each `i ∈ [0, 65536)`: compute `s`, then `F(i) = max_loss_sats + floor(b × ln(cosh(s/b)))` with final `floor()` rounding to u64.
 
-### Algorithm design considerations
+4. **No fixed-point precision tuning, no Taylor term-count tuning, no precomputed irrational constants.** The bignum precision budget is deliberately over-provisioned so that implementation details of the transcendental step do not affect output correctness. Two compliant implementations using different precision levels (as long as both exceed the budget) produce identical F-values.
 
-**Approach options** (to be evaluated during implementation):
+5. **Caching strategy**: `deadcat-core` caches generated F-value tables per unique `(max_loss_sats, half_payout_sats)` pair to amortize the bignum cost. First-use cost per pool parameter combination is on the order of 5–10 seconds (bignum is slow); subsequent lookups on the cached table are O(1). Cache is stored in memory and optionally persisted to disk by the consuming wallet layer.
 
-- **Fixed-point Taylor series for `exp(x)`**: Express `exp(x) = 2^k × exp(r)` where `r` is small, compute `exp(r)` via truncated Taylor series with defined term count and precision. `ln` via inverse or separate series.
-- **Fixed-point `cosh` directly**: `cosh(x) = (exp(x) + exp(-x))/2`. Avoids the log-sum-exp decomposition. Even Taylor terms only: `cosh(x) = 1 + x²/2! + x⁴/4! + ...`
-- **CORDIC**: Iterative shift-and-add algorithm for hyperbolic functions. Deterministic by construction but potentially slower.
-- **High-precision rational arithmetic**: Use a bignum library with exact rational intermediates, convert to u64 at the end. Simplest to reason about correctness but may be slow for 65K evaluations.
+### Protocol constants
 
-**Key constraint**: The algorithm must be fast enough that generating 65,536 F-values takes ≤ ~100ms. Point evaluation must be ≤ ~1μs.
+- `ln(2)`, `ln(999)` — no precomputed approximation is committed at the protocol level. Implementations compute or embed these at their own chosen precision, provided the overall F-value output matches the reference.
+- `S_BIAS = 32,768`, `S_MAX_INDEX = 65,535`, `TABLE_DEPTH = 16` — unchanged, integer constants.
+- `ln(999)` encodes the 0.1%–99.9% price range target (the table edges correspond to implied YES prices of ~0.1% and ~99.9%).
 
-**Precision requirement**: The `floor()` to u64 must be correct. This means the high-precision intermediate must have enough fractional bits that the error is < 1.0 at the final step. For the parameter ranges in practice (`max_loss_sats` in the 26-value set, `half_payout_sats` similarly), the F-values range from `max_loss_sats` (minimum, at `S_BIAS`) to roughly `max_loss_sats + b × ln(999)` (maximum, at the table edges). The absolute values are in the millions-to-billions range (sats), so 64-bit integer part + ~32 fractional bits should suffice. To be verified during implementation.
+### Why bignum over fixed-point Taylor
+
+Several alternatives were considered and rejected in favor of bignum:
+
+- **Fixed-point Taylor + range reduction**: fast at runtime (~100ms for a full table, ~1μs per point evaluation) but requires careful precision analysis, worked examples, and a correctness proof ("Taylor matches reference for all 256 combos"). Substantial spec surface area for a marginal runtime-performance benefit.
+- **CORDIC**: similar complexity concerns; no clear win over Taylor.
+- **Hybrid (bignum for compile-time Merkle root, Taylor for runtime)**: can be added later as a pure optimization. The committed reference Merkle roots (see [Reference Fixtures](#reference-fixtures)) serve as the canonical acceptance criterion for any alternative implementation; switching to Taylor in a future release is non-breaking provided all reference roots reproduce byte-for-byte.
+
+For v1, bignum-only prioritizes correctness and spec simplicity over runtime performance. The cold-start cost (5–10 seconds per new pool combo, one-time per install) is acceptable given that pool creation and first-ingest events are infrequent compared to trading activity.
 
 ## Derivation Chain Summary
 
@@ -180,38 +188,55 @@ Each of the following must be specified with exact precision, rounding mode, and
 Input:      max_loss_sats (u64), half_payout_sats (u64)
                 │
                 ▼
-Step 1:     b = max_loss_sats / ln(2)           [fixed-point, precision TBD]
+Step 1:     b = max_loss_sats / ln(2)                        [bignum rational / high-precision float]
                 │
                 ▼
-Step 2:     q_step_lots = max(1, ceil(ln(999) × b / (65536 × half_payout_sats)))   [u64]
+Step 2:     q_step_lots = max(1, ceil(ln(999) × b / (65536 × half_payout_sats)))   [u64, ceiling rounding]
                 │
                 ▼
-Step 3:     For i in 0..65536:                   [fixed-point, precision TBD]
+Step 3:     For i in 0..65536:                               [bignum rational / high-precision float]
               s = (i - 32768) × q_step_lots × half_payout_sats
-              F(i) = floor(b × ln(exp(s/b) + exp(-s/b)))
+              F(i) = max_loss_sats + floor(b × ln(cosh(s/b)))   [final floor to u64]
                 │
                 ▼
-Step 4:     Merkle root from F-values            [SHA256, already specified]
+Step 4:     Merkle root from F-values                        [SHA256, already specified — see Merkle Tree Format]
 ```
 
-Steps 1-3 need the deterministic integer algorithm. Step 4 is already implemented and matches the `.simf`.
+All arithmetic operations use the same bignum precision budget. No intermediate step uses a lower precision than the rest.
 
-## Test Vectors
+## Reference Fixtures
 
-**To be generated after the algorithm is implemented.** The test vector set should cover:
+Correctness validation uses the committed Merkle root approach rather than per-index test vectors:
 
-1. **Minimum viable params**: smallest `max_loss_sats` and `half_payout_sats` in the 26-value convention set
-2. **Typical params**: mid-range values representative of real pools
-3. **Maximum params**: largest values in the convention set
-4. **Edge indices**: `F(0)`, `F(S_BIAS)`, `F(S_MAX_INDEX)` — the extremes and the minimum
-5. **Symmetry check**: `F(S_BIAS - k)` should equal `F(S_BIAS + k)` for all valid `k` (the cost function is symmetric around the bias point)
-6. **Full Merkle root**: at least one complete set of `(max_loss_sats, half_payout_sats) → q_step_lots → all 65536 F-values → Merkle root`
-7. **Point evaluation consistency**: verify that evaluating `F(i)` individually produces the same value as the table generation path for all `i` in a test case
+- **`deadcat-codegen`** (dev-only crate) contains the bignum reference implementation and a committed fixture file mapping each of the 256 `(max_loss_sats, half_payout_sats)` parameter combinations to:
+  - Its canonical Merkle root (32 bytes).
+  - Anchor F-values at key indices (`F(0)`, `F(S_BIAS)`, `F(S_MAX_INDEX)`) for human inspection and debugging.
+  - The resolved `q_step_lots`.
+- **Regression test** runs on every `cargo test`: re-execute the bignum reference for each of the 256 combos, assert each computed Merkle root matches the committed fixture value. If the bignum implementation or its dependencies ever produce different output (e.g., `num-bigint` version bump changes rounding behavior), this test fails loudly.
+- **Regeneration**: `just regenerate-lmsr-fixtures` invokes the reference generator to emit fresh fixture content. Run by developers when an intentional algorithm change (or parameter-space expansion) is being committed.
+- **Cross-implementation conformance**: future alternative implementations (Taylor, CORDIC, cross-language ports) target the same committed Merkle roots. Any implementation reproducing all 256 roots byte-for-byte is provably equivalent to the bignum reference over the entire valid parameter space.
+- **No per-index test vector is committed** — the Merkle root over 65,536 F-values is a stronger equivalence check than any finite sample of individual F-values. If two implementations agree on the root, they agree on every F-value.
+
+## Precision Calibration
+
+The "200+ bits working precision is sufficient" claim is empirically validated, not assumed. During `deadcat-codegen` development, a one-time calibration run establishes the minimum safe precision for the chosen bignum method:
+
+1. **Establish ground truth**: generate all 256 Merkle roots at a very high precision (e.g., 512 bits). Re-generate at 1024 bits and assert the results match byte-for-byte. If they don't, the starting precision is too low — go higher. Once two consecutive precision levels agree, the higher one is "trusted truth."
+2. **Binary-search downward**: halve the precision repeatedly (512 → 256 → 128 → 64 → …). At each level, regenerate all 256 roots plus their underlying 16.7M F-values (65,536 per combo × 256 combos) and compare to ground truth.
+3. **Record the threshold**: the first precision where any root or F-value disagrees with ground truth is the "minimum safe precision" for this bignum method. The precision budget pinned in the spec (nominally 200 bits) must exceed this threshold by a comfortable margin.
+
+The calibration is a **one-time development artifact**, not a per-CI regression. Its output is a documented fact pinned in the satellite spec (e.g., "empirical minimum for our bignum method is X bits; we use 200 bits for Y bits of safety margin"). The ongoing regression check remains the committed Merkle roots — any implementation that reproduces them byte-for-byte is provably equivalent.
+
+The threshold is **specific to the chosen bignum method** (Taylor series at high precision, continued fractions, MPFR-backed evaluation, etc.). An alternative implementation with a different method may have a different minimum; it only needs to reproduce the committed roots, not the threshold. Implementations whose published conformance demands that they document their precision strategy (for auditability) may cite this calibration result as the justification for their chosen working precision.
+
+A CLI subcommand in `deadcat-codegen` (`just calibrate-precision`) runs the calibration and emits a report. Integrators and auditors can re-run it against a fork or alternative implementation to validate the precision claim.
 
 ## Key Files
 
-- `src-tauri/crates/deadcat-sdk/contract/lmsr_pool.simf` — `lmsr_table_leaf_hash`, `lmsr_table_node_hash`, `merkle_proof_step_fn` (the on-chain verification code — the authoritative definition of the Merkle format)
-- `src-tauri/crates/deadcat-sdk/src/lmsr_pool/table.rs` — Rust-side Merkle tree (leaf hash, node hash, root, proof generation/verification — matches `.simf` byte-for-byte)
-- `src-tauri/crates/deadcat-sdk/src/lmsr_pool/math.rs` — quoting logic (`quote_from_table`, `quote_exact_input_from_manifest`, `fee_free_yes_spot_price_bps`)
+- `crates/deadcat-core/contracts/lmsr_pool.simf` — `lmsr_table_leaf_hash`, `lmsr_table_node_hash`, `merkle_proof_step_fn` (the on-chain verification code — the authoritative definition of the Merkle format)
+- `crates/deadcat-core/src/lmsr_pool/table.rs` — Rust-side Merkle tree (leaf hash, node hash, root, proof generation/verification — matches `.simf` byte-for-byte)
+- `crates/deadcat-core/src/lmsr_pool/math.rs` — quoting logic (`quote_from_table`, `quote_exact_input_from_manifest`, `fee_free_yes_spot_price_bps`)
+- `crates/deadcat-codegen/` (planned, shared with the multi-outcome `.simf` generator) — bignum reference implementation and committed fixture file with per-combo Merkle roots and anchor F-values
+- `crates/deadcat-core/` — runtime F-value computation (bignum-based), per-pool-combo in-memory cache
 - `docs/contracts/lmsr-pool/lmsr-pool-design.md` — pool parameter design, derivation formulas, deterministic generation rationale
-- `docs/architecture/deadcat-core-design.md` — LMSR Math section, point evaluation vs full table distinction
+- `docs/architecture/deadcat-core-design.md` — LMSR Math section, cached-table runtime model and reserve-aware routing notes
