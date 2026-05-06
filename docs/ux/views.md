@@ -297,16 +297,10 @@ Shown when `trending.length === 0` on the Trending view. Icon + "No markets yet"
 | Tokens | `TradeQuote.total_output` (formatted) |
 | Price | `TradeQuote.effective_price` as probability % |
 | Fee | `TradeQuote.estimated_fee` (with "estimate" disclaimer) |
-<<<<<<< HEAD
 | Timer | 30-second countdown on quote validity. On expiry: auto-re-quote + "Price updated" flash |
 | Route legs | `TradeQuote.legs` — advanced mode toggle |
 | Confirm button | Triggers `useExecuteTrade` mutation |
 | Cancel button | Closes modal, clears `tradeQuoteSnapshot` |
-=======
-| Route legs | `TradeQuote.legs` — shown only in advanced mode |
-| Confirm button | Triggers `build_trade_pset` + prepare/blind + sign + broadcast |
-| Cancel button | Dismisses modal |
->>>>>>> 4ee5c77 (docs: resolve trade pset pre-blinding API)
 
 ### Oracle Resolution Panel
 
