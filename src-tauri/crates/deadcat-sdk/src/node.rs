@@ -2520,7 +2520,6 @@ mod tests {
             pool_id: announcement.lmsr_pool_id.clone(),
             market_id: announcement.market_id.clone(),
             creation_txid: announcement.creation_txid.clone(),
-            reserve_yes_outpoint: announcement.initial_reserve_outpoints[0].clone(),
             stored_initial_reserve_outpoints: Some(
                 announcement
                     .initial_reserve_outpoints
@@ -2557,7 +2556,6 @@ mod tests {
             pool_id: announcement.lmsr_pool_id.clone(),
             market_id: announcement.market_id.clone(),
             creation_txid: announcement.creation_txid.clone(),
-            reserve_yes_outpoint: announcement.initial_reserve_outpoints[0].clone(),
             stored_initial_reserve_outpoints: Some([
                 format!("{}:7", announcement.creation_txid),
                 format!("{}:8", announcement.creation_txid),
@@ -2568,7 +2566,7 @@ mod tests {
             params_json: canonical_params_json(&announcement),
             lmsr_table_values: None,
             nostr_event_json: Some(serde_json::to_string(&event).unwrap()),
-            reserve_yes_outpoint: format!("{}:7", announcement.creation_txid),
+            reserve_yes_outpoint: announcement.initial_reserve_outpoints[0].clone(),
         };
 
         let resolved = resolved_sync_metadata(Network::LiquidTestnet, &pool).unwrap();
@@ -2587,19 +2585,17 @@ mod tests {
     fn resolved_sync_metadata_errors_when_pool_is_unrecoverable() {
         let announcement = sample_pool_announcement();
         let params_json = canonical_params_json(&announcement);
-        let reserve_yes_outpoint = format!("{}:0", announcement.creation_txid);
         let pool = crate::LmsrPoolSyncInfo {
             pool_id: announcement.lmsr_pool_id,
             market_id: announcement.market_id,
             creation_txid: announcement.creation_txid,
-            reserve_yes_outpoint: announcement.initial_reserve_outpoints[0].clone(),
             stored_initial_reserve_outpoints: None,
             witness_schema_version: announcement.witness_schema_version,
             current_s_index: announcement.current_s_index,
             params_json,
             lmsr_table_values: None,
             nostr_event_json: None,
-            reserve_yes_outpoint,
+            reserve_yes_outpoint: announcement.initial_reserve_outpoints[0].clone(),
         };
 
         let err = resolved_sync_metadata(Network::LiquidTestnet, &pool).unwrap_err();
@@ -2618,7 +2614,7 @@ mod order_cleanup_tests {
     use lwk_test_util::{TEST_MNEMONIC, TestEnvBuilder, regtest_policy_asset};
     use nostr_relay_builder::prelude::*;
 
-    use crate::testing::{TestStore, test_order_announcement};
+    use crate::testing::{RecordedOwnOrder, TestStore, test_order_announcement};
 
     fn sample_order_market_params(collateral_asset_id: [u8; 32]) -> PredictionMarketParams {
         PredictionMarketParams {
@@ -2752,6 +2748,16 @@ mod order_cleanup_tests {
             .unwrap();
         {
             let mut store = store.lock().unwrap();
+            store.own_orders.push(RecordedOwnOrder {
+                params: announcement.params,
+                maker_pubkey: [0xaa; 32],
+                order_nonce: [0x11; 32],
+                nostr_event_id: event_id.to_hex(),
+                creation_txid: "test-tx".to_string(),
+                market_id: announcement.market_id.clone(),
+                direction_label: announcement.direction_label.clone(),
+                offered_amount: announcement.offered_amount,
+            });
             store.pending_order_deletions.push(PendingOrderDeletion {
                 order_id: 9,
                 market_id: announcement.market_id.clone(),

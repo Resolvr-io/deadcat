@@ -8,11 +8,17 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-large
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
 
       - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          cmd-format: "nix develop .#default --command {0}"
+          workspaces: ./src-tauri -> target
 
       - name: Install dependencies
         run: nix develop --command just install
@@ -29,8 +35,8 @@ jobs:
       - name: Rust clippy
         run: nix develop --command just cargo-clippy
 
-      # - name: Rust tests
-      #   run: nix develop --command just cargo-test
+      - name: Rust tests
+        run: nix develop --command just cargo-test
 
   build:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
@@ -39,13 +45,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-26
+          - platform: blacksmith-6vcpu-macos-latest
             args: --target aarch64-apple-darwin
             arch: aarch64
-          - platform: macos-26
-            args: --target x86_64-apple-darwin
-            arch: x86_64
-          - platform: ubuntu-22.04
+          - platform: blacksmith-8vcpu-ubuntu-2404
             args: ""
             arch: x86_64-linux
 
@@ -54,7 +57,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: contains(matrix.platform, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -76,8 +79,6 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -101,14 +102,14 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: Upload DMG artifact
-        if: startsWith(matrix.platform, 'macos')
+        if: contains(matrix.platform, 'macos')
         uses: actions/upload-artifact@v4
         with:
           name: dmg-${{ matrix.arch }}
           path: src-tauri/target/${{ matrix.arch }}-apple-darwin/release/bundle/dmg/*.dmg
 
       - name: Upload Linux artifacts
-        if: matrix.platform == 'ubuntu-22.04'
+        if: contains(matrix.platform, 'ubuntu')
         uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.arch }}
@@ -120,7 +121,7 @@ jobs:
   release:
     if: github.event_name == 'push'
     needs: [build]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     permissions:
       contents: write
     steps:
