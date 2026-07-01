@@ -26,7 +26,3 @@ dist-ssr
 
 # But keep SDK implementation docs
 !src-tauri/crates/deadcat-sdk/docs/
-
-# Local agent notes
-docs/WALLET_DERIVATION_PATH.md
-docs/memory-management.md
