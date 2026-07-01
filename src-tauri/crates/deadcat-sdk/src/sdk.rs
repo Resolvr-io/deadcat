@@ -428,11 +428,9 @@ impl DeadcatSdk {
         let signer = SwSigner::new(mnemonic, network.is_mainnet())
             .map_err(|e| Error::Signer(e.to_string()))?;
 
-        let slip77_key = signer
-            .slip77_master_blinding_key()
-            .map_err(|e| Error::Signer(e.to_string()))?;
-        let xpub = signer.xpub();
-        let descriptor_str = format!("ct(slip77({}),elwpkh({}/*))", slip77_key, xpub);
+        let descriptor_str = signer
+            .wpkh_slip77_descriptor()
+            .map_err(|e| Error::Descriptor(e.to_string()))?;
         let descriptor: WolletDescriptor = descriptor_str
             .parse()
             .map_err(|e: lwk_wollet::Error| Error::Descriptor(e.to_string()))?;
@@ -4894,6 +4892,37 @@ mod tests {
         )
         .unwrap();
         (sdk, temp_dir)
+    }
+
+    #[test]
+    fn wallet_descriptor_uses_standard_bip84_liquid_singlesig_path() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+        let mainnet_dir = tempfile::tempdir().unwrap();
+        let mainnet = DeadcatSdk::new(
+            mnemonic,
+            Network::Liquid,
+            "tcp://127.0.0.1:1",
+            mainnet_dir.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            mainnet.wollet.wollet_descriptor().to_string(),
+            "ct(slip77(9c8e4f05c7711a98c838be228bcb84924d4570ca53f35fa1c793e58841d47023),elwpkh([73c5da0a/84'/1776'/0']xpub6CRFzUgHFDaiDAQFNX7VeV9JNPDRabq6NYSpzVZ8zW8ANUCiDdenkb1gBoEZuXNZb3wPc1SVcDXgD2ww5UBtTb8s8ArAbTkoRQ8qn34KgcY/<0;1>/*))#87kykuta"
+        );
+
+        let regtest_dir = tempfile::tempdir().unwrap();
+        let regtest = DeadcatSdk::new(
+            mnemonic,
+            Network::LiquidRegtest,
+            "tcp://127.0.0.1:1",
+            regtest_dir.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            regtest.wollet.wollet_descriptor().to_string(),
+            "ct(slip77(9c8e4f05c7711a98c838be228bcb84924d4570ca53f35fa1c793e58841d47023),elwpkh([73c5da0a/84'/1'/0']tpubDC8msFGeGuwnKG9Upg7DM2b4DaRqg3CUZa5g8v2SRQ6K4NSkxUgd7HsL2XVWbVm39yBA4LAxysQAm397zwQSQoQgewGiYZqrA9DsP4zbQ1M/<0;1>/*))#2e4n992d"
+        );
     }
 
     fn maker_pubkey_for_index(sdk: &DeadcatSdk, order_index: u32) -> [u8; 32] {
